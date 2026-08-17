@@ -57,7 +57,10 @@ export function CopilotPanel({ config, onClose }: { config: RuntimeConfig; onClo
       streamRef.current?.abort(); setStatus("Copilot safety boundary triggered"); setBusy(false); return;
     }
     if (event.type === "text_chunk" && event.content) setAnswer((value) => value + event.content);
-    else if (event.type === "turn_complete") { if (!answer && event.output) setAnswer(event.output); setStatus("分析完成"); setBusy(false); }
+    else if (event.type === "turn_complete") {
+      if (event.output) setAnswer((value) => value || event.output || "");
+      setStatus("分析完成"); setBusy(false);
+    }
     else if (event.type === "status_change" && event.status) setStatus(event.status);
     else if (event.type === "error") { setStatus(event.message ?? "Copilot error"); setBusy(false); }
   };
