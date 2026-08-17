@@ -228,14 +228,14 @@ SEO Copilot has three explicit scopes:
 
 The current scope is shown as visible chips in the panel header. A chat turn may never silently retain one merchant's data after the user switches to another merchant.
 
-The chat interface reuses Core AI's existing conversation and Agent Run infrastructure. A conversation may create an analysis-only Agent Run, but it must not dispatch an execution Agent or invoke an external mutation. In MVP, SEO Copilot receives only read-only SEO Ops tools. It may return a structured task draft or a review-readiness explanation, but the operator must commit a draft through the normal SEO Ops API. A formal approval preview remains an explicit UI/API action guarded by `seoops.approve`; chat cannot manufacture or submit it.
+The chat interface reuses Core AI's existing conversation and Agent Run infrastructure. A conversation may create an analysis-only Agent Run, but it must not dispatch an execution Agent or invoke an external mutation. In the first UAT slice, the dedicated SEO Copilot Agent has zero tools and receives a compact, permission-scoped context envelope from the frontend. A later MVP increment may add explicitly read-only SEO Ops tools after separate authorization tests. The Copilot may return a structured task draft or a review-readiness explanation, but the operator must commit a draft through the normal SEO Ops API. A formal approval preview remains an explicit UI/API action guarded by `seoops.approve`; chat cannot manufacture or submit it.
 
 Chat requirements:
 
 - answers identify evidence sources and their capture times;
 - uncertainty and missing inputs are explicit;
 - cross-merchant retrieval is limited to the user's visible portfolio;
-- manage and approval APIs are not registered as autonomous chat tools in MVP;
+- no tools are registered on the first UAT Copilot Agent; manage and approval APIs remain prohibited if read-only tools are added later;
 - a formal approval preview uses `/tasks/:id/approval-previews` and the current user's permission;
 - an approval cannot be completed inside a free-text chat response;
 - approval never triggers an execution Agent;
@@ -243,7 +243,7 @@ Chat requirements:
 - chat transcripts remain in the existing Core AI conversation store;
 - large outputs remain Core AI File/Artifact records.
 
-When a draft is committed from chat, the task create/revision command includes the originating `conversation_id`. Core AI appends the conversation/run link through the domain service; no separate SEO-specific chat persistence API is required.
+When a draft is committed from chat, the task create/revision command includes the originating `conversation_id`. When a task-scoped conversation is created without a task mutation, `/tasks/:id/conversation-links` appends only the Core AI conversation reference. Core AI remains the conversation store; SEO Ops never persists a second transcript.
 
 ## 9. System Architecture
 
@@ -279,7 +279,7 @@ flowchart LR
 
 ### 9.3 Feature enablement
 
-`SEO_OPS_ENABLED` defaults to false. It is enabled explicitly in UAT. A disabled environment does not expose an operational SEO Ops surface. This is a rollout control, not a substitute for RBAC.
+Core AI property `sys.seoops.enabled` defaults to false and is overridden in Kubernetes by `SYS_SEOOPS_ENABLED`. It is enabled explicitly in UAT. A disabled environment does not expose an operational SEO Ops surface. This is a rollout control, not a substitute for RBAC.
 
 ## 10. Persistence Model
 
@@ -318,7 +318,7 @@ Minimum fields:
 Minimum fields:
 
 - identity: `id`, `merchant_id`, optional `location_id`;
-- classification: `task_type`, `source`, `priority`;
+- classification: `task_type`, `source`, `priority`, `impact`;
 - ownership/SLA: `owner_id`, `due_at`;
 - workflow: `status`, `task_revision`, `state_version`;
 - current definition and append-only `revisions`;
@@ -373,6 +373,8 @@ An approval decision includes:
 - actor, timestamp, and optional reason;
 - `idempotency_key`.
 
+`REJECT` and `REVOKE` require a nonblank reason; `APPROVE` may include one.
+
 Approval records are append-only. A rejection or revocation is not edited away; returning to work creates a new revision.
 
 ### 10.7 TaskEvent
@@ -393,6 +395,9 @@ stateDiagram-v2
     DRAFT --> READY_FOR_APPROVAL
     NEEDS_INPUT --> READY_FOR_APPROVAL
     BLOCKED --> READY_FOR_APPROVAL
+    NEEDS_INPUT --> DRAFT: create new revision
+    BLOCKED --> DRAFT: create new revision
+    READY_FOR_APPROVAL --> DRAFT: create new revision
     READY_FOR_APPROVAL --> APPROVED: approve
     READY_FOR_APPROVAL --> REVISION_REQUIRED: reject
     APPROVED --> APPROVAL_REVOKED: revoke
@@ -403,6 +408,8 @@ stateDiagram-v2
 Rules:
 
 - readiness is calculated from task requirements, location identity, and evidence;
+- creating a new definition revision is allowed from `DRAFT`, `NEEDS_INPUT`, `BLOCKED`, `READY_FOR_APPROVAL`, `REVISION_REQUIRED`, or `APPROVAL_REVOKED`; the new revision enters `DRAFT` and is immediately re-evaluated;
+- an `APPROVED` revision must be revoked before another definition revision can be created;
 - the backend validates every transition;
 - `APPROVED` means authorized only;
 - no Agent dispatch or external mutation follows `APPROVED` in MVP;
@@ -446,14 +453,18 @@ The API uses JSON with `snake_case` fields under `/api/seo-ops`.
 
 | Method | Path | Permission | Purpose |
 | --- | --- | --- | --- |
+| `GET` | `/config` | `seoops.view` | Non-secret runtime capability and Copilot configuration |
 | `GET` | `/portfolio` | `seoops.view` | Portfolio aggregates and merchant risk summaries |
 | `GET` | `/inbox` | `seoops.view` | Server-filtered and paginated task queue |
 | `GET` | `/reviews` | `seoops.view` | Paginated factual-review and causal-readiness projection |
 | `GET` | `/reports` | `seoops.view` | Paginated report/artifact reference projection |
 | `GET` | `/tasks/:id` | `seoops.view` | Task aggregate read model |
+| `POST` | `/merchants` | `seoops.manage` | Auditable merchant bootstrap/onboarding command |
+| `POST` | `/merchants/:id/locations` | `seoops.manage` | Auditable location bootstrap/onboarding command |
 | `POST` | `/tasks` | `seoops.manage` | Create an initial task revision |
 | `POST` | `/tasks/:id/revisions` | `seoops.manage` | Append a new task definition revision |
 | `POST` | `/tasks/:id/evidence` | `seoops.manage` | Append an EvidenceRef |
+| `POST` | `/tasks/:id/conversation-links` | `seoops.manage` | Append an owned Core AI conversation reference |
 | `POST` | `/tasks/:id/approval-previews` | `seoops.approve` | Recompute reviewability and deterministic hash |
 | `POST` | `/tasks/:id/approval-decisions` | `seoops.approve` | Approve, reject, or revoke with CAS/idempotency |
 | `GET` | `/tasks/:id/events` | `seoops.view` | Paginated audit timeline |
@@ -474,7 +485,7 @@ Error semantics:
 
 Full conversation transcripts, Agent Run traces, Files, and Artifacts are read through their existing Core AI APIs and require their existing permissions. SEO task responses expose only safe link summaries.
 
-Merchant/location onboarding is not an operator UI in MVP. UAT baseline entities are created by an auditable one-time bootstrap command that calls the same domain validation service as production code. They are not shipped as frontend fixtures.
+Merchant/location onboarding is not an operator UI in MVP. UAT baseline entities are created by an auditable one-time bootstrap command that calls the onboarding API and therefore the same domain validation service as production code. Merchant creation accepts the explicitly approved internal operator user IDs, validates them against active Core AI users, and always includes the creator. The entities are not shipped as frontend fixtures or inserted directly into Mongo.
 
 ## 14. Frontend Data and Interaction Rules
 
@@ -518,7 +529,8 @@ The exact Kubernetes/GitOps manifest source of truth and current Ingress ownersh
 ### 15.2 Configuration
 
 - frontend uses relative API paths and contains no environment secrets;
-- backend `SEO_OPS_ENABLED` defaults false and is true only in UAT for this release;
+- backend `sys.seoops.enabled`/`SYS_SEOOPS_ENABLED` defaults false and is true only in UAT for this release;
+- backend `sys.seoops.copilot.agent-id`/`SYS_SEOOPS_COPILOT_AGENT_ID` contains only the non-secret ID of a dedicated published Copilot Agent with no tools, skills, sub-agents, datasets, sandbox, memory, or external-write capability;
 - Mongo collections and indexes are additive;
 - role-permission mappings are explicit UAT configuration;
 - image references are pinned to immutable digests.
@@ -637,7 +649,7 @@ Release evidence includes:
 Frontend and backend releases are independently reversible.
 
 - Frontend failure: roll back the frontend digest or remove/revert only the `/seo-ops` route.
-- Backend failure: disable `SEO_OPS_ENABLED`, then roll back the Core AI digest.
+- Backend failure: set `SYS_SEOOPS_ENABLED=false`, then roll back the Core AI digest.
 - Mongo changes are additive; old Core AI versions ignore `seo_*` collections.
 - Persisted task, approval, and event history is retained during rollback.
 - No destructive migration or cleanup is part of rollback.
@@ -663,7 +675,7 @@ Performance baselines are recorded in UAT before release. Regressions are evalua
 - Core AI authorization is checked server-side on every entity request;
 - merchant filtering is derived from the authenticated user's visible scope;
 - task IDs are not sufficient authorization;
-- chat receives explicit merchant/task scope and read-only SEO tools;
+- first-UAT chat receives an explicit permission-scoped merchant/task context envelope and has no tools;
 - external execution credentials are not needed by the MVP;
 - frontend bundles and runtime config contain no secrets;
 - audit logs contain IDs and hashes, not sensitive content.
@@ -677,7 +689,7 @@ These are implementation discoveries, not unresolved product decisions:
 - exact Core AI login support for `return_to`;
 - current frontend image registry and namespace naming convention;
 - exact Core AI Mongo registration/index APIs;
-- existing Core AI conversation and read-only tool integration point;
+- existing Core AI conversation/session integration point and the Agent-definition safety check;
 - current role mappings for the initial internal UAT users.
 
 If current infrastructure differs from this document, implementation pauses only when the difference changes an approved safety or topology decision. Pure naming/mechanical differences are handled in the implementation plan.
