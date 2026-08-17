@@ -1,32 +1,50 @@
 # Connexup SEO Operations
 
-面向内部代运营团队的 SEO 执行控制台。首版聚焦一个操作人员同时服务多家商户时最容易出错的链路：商户上下文、行动队列、任务证据链、人工审批和 Agent 执行边界。
+面向内部 SEO 代运营团队的执行控制台，支持一名操作员在同一套流程中管理几十家商户，而不把商户做成永久按钮墙。
 
-## 当前纵向切片
+## 产品范围
 
-- 可搜索的商户 / 门店上下文切换
-- 跨商户行动队列，按“需要判断、阻塞、今天执行、执行后”分组
-- 任务详情与五段证据链：来源 → 预览 → 审批 → 执行 → 回读
-- Copilot 上下文显示与外部写入审批门
-- Agent Run、任务与业务结果分层展示
-- 复盘 / 因果分析入口
+- 组合级商户风险、容量、阻塞、逾期和待审批汇总
+- 可搜索、可收藏、按当前用户隔离偏好的商户切换器
+- 服务端分页的跨商户 Execution Task 收件箱
+- 任务版本、状态版本、执行规范哈希和不可变审计时间线
+- 证据追加、独立 GET 回读和 `409` 过期状态处理
+- 正式审批预览与批准/退回/撤销；审批不触发执行
+- 报告来源、新鲜度和哈希展示
+- 事实、相关、因果就绪度分级的复盘分析
+- 无工具、无技能、无记忆、无外部写入的上下文 Copilot
 
-当前数据为产品验证用的本地 fixture；所有外部写入按钮都保持禁止状态。
+## Core AI 边界
+
+前端从同源 Core AI 调用 `/api/auth/me`、`/api/seo-ops/*` 和最小会话接口。认证使用现有 `apiKey`；身份与权限必须由 `/api/auth/me` 回读后才进入受保护页面。
+
+权限分为：
+
+- `seoops.view`：读取组合、任务、报告、复盘和事件
+- `seoops.manage`：创建商户/地点/任务、修订和证据、链接对话
+- `seoops.approve`：审批预览与正式决定
+- `chat.use`：显示只读 Copilot
+
+任何页面都没有可用的外部执行按钮。`APPROVED` 只是一条授权记录；实际执行、第三方写入与执行后回读属于独立阶段。
 
 ## 本地运行
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-## 验证
+Vite 开发入口为 `http://localhost:5173/seo-ops/`。生产环境必须把 `/seo-ops/api` 所需的同源 `/api/*` 请求转发给 Core AI。
+
+## 验证与容器
 
 ```bash
 npm run test:run
 npm run build
+npm audit --audit-level=high
+docker build -t connexup-seo-ops:local .
+docker run --rm -p 18080:8080 connexup-seo-ops:local
+curl --fail http://127.0.0.1:18080/seo-ops/healthz
 ```
 
-## 下一步架构边界
-
-后端接入时保持四个核心对象独立：`Merchant/Location`、`Task`、`AgentRun`、`Evidence`。任务是业务工作单元；Agent Run 只是某次执行尝试；外部动作必须经过 `preview → approval → execute → readback`，回读证据未建立前不能自动结项。
+Nginx 以非 root 镜像在 8080 端口运行；`/seo-ops/*` 深链接回退到 SPA，`/seo-ops/healthz` 返回纯文本 `ok`。
