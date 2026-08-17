@@ -1,63 +1,53 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, test } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
+import { AuthProvider } from "./auth/AuthContext";
+import { portfolioFixture, taskFixture, userFixture } from "./test/fixtures";
 
-test("switching merchants updates both merchant and location context", async () => {
-  const user = userEvent.setup();
-  render(<App />);
-
-  await user.click(screen.getByRole("button", { name: /当前商户：可可小卤/ }));
-  await user.click(screen.getByRole("option", { name: /Only Bear Chicken & Boba/ }));
-
-  expect(screen.getByRole("heading", { name: "Only Bear Chicken & Boba" })).toBeInTheDocument();
-  expect(screen.getByText("Mineola · Website SEO")).toBeInTheDocument();
+beforeEach(() => {
+  localStorage.setItem("apiKey", "test-key");
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/auth/me") return json(userFixture);
+    if (path === "/api/seo-ops/portfolio") return json(portfolioFixture);
+    if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe" });
+    if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
+    if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
+    if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
+    if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
+    if (path.startsWith("/api/seo-ops/reports")) return json({ items: [], offset: 0, limit: 50, total: 0 });
+    return new Response(null, { status: 404 });
+  }));
 });
 
-test("merchant switcher filters a large portfolio by merchant or location", async () => {
+afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); });
+
+test("portfolio keeps merchants in a searchable switcher", async () => {
   const user = userEvent.setup();
-  render(<App />);
-
-  await user.click(screen.getByRole("button", { name: /当前商户：可可小卤/ }));
-  await user.type(screen.getByRole("searchbox", { name: "搜索商户或门店" }), "Upper West");
-
-  expect(screen.getByRole("option", { name: /Choice Brooklyn UWS/ })).toBeInTheDocument();
-  expect(screen.queryByRole("option", { name: /Only Bear Chicken & Boba/ })).not.toBeInTheDocument();
+  renderApp("/");
+  expect(await screen.findByRole("heading", { name: "代运营组合" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Only Bear Chicken & Boba" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("combobox", { name: "选择商户工作范围" }));
+  expect(screen.getByRole("option", { name: /Only Bear Chicken & Boba/ })).toBeInTheDocument();
 });
 
-test("opening an execution task exposes its target, next action, and evidence state", async () => {
+test("task deep link exposes revision hash evidence and approval boundary", async () => {
   const user = userEvent.setup();
-  render(<App />);
-
-  await user.click(
-    screen.getByRole("button", { name: "查看任务：Only Bear 菜单页发布审批" })
-  );
-
-  const drawer = screen.getByRole("dialog", { name: "任务详情" });
-  expect(drawer).toBeInTheDocument();
-  expect(within(drawer).getByText("Only Bear Chicken & Boba → Mineola → Menu page")).toBeInTheDocument();
-  expect(within(drawer).getByText("批准已核实菜单真值的发布预览")).toBeInTheDocument();
-  expect(within(drawer).getByText("待授权")).toBeInTheDocument();
-  expect(within(drawer).getByText("READY")).toBeInTheDocument();
-  expect(within(drawer).getByText("部分证据")).toBeInTheDocument();
-
-  await user.click(screen.getByRole("button", { name: "关闭任务详情" }));
-  expect(screen.queryByRole("dialog", { name: "任务详情" })).not.toBeInTheDocument();
-});
-
-test("copilot keeps merchant context explicit and gates external writes behind approval", async () => {
-  const user = userEvent.setup();
-  render(<App />);
-
+  renderApp("/tasks/task-1");
+  expect(await screen.findByRole("heading", { name: "菜单页发布证据复核" })).toBeInTheDocument();
+  expect(screen.getByText("rev 2")).toBeInTheDocument();
+  expect(screen.getByText("sha256:abc123")).toBeInTheDocument();
+  expect(screen.getByText("批准只记录授权，不触发执行")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "打开 SEO Ops Copilot" }));
-
-  expect(screen.getByRole("dialog", { name: "SEO Ops Copilot" })).toBeInTheDocument();
-  expect(screen.getByText("商户 · 可可小卤")).toBeInTheDocument();
-
-  await user.click(screen.getByRole("button", { name: "生成发布预览" }));
-
-  expect(screen.getByRole("status")).toHaveTextContent(
-    "已生成预览：需要人工批准后才能执行外部写入。"
-  );
-  expect(screen.getByRole("button", { name: "执行外部写入" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "执行外部写入（MVP 禁用）" })).toBeDisabled();
 });
+
+function renderApp(route: string) {
+  return render(<MemoryRouter initialEntries={[route]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
+}
+
+function json(body: unknown) {
+  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+}
