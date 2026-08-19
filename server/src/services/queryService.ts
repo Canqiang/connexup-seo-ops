@@ -29,7 +29,7 @@ export function parsePageParams(query: PageParams): { offset: number; limit: num
   return { offset: rawOffset, limit: rawLimit };
 }
 
-function paginate<T>(all: T[], offset: number, limit: number): PageResult<T> {
+export function paginate<T>(all: T[], offset: number, limit: number): PageResult<T> {
   return {
     items: all.slice(offset, offset + limit),
     offset,

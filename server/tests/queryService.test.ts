@@ -79,10 +79,20 @@ describe("auth + config stubs", () => {
     });
   });
 
-  it("GET /api/seo-ops/config reports copilot disabled without env", async () => {
+  it("GET /api/seo-ops/config reports copilot disabled and agent runs off without env", async () => {
     const res = await makeApp().inject({ method: "GET", url: "/api/seo-ops/config" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ copilot_enabled: false });
+    expect(res.json()).toEqual({
+      copilot_enabled: false,
+      agent_run_enabled: false,
+      agent_run_types: [
+        "AUDIT",
+        "KEYWORD_RESEARCH",
+        "PLAN",
+        "REPORT",
+        "REVIEW",
+      ],
+    });
   });
 });
 

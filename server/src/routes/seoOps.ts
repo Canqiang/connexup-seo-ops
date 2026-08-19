@@ -17,17 +17,27 @@ import {
 } from "../services/taskService.js";
 import {
   inbox,
+  parsePageParams,
   portfolio,
   reports,
   reviews,
   taskEvents,
 } from "../services/queryService.js";
+import {
+  agentRunView,
+  cancelAgentRun,
+  getAgentRunOr404,
+  listAgentRuns,
+  triggerAgentRun,
+  type AgentRunDeps,
+} from "../services/agentRunService.js";
 import { getMerchant } from "../repos/merchantRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import { getTask } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import { locationView, merchantView, taskView } from "../views/mappers.js";
 import {
+  AGENT_RUN_TYPES,
   EVIDENCE_VERIFICATIONS,
   LOCATION_READINESSES,
 } from "../domain/enums.js";
@@ -109,6 +119,12 @@ const linkConversationSchema = z.object({
   idempotency_key: z.string(),
 });
 
+const triggerAgentRunSchema = z.object({
+  run_type: z.enum(AGENT_RUN_TYPES),
+  goal: z.string().max(2000).optional().nullable(),
+  idempotency_key: z.string(),
+});
+
 /** Resolve the merchant/location names a task wire view needs. */
 function taskNames(ctx: AppContext, task: Task): {
   merchantName: string;
@@ -149,7 +165,11 @@ export function registerSeoOpsRoutes(
     // Copilot is intentionally not wired this phase. Hardcode false so stray
     // CORE_AI_* env vars can't surface a UI that calls unimplemented
     // /api/sessions endpoints.
-    return { copilot_enabled: false };
+    return {
+      copilot_enabled: false,
+      agent_run_enabled: ctx.coreAi !== null && ctx.config.agentRunAgentId !== null,
+      agent_run_types: AGENT_RUN_TYPES,
+    };
   });
 
   app.get("/api/seo-ops/portfolio", async () => portfolio(ctx.db));
@@ -176,6 +196,66 @@ export function registerSeoOpsRoutes(
   app.get("/api/seo-ops/tasks/:taskId/events", async (request) => {
     const { taskId } = request.params as { taskId: string };
     return taskEvents(ctx.db, taskId, request.query as Record<string, unknown>);
+  });
+
+  app.get("/api/seo-ops/tasks/:taskId/agent-runs", async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const { offset, limit } = parsePageParams(
+      request.query as Record<string, unknown>,
+    );
+    const page = listAgentRuns(ctx.db, taskId, { offset, limit });
+    return { ...page, items: page.items.map((run) => agentRunView(run)) };
+  });
+
+  app.post("/api/seo-ops/tasks/:taskId/agent-runs", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    if (!ctx.coreAi || !ctx.config.agentRunAgentId) {
+      throw new ApiError(
+        503,
+        "core-ai is not configured on this server",
+        "CORE_AI_NOT_CONFIGURED",
+      );
+    }
+    const body = triggerAgentRunSchema.parse(request.body);
+    const deps: AgentRunDeps = {
+      db: ctx.db,
+      client: ctx.coreAi,
+      agentId: ctx.config.agentRunAgentId,
+      artifactsDir: ctx.artifactsDir,
+      log: { warn: (message) => request.log.warn(message) },
+    };
+    const { run, replayed } = await triggerAgentRun(deps, taskId, body);
+    reply.status(replayed ? 200 : 202);
+    return agentRunView(run);
+  });
+
+  app.get("/api/seo-ops/agent-runs/:runId", async (request) => {
+    const { runId } = request.params as { runId: string };
+    return agentRunView(getAgentRunOr404(ctx.db, runId), {
+      includeFullOutput: true,
+    });
+  });
+
+  app.post("/api/seo-ops/agent-runs/:runId/cancel", async (request) => {
+    const { runId } = request.params as { runId: string };
+    if (!ctx.coreAi || !ctx.config.agentRunAgentId) {
+      throw new ApiError(
+        503,
+        "core-ai is not configured on this server",
+        "CORE_AI_NOT_CONFIGURED",
+      );
+    }
+    const run = await cancelAgentRun(
+      {
+        db: ctx.db,
+        client: ctx.coreAi,
+        agentId: ctx.config.agentRunAgentId,
+        artifactsDir: ctx.artifactsDir,
+        log: { warn: (message) => request.log.warn(message) },
+      },
+      runId,
+    );
+    return agentRunView(run, { includeFullOutput: true });
   });
 
   app.post("/api/seo-ops/merchants", async (request, reply) => {

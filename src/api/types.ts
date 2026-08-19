@@ -11,7 +11,23 @@ export type ReportFreshness = "FRESH" | "AGING" | "STALE";
 export type LocationReadiness = "READY" | "BLOCKED" | "INCOMPLETE";
 export interface IdName { id: string; name: string }
 
-export interface RuntimeConfig { copilot_enabled: boolean; copilot_agent_id?: string }
+export type AgentRunType = "AUDIT" | "KEYWORD_RESEARCH" | "PLAN" | "REPORT" | "REVIEW";
+export type AgentRunStatus = "TRIGGERING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+export interface AgentRunView {
+  id: string; task_id: string; run_type: string; goal: string | null; status: AgentRunStatus;
+  core_run_id?: string; core_status?: string; input_message: string;
+  output?: string | null; output_preview?: string | null;
+  error?: string; error_code?: string; token_usage: Record<string, number>;
+  artifact_path?: string; artifact_sha256?: string; evidence_id?: string; evidence_skipped_reason?: string;
+  triggered_by: string; triggered_at: string; last_polled_at?: string; completed_at?: string;
+  created_at: string; updated_at: string;
+}
+export interface TriggerAgentRunRequest { run_type: AgentRunType; goal?: string; idempotency_key: string }
+
+export interface RuntimeConfig {
+  copilot_enabled: boolean; copilot_agent_id?: string;
+  agent_run_enabled?: boolean; agent_run_types?: string[];
+}
 export interface AuthenticatedUser { user_id: string; name: string; role: string; permissions: string[] }
 export interface LocationSummary { id: string; display_name: string; readiness_status: LocationReadiness }
 export interface MerchantSummary {

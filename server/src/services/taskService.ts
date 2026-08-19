@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { Db } from "../db/connection.js";
-import { badRequest, conflict, notFound } from "../errors.js";
+import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import {
   canonicalize,
   executionSpecHash,
@@ -129,7 +129,7 @@ function buildRevision(
   };
 }
 
-function buildEvent(
+export function buildEvent(
   type: string,
   taskRevision: number,
   resultingStateVersion: number,
@@ -157,7 +157,7 @@ function locationReadiness(db: Db, task: Task): string | null {
   return getLocation(db, task.locationId)?.readinessStatus ?? null;
 }
 
-function reevaluate(db: Db, task: Task): { status: Task["status"]; evidenceState: Task["evidenceState"] } {
+export function reevaluate(db: Db, task: Task): { status: Task["status"]; evidenceState: Task["evidenceState"] } {
   return evaluate(
     task.requiredEvidenceTypes,
     task.evidenceRefs,
@@ -209,6 +209,42 @@ function mutateTask(
     }
     return { task: updated, replayed: false };
   })();
+}
+
+/** Server-initiated mutation (no client expected_state_version): re-read the
+ * freshest version and retry the CAS on STALE_STATE. Replay semantics still
+ * come from mutationKeys — a crash between task commit and caller bookkeeping
+ * replays instead of duplicating. */
+export function mutateTaskRetry(
+  db: Db,
+  taskId: string,
+  idempotencyKey: string,
+  fingerprint: string,
+  mutate: (task: Task) => Task,
+  attempts = 5,
+): { task: Task; replayed: boolean } {
+  let lastStale: ApiError | null = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const current = getTask(db, taskId);
+    if (!current) throw notFound(`task ${taskId} not found`);
+    try {
+      return mutateTask(
+        db,
+        taskId,
+        idempotencyKey,
+        fingerprint,
+        current.stateVersion,
+        mutate,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "STALE_STATE") {
+        lastStale = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastStale ?? conflict("task state contention", "STALE_STATE");
 }
 
 export interface CreateTaskInput {

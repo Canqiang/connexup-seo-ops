@@ -1,4 +1,4 @@
-import type { AuthenticatedUser, PortfolioResponse, SeoTask } from "../api/types";
+import type { AgentRunView, AuthenticatedUser, PortfolioResponse, SeoTask } from "../api/types";
 
 export const userFixture: AuthenticatedUser = {
   user_id: "user-1", name: "Xander", role: "operator",
@@ -23,4 +23,21 @@ export const taskFixture: SeoTask = {
   execution_spec: "{\"operation\":\"publish_menu\"}", execution_spec_hash: "sha256:abc123",
   required_evidence_types: ["BEFORE_SCREENSHOT", "AFTER_SCREENSHOT"],
   evidence_refs: [], approval_decisions: [], conversation_links: [], agent_run_links: []
+};
+
+export const agentRunRunningFixture: AgentRunView = {
+  id: "run-1", task_id: "task-1", run_type: "AUDIT", goal: "关注 SoLV 排名", status: "RUNNING",
+  core_run_id: "core-1", core_status: "RUNNING", input_message: "你是本地 SEO 统一代理…",
+  output_preview: null, token_usage: { input_tokens: 120, output_tokens: 35 },
+  triggered_by: "local-dev", triggered_at: "2026-08-18T08:00:00Z",
+  created_at: "2026-08-18T08:00:00Z", updated_at: "2026-08-18T08:00:05Z",
+};
+
+export const agentRunCompletedFixture: AgentRunView = {
+  ...agentRunRunningFixture,
+  id: "run-2", run_type: "PLAN", goal: null, status: "COMPLETED", core_status: "COMPLETED",
+  output_preview: "# 优化方案\n\n结论先行：优先补齐经营类别。", output: "# 优化方案\n\n结论先行：优先补齐经营类别。",
+  artifact_path: "data/artifacts/run-2.md", artifact_sha256: `sha256:${"a".repeat(64)}`,
+  evidence_id: "ev-9", token_usage: { input_tokens: 900, output_tokens: 400 },
+  completed_at: "2026-08-18T08:03:00Z", updated_at: "2026-08-18T08:03:00Z",
 };

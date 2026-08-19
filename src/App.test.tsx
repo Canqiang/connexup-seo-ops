@@ -15,6 +15,8 @@ beforeEach(() => {
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe" });
     if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
     if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
+    if (path.startsWith("/api/seo-ops/tasks/task-1/agent-runs")) return json({ items: [], offset: 0, limit: 50, total: 0 });
+    if (path.startsWith("/api/seo-ops/agent-runs/")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reports")) return json({ items: [], offset: 0, limit: 50, total: 0 });

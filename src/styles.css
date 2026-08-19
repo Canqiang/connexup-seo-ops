@@ -126,6 +126,20 @@ td code { color: #7892ae; font-size: 8px; }
 .is-attention, .is-ready_for_approval, .is-aging, .priority-tag.is-high { border-color: rgba(241,174,72,.45); color: var(--amber); background: var(--amber-soft); }
 .is-stable, .is-approved, .is-verified, .is-fresh, .is-causal_ready { border-color: rgba(80,207,189,.42); color: var(--teal); background: rgba(80,207,189,.08); }
 .is-correlational { border-color: rgba(97,184,221,.45); color: var(--cyan); }
+.status-pill.is-completed { border-color: rgba(80,207,189,.42); color: var(--teal); background: rgba(80,207,189,.08); }
+.status-pill.is-failed, .status-pill.is-cancelled { border-color: rgba(255,124,115,.48); color: var(--red); background: var(--red-soft); }
+.status-pill.is-running, .status-pill.is-triggering { border-color: rgba(97,184,221,.45); color: var(--cyan); }
+.run-list { list-style: none; margin: 0; padding: 4px 0 8px; }
+.run-item { padding: 12px 17px; border-bottom: 1px solid var(--line-soft); }
+.run-item:last-child { border-bottom: 0; }
+.run-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.run-row strong { font-size: 10px; }
+.run-row small { margin-left: auto; color: var(--quiet); font-size: 8px; }
+.run-meta { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; }
+.run-meta small { color: var(--muted); font-size: 8px; }
+.run-output { margin-top: 7px; }
+.run-output summary { color: var(--cyan); font-size: 9px; cursor: pointer; }
+.run-output pre { max-height: 260px; overflow: auto; margin: 7px 0 0; padding: 12px; background: #081522; color: #9fc4d8; font-size: 10px; line-height: 1.7; white-space: pre-wrap; }
 .filters { display: flex; align-items: end; flex-wrap: wrap; gap: 9px; }
 .filters label, .command-form label, .approval-preview label { display: flex; flex-direction: column; gap: 5px; color: var(--quiet); font-size: 8px; letter-spacing: .04em; }
 input, select, textarea { border: 1px solid #324b67; border-radius: 3px; background: #0b192a; color: var(--text); }

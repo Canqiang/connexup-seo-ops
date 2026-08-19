@@ -3,6 +3,11 @@ import { fileURLToPath } from "node:url";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export interface ServerConfig {
   port: number;
   host: string;
@@ -10,6 +15,10 @@ export interface ServerConfig {
   coreAiBaseUrl: string | null;
   coreAiToken: string | null;
   copilotAgentId: string | null;
+  /** Agent the operator agent-run panel drives (unified local SEO agent). */
+  agentRunAgentId: string | null;
+  agentRunPollIntervalMs: number;
+  agentRunHttpTimeoutMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -20,5 +29,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     coreAiBaseUrl: env.CORE_AI_BASE_URL?.trim() || null,
     coreAiToken: env.CORE_AI_TOKEN?.trim() || null,
     copilotAgentId: env.COPILOT_AGENT_ID?.trim() || null,
+    agentRunAgentId: env.AGENT_RUN_AGENT_ID?.trim() || null,
+    agentRunPollIntervalMs: positiveInt(env.AGENT_RUN_POLL_INTERVAL_MS, 3000),
+    agentRunHttpTimeoutMs: positiveInt(env.AGENT_RUN_HTTP_TIMEOUT_MS, 15000),
   };
 }
