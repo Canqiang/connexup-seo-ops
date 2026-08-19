@@ -36,6 +36,7 @@ export function AgentRunsPanel({ taskId, canManage, onTaskChanged }: {
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [fullOutputs, setFullOutputs] = useState<Record<string, string | null>>({});
 
   const enabled = configResource.data?.agent_run_enabled === true;
   const runTypes = configResource.data?.agent_run_types ?? DEFAULT_RUN_TYPES;
@@ -81,9 +82,21 @@ export function AgentRunsPanel({ taskId, canManage, onTaskChanged }: {
     runsResource.reload();
   };
 
+  // Lists only carry a 2000-char preview; fetch the full output on expand.
+  const ensureFull = async (run: AgentRunView) => {
+    if (run.output != null) return;
+    if (fullOutputs[run.id] !== undefined) return;
+    try {
+      const detail = await seoOpsApi.agentRun(run.id);
+      setFullOutputs((prev) => ({ ...prev, [run.id]: detail.output ?? null }));
+    } catch {
+      setFullOutputs((prev) => ({ ...prev, [run.id]: null }));
+    }
+  };
+
   const renderRun = (run: AgentRunView) => {
     const tokens = tokenSummary(run.token_usage);
-    const output = run.output ?? run.output_preview;
+    const output = run.output ?? fullOutputs[run.id] ?? run.output_preview;
     return <li className="run-item" key={run.id}>
       <div className="run-row">
         <strong>{run.run_type}</strong>
@@ -101,7 +114,7 @@ export function AgentRunsPanel({ taskId, canManage, onTaskChanged }: {
         {run.evidence_skipped_reason ? <small>证据未追加：{run.evidence_skipped_reason}</small> : null}
       </div>
       {output ? (
-        <details className="run-output">
+        <details className="run-output" onToggle={(event) => { if (event.currentTarget.open) void ensureFull(run); }}>
           <summary>查看输出{run.artifact_sha256 ? `（${run.artifact_sha256.slice(0, 19)}…）` : ""}</summary>
           <pre>{output}</pre>
         </details>

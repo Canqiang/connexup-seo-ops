@@ -82,15 +82,18 @@ test("cancel is only offered for active runs", async () => {
   expect(await screen.findAllByRole("button", { name: "取消" })).toHaveLength(1);
 });
 
-test("completed run expands its output", async () => {
+test("completed run expands and fetches the full output", async () => {
   stubFetch((call) => {
     if (call.path === "/api/seo-ops/config") return enabledConfig;
+    if (call.path === "/api/seo-ops/agent-runs/run-2") {
+      return { ...agentRunCompletedFixture, output: "# 优化方案\n\n结论先行：优先补齐经营类别。\n\n完整报告正文……" };
+    }
     return { ...emptyPage, items: [agentRunCompletedFixture], total: 1 };
   });
   const user = userEvent.setup();
   render(<AgentRunsPanel canManage taskId="task-1" onTaskChanged={() => {}} />);
   await user.click(await screen.findByText(/查看输出/));
-  expect(screen.getByText(/结论先行：优先补齐经营类别/)).toBeInTheDocument();
+  expect(await screen.findByText(/完整报告正文/)).toBeInTheDocument();
 });
 
 test("polls every 5s while a run is active and fires onTaskChanged at terminal", async () => {
@@ -103,6 +106,9 @@ test("polls every 5s while a run is active and fires onTaskChanged at terminal",
   const onTaskChanged = vi.fn();
   render(<AgentRunsPanel canManage taskId="task-1" onTaskChanged={onTaskChanged} />);
   await screen.findByText("RUNNING", { selector: ".status-pill" });
+  // Flush the polling effect so the 5s interval is actually scheduled
+  // before we start advancing the fake clock (effects flush after paint).
+  await act(async () => {});
   const listCalls = () =>
     calls.filter((call) => call.path.startsWith("/api/seo-ops/tasks/task-1/agent-runs") && call.init?.method !== "POST").length;
   const listCallsBefore = listCalls();

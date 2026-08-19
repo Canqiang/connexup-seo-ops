@@ -36,7 +36,7 @@ export const agentRunRunningFixture: AgentRunView = {
 export const agentRunCompletedFixture: AgentRunView = {
   ...agentRunRunningFixture,
   id: "run-2", run_type: "PLAN", goal: null, status: "COMPLETED", core_status: "COMPLETED",
-  output_preview: "# 优化方案\n\n结论先行：优先补齐经营类别。", output: "# 优化方案\n\n结论先行：优先补齐经营类别。",
+  output_preview: "# 优化方案\n\n结论先行：优先补齐经营类别。",
   artifact_path: "data/artifacts/run-2.md", artifact_sha256: `sha256:${"a".repeat(64)}`,
   evidence_id: "ev-9", token_usage: { input_tokens: 900, output_tokens: 400 },
   completed_at: "2026-08-18T08:03:00Z", updated_at: "2026-08-18T08:03:00Z",
