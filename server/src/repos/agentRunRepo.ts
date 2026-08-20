@@ -163,6 +163,7 @@ export async function transitionAgentRun(
     values.push(key === "tokenUsage" ? JSON.stringify(value ?? {}) : value);
   }
   if (sets.length === 0) return getAgentRun(db, id);
+  if (fromStatuses.length === 0) return null;
   values.push(new Date().toISOString());
   const updatedAtIndex = paramIndex++;
   values.push(id);
