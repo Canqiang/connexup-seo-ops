@@ -1,8 +1,3 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-
 function positiveInt(raw: string | undefined, fallback: number): number {
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -11,7 +6,7 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 export interface ServerConfig {
   port: number;
   host: string;
-  dbPath: string;
+  databaseUrl: string;
   coreAiBaseUrl: string | null;
   coreAiToken: string | null;
   copilotAgentId: string | null;
@@ -27,7 +22,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     port: Number(env.PORT ?? "8787"),
     host: env.HOST ?? "127.0.0.1",
-    dbPath: env.DB_PATH ?? path.resolve(moduleDir, "../../data/seo-ops.db"),
+    databaseUrl: env.DATABASE_URL ?? "postgres://seo_ops:seo_ops@localhost:5432/seo_ops_dev",
     coreAiBaseUrl: env.CORE_AI_BASE_URL?.trim() || null,
     coreAiToken: env.CORE_AI_TOKEN?.trim() || null,
     copilotAgentId: env.COPILOT_AGENT_ID?.trim() || null,
