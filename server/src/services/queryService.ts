@@ -4,6 +4,11 @@ import { listMerchants } from "../repos/merchantRepo.js";
 import { listLocations } from "../repos/locationRepo.js";
 import { getTask, listTasks } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
+import {
+  deriveLifecycle,
+  loadLifecycleInputs,
+  type ExceptionWire,
+} from "./lifecycleService.js";
 
 export interface PageResult<T> {
   items: T[];
@@ -60,6 +65,10 @@ export interface PortfolioResponseWire {
     blocked_count: number;
     overdue_count: number;
     health: "STABLE" | "ATTENTION" | "BLOCKED";
+    /** 生命周期当前阶段（从证据链推导）。 */
+    stage: string;
+    /** 首页异常分组依据。 */
+    exception: ExceptionWire;
   }>;
   totals: { tasks: number; blocked: number; ready_for_approval: number; overdue: number };
 }
@@ -74,6 +83,14 @@ export function portfolio(db: Db, now: Date = new Date()): PortfolioResponseWire
   const merchants = listMerchants(db);
   const locations = listLocations(db);
   const tasks = listTasks(db);
+
+  const lifecycleInputs = loadLifecycleInputs(db, merchants.map((m) => m.id));
+  const tasksByMerchant = new Map<string, Task[]>();
+  for (const task of tasks) {
+    const list = tasksByMerchant.get(task.merchantId) ?? [];
+    list.push(task);
+    tasksByMerchant.set(task.merchantId, list);
+  }
 
   const totals = { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 };
   const perMerchant = new Map<
@@ -106,6 +123,12 @@ export function portfolio(db: Db, now: Date = new Date()): PortfolioResponseWire
       agg.blocked > 0 ? "BLOCKED"
       : agg.overdue > 0 || agg.ready > 0 ? "ATTENTION"
       : "STABLE";
+    const lifecycle = deriveLifecycle(
+      m.id,
+      lifecycleInputs,
+      tasksByMerchant,
+      now,
+    );
     return {
       id: m.id,
       slug: m.slug,
@@ -126,6 +149,8 @@ export function portfolio(db: Db, now: Date = new Date()): PortfolioResponseWire
       blocked_count: agg.blocked,
       overdue_count: agg.overdue,
       health,
+      stage: lifecycle.stage,
+      exception: lifecycle.exception,
     };
   });
 

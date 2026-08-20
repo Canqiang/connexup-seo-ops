@@ -1,75 +1,139 @@
-import type { AgentRunType } from "../domain/enums.js";
+import type { AgentRunStage } from "../domain/enums.js";
 import type { Location, Merchant } from "../repos/types.js";
-import type { Task } from "../repos/taskTypes.js";
+import type { Questionnaire } from "../repos/questionnaireTypes.js";
 
-/** Per-run-type directives rendered into the SOP message. Read-only framing
- * is global (below); EXECUTE-style work is deliberately not representable. */
-const RUN_TYPE_DIRECTIVES: Record<AgentRunType, string> = {
-  AUDIT: "运行类型：AUDIT（现状审计）——对目标商户/地点做本地 SEO 现状诊断，输出问题清单（按影响排序）与证据缺口。",
-  KEYWORD_RESEARCH:
-    "运行类型：KEYWORD_RESEARCH（关键词研究）——研究本地搜索关键词机会，输出关键词清单（含意图分组与优先级）与可执行建议。",
-  PLAN: "运行类型：PLAN（方案规划）——基于现状与任务目标产出可执行的优化方案（分步骤、可验收），不含任何执行动作。",
-  REPORT: "运行类型：REPORT（数据报告）——汇总当前可得数据，输出结构化的表现报告，标注数据来源与采集口径。",
-  REVIEW: "运行类型：REVIEW（效果复盘）——对照任务目标复盘已做工作的效果，输出结论、归因分析与下一步建议。",
+/** 阶段串联时内联上一阶段交付物的每段上限（字符）。core-ai trigger 只收文本，
+ * 且触发时校验每日 token 配额——宁可少不可爆。 */
+export const PRIOR_EXCERPT_LIMIT = 2400;
+
+/** 截断交付物内容用于内联：整行保留，超限处标注截断。 */
+export function excerptForPrompt(text: string, limit = PRIOR_EXCERPT_LIMIT): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= limit) return trimmed;
+  const cut = trimmed.slice(0, limit);
+  const lastNewline = cut.lastIndexOf("\n");
+  const kept = lastNewline > limit / 2 ? cut.slice(0, lastNewline) : cut;
+  return `${kept}\n（…已截断，原文共 ${trimmed.length} 字符）`;
+}
+
+export interface StageRunPromptInput {
+  stage: AgentRunStage;
+  merchant: Merchant;
+  location: Location | null;
+  questionnaire: Questionnaire | null;
+  /** 上游阶段交付物摘录（调用方已用 excerptForPrompt 截断）。 */
+  priorExcerpts?: Partial<Record<AgentRunStage, string>>;
+  goal?: string | null;
+}
+
+const RED_LINE =
+  "你是本地 SEO 分析助手。这是一次只读分析任务：不得执行任何写入或变更操作（不改 GBP、不发内容、不提交表单）。";
+
+const OUTPUT_RULES =
+  "输出规范：使用中文；结论先行；数据未知时标注 unknown，不要编造数据。";
+
+interface StageTemplate {
+  /** 一句话说清楚要什么。 */
+  directive: string;
+  /** 期望附件（写进输出契约，附件是主交付物）。 */
+  deliverables: string;
+  /** 这个阶段依赖哪些上游阶段的交付物。 */
+  priorStages: AgentRunStage[];
+}
+
+const TEMPLATES: Record<AgentRunStage, StageTemplate> = {
+  KEYWORDS: {
+    directive: "为这个地点生成本地 SEO 关键词库（含搜索意图分组与优先级）。",
+    deliverables:
+      "必须产出附件：关键词库 CSV（列：keyword, intent, priority, monthly_volume_estimate）。",
+    priorStages: [],
+  },
+  AUDIT: {
+    directive: "对这个地点做双审计：GBP 资料完整度与官网页面本地 SEO 现状，产出问题清单。",
+    deliverables:
+      "必须产出附件：问题清单 Markdown（每条：问题 / 依据 / 影响面）；如有截图一并附上。",
+    priorStages: ["KEYWORDS"],
+  },
+  RANKING_BASELINE: {
+    directive: "基于关键词库建立这个地点的排名基线（local pack 与 organic 两套）。",
+    deliverables:
+      "必须产出附件：排名基线 CSV（列：keyword, local_rank, organic_rank, checked_at）。",
+    priorStages: ["KEYWORDS"],
+  },
+  PLAN: {
+    directive: "基于审计问题清单与排名基线，生成优化 Plan：逐条可执行的建议清单。",
+    deliverables:
+      "必须产出附件：优化建议清单 Markdown，每条格式为「- [P0|P1|P2] 标题：具体动作」，便于逐条转为执行任务。",
+    priorStages: ["AUDIT", "RANKING_BASELINE"],
+  },
+  REVIEW: {
+    directive: "对照上轮优化 Plan 与最新排名基线，做效果复盘：哪些动作见效、哪些存疑、下轮建议。",
+    deliverables:
+      "必须产出附件：复盘报告 Markdown（结论 / 证据 / 下轮建议三段）。",
+    priorStages: ["PLAN", "RANKING_BASELINE"],
+  },
 };
 
-/** Builds the Chinese SOP message sent to the unified local SEO agent.
- * Pure function — deterministic field order so tests can assert content. */
-export function buildAgentRunMessage(args: {
-  runType: AgentRunType;
-  task: Task;
-  merchant: Merchant | null;
-  location: Location | null;
-  goal?: string | null;
-}): string {
-  const { runType, task, merchant, location, goal } = args;
+const STAGE_NAMES: Record<AgentRunStage, string> = {
+  KEYWORDS: "关键词库",
+  AUDIT: "审计问题清单",
+  RANKING_BASELINE: "排名基线",
+  PLAN: "优化 Plan",
+  REVIEW: "复盘报告",
+};
 
+export function priorStagesFor(stage: AgentRunStage): AgentRunStage[] {
+  return TEMPLATES[stage].priorStages;
+}
+
+function questionnaireBlock(questionnaire: Questionnaire | null): string | null {
+  if (!questionnaire || questionnaire.status !== "FILLED" || !questionnaire.answers) {
+    return null;
+  }
   const lines: string[] = [];
-  lines.push("你是本地 SEO 统一代理。本次为【只读分析任务】：不得执行任何写入或变更操作（不修改商家资料、不发布内容、不提交任何外部更改），只进行分析并输出报告。");
-  lines.push(RUN_TYPE_DIRECTIVES[runType]);
-  lines.push("输出要求：使用中文；结构化呈现（结论先行 → 依据 → 建议清单）；信息不足之处明确标注为“未知”，不要编造数据或指标。");
-
-  lines.push("");
-  lines.push("=== 任务上下文 ===");
-  lines.push(
-    merchant
-      ? `商户：${merchant.displayName}（slug: ${merchant.slug}）`
-      : "商户：（未提供）",
-  );
-  if (location) {
-    const identities =
-      Object.keys(location.externalIdentities).length > 0
-        ? JSON.stringify(location.externalIdentities)
-        : "无";
-    lines.push(
-      `地点：${location.displayName}（slug: ${location.slug}${location.timezone ? `，时区 ${location.timezone}` : ""}；外部身份：${identities}）`,
-    );
-  } else {
-    lines.push("地点：（任务未绑定地点）");
+  for (const item of questionnaire.questions) {
+    const answer = questionnaire.answers[item.id];
+    if (!answer || answer.trim() === "") continue;
+    lines.push(`问：${item.question}`);
+    lines.push(`答：${answer.trim()}`);
   }
-  lines.push(
-    `任务：${task.title}（task_type: ${task.taskType}，source: ${task.source}，priority: ${task.priority}，impact: ${task.impact}${task.ownerId ? `，owner: ${task.ownerId}` : ""}${task.dueAt ? `，due: ${task.dueAt}` : ""}）`,
-  );
-  lines.push(
-    `当前状态：${task.status}（evidence_state: ${task.evidenceState}，task_revision: ${task.taskRevision}，state_version: ${task.stateVersion}）`,
-  );
-  lines.push("");
-  lines.push("执行定义（execution_spec，原文）：");
-  lines.push("```json");
-  lines.push(task.executionSpec);
-  lines.push("```");
-  lines.push(`证据要求：${task.requiredEvidenceTypes.join(", ") || "（无）"}`);
-  const currentEvidence = task.evidenceRefs
-    .filter((e) => e.taskRevision === task.taskRevision)
-    .map((e) => `${e.type}:${e.verificationStatus}`);
-  lines.push(
-    `当前版本已有证据：${currentEvidence.length > 0 ? currentEvidence.join("、") : "无"}`,
-  );
+  if (lines.length === 0) return null;
+  return `商家问卷回收（商家自行填写，分析时优先以此为据）：\n${lines.join("\n")}`;
+}
 
-  if (goal !== undefined && goal !== null && goal.trim() !== "") {
-    lines.push("");
-    lines.push(`操作员补充目标：${goal.trim()}`);
+/** 聚焦请求：固定四段——只读红线 → 具体要什么 → 最小事实集 → 输出契约。
+ * 不倾倒任务上下文；阶段串联靠上游交付物摘录内联。 */
+export function buildStageRunMessage(input: StageRunPromptInput): string {
+  const template = TEMPLATES[input.stage];
+  const sections: string[] = [RED_LINE, template.directive];
+
+  const facts: string[] = [`商户：${input.merchant.displayName}（${input.merchant.slug}）`];
+  if (input.location) {
+    facts.push(`地点：${input.location.displayName}`);
+    const identities = Object.entries(input.location.externalIdentities ?? {});
+    if (identities.length > 0) {
+      facts.push(
+        `外部标识：${identities.map(([key, value]) => `${key}=${value}`).join("，")}`,
+      );
+    }
+  }
+  sections.push(facts.join("\n"));
+
+  const qBlock = questionnaireBlock(input.questionnaire);
+  if (qBlock) sections.push(qBlock);
+
+  for (const priorStage of template.priorStages) {
+    const excerpt = input.priorExcerpts?.[priorStage];
+    if (excerpt && excerpt.trim() !== "") {
+      sections.push(`上游交付物——${STAGE_NAMES[priorStage]}：\n${excerpt.trim()}`);
+    } else {
+      sections.push(`上游交付物——${STAGE_NAMES[priorStage]}：（未提供，按 unknown 处理，不要编造）`);
+    }
   }
 
-  return lines.join("\n");
+  const goal = input.goal?.trim();
+  if (goal) sections.push(`操作员补充目标：${goal}`);
+
+  sections.push(`${template.deliverables}\n${OUTPUT_RULES}`);
+  return sections.join("\n\n");
 }

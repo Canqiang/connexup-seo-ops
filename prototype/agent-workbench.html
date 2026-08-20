@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 面板简化原型</title>
+<style>
+  /* ============ 宿主页面（评审外壳） ============ */
+  :root {
+    --host-bg: #0b1524; --host-panel: #0f1c2f; --host-line: #22354e;
+    --host-text: #e7eef7; --host-muted: #91a5bd; --host-quiet: #60758e;
+    --amber: #f1ae48; --amber-soft: rgba(241, 174, 72, .12);
+    --cyan: #61b8dd; --teal: #50cfbd; --red: #ff7c73;
+    --mono: "SFMono-Regular", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--host-bg); }
+  body { margin: 0; min-height: 100vh; background: var(--host-bg); color: var(--host-text);
+    font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-synthesis: none; text-rendering: optimizeLegibility; }
+  .host-wrap { max-width: 1200px; margin: 0 auto; padding: 40px 26px 90px; }
+  .host-kicker { font: 650 9px/1.4 var(--mono); letter-spacing: .2em; color: var(--amber); text-transform: uppercase; }
+  .host-wrap > header h1 { margin: 10px 0 8px; font-size: clamp(22px, 3vw, 30px); font-weight: 670; letter-spacing: -.03em; line-height: 1.15; text-wrap: balance; }
+  .host-wrap > header p.thesis { margin: 0; max-width: 68ch; color: var(--host-muted); font-size: 13px; line-height: 1.85; }
+  .host-wrap > header p.thesis b { color: var(--host-text); font-weight: 650; }
+  section.host-block { margin-top: 32px; }
+  .host-block > h2 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--host-muted); letter-spacing: .04em; }
+  .host-block > p.note { margin: 0 0 12px; color: var(--host-quiet); font-size: 11px; }
+  code { font-family: var(--mono); }
+
+  .state-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .state-tabs button { min-height: 32px; padding: 0 14px; border: 1px solid #33496a; border-radius: 4px;
+    background: #12233a; color: #b7c6d8; font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .state-tabs button:hover { border-color: #46608a; color: var(--host-text); }
+  .state-tabs button[aria-pressed="true"] { border-color: rgba(241,174,72,.6); background: var(--amber-soft); color: #f6c473; }
+  .state-tabs button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  .frame-scroll { overflow-x: auto; }
+  .frame { overflow: hidden; min-width: 1020px; border: 1px solid #2c4360; border-radius: 8px; background: #081522; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .frame-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #243a55; background: #0c1a2b; }
+  .frame-bar i { width: 9px; height: 9px; border-radius: 50%; background: #2e4763; }
+  .frame-bar span { margin-left: 10px; overflow: hidden; padding: 3px 12px; border: 1px solid #22374f; border-radius: 99px; background: #0a1726; color: var(--host-quiet); font: 10px var(--mono); white-space: nowrap; text-overflow: ellipsis; }
+
+  /* ============ 原型画面：现有任务页（1:1 照搬）+ 新 Agent 面板 ============ */
+  .mock {
+    --ink: #07111f; --deep: #0b1727; --panel: #101f33; --panel-raised: #15283f;
+    --line: #263c56; --line-soft: rgba(112, 144, 180, .18);
+    --text: #e7eef7; --muted: #91a5bd; --quiet: #60758e;
+    --amber-soft: rgba(241, 174, 72, .12); --red-soft: rgba(255, 124, 115, .11);
+    padding: 30px 28px 46px;
+    background: radial-gradient(circle at 73% -20%, #142943 0, transparent 34%), var(--ink);
+    color: #dce7f4;
+  }
+  .mock button, .mock input { font: inherit; }
+  .mock button { color: inherit; cursor: pointer; }
+  .mock button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  /* —— 以下为现网 styles.css 的相关片段（未改） —— */
+  .eyebrow { display: block; color: #7393b9; font-family: var(--mono); font-size: 8px; line-height: 1.4; letter-spacing: .16em; text-transform: uppercase; }
+  .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
+  .page-heading h1 { margin: 7px 0 4px; color: var(--text); font-size: 30px; font-weight: 670; line-height: 1.05; letter-spacing: -.04em; }
+  .page-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+  .heading-actions { display: flex; align-items: center; gap: 8px; }
+  .primary-button, .secondary-button, .danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 0 13px; border-radius: 4px; font-size: 10px; font-weight: 650; }
+  .primary-button { border: 1px solid rgba(241, 174, 72, .62); background: var(--amber-soft); color: #f6c473; }
+  .secondary-button { border: 1px solid #38516d; background: #13253b; color: #c4d2e1; }
+  .icon-button { width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid #314963; border-radius: 4px; background: transparent; color: #8da2ba; }
+  .task-state-ribbon { display: grid; grid-template-columns: repeat(5, 1fr); margin-bottom: 22px; border: 1px solid var(--line); background: linear-gradient(90deg, rgba(21,42,66,.78), rgba(12,27,45,.78)); }
+  .task-state-ribbon > div { min-width: 0; padding: 15px 17px; border-right: 1px solid var(--line); }
+  .task-state-ribbon > div:last-child { border-right: 0; }
+  .task-state-ribbon span { display: block; color: var(--muted); font-size: 9px; }
+  .task-state-ribbon strong { display: block; margin-top: 8px; color: var(--text); font: 19px/1 var(--mono); }
+  .task-layout { display: grid; grid-template-columns: minmax(0, 1fr) 370px; align-items: start; gap: 18px; }
+  .task-primary, .task-context { display: grid; gap: 18px; }
+  .data-panel, .approval-panel, .link-panel { border: 1px solid var(--line); background: rgba(13, 29, 48, .72); }
+  .panel-heading { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 17px; border-bottom: 1px solid var(--line); }
+  .panel-heading h2 { margin: 3px 0 0; font-size: 15px; font-weight: 650; }
+  .result-count, .quiet-copy { color: var(--quiet); font-size: 8px; font-family: var(--mono); }
+  .hash-badge { max-width: 55%; display: flex; align-items: center; gap: 6px; overflow: hidden; color: #7f9ab8; font-size: 8px; font-family: var(--mono); text-overflow: ellipsis; }
+  .execution-spec { min-height: 120px; max-height: 300px; margin: 0; overflow: auto; padding: 16px; background: #081522; color: #9fc4d8; font-size: 10px; line-height: 1.8; white-space: pre-wrap; font-family: var(--mono); }
+  .timeline { list-style: none; margin: 0; padding: 12px 18px; }
+  .timeline li { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; min-height: 58px; }
+  .timeline li > span { width: 7px; height: 7px; margin-top: 5px; border: 1px solid var(--cyan); border-radius: 50%; box-shadow: 0 0 0 4px rgba(97,184,221,.08); }
+  .timeline strong { font-size: 9px; }
+  .timeline p { margin: 4px 0; color: var(--muted); font-size: 8px; }
+  .timeline small, .timeline time { color: var(--quiet); font-size: 7px; font-family: var(--mono); }
+  .evidence-spine { padding: 14px 17px 20px; }
+  .evidence-spine > div { position: relative; display: grid; grid-template-columns: 24px 1fr auto; gap: 9px; min-height: 58px; color: #71869e; }
+  .evidence-spine > div:not(:last-child)::before { content: ""; position: absolute; left: 7px; top: 17px; bottom: -1px; width: 1px; background: #304760; }
+  .spine-node { position: relative; z-index: 1; width: 15px; height: 15px; display: grid; place-items: center; border: 1px solid #425a73; border-radius: 50%; background: var(--panel); font-size: 7px; font-family: var(--mono); }
+  .evidence-spine strong { display: block; color: #b9c8d8; font-size: 9px; }
+  .evidence-spine small { display: block; margin-top: 4px; color: var(--quiet); font-size: 8px; }
+  .evidence-spine code { font-size: 7px; }
+  .status-pill { display: inline-flex; width: fit-content; padding: 3px 6px; border: 1px solid #3a516b; color: #91a5bc; font-size: 7px; letter-spacing: .05em; white-space: nowrap; font-family: var(--mono); }
+  .is-attention { border-color: rgba(241,174,72,.45); color: var(--amber); background: var(--amber-soft); }
+  .status-pill.is-running { border-color: rgba(97,184,221,.45); color: var(--cyan); }
+  .status-pill.is-teal { border-color: rgba(80,207,189,.42); color: var(--teal); background: rgba(80,207,189,.08); }
+  .approval-panel header { display: flex; justify-content: space-between; align-items: center; padding: 13px 15px; border-bottom: 1px solid var(--line); }
+  .approval-panel header span { display: flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 650; }
+  .approval-panel header small { color: var(--quiet); font-size: 7px; font-family: var(--mono); }
+  .approval-preview { padding: 14px; }
+  .approval-preview dl { display: grid; grid-template-columns: 1fr 1fr; margin: 0 0 12px; border: 1px solid var(--line); }
+  .approval-preview dl div { padding: 9px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .approval-preview dt { color: var(--quiet); font-size: 7px; font-family: var(--mono); }
+  .approval-preview dd { margin: 4px 0 0; font-size: 9px; }
+  .blocker-list { padding: 10px 10px 10px 27px; margin: 0 14px; background: var(--red-soft); color: #ffaaa4; font-size: 9px; }
+  .boundary-note { display: flex; align-items: center; gap: 6px; margin: 12px 14px; color: var(--muted); font-size: 9px; }
+  .button-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 14px 14px; }
+  .link-panel { padding: 13px; }
+  .link-panel > div { display: flex; align-items: center; gap: 9px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); color: #8da2b8; font-size: 9px; }
+  .link-panel p { display: flex; gap: 6px; margin: 12px 0 0; color: var(--quiet); font-size: 8px; line-height: 1.5; }
+
+  /* —— ★ 新的 Agent 面板（唯一重设计的部分） —— */
+  .wb-panel { position: relative; box-shadow: 0 0 0 1.5px rgba(241, 174, 72, .5); }
+  .wb-scope-tag { position: absolute; top: -11px; right: 14px; z-index: 6; padding: 3px 10px; border: 1px solid rgba(241,174,72,.6); border-radius: 99px; background: #241a08; color: #f6c473; font-size: 9px; font-weight: 650; letter-spacing: .06em; }
+  .wb-state { display: none; }
+  .wb-state.is-on { display: block; }
+
+  /* 状态一：动作条 */
+  .wb-actions { position: relative; padding: 15px 17px 6px; }
+  .wb-lead { margin: 0 0 11px; color: var(--muted); font-size: 11px; }
+  .sop-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .sop-row button { display: grid; gap: 4px; padding: 10px 11px; border: 1px solid #38516d; border-radius: 4px; background: #13253b; color: var(--text); text-align: left; }
+  .sop-row button:hover { border-color: rgba(241,174,72,.55); background: #182e49; }
+  .sop-row strong { font-size: 11px; font-weight: 650; }
+  .sop-row small { color: var(--quiet); font-size: 9px; line-height: 1.5; }
+  .wb-more { margin: 0; padding: 10px 17px 4px; border: 0; background: transparent; color: var(--cyan); font-size: 10px; }
+  .wb-goal { display: none; margin: 6px 0 0; padding: 0 17px 6px; }
+  .wb-goal.is-open { display: block; }
+  .wb-goal input { width: 100%; height: 32px; padding: 0 10px; border: 1px solid #324b67; border-radius: 3px; background: #0b192a; color: var(--text); font-size: 11px; }
+  .wb-goal small { display: block; margin-top: 5px; color: var(--quiet); font-size: 8px; }
+
+  /* 状态二：运行卡 */
+  .wb-run { position: relative; margin: 16px 17px; padding: 15px 18px; border: 1px solid rgba(97,184,221,.35); background: rgba(14,32,52,.8); }
+  .wb-run-top { display: flex; align-items: center; gap: 10px; }
+  .wb-run-top strong { font-size: 13px; font-weight: 670; }
+  .wb-progress { height: 3px; margin: 13px 0 11px; background: #0d2032; overflow: hidden; }
+  .wb-progress i { display: block; width: 36%; height: 100%; background: linear-gradient(90deg, transparent, var(--cyan), transparent); animation: sweep 1.5s ease-in-out infinite; }
+  @keyframes sweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(390%); } }
+  .wb-run-sub { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.8; }
+  .wb-run-sub b { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .wb-run-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  .wb-run-actions .kill { min-height: 30px; padding: 0 12px; border: 1px solid rgba(255,124,115,.5); border-radius: 4px; background: var(--red-soft); color: var(--red); font-size: 10px; font-weight: 650; }
+  .wb-run-actions .accel { border: 0; background: transparent; color: var(--quiet); font-size: 9px; text-decoration: underline dotted; }
+  .wb-run-actions .accel:hover { color: var(--cyan); }
+
+  /* 状态三：报告阅读 */
+  .wb-report { padding: 15px 17px 2px; }
+  .rep-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .rep-head h3 { margin: 5px 0 0; font-size: 16px; font-weight: 670; letter-spacing: -.02em; }
+  .chain-line { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 10px 0 2px; color: var(--muted); font-size: 10px; }
+  .chain-line .ok { color: var(--teal); }
+  .chain-line .toggle { border: 0; background: transparent; color: var(--cyan); font-size: 9px; text-decoration: underline dotted; }
+  .tech-detail { display: none; margin: 6px 0 0; padding: 8px 10px; border: 1px dashed #2c4665; color: var(--quiet); font: 9px/1.9 var(--mono); }
+  .tech-detail.is-open { display: block; }
+  .rep-body { position: relative; margin-top: 12px; padding: 2px 30px 0 2px; border-top: 1px solid var(--line-soft); }
+  .rep-body h4 { margin: 16px 0 8px; color: #b9c8d8; font-size: 12px; font-weight: 650; }
+  .rep-body h4::before { content: "§ "; color: var(--amber); font-family: var(--mono); font-size: 10px; }
+  .rep-body p { margin: 0 0 10px; color: #c3d1e0; font-size: 12px; line-height: 1.95; }
+  .rep-body p b { color: var(--text); }
+  .tbl-wrap { overflow-x: auto; }
+  .rep-body table { width: 100%; border-collapse: collapse; margin: 4px 0 14px; }
+  .rep-body th { padding: 7px 9px; border-bottom: 1px solid var(--line); color: #6f86a0; font: 8px var(--mono); letter-spacing: .09em; text-align: left; }
+  .rep-body td { padding: 8px 9px; border-bottom: 1px solid var(--line-soft); color: #a4b4c8; font-size: 10.5px; line-height: 1.7; vertical-align: top; }
+  .rep-body td b { color: #d8e3ef; }
+  .rep-body ol, .rep-body ul { margin: 0 0 12px; padding-left: 20px; color: #c3d1e0; font-size: 12px; line-height: 1.95; }
+  .rep-body li { margin-bottom: 6px; }
+  .rep-body li b { color: var(--text); }
+  .rep-boundary { display: flex; gap: 8px; margin: 4px 0 14px; padding: 10px 12px; border: 1px solid rgba(80,207,189,.25); background: rgba(80,207,189,.06); color: #8ec4bc; font-size: 9px; line-height: 1.7; }
+  .wb-history { position: relative; margin: 4px 17px 0; border-top: 1px solid var(--line); padding: 11px 0 14px; }
+  .wb-history .h-title { color: var(--quiet); font: 8px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+  .hist-row { display: grid; grid-template-columns: 10px 88px 1fr auto; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--line-soft); color: #a4b4c8; font-size: 10.5px; }
+  .hist-row:last-child { border-bottom: 0; }
+  .hist-row i { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); }
+  .hist-row strong { font-size: 10.5px; font-weight: 650; color: #dfe9f4; }
+  .hist-row em { overflow: hidden; color: var(--muted); font-size: 9.5px; font-style: normal; white-space: nowrap; text-overflow: ellipsis; }
+  .hist-row time { color: var(--quiet); font: 9px var(--mono); }
+  .hist-row.is-now { background: rgba(241,174,72,.05); box-shadow: inset 2px 0 var(--amber); }
+
+  /* 标注圆点 */
+  .chip-note { position: absolute; top: -9px; right: 12px; z-index: 5; width: 19px; height: 19px;
+    display: grid; place-items: center; border: 1px solid rgba(241,174,72,.65); border-radius: 50%;
+    background: #1a1508; color: var(--amber); font: 700 10px var(--mono); pointer-events: none; }
+
+  /* ============ 图例与改动清单 ============ */
+  .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+  .legend article { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 12px 14px; border: 1px solid var(--host-line); background: var(--host-panel); }
+  .legend .n { width: 19px; height: 19px; display: grid; place-items: center; border: 1px solid rgba(241,174,72,.65); border-radius: 50%; color: var(--amber); font: 700 10px var(--mono); }
+  .legend strong { display: block; font-size: 11.5px; }
+  .legend p { margin: 4px 0 0; color: var(--host-muted); font-size: 10.5px; line-height: 1.75; }
+  .tbl-scroll { overflow-x: auto; border: 1px solid var(--host-line); background: var(--host-panel); }
+  .tbl-host { width: 100%; border-collapse: collapse; }
+  .tbl-host th { padding: 9px 12px; border-bottom: 1px solid var(--host-line); color: #6f86a0; font: 8px var(--mono); letter-spacing: .09em; text-align: left; text-transform: uppercase; }
+  .tbl-host td { padding: 10px 12px; border-bottom: 1px solid rgba(112,144,180,.14); color: #a4b4c8; font-size: 11px; line-height: 1.7; vertical-align: top; }
+  .tbl-host tr:last-child td { border-bottom: 0; }
+  .tbl-host td b { color: var(--host-text); }
+  .scope-note { padding: 14px 16px; border: 1px solid rgba(80,207,189,.25); background: rgba(80,207,189,.05); color: #8ec4bc; font-size: 11px; line-height: 1.9; }
+  .scope-note b { color: #a8dcd2; }
+
+  @media (prefers-reduced-motion: reduce) { .wb-progress i { animation: none; } * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="host-wrap">
+
+  <header>
+    <span class="host-kicker">SEO OPS · Agent 面板简化重设计（v2）</span>
+    <h1>任务页不动，只把 Agent 面板换成「动作条 → 运行卡 → 报告阅读」</h1>
+    <p class="thesis">下面这张原型就是<b>现在线上的任务页</b>：执行定义、事件时间线、状态 ribbon、审批、证据脊柱全部原样（金色描圈的是唯一重设计的 Agent 面板）。面板内部为非技术的运营操作员重排：<b>五个中文动作一键触发，运行状态是一句话，报告渲染成文档直接读</b>；枚举、状态码、token 这些工程信息折叠进「技术信息」，点开仍然全都在。</p>
+  </header>
+
+  <section class="host-block">
+    <h2>交互原型</h2>
+    <p class="note">可点击：切三个状态看主流程；「从零开始」里点任一动作按钮会进入运行态（计时器真的在走，运行卡里有「演示加速完成」）。</p>
+    <div class="state-tabs" role="toolbar" aria-label="原型状态">
+      <button data-go="empty" type="button" aria-pressed="false">① 从零开始</button>
+      <button data-go="running" type="button" aria-pressed="false">② 运行中</button>
+      <button data-go="done" type="button" aria-pressed="true">③ 看报告</button>
+    </div>
+    <div class="frame-scroll">
+      <div class="frame">
+        <div class="frame-bar"><i></i><i></i><i></i><span>localhost:5173/seo-ops/tasks/c1af7172-3dde-4eae-a82e-7e121acf8ab7</span></div>
+
+        <div class="mock">
+          <!-- ===== 现有任务页结构，照搬 ===== -->
+          <header class="page-heading">
+            <div>
+              <span class="eyebrow">TASK / c1af7172-3dde-4eae-a82e-7e121acf8ab7</span>
+              <h1>补齐 GBP 经营类别（冒烟）</h1>
+              <p>Only Bear Chicken &amp; Boba → Mineola · WEBSITE_SEO</p>
+            </div>
+            <div class="heading-actions">
+              <button aria-label="刷新任务" class="icon-button" type="button">↻</button>
+              <button class="secondary-button" type="button">新建修订</button>
+              <button class="primary-button" type="button">＋ 附加证据</button>
+            </div>
+          </header>
+
+          <section class="task-state-ribbon">
+            <div><span>任务版本</span><strong>rev 2</strong></div>
+            <div><span>状态版本</span><strong>5</strong></div>
+            <div><span>执行状态</span><strong>NEEDS_INPUT</strong></div>
+            <div><span>证据状态</span><strong>PARTIAL</strong></div>
+            <div><span>影响</span><strong>HIGH</strong></div>
+          </section>
+
+          <div class="task-layout">
+            <div class="task-primary">
+
+              <!-- 执行定义（现状） -->
+              <section class="data-panel">
+                <div class="panel-heading">
+                  <div><span class="eyebrow">IMMUTABLE EXECUTION SPEC</span><h2>执行定义</h2></div>
+                  <code class="hash-badge">⌘ sha256:e9c4f3d2…a71d</code>
+                </div>
+                <pre class="execution-spec">{
+  "operation": "update_gbp_categories",
+  "primary": "Korean fried chicken",
+  "secondary": ["Chicken restaurant"]
+}</pre>
+              </section>
+
+              <!-- 事件时间线（现状） -->
+              <section class="data-panel">
+                <div class="panel-heading">
+                  <div><span class="eyebrow">AUDIT TRAIL</span><h2>事件时间线</h2></div>
+                  <span class="result-count">3</span>
+                </div>
+                <ul class="timeline">
+                  <li><span></span><div><strong>AGENT_RUN_COMPLETED</strong><p>复盘完成，产物已归档并追加证据</p></div><time>15:42</time></li>
+                  <li><span></span><div><strong>EVIDENCE_APPENDED</strong><p>复盘摘要 · UNVERIFIED · sha256 校验通过</p></div><time>15:42</time></li>
+                  <li><span></span><div><strong>AGENT_RUN_TRIGGERED</strong><p>触发只读复盘（REVIEW）· 目标：关注类别合法性</p></div><time>15:39</time></li>
+                </ul>
+              </section>
+
+              <!-- ★★★ 唯一重设计：Agent 面板 ★★★ -->
+              <section aria-label="Agent 运行" class="data-panel wb-panel">
+                <span class="wb-scope-tag">▼ 只重设计这一块</span>
+                <div class="panel-heading">
+                  <div><span class="eyebrow">AGENT RUNS · READ-ONLY</span><h2>Agent 运行</h2></div>
+                  <span class="result-count">3 次 · 全部只读</span>
+                </div>
+
+                <!-- 状态一：动作条 -->
+                <div class="wb-state" data-state="empty">
+                  <div class="wb-actions">
+                    <span class="chip-note">1</span>
+                    <p class="wb-lead">选一个动作，Agent 只读执行，产物自动归档为证据（约 3 分钟）：</p>
+                    <div class="sop-row">
+                      <button data-sop="体检" type="button"><strong>体检</strong><small>现状诊断，找出问题清单</small></button>
+                      <button data-sop="关键词调研" type="button"><strong>关键词调研</strong><small>挖掘本地搜索词机会</small></button>
+                      <button data-sop="优化方案" type="button"><strong>优化方案</strong><small>给出可执行的整改步骤</small></button>
+                      <button data-sop="效果报告" type="button"><strong>效果报告</strong><small>阶段表现与数据汇报</small></button>
+                      <button data-sop="复盘" type="button"><strong>复盘</strong><small>回看执行过程与归因</small></button>
+                    </div>
+                  </div>
+                  <button class="wb-more" data-toggle="goal" type="button">＋ 补充要求（可选）</button>
+                  <div class="wb-goal" data-block="goal">
+                    <input placeholder="例如：重点看 SoLV 排名与地图包表现" type="text">
+                    <small>会并入本次运行目标；留空也可以直接点上面的动作。</small>
+                  </div>
+                </div>
+
+                <!-- 状态二：运行卡 -->
+                <div class="wb-state" data-state="running">
+                  <div class="wb-run">
+                    <span class="chip-note">2</span>
+                    <div class="wb-run-top">
+                      <strong id="runLabel">正在体检</strong>
+                      <span class="status-pill is-running">运行中</span>
+                    </div>
+                    <div class="wb-progress" aria-hidden="true"><i></i></div>
+                    <p class="wb-run-sub">已运行 <b id="elapsed">0′00″</b> · 一般 3 分钟内完成 · 页面每 5 秒自动刷新，可以先去忙别的</p>
+                    <div class="wb-run-actions">
+                      <button class="kill" data-go="empty" type="button">取消运行</button>
+                      <button class="accel" data-go="done" type="button">演示：加速完成 →</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 状态三：报告阅读 -->
+                <div class="wb-state is-on" data-state="done">
+                  <article class="wb-report">
+                    <header class="rep-head">
+                      <div><span class="eyebrow">复盘 · 今天 15:39 触发</span><h3>效果复盘：补齐 GBP 经营类别</h3></div>
+                      <span class="status-pill is-teal">完成</span>
+                    </header>
+                    <p class="chain-line">
+                      <span class="chip-note">4</span>
+                      <span class="ok">✓ 已存为证据（待核验）</span><span>·</span>
+                      <span>SHA-256 校验通过</span><span>·</span><span>用时 3′12″</span>
+                      <button class="toggle" data-toggle="tech" type="button">技术信息</button>
+                    </p>
+                    <div class="tech-detail" data-block="tech">run 5a1cd292 · core run c1f04ab7 · REVIEW · 输入 296,412 tokens / 输出 4,183 tokens · 轮询 5s</div>
+
+                    <div class="rep-body">
+                      <span class="chip-note">3</span>
+                      <h4>结论</h4>
+                      <p>任务<b>未产生可验证的效果</b>：目标门店在已连接的 GBP 账户中不存在（外部身份 gid-demo 为演示占位），且执行定义里的主类别 “Korean fried chicken” 不是 GBP 合法类别。两个问题叠加，审计结果无从对账，任务停留在待输入状态。</p>
+
+                      <h4>依据</h4>
+                      <div class="tbl-wrap">
+                        <table>
+                          <thead><tr><th>核对项</th><th>结果</th><th>说明</th></tr></thead>
+                          <tbody>
+                            <tr><td>GBP 可访问门店</td><td><b>无目标门店</b></td><td>7 个门店中无 “Only Bear” / “Mineola” 任何匹配</td></tr>
+                            <tr><td>主类别合法性</td><td><b>不合法</b></td><td>GBP 不允许自定义类别；近似合法项为 Korean restaurant、Chicken restaurant</td></tr>
+                            <tr><td>品牌档案</td><td><b>不可检索</b></td><td>slug “only-bear” 非有效 merchant_id，缺少对照基准</td></tr>
+                            <tr><td>证据状态</td><td>待核验</td><td>审计报告存在但未通过验证</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <h4>建议（按优先级）</h4>
+                      <ol>
+                        <li><b>接入真实 GBP（P0）</b>：把演示占位身份替换为真实授权连接，确认 Mineola 门店的规范 ID。</li>
+                        <li><b>修正类别参数（P0）</b>：主类别改为 Korean restaurant，辅类别 Chicken restaurant。</li>
+                        <li><b>重跑体检并核验证据（P0）</b>：对真实门店重跑，推动任务从待输入转完成。</li>
+                      </ol>
+
+                      <h4>本次无法确认（标注为未知）</h4>
+                      <ul>
+                        <li>门店当前实际已设置的类别 —— 未知（无真实连接可读）。</li>
+                        <li>品牌档案中的期望类别 —— 未知（档案不可检索）。</li>
+                      </ul>
+
+                      <div class="rep-boundary">本次为只读复盘，未对任何外部系统执行写入。</div>
+                    </div>
+                  </article>
+
+                  <div class="wb-history">
+                    <span class="chip-note">5</span>
+                    <div class="h-title">历史运行 · 点击换读</div>
+                    <div class="hist-row is-now"><i></i><strong>复盘</strong><em>门店未接入真实 GBP，审计无从对账</em><time>15:39</time></div>
+                    <div class="hist-row"><i></i><strong>关键词调研</strong><em>机会词集中在中英混搜的类别词</em><time>15:05</time></div>
+                    <div class="hist-row"><i></i><strong>体检</strong><em>主类别不合法，需映射为合法 GBP 类别</em><time>14:41</time></div>
+                  </div>
+                </div>
+              </section>
+              <!-- ★★★ 重设计结束 ★★★ -->
+
+            </div>
+
+            <aside class="task-context">
+              <!-- 证据脊柱（现状） -->
+              <section class="data-panel">
+                <div class="panel-heading">
+                  <div><span class="eyebrow">EVIDENCE SPINE</span><h2>证据脊柱</h2></div>
+                </div>
+                <div class="evidence-spine">
+                  <div><span class="spine-node">RE</span><div><strong>复盘摘要</strong><small>今天 15:42 · Agent 归档</small><code>REVIEW_SUMMARY · UNVERIFIED</code></div><span class="status-pill is-attention">待核验</span></div>
+                  <div><span class="spine-node">KE</span><div><strong>关键词研究</strong><small>今天 15:08 · Agent 归档</small><code>KEYWORD_RESEARCH_REPORT · UNVERIFIED</code></div><span class="status-pill is-attention">待核验</span></div>
+                  <div><span class="spine-node">AU</span><div><strong>审计报告</strong><small>今天 14:44 · Agent 归档</small><code>AUDIT_REPORT · UNVERIFIED</code></div><span class="status-pill is-attention">待核验</span></div>
+                </div>
+              </section>
+
+              <!-- 审批（现状） -->
+              <section class="approval-panel">
+                <header><span>审批</span><small>APPROVAL BOUNDARY</small></header>
+                <div class="approval-preview">
+                  <dl>
+                    <div><dt>待批任务版本</dt><dd>rev 2 · state 5</dd></div>
+                    <div><dt>证据状态</dt><dd>PARTIAL（3 待核验）</dd></div>
+                  </dl>
+                </div>
+                <div class="blocker-list">3 项证据待核验：复盘摘要、关键词研究、审计报告</div>
+                <p class="boundary-note">✓ 批准只记录授权，不触发执行</p>
+                <div class="button-row"><button class="primary-button" disabled type="button">批准</button></div>
+              </section>
+
+              <!-- 链接（现状） -->
+              <section class="link-panel">
+                <div><span>💬 <strong>0</strong> 对话链接</span></div>
+                <div><span>🤖 <strong>3</strong> Agent Run 引用</span></div>
+                <p>🛡 这里只显示 ID 和状态摘要，不载入聊天正文或运行载荷。</p>
+              </section>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="host-block">
+    <h2>面板里五处改动的图例（金色圆点对应原型里的位置）</h2>
+    <div class="legend">
+      <article><span class="n">1</span><div><strong>一键动作条替代触发表单</strong><p>五个中文动词各配一句话说明，点按钮即触发。下拉枚举、常驻两行文本域、提交按钮取消；“补充要求”折叠成可选的一行。</p></div></article>
+      <article><span class="n">2</span><div><strong>运行态是一句话</strong><p>正在做什么 + 已运行多久 + 取消。RUNNING、core 状态码、轮询间隔这些词不再出现，页面自己刷新。</p></div></article>
+      <article><span class="n">3</span><div><strong>报告渲染成文档</strong><p>结论 / 依据表格 / 建议清单 / 未知声明按结构排版，正文字号加大。等宽 pre 折叠块不再作为主阅读界面。</p></div></article>
+      <article><span class="n">4</span><div><strong>结果链路压缩成一行</strong><p>已存证据（待核验）· 校验通过 · 用时。run id、token 用量、core run id 收进「技术信息」，点开才显示。</p></div></article>
+      <article><span class="n">5</span><div><strong>历史是细行</strong><p>每次运行一行：类型 · 一句结论摘要 · 时间 · 状态点，点哪条读哪条。</p></div></article>
+    </div>
+  </section>
+
+  <section class="host-block">
+    <h2>改动清单（仅 AgentRunsPanel）</h2>
+    <div class="tbl-scroll">
+      <table class="tbl-host">
+        <thead><tr><th style="width:34%">现在（面板内）</th><th style="width:33%">简化后</th><th>为什么</th></tr></thead>
+        <tbody>
+          <tr><td>下拉选枚举（AUDIT…）+ 两行目标文本域 + 提交按钮</td><td><b>五个中文动作按钮</b> + 可选的一行补充要求</td><td>运营的词是“体检/复盘”，不是 AUDIT/REVIEW；高频路径一步到位</td></tr>
+          <tr><td>每条运行一行：英文状态 pill、core 状态码、时间戳、token 汇总</td><td><b>运行中一张卡、完成进历史细行</b>，状态中文化</td><td>操作者关心“跑得怎样”，不关心 core_status 和 token 数</td></tr>
+          <tr><td>输出藏在 details 里的等宽 pre（2000 字预览再拉全量）</td><td><b>渲染成文档的报告阅读区</b>，默认展开最新一篇</td><td>报告是给人读的，4700 字等宽文本块读不动</td></tr>
+          <tr><td>sha 前缀直接拼在“查看输出”标题里</td><td><b>一行结果链路 + 「技术信息」折叠</b></td><td>审计信息要可查，不必常驻</td></tr>
+          <tr><td>取消按钮混在每行 meta 里</td><td><b>只在运行卡上出现一次</b></td><td>只有活跃运行可取消，别处出现是噪音</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="host-block">
+    <div class="scope-note"><b>明确不动的：</b>任务页其余部分（执行定义、事件时间线、状态 ribbon、证据脊柱、审批、链接面板）与线上一致——原型里就是按现网样式 1:1 还原的；后端契约原样（触发 / 轮询 / 取消 / 证据追加 / sha256 校验）；审批红线与 EXECUTE 禁用照旧。原型报告内容取自真实冒烟运行的节选改写。</div>
+  </section>
+
+</div>
+
+<script>
+  var t0 = null, timer = null;
+  function $(sel, root) { return (root || document).querySelector(sel); }
+  function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+  function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
+
+  function go(name, sopLabel) {
+    $all(".wb-state").forEach(function (el) { el.classList.toggle("is-on", el.dataset.state === name); });
+    $all(".state-tabs button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.go === name)); });
+    stopTimer();
+    if (name === "running") {
+      $("#runLabel").textContent = "正在" + (sopLabel || "体检");
+      t0 = Date.now();
+      timer = setInterval(function () {
+        var s = Math.floor((Date.now() - t0) / 1000);
+        $("#elapsed").textContent = Math.floor(s / 60) + "′" + String(s % 60).padStart(2, "0") + "″";
+      }, 500);
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    var el;
+    if ((el = event.target.closest("[data-go]"))) { go(el.dataset.go, el.dataset.sop); return; }
+    if ((el = event.target.closest("[data-toggle]"))) {
+      var block = $('[data-block="' + el.dataset.toggle + '"]');
+      if (block) block.classList.toggle("is-open");
+    }
+  });
+</script>
+</body>
+</html>

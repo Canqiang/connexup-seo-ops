@@ -21,12 +21,26 @@ export interface CoreAgentRunDetail {
   trace_id?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  /** File references produced by the agent run (identity + download URL, never bytes). */
+  artifacts?: CoreRunArtifact[];
+}
+
+export interface CoreRunArtifact {
+  file_id: string;
+  file_name: string;
+  content_type?: string | null;
+  size?: number | null;
+  url: string;
+  title?: string | null;
+  description?: string | null;
 }
 
 export interface CoreAiClient {
   trigger(agentId: string, input: string): Promise<{ run_id: string; status: string }>;
   getRun(runId: string): Promise<CoreAgentRunDetail>;
   cancel(runId: string): Promise<void>;
+  /** Download an artifact's bytes; the token goes only in the Authorization header. */
+  downloadArtifact(url: string): Promise<Uint8Array>;
 }
 
 export class CoreAiError extends Error {
@@ -116,6 +130,24 @@ export function createCoreAiClient(opts: {
     },
     async cancel(runId) {
       await request("POST", `/api/runs/${encodeURIComponent(runId)}/cancel`);
+    },
+    async downloadArtifact(url) {
+      // Absolute caller-resolvable URL per the core-ai ArtifactRef contract;
+      // tolerate relative paths by resolving against the configured base.
+      const target = /^https?:\/\//i.test(url) ? url : `${baseUrl}${url.startsWith("/") ? "" : "/"}${url}`;
+      let response: Response;
+      try {
+        response = await doFetch(target, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (err) {
+        throw new CoreAiError(0, `artifact download failed: ${err instanceof Error ? err.message : "network error"}`);
+      }
+      if (!response.ok) {
+        throw new CoreAiError(response.status, `artifact download returned ${response.status}`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
     },
   };
 }

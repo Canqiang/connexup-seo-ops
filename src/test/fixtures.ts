@@ -1,4 +1,4 @@
-import type { AgentRunView, AuthenticatedUser, PortfolioResponse, SeoTask } from "../api/types";
+import type { AuthenticatedUser, PortfolioResponse, SeoTask, StageRunView } from "../api/types";
 
 export const userFixture: AuthenticatedUser = {
   user_id: "user-1", name: "Xander", role: "operator",
@@ -25,19 +25,31 @@ export const taskFixture: SeoTask = {
   evidence_refs: [], approval_decisions: [], conversation_links: [], agent_run_links: []
 };
 
-export const agentRunRunningFixture: AgentRunView = {
-  id: "run-1", task_id: "task-1", run_type: "AUDIT", goal: "关注 SoLV 排名", status: "RUNNING",
-  core_run_id: "core-1", core_status: "RUNNING", input_message: "你是本地 SEO 统一代理…",
-  output_preview: null, token_usage: { input_tokens: 120, output_tokens: 35 },
+export const stageRunRunningFixture: StageRunView = {
+  id: "run-1", merchant_id: "only-bear", location_id: "mineola",
+  stage: "KEYWORDS", run_type: "KEYWORD_RESEARCH", goal: null, status: "RUNNING",
+  core_run_id: "core-1", core_status: "RUNNING", input_message: "为该商户生成关键词库…",
+  output_preview: null, token_usage: {},
+  deliverables: [],
   triggered_by: "local-dev", triggered_at: "2026-08-18T08:00:00Z",
   created_at: "2026-08-18T08:00:00Z", updated_at: "2026-08-18T08:00:05Z",
 };
 
-export const agentRunCompletedFixture: AgentRunView = {
-  ...agentRunRunningFixture,
-  id: "run-2", run_type: "PLAN", goal: null, status: "COMPLETED", core_status: "COMPLETED",
-  output_preview: "# 优化方案\n\n结论先行：优先补齐经营类别。",
-  artifact_path: "data/artifacts/run-2.md", artifact_sha256: `sha256:${"a".repeat(64)}`,
-  evidence_id: "ev-9", token_usage: { input_tokens: 900, output_tokens: 400 },
+export const stageRunCompletedFixture: StageRunView = {
+  ...stageRunRunningFixture,
+  id: "run-2", stage: "PLAN", run_type: "PLAN", status: "COMPLETED", core_status: "COMPLETED",
+  output: "# 优化方案\n\n## 建议清单\n1. **补齐 GBP 经营类别（P0）**：主类别缺失导致 local pack 不入围。",
+  output_preview: "# 优化方案\n\n## 建议清单\n1. **补齐 GBP 经营类别（P0）**：主类别缺失导致 local pack 不入围。",
+  token_usage: { input_tokens: 900, output_tokens: 400 },
+  deliverables: [
+    { id: "run-2-summary", kind: "SUMMARY", file_name: "run-2-summary.md", content_type: "text/markdown",
+      size: 2200, title: "优化方案摘要", description: null, sha256: `sha256:${"a".repeat(64)}`,
+      downloaded: true, download_path: "/api/seo-ops/deliverables/run-2-summary/download",
+      created_at: "2026-08-18T08:03:00Z" },
+    { id: "run-2-att-f-1", kind: "ATTACHMENT", file_name: "plan.md", content_type: "text/markdown",
+      size: 4096, title: "优化方案", description: null, sha256: `sha256:${"b".repeat(64)}`,
+      downloaded: true, download_path: "/api/seo-ops/deliverables/run-2-att-f-1/download",
+      created_at: "2026-08-18T08:03:00Z" },
+  ],
   completed_at: "2026-08-18T08:03:00Z", updated_at: "2026-08-18T08:03:00Z",
 };

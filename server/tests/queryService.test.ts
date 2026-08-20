@@ -85,11 +85,11 @@ describe("auth + config stubs", () => {
     expect(res.json()).toEqual({
       copilot_enabled: false,
       agent_run_enabled: false,
-      agent_run_types: [
+      agent_run_stages: [
+        "KEYWORDS",
         "AUDIT",
-        "KEYWORD_RESEARCH",
+        "RANKING_BASELINE",
         "PLAN",
-        "REPORT",
         "REVIEW",
       ],
     });

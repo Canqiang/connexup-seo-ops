@@ -40,6 +40,49 @@ export const LOCATION_READINESSES = [
 ] as const;
 export type LocationReadiness = (typeof LOCATION_READINESSES)[number];
 
+/** 接入问卷状态：DRAFT 生成未发放 / SENT 已外发待商家 / FILLED 商家已提交。
+ * OVERDUE 不是存储状态——由 sent_at + now 推导（催填用）。 */
+export const QUESTIONNAIRE_STATUSES = [
+  "DRAFT",
+  "SENT",
+  "FILLED",
+] as const;
+export type QuestionnaireStatus = (typeof QUESTIONNAIRE_STATUSES)[number];
+
+/** 商户生命周期阶段轨（新店与老店共用同一条轨）。阶段永远从交付物链推导，
+ * 不落存储列——重跑任一环节阶段自动回退，避免前向-only 枚举的回退谎言。 */
+export const LIFECYCLE_STAGES = [
+  "QUESTIONNAIRE",
+  "KEYWORDS",
+  "AUDIT",
+  "RANKING_BASELINE",
+  "PLAN",
+  "EXECUTE",
+  "VERIFY",
+] as const;
+export type LifecycleStage = (typeof LIFECYCLE_STAGES)[number];
+
+/** 首页异常分组的优先级顺序（先命中先分组）。 */
+export const MERCHANT_EXCEPTIONS = [
+  "WAITING_MERCHANT",
+  "PLAN_PENDING",
+  "APPROVAL",
+  "VERIFY",
+  "RANKING_DUE",
+] as const;
+export type MerchantExceptionType = (typeof MERCHANT_EXCEPTIONS)[number];
+
+/** 可从阶段卡一键触发 agent 运行的阶段（EXECUTE/VERIFY 是人工环节，
+ * 永不可触发——红线）。REVIEW 不在轨上，供老店复盘。 */
+export const AGENT_RUN_STAGES = [
+  "KEYWORDS",
+  "AUDIT",
+  "RANKING_BASELINE",
+  "PLAN",
+  "REVIEW",
+] as const;
+export type AgentRunStage = (typeof AGENT_RUN_STAGES)[number];
+
 export const AGENT_RUN_TYPES = [
   "AUDIT",
   "KEYWORD_RESEARCH",
@@ -48,6 +91,15 @@ export const AGENT_RUN_TYPES = [
   "REVIEW",
 ] as const;
 export type AgentRunType = (typeof AGENT_RUN_TYPES)[number];
+
+/** 阶段 → 只读 SOP 运行类型（统一 agent 侧的分类口径）。 */
+export const RUN_TYPE_BY_STAGE: Record<AgentRunStage, AgentRunType> = {
+  KEYWORDS: "KEYWORD_RESEARCH",
+  AUDIT: "AUDIT",
+  RANKING_BASELINE: "REPORT",
+  PLAN: "PLAN",
+  REVIEW: "REVIEW",
+};
 
 export const AGENT_RUN_STATUSES = [
   "TRIGGERING",
@@ -66,13 +118,6 @@ export const CORE_RUN_TERMINAL_STATUSES = [
   "SKIPPED",
 ] as const;
 
-/** run_type -> evidence.type appended when a run completes (requirement_key
- * uses the same value). Only *_REPORT values surface in the reports
- * projection; PLAN/REVIEW outputs are working documents, not data reports. */
-export const EVIDENCE_TYPE_BY_RUN_TYPE: Record<AgentRunType, string> = {
-  AUDIT: "AUDIT_REPORT",
-  KEYWORD_RESEARCH: "KEYWORD_RESEARCH_REPORT",
-  PLAN: "ACTION_PLAN",
-  REPORT: "PERFORMANCE_REPORT",
-  REVIEW: "REVIEW_SUMMARY",
-};
+/** 交付物来源：SUMMARY 运行正文 / ATTACHMENT agent 附件 / MANUAL 运营手工上传兜底。 */
+export const DELIVERABLE_KINDS = ["SUMMARY", "ATTACHMENT", "MANUAL"] as const;
+export type DeliverableKind = (typeof DELIVERABLE_KINDS)[number];

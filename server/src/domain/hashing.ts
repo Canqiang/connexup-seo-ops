@@ -45,6 +45,11 @@ export function sha256Hash(input: string): string {
   return "sha256:" + createHash("sha256").update(input, "utf8").digest("hex");
 }
 
+/** sha256 over raw bytes (binary artifacts — encoding-agnostic). */
+export function sha256HashBytes(input: Uint8Array): string {
+  return "sha256:" + createHash("sha256").update(input).digest("hex");
+}
+
 /** Canonicalize then hash an execution spec. */
 export function executionSpecHash(rawSpec: string): string {
   return sha256Hash(canonicalize(rawSpec));

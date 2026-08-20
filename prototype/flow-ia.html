@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>商户流程 IA 原型 v3</title>
+<style>
+  /* ============ 宿主外壳 ============ */
+  :root {
+    --host-bg: #0b1524; --host-panel: #0f1c2f; --host-line: #22354e;
+    --host-text: #e7eef7; --host-muted: #91a5bd; --host-quiet: #60758e;
+    --amber: #f1ae48; --amber-soft: rgba(241, 174, 72, .12);
+    --cyan: #61b8dd; --teal: #50cfbd; --red: #ff7c73;
+    --mono: "SFMono-Regular", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--host-bg); }
+  body { margin: 0; min-height: 100vh; background: var(--host-bg); color: var(--host-text);
+    font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-synthesis: none; text-rendering: optimizeLegibility; }
+  .host-wrap { max-width: 1220px; margin: 0 auto; padding: 40px 26px 90px; }
+  .host-kicker { font: 650 9px/1.4 var(--mono); letter-spacing: .2em; color: var(--amber); text-transform: uppercase; }
+  .host-wrap > header h1 { margin: 10px 0 8px; font-size: clamp(22px, 3vw, 30px); font-weight: 670; letter-spacing: -.03em; line-height: 1.15; text-wrap: balance; }
+  .host-wrap > header p.thesis { margin: 0; max-width: 72ch; color: var(--host-muted); font-size: 13px; line-height: 1.85; }
+  .host-wrap > header p.thesis b { color: var(--host-text); font-weight: 650; }
+  section.host-block { margin-top: 32px; }
+  .host-block > h2 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--host-muted); letter-spacing: .04em; }
+  .host-block > p.note { margin: 0 0 12px; color: var(--host-quiet); font-size: 11px; }
+
+  .state-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .state-tabs button { min-height: 32px; padding: 0 14px; border: 1px solid #33496a; border-radius: 4px;
+    background: #12233a; color: #b7c6d8; font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .state-tabs button:hover { border-color: #46608a; color: var(--host-text); }
+  .state-tabs button[aria-pressed="true"] { border-color: rgba(241,174,72,.6); background: var(--amber-soft); color: #f6c473; }
+  .state-tabs button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  .frame-scroll { overflow-x: auto; }
+  .frame { position: relative; overflow: hidden; min-width: 1080px; border: 1px solid #2c4360; border-radius: 8px; background: #081522; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .frame-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #243a55; background: #0c1a2b; }
+  .frame-bar i { width: 9px; height: 9px; border-radius: 50%; background: #2e4763; }
+  .frame-bar span { margin-left: 10px; overflow: hidden; padding: 3px 12px; border: 1px solid #22374f; border-radius: 99px; background: #0a1726; color: var(--host-quiet); font: 10px var(--mono); white-space: nowrap; text-overflow: ellipsis; }
+
+  /* ============ 原型画面（产品视觉语言） ============ */
+  .mock {
+    --ink: #07111f; --panel: #101f33; --raised: #15283f; --line: #263c56;
+    --line-soft: rgba(112, 144, 180, .18); --text: #e7eef7; --muted: #91a5bd; --quiet: #60758e;
+    --amber-soft: rgba(241, 174, 72, .12); --red-soft: rgba(255, 124, 115, .11);
+    position: relative; display: flex; min-height: 720px;
+    background: radial-gradient(circle at 73% -20%, #142943 0, transparent 34%), var(--ink);
+    color: #dce7f4;
+  }
+  .mock button { font: inherit; color: inherit; cursor: pointer; }
+  .mock button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  /* 侧栏（导航两项：商户 / 任务） */
+  .side { position: relative; z-index: 10; width: 64px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 8px; border-right: 1px solid #1e334b; background: rgba(5, 14, 26, .96); }
+  .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid rgba(241, 174, 72, .6); color: var(--amber); font: 750 10px var(--mono); letter-spacing: .1em; clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px); }
+  .side nav { width: 100%; display: flex; flex-direction: column; gap: 4px; margin-top: 26px; }
+  .side nav a { display: grid; justify-items: center; gap: 4px; padding: 9px 0; border-left: 2px solid transparent; color: #71859c; }
+  .side nav a span { font-size: 8px; letter-spacing: .08em; }
+  .side nav a:hover { color: var(--text); background: rgba(255,255,255,.035); }
+  .side nav a.active { color: var(--amber); border-left-color: var(--amber); background: var(--amber-soft); }
+  .side .avatar { width: 28px; height: 28px; display: grid; place-items: center; margin-top: auto; border: 1px solid #344b65; border-radius: 50%; background: #15253a; color: #aebed0; font-size: 8px; font-weight: 700; }
+
+  .stage { display: none; flex: 1; min-width: 0; padding: 28px 26px 46px; }
+  .stage.is-on { display: block; }
+
+  /* 产品通用件 */
+  .eyebrow { display: block; color: #7393b9; font-family: var(--mono); font-size: 8px; line-height: 1.4; letter-spacing: .16em; text-transform: uppercase; }
+  .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+  .page-heading h1 { margin: 7px 0 4px; color: var(--text); font-size: 27px; font-weight: 670; line-height: 1.05; letter-spacing: -.04em; }
+  .page-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+  .heading-actions { display: flex; align-items: center; gap: 8px; }
+  .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 0 13px; border-radius: 4px; font-size: 10px; font-weight: 650; }
+  .primary-button { border: 1px solid rgba(241, 174, 72, .62); background: var(--amber-soft); color: #f6c473; }
+  .secondary-button { border: 1px solid #38516d; background: #13253b; color: #c4d2e1; }
+  .text-link { border: 0; background: transparent; color: var(--cyan); font-size: 10px; text-decoration: underline dotted; }
+  .data-panel { border: 1px solid var(--line); background: rgba(13, 29, 48, .72); }
+  .panel-heading { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 17px; border-bottom: 1px solid var(--line); }
+  .panel-heading h2 { margin: 3px 0 0; font-size: 15px; font-weight: 650; }
+  .result-count, .quiet-copy { color: var(--quiet); font-size: 8px; font-family: var(--mono); }
+  .pill { display: inline-flex; width: fit-content; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid #3a516b; color: #91a5bc; font-size: 8px; letter-spacing: .05em; white-space: nowrap; font-family: var(--mono); }
+  .pill.is-amber { border-color: rgba(241,174,72,.45); color: var(--amber); background: var(--amber-soft); }
+  .pill.is-cyan { border-color: rgba(97,184,221,.45); color: var(--cyan); }
+  .pill.is-teal { border-color: rgba(80,207,189,.42); color: var(--teal); background: rgba(80,207,189,.08); }
+  .pill.is-red { border-color: rgba(255,124,115,.48); color: var(--red); background: var(--red-soft); }
+  .pill.is-quiet { color: var(--quiet); }
+
+  /* —— 屏① 异常清单 —— */
+  .grp { margin-bottom: 18px; }
+  .grp-head { display: flex; align-items: baseline; gap: 10px; padding: 0 2px 8px; }
+  .grp-head strong { font-size: 12px; font-weight: 650; }
+  .grp-head .cnt { color: var(--quiet); font: 10px var(--mono); }
+  .grp-head small { margin-left: auto; color: var(--quiet); font-size: 9px; }
+  .grp.is-calm { opacity: .62; }
+  .grp.is-calm .grp-head strong { color: var(--muted); font-weight: 500; }
+  .mrow { position: relative; display: grid; grid-template-columns: 108px minmax(0, 1.5fr) minmax(0, 1.6fr) auto; align-items: center; gap: 14px; padding: 11px 14px; border: 1px solid var(--line); border-top: 0; background: rgba(13, 29, 48, .72); }
+  .grp .mrow:first-of-type { border-top: 1px solid var(--line); }
+  .mrow:hover { background: #14294495; }
+  .mrow .who strong { display: block; font-size: 11px; color: var(--text); }
+  .mrow .who small { display: block; margin-top: 2px; color: var(--quiet); font-size: 9px; }
+  .mrow .why { color: var(--muted); font-size: 10px; line-height: 1.6; }
+  .mrow .why b { color: #e3b96c; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .mrow .act { display: flex; gap: 7px; align-items: center; }
+  .mrow .act .primary-button, .mrow .act .secondary-button { min-height: 30px; font-size: 9px; }
+  .dot-wait { width: 7px; height: 7px; display: inline-block; border-radius: 50%; background: var(--amber); margin-right: 6px; vertical-align: 1px; }
+  .dot-ok { width: 7px; height: 7px; display: inline-block; border-radius: 50%; background: var(--teal); margin-right: 6px; vertical-align: 1px; }
+  .dot-calm { width: 7px; height: 7px; display: inline-block; border-radius: 50%; background: #3a516b; margin-right: 6px; vertical-align: 1px; }
+
+  /* —— 屏②③ 生命周期页 —— */
+  .lc-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+  .lc-head .back { border: 0; background: transparent; color: var(--quiet); font-size: 10px; margin-bottom: 6px; cursor: pointer; }
+  .lc-head .back:hover { color: var(--cyan); }
+  .lc-head h1 { margin: 5px 0 4px; font-size: 25px; font-weight: 670; letter-spacing: -.04em; }
+  .lc-head .sub { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin: 0; color: var(--muted); font-size: 11px; }
+  .round-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid rgba(97,184,221,.45); color: var(--cyan); font: 9px var(--mono); }
+
+  .rail { position: relative; display: grid; gap: 0; margin: 6px 0 20px; padding: 0 6px; }
+  .rail-7 { grid-template-columns: repeat(7, 1fr); }
+  .rail-5 { grid-template-columns: repeat(5, 1fr); }
+  .r-step { position: relative; padding: 18px 4px 0; text-align: center; }
+  .r-step::before { content: ""; position: absolute; top: 5px; left: -50%; right: 50%; height: 2px; background: #24405e; }
+  .r-step:first-child::before { display: none; }
+  .r-step::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 12px; height: 12px; border-radius: 50%; border: 2px solid #3a516b; background: var(--panel); }
+  .r-step.is-done::after { border-color: var(--teal); background: var(--teal); }
+  .r-step.is-now::after { border-color: var(--amber); background: var(--amber); box-shadow: 0 0 0 5px var(--amber-soft); }
+  .r-step strong { display: block; font-size: 10px; font-weight: 650; color: var(--text); }
+  .r-step.is-off strong { color: var(--quiet); font-weight: 500; }
+  .r-step small { display: block; margin-top: 3px; color: var(--quiet); font: 8px/1.6 var(--mono); }
+  .r-step.is-now strong { color: #f6c473; }
+  .r-step.is-now small { color: var(--amber); }
+
+  .cur-card { position: relative; padding: 16px 18px; border: 1px solid rgba(241,174,72,.4); background: linear-gradient(120deg, rgba(241,174,72,.07), rgba(13,29,48,.75) 55%); }
+  .cur-card h3 { margin: 5px 0 4px; font-size: 15px; font-weight: 670; }
+  .cur-card .desc { margin: 0 0 12px; color: var(--muted); font-size: 10.5px; line-height: 1.7; }
+  .plan-list { list-style: none; margin: 0 0 14px; padding: 0; }
+  .plan-list li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line-soft); border-bottom: 0; background: #0e1d30; }
+  .plan-list li:last-child { border-bottom: 1px solid var(--line-soft); }
+  .plan-list .n { color: var(--quiet); font: 9px var(--mono); }
+  .plan-list p { margin: 0; font-size: 10.5px; color: #c3d1e0; line-height: 1.6; }
+  .cur-actions { display: flex; align-items: center; gap: 12px; }
+  .cur-actions .done-note { display: none; color: var(--teal); font-size: 10px; }
+  .cur-card.is-confirmed .cur-actions .primary-button { display: none; }
+  .cur-card.is-confirmed .done-note { display: inline; }
+
+  /* 人工工单（执行段） */
+  .work-note { display: flex; gap: 8px; margin: 0 0 10px; padding: 9px 11px; border: 1px solid rgba(80,207,189,.25); background: rgba(80,207,189,.06); color: #8ec4bc; font-size: 9px; line-height: 1.7; }
+  .work-list { list-style: none; margin: 0; padding: 0; }
+  .work-list li { display: grid; grid-template-columns: 14px 1fr auto auto; align-items: center; gap: 12px; padding: 11px 4px; border-bottom: 1px solid var(--line-soft); }
+  .work-list li:last-child { border-bottom: 0; }
+  .work-list i { width: 8px; height: 8px; border-radius: 50%; background: #3a516b; }
+  .work-list li.is-done i { background: var(--teal); }
+  .work-list li.is-now i { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); }
+  .work-list p { margin: 0; font-size: 10.5px; color: #c3d1e0; line-height: 1.6; }
+  .work-list p small { display: block; margin-top: 2px; color: var(--quiet); font-size: 8.5px; }
+  .work-list .primary-button { min-height: 28px; font-size: 9px; }
+
+  /* 排名对比条 */
+  .cmp { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+  .cmp article { padding: 11px 13px; border: 1px solid var(--line-soft); background: #0e1d30; }
+  .cmp span { display: block; color: var(--quiet); font-size: 8.5px; }
+  .cmp strong { display: block; margin-top: 6px; font: 15px/1.2 var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+  .cmp small { display: block; margin-top: 4px; font-size: 8.5px; }
+  .up { color: var(--teal); } .flat { color: var(--muted); }
+
+  /* 原样下沉的既有面板 */
+  .embed { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; align-items: start; margin-top: 18px; }
+  .task-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line-soft); }
+  .task-row:last-child { border-bottom: 0; }
+  .task-row strong { font-size: 10.5px; color: #dfe9f4; }
+  .task-row small { display: block; margin-top: 3px; color: var(--quiet); font-size: 8px; font-family: var(--mono); }
+  .task-row .secondary-button { min-height: 28px; font-size: 9px; }
+  .task-empty { padding: 18px 17px; color: var(--muted); font-size: 10px; line-height: 1.8; }
+  .fresh { animation: fresh-glow 1.6s ease-out 2; }
+  @keyframes fresh-glow { 0%,100% { box-shadow: 0 0 0 0 rgba(80,207,189,0); } 40% { box-shadow: 0 0 0 2px rgba(80,207,189,.55); } }
+  .evidence-spine { padding: 12px 15px 16px; }
+  .evidence-spine > div { position: relative; display: grid; grid-template-columns: 20px 1fr; gap: 9px; min-height: 50px; }
+  .evidence-spine > div:not(:last-child)::before { content: ""; position: absolute; left: 5px; top: 15px; bottom: -1px; width: 1px; background: #304760; }
+  .spine-node { position: relative; z-index: 1; width: 12px; height: 12px; border: 1px solid #425a73; border-radius: 50%; background: var(--panel); }
+  .evidence-spine .is-verified .spine-node { border-color: var(--teal); background: var(--teal); }
+  .evidence-spine .is-amber .spine-node { border-color: var(--amber); background: var(--amber); }
+  .evidence-spine strong { display: block; color: #b9c8d8; font-size: 9px; }
+  .evidence-spine small { display: block; margin-top: 3px; color: var(--quiet); font-size: 8px; line-height: 1.6; }
+  .boundary { display: flex; gap: 6px; margin: 0 15px 14px; color: var(--muted); font-size: 9px; line-height: 1.6; }
+
+  /* +新店 弹层 */
+  .modal-layer { position: absolute; inset: 0; z-index: 40; display: none; align-items: flex-start; justify-content: center; padding-top: 90px; background: rgba(2,8,15,.72); backdrop-filter: blur(2px); }
+  .modal-layer.is-open { display: flex; }
+  .modal { width: min(460px, calc(100% - 40px)); border: 1px solid #304965; background: #0e1c2e; box-shadow: 0 28px 80px rgba(0,0,0,.55); }
+  .modal header { display: flex; align-items: center; justify-content: space-between; padding: 14px 17px; border-bottom: 1px solid var(--line); }
+  .modal header strong { font-size: 13px; }
+  .modal header button { border: 0; background: transparent; color: var(--quiet); font-size: 12px; cursor: pointer; }
+  .modal-body { padding: 16px 17px 18px; }
+  .modal-body label { display: block; margin-bottom: 12px; color: var(--quiet); font-size: 9px; }
+  .modal-body input { width: 100%; height: 34px; margin-top: 5px; padding: 0 10px; border: 1px solid #324b67; border-radius: 3px; background: #0b192a; color: var(--text); font-size: 11px; }
+  .modal .hint { margin: 12px 0 0; color: var(--quiet); font-size: 8.5px; line-height: 1.7; }
+  .gen-done { display: none; }
+  .modal.is-gen .gen-form { display: none; }
+  .modal.is-gen .gen-done { display: block; }
+  .gen-done .link { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0 4px; padding: 10px 12px; border: 1px dashed #2c4665; color: var(--cyan); font: 10px var(--mono); }
+
+  /* 标注圆点 */
+  .chip-note { position: absolute; top: -9px; right: 12px; z-index: 25; width: 19px; height: 19px;
+    display: grid; place-items: center; border: 1px solid rgba(241,174,72,.65); border-radius: 50%;
+    background: #1a1508; color: var(--amber); font: 700 10px var(--mono); pointer-events: none; }
+
+  /* ============ 图例 ============ */
+  .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+  .legend article { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 12px 14px; border: 1px solid var(--host-line); background: var(--host-panel); }
+  .legend .n { width: 19px; height: 19px; display: grid; place-items: center; border: 1px solid rgba(241,174,72,.65); border-radius: 50%; color: var(--amber); font: 700 10px var(--mono); }
+  .legend strong { display: block; font-size: 11.5px; }
+  .legend p { margin: 4px 0 0; color: var(--host-muted); font-size: 10.5px; line-height: 1.75; }
+  .scope-note { padding: 14px 16px; border: 1px solid rgba(80,207,189,.25); background: rgba(80,207,189,.05); color: #8ec4bc; font-size: 11px; line-height: 1.9; }
+  .scope-note b { color: #a8dcd2; }
+
+  @media (prefers-reduced-motion: reduce) { .fresh { animation: none; } * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="host-wrap">
+
+  <header>
+    <span class="host-kicker">SEO OPS · IA 原型 V3（按 Council 裁决）</span>
+    <h1>首页回答“三十家今天该动哪家”，商户页回答“这家店走到哪、下一步点哪”</h1>
+    <p class="thesis">导航只剩两项（商户 / 任务）+ 唯一新屏「商户生命周期页」。流程是<b>商户的属性</b>：首页是异常驱动的待办清单，不画常驻流水线；单商户页内一条阶段轨，新店逐格点亮、老店同轨稳态；<b>任务/证据/审批原样下沉嵌入，一行不改</b>；执行段在 EXECUTE 关闭期渲染为人工工单。</p>
+  </header>
+
+  <section class="host-block">
+    <h2>交互原型</h2>
+    <p class="note">可点击：屏① 里「打开生命周期页」「重跑 ranking」会跳到对应商户页；「＋ 新店」可走完生成问卷弹层；屏② 点「确认 Plan」会真的生成 3 个任务；屏③ 点「完成并回填证据」工单会翻转。</p>
+    <div class="state-tabs" role="toolbar" aria-label="原型屏幕">
+      <button data-go="home" type="button" aria-pressed="true">① 商户首页 · 异常清单</button>
+      <button data-go="newstore" type="button" aria-pressed="false">② 生命周期页 · 新店（走到 Plan）</button>
+      <button data-go="oldstore" type="button" aria-pressed="false">③ 生命周期页 · 老店（第 2 轮 · 人工执行）</button>
+    </div>
+    <div class="frame-scroll">
+      <div class="frame">
+        <div class="frame-bar"><i></i><i></i><i></i><span>localhost:5173/seo-ops/merchants</span></div>
+
+        <div class="mock">
+          <div class="side">
+            <div class="brand-mark">CX</div>
+            <nav>
+              <a class="active" data-nav="merchants" href="#merchants"><span>🏛</span><span>商户</span></a>
+              <a data-nav="tasks" href="#tasks"><span>▤</span><span>任务</span></a>
+            </nav>
+            <div class="avatar">XA</div>
+          </div>
+
+          <!-- ===== 屏① 商户首页 · 异常清单 ===== -->
+          <div class="stage is-on" data-state="home">
+            <header class="page-heading">
+              <div>
+                <span class="eyebrow">PORTFOLIO / 9 MERCHANTS</span>
+                <h1>商户</h1>
+                <p>5 家需要处理 · 按卡住的时间排序 · 今天 8 月 19 日</p>
+              </div>
+              <div class="heading-actions" style="position:relative">
+                <span class="chip-note">3</span>
+                <button class="primary-button" data-open-modal="1" type="button">＋ 新店</button>
+              </div>
+            </header>
+
+            <div class="grp" style="position:relative">
+              <span class="chip-note">1</span>
+              <div class="grp-head"><strong><span class="dot-wait"></span>等待商家回复</strong><span class="cnt">2</span><small>问卷外发后按发出天数排序，可重发</small></div>
+              <div class="mrow">
+                <span class="pill is-amber">问卷</span>
+                <div class="who"><strong>Only Bear Chicken &amp; Boba</strong><small>Mineola · 新店接入</small></div>
+                <div class="why" style="position:relative; padding-right:26px"><span class="chip-note">2</span>接入问卷发出 <b>5 天</b>未回（8/14 发出）——整个新店流程卡在这里</div>
+                <div class="act"><button class="secondary-button" type="button" title="原型示意">重发问卷</button><button class="text-link" data-go="newstore" type="button">打开 ›</button></div>
+              </div>
+              <div class="mrow">
+                <span class="pill is-amber">问卷</span>
+                <div class="who"><strong>Hana Korean BBQ</strong><small>Flushing · 新店接入</small></div>
+                <div class="why">接入问卷发出 <b>2 天</b>未回（8/17 发出）</div>
+                <div class="act"><button class="secondary-button" type="button" title="原型示意">重发问卷</button></div>
+              </div>
+            </div>
+
+            <div class="grp">
+              <div class="grp-head"><strong><span class="dot-wait"></span>Plan 待确认</strong><span class="cnt">1</span><small>Agent 已产出，等操作员确认转任务</small></div>
+              <div class="mrow">
+                <span class="pill is-cyan">Plan</span>
+                <div class="who"><strong>Green Fork Salad Bar</strong><small>Mineola · 新店接入</small></div>
+                <div class="why">优化 Plan 昨日生成 · <b>3</b> 条建议 · 已读报告未确认</div>
+                <div class="act"><button class="primary-button" data-go="newstore" type="button">打开生命周期页 ›</button></div>
+              </div>
+            </div>
+
+            <div class="grp">
+              <div class="grp-head"><strong><span class="dot-wait"></span>待审批</strong><span class="cnt">1</span><small>批准只记录授权，不触发执行</small></div>
+              <div class="mrow">
+                <span class="pill is-cyan">执行</span>
+                <div class="who"><strong>Cedar Creek Coffee</strong><small>Garden City · 第 3 轮</small></div>
+                <div class="why">2 个任务已具备核验证据，等待批准</div>
+                <div class="act"><button class="secondary-button" type="button" title="原型示意">去审批</button></div>
+              </div>
+            </div>
+
+            <div class="grp">
+              <div class="grp-head"><strong><span class="dot-wait"></span>证据待核验</strong><span class="cnt">1</span><small>执行后回填的证据等核验</small></div>
+              <div class="mrow">
+                <span class="pill is-cyan">核验</span>
+                <div class="who"><strong>Sunrise Bagel Co.</strong><small>Mineola · 第 1 轮</small></div>
+                <div class="why">2 张执行后截图待核验（8/18 回填）</div>
+                <div class="act"><button class="secondary-button" type="button" title="原型示意">去核验</button></div>
+              </div>
+            </div>
+
+            <div class="grp">
+              <div class="grp-head"><strong><span class="dot-wait"></span>Ranking 复查到期</strong><span class="cnt">1</span><small>每周一查，逾期标红</small></div>
+              <div class="mrow">
+                <span class="pill is-cyan">排名</span>
+                <div class="who"><strong>Sakura Ramen Fort St.</strong><small>Flushing · 第 2 轮</small></div>
+                <div class="why">上次 8/11 · 已 <b>8 天</b> · 周期 7 天已逾期</div>
+                <div class="act"><button class="primary-button" data-go="oldstore" type="button">重跑 ranking ›</button></div>
+              </div>
+            </div>
+
+            <div class="grp is-calm">
+              <div class="grp-head"><strong><span class="dot-calm"></span>周期内无待办</strong><span class="cnt">3</span><small>下次复查 9/2</small></div>
+              <div class="mrow">
+                <span class="pill is-quiet">执行</span>
+                <div class="who"><strong>Pinehurst Pizza</strong><small>Mineola · 第 2 轮</small></div>
+                <div class="why">本周 GBP Post 已发布 · 下次复查 9/2</div>
+                <div class="act"><span class="quiet-copy">—</span></div>
+              </div>
+              <div class="mrow">
+                <span class="pill is-quiet">核验</span>
+                <div class="who"><strong>Lan Zhou Noodle</strong><small>Flushing · 第 1 轮</small></div>
+                <div class="why">执行证据已核验 · 下次复查 9/2</div>
+                <div class="act"><span class="quiet-copy">—</span></div>
+              </div>
+              <div class="mrow">
+                <span class="pill is-quiet">排名</span>
+                <div class="who"><strong>El Sabor Latino</strong><small>Westbury · 第 4 轮</small></div>
+                <div class="why">排名平稳 · 下次复查 9/2</div>
+                <div class="act"><span class="quiet-copy">—</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ===== 屏② 生命周期页 · 新店 ===== -->
+          <div class="stage" data-state="newstore">
+            <div class="lc-head">
+              <div>
+                <button class="back" data-go="home" type="button">‹ 商户</button>
+                <span class="eyebrow">MERCHANT / green-fork</span>
+                <h1>Green Fork Salad Bar</h1>
+                <p class="sub">Mineola · 本地 SEO · <span class="round-badge">⟳ 首轮接入</span></p>
+              </div>
+              <div class="heading-actions"><button class="secondary-button" type="button" title="原型示意">商户设置</button></div>
+            </div>
+
+            <div class="rail rail-7" style="position:relative; padding-top:2px">
+              <span class="chip-note">4</span>
+              <div class="r-step is-done"><strong>问卷</strong><small>8/12 商家已填</small></div>
+              <div class="r-step is-done"><strong>关键词</strong><small>32 词 · 8/13</small></div>
+              <div class="r-step is-done"><strong>双审计</strong><small>GBP+站内 · 8/14</small></div>
+              <div class="r-step is-done"><strong>排名基线</strong><small>local+organic · 8/15</small></div>
+              <div class="r-step is-now"><strong>Plan</strong><small>待确认</small></div>
+              <div class="r-step is-off"><strong>执行</strong><small>审批后 · 人工</small></div>
+              <div class="r-step is-off"><strong>核验</strong><small>—</small></div>
+            </div>
+
+            <section class="cur-card" style="position:relative">
+              <span class="chip-note">5</span>
+              <span class="eyebrow">CURRENT STEP · PLAN</span>
+              <h3>优化 Plan 已生成 · 等你确认</h3>
+              <p class="desc">基于 8/14 双审计与 8/15 排名基线生成（查看完整报告 ›）。确认后按条目转为任务落库，逐条走审批。</p>
+              <ul class="plan-list">
+                <li><span class="n">P0</span><p>补全 GBP 服务区域：外送半径从 3 英里扩到 6 英里（审计：覆盖了 71% 的“near me”搜索区位）</p><span class="pill is-red">P0</span></li>
+                <li><span class="n">P0</span><p>官网菜单页补本地结构化数据（schema）与 NAP 一致性修正</p><span class="pill is-red">P0</span></li>
+                <li><span class="n">P1</span><p>新增 6 个类别词到 GBP services（来自关键词库 8/13 快照）</p><span class="pill is-amber">P1</span></li>
+              </ul>
+              <div class="cur-actions">
+                <button class="primary-button" data-confirm-plan="1" type="button">确认 Plan · 生成 3 个任务</button>
+                <button class="text-link" type="button" title="原型示意">查看完整报告</button>
+                <span class="done-note">✓ 已生成 3 个任务（见下方任务列表），逐条审批后进入执行</span>
+              </div>
+            </section>
+
+            <div class="embed">
+              <section class="data-panel" style="position:relative">
+                <span class="chip-note">6</span>
+                <div class="panel-heading">
+                  <div><span class="eyebrow">TASKS · 原样下沉</span><h2>任务</h2></div>
+                  <span class="result-count" id="gf-task-count">0</span>
+                </div>
+                <div class="task-empty" id="gf-empty">尚无任务 —— 确认上方 Plan 后按条目生成，每条任务携带执行定义、证据要求与审批（现有任务系统，零改动）。</div>
+                <div id="gf-tasks" style="display:none">
+                  <div class="task-row"><div><strong>补全 GBP 服务区域（6 英里）</strong><small>rev 1 · NEEDS_INPUT · 证据: BEFORE/AFTER</small></div><span class="pill is-amber">待补输入</span><button class="secondary-button" type="button" title="原型示意">打开 ›</button></div>
+                  <div class="task-row"><div><strong>菜单页结构化数据 + NAP 修正</strong><small>rev 1 · NEEDS_INPUT</small></div><span class="pill is-amber">待补输入</span><button class="secondary-button" type="button" title="原型示意">打开 ›</button></div>
+                  <div class="task-row"><div><strong>GBP services 新增 6 个类别词</strong><small>rev 1 · NEEDS_INPUT</small></div><span class="pill is-amber">待补输入</span><button class="secondary-button" type="button" title="原型示意">打开 ›</button></div>
+                </div>
+              </section>
+              <section class="data-panel">
+                <div class="panel-heading"><div><span class="eyebrow">EVIDENCE</span><h2>证据</h2></div><span class="result-count">2</span></div>
+                <div class="evidence-spine">
+                  <div class="is-verified"><span class="spine-node"></span><div><strong>接入问卷</strong><small>8/12 商家填写 · VERIFIED</small></div></div>
+                  <div class="is-verified"><span class="spine-node"></span><div><strong>双审计报告</strong><small>8/14 Agent 归档 · VERIFIED</small></div></div>
+                </div>
+                <p class="boundary">🛡 批准只记录授权，不触发执行；外部写入前必须持有授权。</p>
+              </section>
+            </div>
+          </div>
+
+          <!-- ===== 屏③ 生命周期页 · 老店稳态 ===== -->
+          <div class="stage" data-state="oldstore">
+            <div class="lc-head">
+              <div>
+                <button class="back" data-go="home" type="button">‹ 商户</button>
+                <span class="eyebrow">MERCHANT / sakura-ramen</span>
+                <h1>Sakura Ramen Fort St.</h1>
+                <p class="sub" style="position:relative; padding-right:30px"><span class="chip-note">8</span>Flushing · 本地 SEO · <span class="round-badge">⟳ 第 2 轮 · 8 月</span></p>
+              </div>
+              <div class="heading-actions"><button class="secondary-button" type="button" title="原型示意">↔ 与上期对比</button></div>
+            </div>
+
+            <div class="rail rail-5">
+              <div class="r-step is-done"><strong>双审计</strong><small>8/12 · 2 问题</small></div>
+              <div class="r-step is-done"><strong>排名复查</strong><small>8/15 · local +3</small></div>
+              <div class="r-step is-done"><strong>调整 Plan</strong><small>8/16 · 3 项</small></div>
+              <div class="r-step is-now"><strong>执行</strong><small>人工 2/3</small></div>
+              <div class="r-step is-off"><strong>核验</strong><small>待回填 1</small></div>
+            </div>
+
+            <div class="cmp">
+              <article><span>LOCAL 包内均值（32 词）</span><strong>12 → 9</strong><small class="up">▲ +3 位 · 较上期 8/11</small></article>
+              <article><span>ORGANIC 首页词占比</span><strong>4 / 32</strong><small class="flat">— 持平 · 较上期</small></article>
+              <article><span>新挖机会词</span><strong>2</strong><small class="up">已并入本轮调整 Plan</small></article>
+            </div>
+
+            <section class="data-panel">
+              <div class="panel-heading">
+                <div><span class="eyebrow">EXECUTE · 人工工单</span><h2>执行 · 3 项已授权</h2></div>
+                <span class="result-count">2 完成 · 1 待执行</span>
+              </div>
+              <div style="padding:14px 17px 6px; position:relative">
+                <span class="chip-note">7</span>
+                <p class="work-note">🛡 审批只记录授权，EXECUTE 自动化未开放——由人工按工单执行，逐条回填证据后核验。</p>
+                <ul class="work-list">
+                  <li class="is-done"><i></i><p>GBP 主类别修正为 Ramen shop<small>8/17 执行 · 证据已回填并核验</small></p><span class="pill is-teal">已核验</span><span></span></li>
+                  <li class="is-done"><i></i><p>GBP 服务区域扩展 5 英里<small>8/18 执行 · 截图已回填</small></p><span class="pill is-amber">待核验</span><span></span></li>
+                  <li class="is-now" id="work-pending"><i></i><p>本周 GBP Post 埋入「ramen near me」等 2 个新词<small>授权于 8/16 · 等待人工执行</small></p><span class="pill is-amber">待执行</span><button class="primary-button" data-complete-work="1" type="button">完成并回填证据</button></li>
+                </ul>
+              </div>
+            </section>
+
+            <div class="embed">
+              <section class="data-panel">
+                <div class="panel-heading"><div><span class="eyebrow">TASKS · 原样下沉</span><h2>任务</h2></div><span class="result-count">2</span></div>
+                <div class="task-row"><div><strong>GBP 主类别修正</strong><small>rev 1 · APPROVED · 8/16 授权</small></div><span class="pill is-teal">已批准</span><button class="secondary-button" type="button" title="原型示意">打开 ›</button></div>
+                <div class="task-row"><div><strong>本周 GBP Post 埋词</strong><small>rev 1 · READY_FOR_APPROVAL</small></div><span class="pill is-amber">待审批</span><button class="secondary-button" type="button" title="原型示意">审批 ›</button></div>
+              </section>
+              <section class="data-panel">
+                <div class="panel-heading"><div><span class="eyebrow">EVIDENCE</span><h2>证据</h2></div><span class="result-count">3</span></div>
+                <div class="evidence-spine">
+                  <div class="is-verified"><span class="spine-node"></span><div><strong>类别修正后截图</strong><small>8/17 回填 · VERIFIED</small></div></div>
+                  <div class="is-amber"><span class="spine-node"></span><div><strong>服务区域截图</strong><small>8/18 回填 · 待核验</small></div></div>
+                  <div><span class="spine-node"></span><div><strong>Post 发布截图</strong><small>待执行后回填</small></div></div>
+                </div>
+                <p class="boundary">🛡 批准只记录授权，不触发执行。</p>
+              </section>
+            </div>
+          </div>
+
+          <!-- ===== ＋新店 弹层 ===== -->
+          <div class="modal-layer" data-modal="1">
+            <div class="modal" id="newstore-modal">
+              <header><strong>新店接入</strong><button data-close-modal="1" type="button">✕</button></header>
+              <div class="modal-body">
+                <div class="gen-form">
+                  <label>店名<input placeholder="例如：Only Bear Chicken &amp; Boba" type="text"></label>
+                  <label>官网（可选，用于生成更准的问卷）<input placeholder="https://" type="text"></label>
+                  <button class="primary-button" data-gen="1" style="width:100%" type="button">生成接入问卷 →</button>
+                  <p class="hint">基于店名/官网抓取商家信息，生成定制问卷（菜品结构、服务方式、服务区域…）。问卷通过外链发给商家填写，只读采集，不涉及任何外部写入。</p>
+                </div>
+                <div class="gen-done">
+                  <p style="margin:0 0 4px; color:var(--teal); font-size:11px">✓ 问卷已生成（12 题 · 基于官网菜单页定制）</p>
+                  <div class="link"><span>q.cnxup.io/s/8f31-eb2a</span><button class="text-link" type="button" title="原型示意">复制</button></div>
+                  <button class="primary-button" data-close-modal="1" style="width:100%; margin-top:12px" type="button">发放给商家</button>
+                  <p class="hint">发放后该商户进入首页「等待商家回复」组，按发出天数排序并可重发；商家提交后自动触发关键词生成。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="host-block">
+    <h2>8 处图例（金色圆点对应画面位置）</h2>
+    <div class="legend">
+      <article><span class="n">1</span><div><strong>首页 = 异常清单，不是流水线</strong><p>按“需要动的原因”分组，卡得最久的置顶、标天数；首屏一秒回答“三十家今天该动哪家”。常驻全量流水线被 Council 判为视觉撒谎。</p></div></article>
+      <article><span class="n">2</span><div><strong>等待商家是一等公民</strong><p>问卷在系统外由商家填——“第 5 天未回 + 重发”是首页最重要的状态。这是互评轮抓出的第二用户面盲点。</p></div></article>
+      <article><span class="n">3</span><div><strong>＋ 新店是唯一新建入口</strong><p>店名/官网 → 生成定制问卷 → 外链发放。新店从这里自然进入同一条生命周期。</p></div></article>
+      <article><span class="n">4</span><div><strong>阶段轨 = 商户的属性</strong><p>问卷→关键词→双审计→排名基线→Plan→执行→核验；未到段置灰、当前段高亮。界面上没有 agent 词汇，按钮叫“确认 Plan”。</p></div></article>
+      <article><span class="n">5</span><div><strong>下一步只有一个</strong><p>当前阶段卡 = 最新产物摘要 + 单个主按钮，背后才映射到既有五种 SOP。点“确认 Plan”试试，任务会真的生成。</p></div></article>
+      <article><span class="n">6</span><div><strong>任务/证据原样下沉</strong><p>现有任务系统、证据脊柱、审批门嵌入商户页下一层，一行不改——红线可见性不降级。</p></div></article>
+      <article><span class="n">7</span><div><strong>执行 = 人工工单</strong><p>EXECUTE 关闭期，审批授权后由人工按工单执行、逐条“完成并回填证据”走既有待核验流。这是操作员当下的主职。</p></div></article>
+      <article><span class="n">8</span><div><strong>老店 = 同一块屏的稳态</strong><p>同一条轨 + 轮次徽标 + 与上期对比（只放数字，不做图表）。没有“新店变老店”的身份切换，阶段可回退重跑。</p></div></article>
+    </div>
+  </section>
+
+  <section class="host-block">
+    <div class="scope-note"><b>落地顺序（Council 裁决）：</b>① merchant.stage 字段 + 生命周期页（纯读 + 按钮触发现有 SOP）→ ② 首页切异常清单 → ③ 问卷 MVP（生成 → 外链发放 → sent/filled/overdue + 重发）→ ④ Plan 渲染成清单、逐条“转任务”（复用现有建任务）→ ⑤ 人工执行工单 + 证据回填闭环 → ⑥ ranking 快照表（local/organic/词/位次/日期，不做图表）→ ⑦ 老店轮次套同一骨架。①②④⑤几乎零后端；红线（审批只记录授权、EXECUTE 关闭）全程不动。<br><b>第一件事：</b>拿这两屏给真实操作员走查，只问一句：“这三十家今天该动哪家？下一步点哪里？”——30 秒答得出来再动代码。</div>
+  </section>
+
+</div>
+
+<script>
+  function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+  function go(name) {
+    $all(".stage").forEach(function (el) { el.classList.toggle("is-on", el.dataset.state === name); });
+    $all(".state-tabs button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.go === name)); });
+    var activeNav = name === "home" ? "merchants" : "merchants";
+    $all(".side nav a").forEach(function (a) { a.classList.toggle("active", a.dataset.nav === activeNav); });
+    var frameBar = document.querySelector(".frame-bar span");
+    if (frameBar) frameBar.textContent = name === "home"
+      ? "localhost:5173/seo-ops/merchants"
+      : "localhost:5173/seo-ops/merchants/" + (name === "newstore" ? "green-fork" : "sakura-ramen");
+  }
+
+  document.addEventListener("click", function (event) {
+    var el;
+    if ((el = event.target.closest("[data-go]"))) { go(el.dataset.go); return; }
+    if ((el = event.target.closest("[data-open-modal]"))) {
+      document.querySelector('[data-modal]').classList.add("is-open");
+      return;
+    }
+    if ((el = event.target.closest("[data-close-modal]"))) {
+      var layer = el.closest(".modal-layer");
+      layer.classList.remove("is-open");
+      layer.querySelector(".modal").classList.remove("is-gen");
+      return;
+    }
+    if ((el = event.target.closest("[data-gen]"))) {
+      el.closest(".modal").classList.add("is-gen");
+      return;
+    }
+    if ((el = event.target.closest("[data-confirm-plan]"))) {
+      var card = el.closest(".cur-card");
+      card.classList.add("is-confirmed");
+      document.getElementById("gf-empty").style.display = "none";
+      var tasks = document.getElementById("gf-tasks");
+      tasks.style.display = "block";
+      tasks.classList.add("fresh");
+      document.getElementById("gf-task-count").textContent = "3";
+      return;
+    }
+    if ((el = event.target.closest("[data-complete-work]"))) {
+      var li = document.getElementById("work-pending");
+      li.classList.remove("is-now");
+      li.classList.add("is-done");
+      li.querySelector("p").innerHTML = "本周 GBP Post 埋入「ramen near me」等 2 个新词<small>刚刚执行 · 证据回填后进入核验</small>";
+      li.querySelectorAll(".pill")[0].outerHTML = '<span class="pill is-amber">待核验</span>';
+      el.outerHTML = '<button class="secondary-button" type="button" title="原型示意">回填截图 ›</button>';
+      return;
+    }
+  });
+</script>
+</body>
+</html>

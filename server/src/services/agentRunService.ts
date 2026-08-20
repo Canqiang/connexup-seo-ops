@@ -3,36 +3,36 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db/connection.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
-import { requestFingerprint, sha256Hash } from "../domain/hashing.js";
-import { canAppendEvidence } from "../domain/stateMachine.js";
+import { requestFingerprint, sha256Hash, sha256HashBytes } from "../domain/hashing.js";
 import {
-  AGENT_RUN_TYPES,
+  AGENT_RUN_STAGES,
   CORE_RUN_TERMINAL_STATUSES,
-  EVIDENCE_TYPE_BY_RUN_TYPE,
+  RUN_TYPE_BY_STAGE,
+  type AgentRunStage,
   type AgentRunStatus,
-  type AgentRunType,
 } from "../domain/enums.js";
 import { getMerchant } from "../repos/merchantRepo.js";
-import { getLocation } from "../repos/locationRepo.js";
-import { getTask } from "../repos/taskRepo.js";
+import { getLocation, listLocationsByMerchant } from "../repos/locationRepo.js";
+import { latestQuestionnaireByMerchant } from "../repos/questionnaireRepo.js";
 import {
+  countAgentRunsByMerchantSince,
   findAgentRunByIdempotencyKey,
   getAgentRun,
+  getDeliverable,
   insertAgentRun,
-  listAgentRunsByTask,
+  listAgentRunsByMerchant,
+  listDeliverablesByRun,
   transitionAgentRun,
   updateAgentRun,
+  upsertDeliverable,
 } from "../repos/agentRunRepo.js";
-import type { AgentRun } from "../repos/agentRunTypes.js";
-import type { EvidenceRefRecord, Task } from "../repos/taskTypes.js";
+import type { AgentRun, RunDeliverable } from "../repos/agentRunTypes.js";
 import { requireIdempotencyKey, resolveIdempotentCreate } from "./merchantService.js";
-import { buildAgentRunMessage } from "./agentRunPrompt.js";
 import {
-  ACTOR_ID,
-  buildEvent,
-  mutateTaskRetry,
-  reevaluate,
-} from "./taskService.js";
+  buildStageRunMessage,
+  excerptForPrompt,
+  priorStagesFor,
+} from "./agentRunPrompt.js";
 import { paginate, type PageResult } from "./queryService.js";
 import type { CoreAgentRunDetail, CoreAiClient } from "./coreAiClient.js";
 
@@ -45,58 +45,86 @@ export interface AgentRunDeps {
   client: CoreAiClient;
   /** core-ai agent id (UAT unified local SEO agent). */
   agentId: string;
-  /** Directory where run outputs are persisted as artifacts. */
+  /** Directory where deliverable files are persisted. */
   artifactsDir: string;
+  /** Per-merchant daily trigger cap — protects the core-ai token quota
+   * against UI retry loops. */
+  dailyRunLimit?: number;
   log?: { warn(message: string): void };
 }
 
-export interface TriggerAgentRunInput {
-  run_type: string;
+export interface TriggerStageRunInput {
+  stage: string;
+  location_id?: string | null;
   goal?: string | null;
   idempotency_key: string;
 }
 
-/** Sync the task-side link (and append the TRIGGERED event) for a run. */
-function taskWithTriggeredLink(task: Task, run: AgentRun): Task {
-  const now = nowIso();
-  const linked = task.agentRunLinks.some((l) => l.agentRunId === run.id);
-  const updated: Task = {
-    ...task,
-    agentRunLinks: linked
-      ? task.agentRunLinks.map((l) =>
-          l.agentRunId === run.id ? { ...l, status: "RUNNING" } : l,
-        )
-      : [
-          ...task.agentRunLinks,
-          {
-            agentRunId: run.id,
-            relationship: run.runType,
-            status: "RUNNING",
-            linkedBy: ACTOR_ID,
-            linkedAt: now,
-          },
-        ],
-    stateVersion: task.stateVersion + 1,
-    updatedAt: now,
-  };
-  updated.events = [
-    ...task.events,
-    buildEvent("AGENT_RUN_TRIGGERED", updated.taskRevision, updated.stateVersion, {
-      referenceId: run.id,
-    }),
-  ];
-  return updated;
+const DEFAULT_DAILY_RUN_LIMIT = 20;
+
+/** 上游交付物内容可内联进 prompt 的类型（附件可能是图片等二进制）。 */
+function isTextDeliverable(d: RunDeliverable): boolean {
+  if (d.contentType) {
+    return (
+      d.contentType.startsWith("text/") ||
+      d.contentType.includes("csv") ||
+      d.contentType.includes("markdown") ||
+      d.contentType.includes("json")
+    );
+  }
+  return /\.(md|csv|txt|json)$/i.test(d.fileName);
 }
 
-export async function triggerAgentRun(
+/** 阶段串联：上游阶段最近一次 COMPLETED 运行的交付物内容（附件优先，正文兜底），
+ * 截断后内联进下游 prompt。 */
+export function gatherPriorExcerpts(
+  db: Db,
+  merchantId: string,
+  stage: AgentRunStage,
+): Partial<Record<AgentRunStage, string>> {
+  const excerpts: Partial<Record<AgentRunStage, string>> = {};
+  for (const priorStage of priorStagesFor(stage)) {
+    const run = listAgentRunsByMerchant(db, merchantId, priorStage).find(
+      (r) => r.status === "COMPLETED",
+    );
+    if (!run) continue;
+    const deliverables = listDeliverablesByRun(db, run.id);
+    const candidate =
+      deliverables.find(
+        (d) => d.kind !== "SUMMARY" && d.localPath !== null && isTextDeliverable(d),
+      ) ?? deliverables.find((d) => d.kind === "SUMMARY" && d.localPath !== null);
+    let content: string | null = null;
+    if (candidate?.localPath) {
+      try {
+        content = fs.readFileSync(candidate.localPath, "utf8");
+      } catch {
+        content = null;
+      }
+    }
+    if (content === null) content = run.output;
+    if (content && content.trim() !== "") {
+      excerpts[priorStage] = excerptForPrompt(content);
+    }
+  }
+  return excerpts;
+}
+
+function startOfUtcDayIso(): string {
+  const now = new Date();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  ).toISOString();
+}
+
+export async function triggerStageRun(
   deps: AgentRunDeps,
-  taskId: string,
-  input: TriggerAgentRunInput,
+  merchantId: string,
+  input: TriggerStageRunInput,
 ): Promise<{ run: AgentRun; replayed: boolean }> {
   const key = requireIdempotencyKey(input.idempotency_key, "idempotency_key");
-  const runType = input.run_type as AgentRunType;
-  if (!AGENT_RUN_TYPES.includes(runType)) {
-    throw badRequest(`run_type must be one of ${AGENT_RUN_TYPES.join("/")}`);
+  const stage = input.stage as AgentRunStage;
+  if (!AGENT_RUN_STAGES.includes(stage)) {
+    throw badRequest(`stage must be one of ${AGENT_RUN_STAGES.join("/")}`);
   }
   const rawGoal =
     input.goal === undefined || input.goal === null ? "" : input.goal.trim();
@@ -106,28 +134,59 @@ export async function triggerAgentRun(
   const goal = rawGoal === "" ? null : rawGoal;
 
   const fingerprint = requestFingerprint({
-    task_id: taskId,
-    run_type: runType,
+    merchant_id: merchantId,
+    stage,
+    location_id: input.location_id ?? null,
     goal,
   });
-
   const replay = resolveIdempotentCreate(
     findAgentRunByIdempotencyKey(deps.db, key),
     fingerprint,
   );
   if (replay) return { run: replay, replayed: true };
 
-  const task = getTask(deps.db, taskId);
-  if (!task) throw notFound(`task ${taskId} not found`);
-  const merchant = getMerchant(deps.db, task.merchantId);
-  const location = task.locationId ? getLocation(deps.db, task.locationId) : null;
-  const message = buildAgentRunMessage({ runType, task, merchant, location, goal });
+  const merchant = getMerchant(deps.db, merchantId);
+  if (!merchant) throw notFound(`merchant ${merchantId} not found`);
+
+  let location = null;
+  if (input.location_id) {
+    location = getLocation(deps.db, input.location_id);
+    if (!location || location.merchantId !== merchantId) {
+      throw badRequest(`location ${input.location_id} does not belong to merchant ${merchantId}`);
+    }
+  } else {
+    // 单地点商户是常态：不传 location 就用第一个（多地点时提示显式选择）。
+    const locations = listLocationsByMerchant(deps.db, merchantId);
+    location = locations[0] ?? null;
+  }
+
+  const limit = deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT;
+  if (countAgentRunsByMerchantSince(deps.db, merchantId, startOfUtcDayIso()) >= limit) {
+    throw new ApiError(
+      429,
+      `merchant ${merchantId} reached the daily run limit (${limit})`,
+      "RUN_LIMIT_REACHED",
+    );
+  }
+
+  const questionnaire = latestQuestionnaireByMerchant(deps.db, merchantId);
+  const message = buildStageRunMessage({
+    stage,
+    merchant,
+    location,
+    questionnaire,
+    priorExcerpts: gatherPriorExcerpts(deps.db, merchantId, stage),
+    goal,
+  });
 
   const now = nowIso();
   const run: AgentRun = {
     id: crypto.randomUUID(),
-    taskId,
-    runType,
+    merchantId,
+    locationId: location?.id ?? null,
+    stage,
+    taskId: null,
+    runType: RUN_TYPE_BY_STAGE[stage],
     goal,
     status: "TRIGGERING",
     coreRunId: null,
@@ -137,17 +196,13 @@ export async function triggerAgentRun(
     error: null,
     errorCode: null,
     tokenUsage: {},
-    artifactPath: null,
-    artifactSha256: null,
-    evidenceId: null,
-    evidenceSkippedReason: null,
-    triggeredBy: ACTOR_ID,
+    triggeredBy: "local-dev",
     triggeredAt: now,
     lastPolledAt: null,
     completedAt: null,
     creationIdempotencyKey: key,
     requestFingerprint: fingerprint,
-    createdBy: ACTOR_ID,
+    createdBy: "local-dev",
     createdAt: now,
     updatedAt: now,
   };
@@ -182,35 +237,102 @@ export async function triggerAgentRun(
     updateAgentRun(deps.db, run);
     throw new ApiError(502, `core-ai trigger failed: ${detail}`, "CORE_AI_TRIGGER_FAILED");
   }
-
-  // Best-effort link onto the task; a failure here must not fail the 202 —
-  // applyTerminalTransition re-creates the link if it is still missing.
-  try {
-    mutateTaskRetry(
-      deps.db,
-      taskId,
-      `agent-run:${run.id}:link`,
-      fingerprint,
-      (t) => taskWithTriggeredLink(t, run),
-    );
-  } catch (err) {
-    deps.log?.warn(
-      `agent run ${run.id}: failed to link onto task ${taskId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
   return { run, replayed: false };
 }
 
-/** Atomic artifact write: tmp file + rename, idempotent on identical bytes. */
-function writeArtifact(artifactsDir: string, runId: string, content: string): string {
-  fs.mkdirSync(artifactsDir, { recursive: true });
-  const finalPath = path.join(artifactsDir, `${runId}.md`);
-  const tmpPath = `${finalPath}.tmp`;
-  fs.writeFileSync(tmpPath, content, "utf8");
-  fs.renameSync(tmpPath, finalPath);
-  return finalPath;
+/** Atomic file write: tmp + rename, idempotent on identical bytes. */
+function writeFileAtomic(filePath: string, bytes: Uint8Array | string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp`;
+  if (typeof bytes === "string") fs.writeFileSync(tmpPath, bytes, "utf8");
+  else fs.writeFileSync(tmpPath, bytes);
+  fs.renameSync(tmpPath, filePath);
+}
+
+/** Filesystem-safe deliverable file name: <runId>-<tag>-<fileName>. */
+function deliverableFileName(runId: string, tag: string, fileName: string): string {
+  const safe = fileName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "file";
+  return `${runId}-${tag}-${safe}`;
+}
+
+/** 终态第一步：正文落盘 + 附件下载，全部落成 deliverable 行。每个 id 由
+ * (run, 来源) 决定性生成，upsert 让崩溃重放天然幂等；单个附件下载失败只记
+ * download_error、保留 remote_url，绝不失败整个运行。 */
+export async function recordDeliverables(
+  deps: AgentRunDeps,
+  run: AgentRun,
+  core: CoreAgentRunDetail,
+): Promise<RunDeliverable[]> {
+  const saved: RunDeliverable[] = [];
+  const stamp = core.completed_at ?? nowIso();
+
+  const output = core.output ?? null;
+  if (core.status === "COMPLETED" && output !== null && output.trim() !== "") {
+    const filePath = path.join(deps.artifactsDir, `${run.id}.md`);
+    writeFileAtomic(filePath, output);
+    saved.push(
+      upsertDeliverable(deps.db, {
+        id: `${run.id}-summary`,
+        runId: run.id,
+        kind: "SUMMARY",
+        fileId: null,
+        fileName: `${run.id}.md`,
+        contentType: "text/markdown",
+        size: Buffer.byteLength(output, "utf8"),
+        title: null,
+        description: null,
+        sha256: sha256Hash(output),
+        localPath: filePath,
+        remoteUrl: null,
+        downloadedAt: stamp,
+        downloadError: null,
+        createdAt: stamp,
+      }),
+    );
+  }
+
+  for (const [index, artifact] of (core.artifacts ?? []).entries()) {
+    let localPath: string | null = null;
+    let sha: string | null = null;
+    let size: number | null = artifact.size ?? null;
+    let downloadError: string | null = null;
+    try {
+      const bytes = await deps.client.downloadArtifact(artifact.url);
+      const filePath = path.join(
+        deps.artifactsDir,
+        deliverableFileName(run.id, String(index), artifact.file_name),
+      );
+      writeFileAtomic(filePath, bytes);
+      localPath = filePath;
+      sha = sha256HashBytes(bytes);
+      size = bytes.byteLength;
+    } catch (err) {
+      downloadError = err instanceof Error ? err.message : "download failed";
+      deps.log?.warn(
+        `run ${run.id}: attachment ${artifact.file_name} download failed, keeping remote ref: ${downloadError}`,
+      );
+    }
+    saved.push(
+      upsertDeliverable(deps.db, {
+        id: `${run.id}-att-${artifact.file_id}`,
+        runId: run.id,
+        kind: "ATTACHMENT",
+        fileId: artifact.file_id,
+        fileName: artifact.file_name,
+        contentType: artifact.content_type ?? null,
+        size,
+        title: artifact.title ?? null,
+        description: artifact.description ?? null,
+        sha256: sha,
+        localPath,
+        remoteUrl: artifact.url,
+        downloadedAt: localPath ? nowIso() : null,
+        downloadError,
+        createdAt: stamp,
+      }),
+    );
+  }
+  return saved;
 }
 
 function isCoreTerminal(status: string): boolean {
@@ -223,130 +345,31 @@ function mapCoreStatus(coreStatus: string): AgentRunStatus {
   return "FAILED"; // FAILED / TIMEOUT / SKIPPED
 }
 
-/** Record a terminal core-ai outcome for a RUNNING local run.
- *
- * Crash-safe ordering — each step is independently idempotent:
- *   (a) artifact write (same bytes) -> (b) task mutation (replays via
- *   mutationKeys) -> (c) run-row conditional transition LAST, so a crash
- *   before (c) leaves the row RUNNING and the next poll replays (a)+(b). */
+/** 终态第二步：条件翻转 run 行（单写者守卫）。调用顺序是崩溃安全的关键——
+ * recordDeliverables 先行；这里失败或崩溃时行仍 RUNNING，下轮 poll 整体重放。 */
 export function applyTerminalTransition(
   deps: AgentRunDeps,
   run: AgentRun,
   core: CoreAgentRunDetail,
 ): AgentRun {
   if (!isCoreTerminal(core.status)) return run;
-  if (run.status !== "RUNNING") return run;
+  if (run.status !== "RUNNING" && run.status !== "TRIGGERING") return run;
 
-  const mapped = mapCoreStatus(core.status);
-  const output = core.output ?? null;
-  const changes: Partial<AgentRun> = {
-    status: mapped,
-    coreStatus: core.status,
-    output,
-    error: core.error ?? null,
-    tokenUsage: core.token_usage ?? {},
-    completedAt: core.completed_at ?? nowIso(),
-    lastPolledAt: nowIso(),
-  };
-
-  // (a) artifact — only for a completed run with non-empty output.
-  let sha: string | null = null;
-  if (mapped === "COMPLETED" && output !== null && output.trim() !== "") {
-    sha = sha256Hash(output);
-    changes.artifactPath = writeArtifact(deps.artifactsDir, run.id, output);
-    changes.artifactSha256 = sha;
-  }
-
-  // (b) task mutation — evidence append + link sync + event. The fingerprint
-  // excludes the output so a replay after a crash matches deterministically.
-  try {
-    const result = mutateTaskRetry(
-      deps.db,
-      run.taskId,
-      `agent-run:${run.id}:complete`,
-      requestFingerprint({ core_run_id: core.id, core_status: core.status }),
-      (task) => {
-        const now = nowIso();
-        let evidenceRefs = task.evidenceRefs;
-        if (mapped === "COMPLETED" && sha !== null && canAppendEvidence(task.status)) {
-          const type = EVIDENCE_TYPE_BY_RUN_TYPE[run.runType];
-          const evidence: EvidenceRefRecord = {
-            id: crypto.randomUUID(),
-            taskRevision: task.taskRevision,
-            type,
-            artifactId: run.id,
-            sha256: sha,
-            capturedAt: core.completed_at ?? now,
-            verificationStatus: "UNVERIFIED",
-            requirementKey: type,
-            createdBy: ACTOR_ID,
-            createdAt: now,
-          };
-          evidenceRefs = [...task.evidenceRefs, evidence];
-        }
-        const linked = task.agentRunLinks.some((l) => l.agentRunId === run.id);
-        const updated: Task = {
-          ...task,
-          evidenceRefs,
-          agentRunLinks: linked
-            ? task.agentRunLinks.map((l) =>
-                l.agentRunId === run.id ? { ...l, status: core.status } : l,
-              )
-            : [
-                ...task.agentRunLinks,
-                {
-                  agentRunId: run.id,
-                  relationship: run.runType,
-                  status: core.status,
-                  linkedBy: ACTOR_ID,
-                  linkedAt: now,
-                },
-              ],
-          stateVersion: task.stateVersion + 1,
-          updatedAt: now,
-        };
-        const derived = reevaluate(deps.db, updated);
-        updated.status = derived.status;
-        updated.evidenceState = derived.evidenceState;
-        const eventType =
-          mapped === "COMPLETED" ? "AGENT_RUN_COMPLETED"
-          : mapped === "CANCELLED" ? "AGENT_RUN_CANCELLED"
-          : "AGENT_RUN_FAILED";
-        updated.events = [
-          ...task.events,
-          buildEvent(eventType, updated.taskRevision, updated.stateVersion, {
-            fromStatus: task.status,
-            toStatus: derived.status,
-            referenceId: run.id,
-          }),
-        ];
-        return updated;
-      },
-    );
-    const appended =
-      result.task.evidenceRefs.find((e) => e.artifactId === run.id) ?? null;
-    changes.evidenceId = appended ? appended.id : null;
-    changes.evidenceSkippedReason =
-      appended === null && mapped === "COMPLETED"
-        ? sha !== null
-          ? "task status does not accept evidence (append skipped)"
-          : "agent produced no output"
-        : null;
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) {
-      changes.evidenceSkippedReason = "task no longer exists";
-      deps.log?.warn(
-        `agent run ${run.id}: task ${run.taskId} disappeared before completion`,
-      );
-    } else {
-      throw err;
-    }
-  }
-
-  // (c) conditional transition LAST — single-winner guard.
   const final =
-    transitionAgentRun(deps.db, run.id, changes, ["RUNNING"]) ??
-    getAgentRun(deps.db, run.id);
+    transitionAgentRun(
+      deps.db,
+      run.id,
+      {
+        status: mapCoreStatus(core.status),
+        coreStatus: core.status,
+        output: core.output ?? null,
+        error: core.error ?? null,
+        tokenUsage: core.token_usage ?? {},
+        completedAt: core.completed_at ?? nowIso(),
+        lastPolledAt: nowIso(),
+      },
+      ["RUNNING", "TRIGGERING"],
+    ) ?? getAgentRun(deps.db, run.id);
   return final ?? run;
 }
 
@@ -361,7 +384,7 @@ export function syntheticCancelledRun(run: AgentRun): CoreAgentRunDetail {
   };
 }
 
-export async function cancelAgentRun(
+export async function cancelStageRun(
   deps: AgentRunDeps,
   id: string,
 ): Promise<AgentRun> {
@@ -397,16 +420,83 @@ export async function cancelAgentRun(
     // treat it as cancelled rather than leaving the row dangling.
     core = syntheticCancelledRun(run);
   }
+  await recordDeliverables(deps, run, core);
   return applyTerminalTransition(deps, run, core);
 }
 
-export function listAgentRuns(
+export interface ManualDeliverableInput {
+  file_name: string;
+  content_type?: string | null;
+  /** Base64-encoded bytes (JSON transport keeps the route dependency-free). */
+  content_base64: string;
+}
+
+/** 兜底：agent 只回正文不回附件时，运营手工上传交付物解锁阶段。 */
+export function addManualDeliverable(
+  deps: Pick<AgentRunDeps, "db" | "artifactsDir">,
+  runId: string,
+  input: ManualDeliverableInput,
+): RunDeliverable {
+  const run = getAgentRun(deps.db, runId);
+  if (!run) throw notFound(`agent run ${runId} not found`);
+  if (run.status !== "COMPLETED") {
+    throw conflict(
+      `agent run ${runId} is not COMPLETED (status ${run.status})`,
+      "RUN_NOT_COMPLETED",
+    );
+  }
+  const fileName = input.file_name.trim();
+  if (fileName === "") throw badRequest("file_name must not be empty");
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(input.content_base64, "base64");
+  } catch {
+    throw badRequest("content_base64 must be valid base64");
+  }
+  if (bytes.byteLength === 0) throw badRequest("content must not be empty");
+  if (bytes.byteLength > 10 * 1024 * 1024) {
+    throw badRequest("manual deliverable must be at most 10MB");
+  }
+
+  const id = crypto.randomUUID();
+  const filePath = path.join(
+    deps.artifactsDir,
+    deliverableFileName(runId, `manual-${id.slice(0, 8)}`, fileName),
+  );
+  writeFileAtomic(filePath, bytes);
+  const now = nowIso();
+  return upsertDeliverable(deps.db, {
+    id,
+    runId,
+    kind: "MANUAL",
+    fileId: null,
+    fileName,
+    contentType: input.content_type ?? null,
+    size: bytes.byteLength,
+    title: null,
+    description: null,
+    sha256: sha256HashBytes(bytes),
+    localPath: filePath,
+    remoteUrl: null,
+    downloadedAt: now,
+    downloadError: null,
+    createdAt: now,
+  });
+}
+
+export function listStageRuns(
   db: Db,
-  taskId: string,
-  params: { offset: number; limit: number },
+  merchantId: string,
+  params: { stage?: string; offset: number; limit: number },
 ): PageResult<AgentRun> {
-  if (!getTask(db, taskId)) throw notFound(`task ${taskId} not found`);
-  return paginate(listAgentRunsByTask(db, taskId), params.offset, params.limit);
+  if (!getMerchant(db, merchantId)) {
+    throw notFound(`merchant ${merchantId} not found`);
+  }
+  return paginate(
+    listAgentRunsByMerchant(db, merchantId, params.stage),
+    params.offset,
+    params.limit,
+  );
 }
 
 export function getAgentRunOr404(db: Db, id: string): AgentRun {
@@ -415,9 +505,50 @@ export function getAgentRunOr404(db: Db, id: string): AgentRun {
   return run;
 }
 
-export interface AgentRunWire {
+export function getDeliverableOr404(db: Db, id: string): RunDeliverable {
+  const deliverable = getDeliverable(db, id);
+  if (!deliverable) throw notFound(`deliverable ${id} not found`);
+  return deliverable;
+}
+
+export interface DeliverableWire {
   id: string;
-  task_id: string;
+  kind: string;
+  file_name: string;
+  content_type: string | null;
+  size: number | null;
+  title: string | null;
+  description: string | null;
+  sha256: string | null;
+  downloaded: boolean;
+  download_error?: string;
+  /** Local serving route — the remote core-ai URL is deliberately not exposed. */
+  download_path: string;
+  created_at: string;
+}
+
+export function deliverableView(d: RunDeliverable): DeliverableWire {
+  return {
+    id: d.id,
+    kind: d.kind,
+    file_name: d.fileName,
+    content_type: d.contentType,
+    size: d.size,
+    title: d.title,
+    description: d.description,
+    sha256: d.sha256,
+    downloaded: d.localPath !== null,
+    ...(d.downloadError ? { download_error: d.downloadError } : {}),
+    download_path: `/api/seo-ops/deliverables/${d.id}/download`,
+    created_at: d.createdAt,
+  };
+}
+
+export interface StageRunWire {
+  id: string;
+  merchant_id: string;
+  location_id: string | null;
+  stage: AgentRunStage;
   run_type: string;
   goal: string | null;
   status: AgentRunStatus;
@@ -429,10 +560,7 @@ export interface AgentRunWire {
   error?: string;
   error_code?: string;
   token_usage: Record<string, number>;
-  artifact_path?: string;
-  artifact_sha256?: string;
-  evidence_id?: string;
-  evidence_skipped_reason?: string;
+  deliverables: DeliverableWire[];
   triggered_by: string;
   triggered_at: string;
   last_polled_at?: string;
@@ -442,11 +570,12 @@ export interface AgentRunWire {
 }
 
 /** snake_case wire view; lists get a 2000-char output preview, detail gets
- * the full output. */
-export function agentRunView(
+ * the full output. Deliverables always ride along — they are the product. */
+export function stageRunView(
   run: AgentRun,
+  deliverables: RunDeliverable[],
   opts: { includeFullOutput?: boolean } = {},
-): AgentRunWire {
+): StageRunWire {
   const preview =
     run.output === null
       ? null
@@ -455,7 +584,9 @@ export function agentRunView(
         : run.output;
   return {
     id: run.id,
-    task_id: run.taskId,
+    merchant_id: run.merchantId,
+    location_id: run.locationId,
+    stage: run.stage,
     run_type: run.runType,
     goal: run.goal,
     status: run.status,
@@ -468,12 +599,7 @@ export function agentRunView(
     ...(run.error ? { error: run.error } : {}),
     ...(run.errorCode ? { error_code: run.errorCode } : {}),
     token_usage: run.tokenUsage,
-    ...(run.artifactPath ? { artifact_path: run.artifactPath } : {}),
-    ...(run.artifactSha256 ? { artifact_sha256: run.artifactSha256 } : {}),
-    ...(run.evidenceId ? { evidence_id: run.evidenceId } : {}),
-    ...(run.evidenceSkippedReason
-      ? { evidence_skipped_reason: run.evidenceSkippedReason }
-      : {}),
+    deliverables: deliverables.map(deliverableView),
     triggered_by: run.triggeredBy,
     triggered_at: run.triggeredAt,
     ...(run.lastPolledAt ? { last_polled_at: run.lastPolledAt } : {}),

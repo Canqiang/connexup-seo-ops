@@ -1,11 +1,23 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import fsPromises from "node:fs/promises";
 import type { AppContext } from "../index.js";
 import { ApiError } from "../errors.js";
 import {
   createLocation,
   createMerchant,
 } from "../services/merchantService.js";
+import {
+  createQuestionnaire,
+  getQuestionnaire,
+  sendQuestionnaire,
+  submitQuestionnaire,
+} from "../services/questionnaireService.js";
+import { deriveLifecycleForDb } from "../services/lifecycleService.js";
+import {
+  deriveRankingOverview,
+  loadRankingSnapshots,
+} from "../services/rankingService.js";
 import {
   ACTOR_ID,
   appendEvidence,
@@ -24,20 +36,28 @@ import {
   taskEvents,
 } from "../services/queryService.js";
 import {
-  agentRunView,
-  cancelAgentRun,
+  addManualDeliverable,
+  cancelStageRun,
+  deliverableView,
   getAgentRunOr404,
-  listAgentRuns,
-  triggerAgentRun,
+  getDeliverableOr404,
+  listStageRuns,
+  stageRunView,
+  triggerStageRun,
   type AgentRunDeps,
 } from "../services/agentRunService.js";
+import {
+  listDeliverablesByRun,
+  listDeliverablesByRunIds,
+} from "../repos/agentRunRepo.js";
 import { getMerchant } from "../repos/merchantRepo.js";
+import { getQuestionnaireByShareSlug } from "../repos/questionnaireRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import { getTask } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
-import { locationView, merchantView, taskView } from "../views/mappers.js";
+import { locationView, merchantView, taskView, questionnaireView } from "../views/mappers.js";
 import {
-  AGENT_RUN_TYPES,
+  AGENT_RUN_STAGES,
   EVIDENCE_VERIFICATIONS,
   LOCATION_READINESSES,
 } from "../domain/enums.js";
@@ -119,11 +139,34 @@ const linkConversationSchema = z.object({
   idempotency_key: z.string(),
 });
 
-const triggerAgentRunSchema = z.object({
-  run_type: z.enum(AGENT_RUN_TYPES),
+const triggerStageRunSchema = z.object({
+  stage: z.enum(AGENT_RUN_STAGES),
+  location_id: z.string().optional().nullable(),
   goal: z.string().max(2000).optional().nullable(),
   idempotency_key: z.string(),
 });
+
+const manualDeliverableSchema = z.object({
+  file_name: z.string().min(1).max(200),
+  content_type: z.string().max(100).optional().nullable(),
+  content_base64: z.string().min(1),
+});
+
+const createQuestionnaireSchema = z.object({
+  website: z.string().max(500).optional().nullable(),
+  idempotency_key: z.string(),
+});
+
+const submitQuestionnaireSchema = z.object({
+  answers: z.record(z.string()),
+});
+
+/** ASCII-only fallback filename for the Content-Disposition header
+ * (non-ASCII names would need RFC 5987 encoding; keep it simple). */
+function attachmentFileNameForHeader(fileName: string): string {
+  const safe = fileName.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+  return safe === "" ? "attachment" : safe;
+}
 
 /** Resolve the merchant/location names a task wire view needs. */
 function taskNames(ctx: AppContext, task: Task): {
@@ -147,6 +190,17 @@ function taskOr404(ctx: AppContext, taskId: string): Task {
   return task;
 }
 
+function getQuestionnaireByShareSlugOr404(
+  ctx: AppContext,
+  slug: string,
+): NonNullable<ReturnType<typeof getQuestionnaireByShareSlug>> {
+  const questionnaire = getQuestionnaireByShareSlug(ctx.db, slug);
+  if (!questionnaire) {
+    throw new ApiError(404, `questionnaire form ${slug} not found`, undefined);
+  }
+  return questionnaire;
+}
+
 /** Register all /api/seo-ops/* routes + auth/config stubs. */
 export function registerSeoOpsRoutes(
   app: FastifyInstance,
@@ -168,7 +222,7 @@ export function registerSeoOpsRoutes(
     return {
       copilot_enabled: false,
       agent_run_enabled: ctx.coreAi !== null && ctx.config.agentRunAgentId !== null,
-      agent_run_types: AGENT_RUN_TYPES,
+      agent_run_stages: AGENT_RUN_STAGES,
     };
   });
 
@@ -198,43 +252,100 @@ export function registerSeoOpsRoutes(
     return taskEvents(ctx.db, taskId, request.query as Record<string, unknown>);
   });
 
-  app.get("/api/seo-ops/tasks/:taskId/agent-runs", async (request) => {
-    const { taskId } = request.params as { taskId: string };
-    const { offset, limit } = parsePageParams(
-      request.query as Record<string, unknown>,
-    );
-    const page = listAgentRuns(ctx.db, taskId, { offset, limit });
-    return { ...page, items: page.items.map((run) => agentRunView(run)) };
-  });
+  // ---- 阶段运行（归属商户，不建任务） ----
 
-  app.post("/api/seo-ops/tasks/:taskId/agent-runs", async (request, reply) => {
-    const { taskId } = request.params as { taskId: string };
-    if (!ctx.coreAi || !ctx.config.agentRunAgentId) {
-      throw new ApiError(
-        503,
-        "core-ai is not configured on this server",
-        "CORE_AI_NOT_CONFIGURED",
-      );
-    }
-    const body = triggerAgentRunSchema.parse(request.body);
-    const deps: AgentRunDeps = {
-      db: ctx.db,
-      client: ctx.coreAi,
-      agentId: ctx.config.agentRunAgentId,
-      artifactsDir: ctx.artifactsDir,
-      log: { warn: (message) => request.log.warn(message) },
+  app.post(
+    "/api/seo-ops/merchants/:merchantId/stage-runs",
+    async (request, reply) => {
+      const { merchantId } = request.params as { merchantId: string };
+      if (!ctx.coreAi || !ctx.config.agentRunAgentId) {
+        throw new ApiError(
+          503,
+          "core-ai is not configured on this server",
+          "CORE_AI_NOT_CONFIGURED",
+        );
+      }
+      const body = triggerStageRunSchema.parse(request.body);
+      const deps: AgentRunDeps = {
+        db: ctx.db,
+        client: ctx.coreAi,
+        agentId: ctx.config.agentRunAgentId,
+        artifactsDir: ctx.artifactsDir,
+        dailyRunLimit: ctx.config.agentRunDailyLimit,
+        log: { warn: (message) => request.log.warn(message) },
+      };
+      const { run, replayed } = await triggerStageRun(deps, merchantId, body);
+      reply.status(replayed ? 200 : 202);
+      return stageRunView(run, listDeliverablesByRun(ctx.db, run.id));
+    },
+  );
+
+  app.get("/api/seo-ops/merchants/:merchantId/stage-runs", async (request) => {
+    const { merchantId } = request.params as { merchantId: string };
+    const query = request.query as Record<string, unknown>;
+    const { offset, limit } = parsePageParams(query);
+    const stage = typeof query.stage === "string" && query.stage !== "" ? query.stage : undefined;
+    const page = listStageRuns(ctx.db, merchantId, { stage, offset, limit });
+    const deliverablesByRun = listDeliverablesByRunIds(
+      ctx.db,
+      page.items.map((run) => run.id),
+    );
+    return {
+      ...page,
+      items: page.items.map((run) =>
+        stageRunView(run, deliverablesByRun.get(run.id) ?? []),
+      ),
     };
-    const { run, replayed } = await triggerAgentRun(deps, taskId, body);
-    reply.status(replayed ? 200 : 202);
-    return agentRunView(run);
   });
 
   app.get("/api/seo-ops/agent-runs/:runId", async (request) => {
     const { runId } = request.params as { runId: string };
-    return agentRunView(getAgentRunOr404(ctx.db, runId), {
+    const run = getAgentRunOr404(ctx.db, runId);
+    return stageRunView(run, listDeliverablesByRun(ctx.db, run.id), {
       includeFullOutput: true,
     });
   });
+
+  // 兜底：agent 只回正文不回附件时，运营手工上传交付物解锁阶段。
+  app.post(
+    "/api/seo-ops/agent-runs/:runId/deliverables",
+    async (request, reply) => {
+      const { runId } = request.params as { runId: string };
+      const body = manualDeliverableSchema.parse(request.body);
+      const deliverable = addManualDeliverable(
+        { db: ctx.db, artifactsDir: ctx.artifactsDir },
+        runId,
+        body,
+      );
+      reply.status(201);
+      return deliverableView(deliverable);
+    },
+  );
+
+  app.get(
+    "/api/seo-ops/deliverables/:deliverableId/download",
+    async (request, reply) => {
+      const { deliverableId } = request.params as { deliverableId: string };
+      const deliverable = getDeliverableOr404(ctx.db, deliverableId);
+      if (!deliverable.localPath) {
+        throw new ApiError(
+          404,
+          `deliverable ${deliverable.fileName} was not downloaded (remote fetch failed)`,
+          "DELIVERABLE_NOT_DOWNLOADED",
+        );
+      }
+      const buffer = await fsPromises.readFile(deliverable.localPath);
+      reply.header(
+        "Content-Type",
+        deliverable.contentType ?? "application/octet-stream",
+      );
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="${attachmentFileNameForHeader(deliverable.fileName)}"`,
+      );
+      return reply.send(buffer);
+    },
+  );
 
   app.post("/api/seo-ops/agent-runs/:runId/cancel", async (request) => {
     const { runId } = request.params as { runId: string };
@@ -245,7 +356,7 @@ export function registerSeoOpsRoutes(
         "CORE_AI_NOT_CONFIGURED",
       );
     }
-    const run = await cancelAgentRun(
+    const run = await cancelStageRun(
       {
         db: ctx.db,
         client: ctx.coreAi,
@@ -255,7 +366,9 @@ export function registerSeoOpsRoutes(
       },
       runId,
     );
-    return agentRunView(run, { includeFullOutput: true });
+    return stageRunView(run, listDeliverablesByRun(ctx.db, run.id), {
+      includeFullOutput: true,
+    });
   });
 
   app.post("/api/seo-ops/merchants", async (request, reply) => {
@@ -291,6 +404,76 @@ export function registerSeoOpsRoutes(
       return locationView(result.entity);
     },
   );
+
+  // ---- 问卷（新店接入入口） ----
+
+  app.post(
+    "/api/seo-ops/merchants/:merchantId/questionnaires",
+    async (request, reply) => {
+      const { merchantId } = request.params as { merchantId: string };
+      const body = createQuestionnaireSchema.parse(request.body);
+      const result = createQuestionnaire(ctx.db, merchantId, {
+        website: body.website ?? null,
+        idempotencyKey: body.idempotency_key,
+        createdBy: "local-dev",
+      });
+      reply.status(result.replayed ? 200 : 201);
+      return questionnaireView(result.entity);
+    },
+  );
+
+  app.post(
+    "/api/seo-ops/questionnaires/:questionnaireId/send",
+    async (request) => {
+      const { questionnaireId } = request.params as { questionnaireId: string };
+      return questionnaireView(sendQuestionnaire(ctx.db, questionnaireId));
+    },
+  );
+
+  // 公开回收面（商家填写，无鉴权；只暴露题目，不回传答案与内部 id）。
+  app.get("/api/public/questionnaire-forms/:slug", async (request) => {
+    const { slug } = request.params as { slug: string };
+    const questionnaire = getQuestionnaireByShareSlugOr404(ctx, slug);
+    const merchant = getMerchant(ctx.db, questionnaire.merchantId);
+    return {
+      status: questionnaire.status,
+      merchant_name: merchant?.displayName ?? questionnaire.merchantId,
+      base_info: questionnaire.baseInfo,
+      ...(questionnaire.status === "FILLED"
+        ? {}
+        : { questions: questionnaire.questions }),
+    };
+  });
+
+  app.post(
+    "/api/public/questionnaire-forms/:slug/submissions",
+    async (request, reply) => {
+      const { slug } = request.params as { slug: string };
+      const body = submitQuestionnaireSchema.parse(request.body);
+      const questionnaire = submitQuestionnaire(ctx.db, slug, body.answers);
+      reply.status(questionnaire.filledAt ? 200 : 201);
+      return { status: questionnaire.status };
+    },
+  );
+
+  // ---- 生命周期（阶段轨 + 异常，全部从证据链推导） ----
+
+  app.get("/api/seo-ops/merchants/:merchantId/lifecycle", async (request) => {
+    const { merchantId } = request.params as { merchantId: string };
+    if (!getMerchant(ctx.db, merchantId)) {
+      throw new ApiError(404, `merchant ${merchantId} not found`, undefined);
+    }
+    return deriveLifecycleForDb(ctx.db, merchantId);
+  });
+
+  // 排名快照 + 与上期对比（老店轮次骨架）；数据源是排名运行的 CSV 附件。
+  app.get("/api/seo-ops/merchants/:merchantId/ranking", async (request) => {
+    const { merchantId } = request.params as { merchantId: string };
+    if (!getMerchant(ctx.db, merchantId)) {
+      throw new ApiError(404, `merchant ${merchantId} not found`, undefined);
+    }
+    return deriveRankingOverview(loadRankingSnapshots(ctx.db, merchantId));
+  });
 
   app.post("/api/seo-ops/tasks", async (request, reply) => {
     const body = createTaskSchema.parse(request.body);

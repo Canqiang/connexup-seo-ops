@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentRunMessage } from "../src/services/agentRunPrompt.js";
-import type { AgentRunType } from "../src/domain/enums.js";
+import {
+  buildStageRunMessage,
+  excerptForPrompt,
+  priorStagesFor,
+  PRIOR_EXCERPT_LIMIT,
+} from "../src/services/agentRunPrompt.js";
+import type { AgentRunStage } from "../src/domain/enums.js";
 import type { Location, Merchant } from "../src/repos/types.js";
-import type { Task } from "../src/repos/taskTypes.js";
+import type { Questionnaire } from "../src/repos/questionnaireTypes.js";
 
 const merchant: Merchant = {
   id: "m-1",
@@ -33,105 +38,119 @@ const location: Location = {
   updatedAt: "2026-08-01T00:00:00.000Z",
 };
 
-const task: Task = {
-  id: "t-1",
+const filledQuestionnaire: Questionnaire = {
+  id: "q-1",
   merchantId: "m-1",
-  locationId: "l-1",
-  taskType: "GBP_PROFILE",
-  source: "SEO_AUDIT",
-  priority: "HIGH",
-  impact: "MEDIUM",
-  ownerId: "op-1",
-  dueAt: "2026-09-01T00:00:00.000Z",
-  status: "NEEDS_INPUT",
-  evidenceState: "NONE",
-  taskRevision: 1,
-  stateVersion: 1,
-  title: "补齐 GBP 经营类别",
-  executionSpec: '{"action":"update_categories","primary":"Korean fried chicken"}',
-  executionSpecHash: "sha256:abc",
-  requiredEvidenceTypes: ["AUDIT_REPORT"],
-  revisions: [],
-  evidenceRefs: [
-    {
-      id: "e-1",
-      taskRevision: 1,
-      type: "BASELINE_MEASUREMENT",
-      sourceRef: "gsc://baseline",
-      capturedAt: "2026-08-10T00:00:00.000Z",
-      verificationStatus: "VERIFIED",
-      requirementKey: "BASELINE_MEASUREMENT",
-      createdBy: "local-dev",
-      createdAt: "2026-08-10T00:00:00.000Z",
-    },
+  shareSlug: "ab12cd34",
+  status: "FILLED",
+  baseInfo: { name: "Only Bear" },
+  questions: [
+    { id: "q1", question: "主营业务是什么？", required: true },
+    { id: "q2", question: "服务覆盖范围？", required: true },
+    { id: "q3", question: "其他补充", required: false },
   ],
-  approvalDecisions: [],
-  events: [],
-  conversationLinks: [],
-  agentRunLinks: [],
-  mutationKeys: {},
-  creationIdempotencyKey: "tk-1",
-  requestFingerprint: "fp",
-  createdBy: "local-dev",
-  createdAt: "2026-08-18T00:00:00.000Z",
-  updatedAt: "2026-08-18T00:00:00.000Z",
+  answers: { q1: "韩式炸鸡与奶茶", q2: "Mineola 周边 5 英里", q3: "  " },
+  sendCount: 1,
+  sentAt: "2026-08-18T08:00:00.000Z",
+  lastSentAt: "2026-08-18T08:00:00.000Z",
+  filledAt: "2026-08-18T09:00:00.000Z",
+  creationIdempotencyKey: null,
+  requestFingerprint: null,
+  createdBy: null,
+  createdAt: "2026-08-18T08:00:00.000Z",
+  updatedAt: "2026-08-18T09:00:00.000Z",
 };
 
-function message(runType: AgentRunType, goal?: string | null) {
-  return buildAgentRunMessage({ runType, task, merchant, location, goal });
+function message(stage: AgentRunStage, overrides: Partial<Parameters<typeof buildStageRunMessage>[0]> = {}) {
+  return buildStageRunMessage({
+    stage,
+    merchant,
+    location,
+    questionnaire: null,
+    ...overrides,
+  });
 }
 
-describe("buildAgentRunMessage", () => {
-  it("includes the read-only red line and output rules", () => {
-    const m = message("AUDIT");
-    expect(m).toMatch(/只读分析任务/);
+describe("buildStageRunMessage", () => {
+  it("always opens with the read-only red line and closes with the output contract", () => {
+    const m = message("KEYWORDS");
+    expect(m.startsWith("你是本地 SEO 分析助手。这是一次只读分析任务")).toBe(true);
     expect(m).toMatch(/不得执行任何写入或变更操作/);
-    expect(m).toMatch(/使用中文/);
+    expect(m).toMatch(/必须产出附件/);
     expect(m).toMatch(/不要编造数据/);
   });
 
-  it("includes merchant, location, task fields and execution_spec verbatim", () => {
-    const m = message("AUDIT");
+  it("is a focused request: merchant + location facts, no task context dump", () => {
+    const m = message("KEYWORDS");
     expect(m).toContain("Only Bear");
-    expect(m).toContain("only-bear");
     expect(m).toContain("Mineola");
-    expect(m).toContain('{"google_business":"gid-123"}');
-    expect(m).toContain("补齐 GBP 经营类别");
-    expect(m).toContain("GBP_PROFILE");
-    expect(m).toContain("HIGH");
-    expect(m).toContain("NEEDS_INPUT");
-    expect(m).toContain(task.executionSpec);
-    expect(m).toContain("AUDIT_REPORT");
-    expect(m).toContain("BASELINE_MEASUREMENT:VERIFIED");
+    expect(m).toContain("google_business=gid-123");
+    expect(m).not.toMatch(/execution_spec|task_type|state_version/);
+    expect(m.length).toBeLessThan(4000);
   });
 
-  it("renders a distinct directive per run type", () => {
-    const audit = message("AUDIT");
-    const plan = message("PLAN");
-    const review = message("REVIEW");
-    expect(audit).not.toBe(plan);
-    expect(audit).toMatch(/现状审计/);
-    expect(plan).toMatch(/方案规划/);
-    expect(review).toMatch(/效果复盘/);
+  it("renders a distinct directive and deliverable contract per stage", () => {
+    expect(message("KEYWORDS")).toMatch(/关键词库 CSV/);
+    expect(message("AUDIT")).toMatch(/双审计/);
+    expect(message("RANKING_BASELINE")).toMatch(/排名基线 CSV/);
+    expect(message("PLAN")).toMatch(/\[P0\|P1\|P2\]/);
+    expect(message("REVIEW")).toMatch(/复盘/);
+  });
+
+  it("embeds the FILLED questionnaire as Q&A, skipping blank answers", () => {
+    const m = message("KEYWORDS", { questionnaire: filledQuestionnaire });
+    expect(m).toContain("商家问卷回收");
+    expect(m).toContain("问：主营业务是什么？");
+    expect(m).toContain("答：韩式炸鸡与奶茶");
+    expect(m).not.toContain("其他补充"); // whitespace-only answer dropped
+    const sent = message("KEYWORDS", {
+      questionnaire: { ...filledQuestionnaire, status: "SENT", answers: null },
+    });
+    expect(sent).not.toContain("商家问卷回收");
+  });
+
+  it("inlines prior-stage excerpts and marks missing ones as unknown", () => {
+    const withExcerpt = message("RANKING_BASELINE", {
+      priorExcerpts: { KEYWORDS: "keyword,intent\n炸鸡外卖,transactional" },
+    });
+    expect(withExcerpt).toContain("上游交付物——关键词库");
+    expect(withExcerpt).toContain("炸鸡外卖,transactional");
+
+    const missing = message("PLAN");
+    expect(missing).toContain("上游交付物——审计问题清单：（未提供，按 unknown 处理");
+    expect(missing).toContain("上游交付物——排名基线：（未提供，按 unknown 处理");
   });
 
   it("appends the operator goal only when provided", () => {
     expect(message("AUDIT")).not.toMatch(/操作员补充目标/);
-    expect(message("AUDIT", null)).not.toMatch(/操作员补充目标/);
-    expect(message("AUDIT", "  关注 SoLV 排名  ")).toMatch(
-      /操作员补充目标：关注 SoLV 排名/,
-    );
+    expect(message("AUDIT", { goal: "  关注 SoLV 排名  " })).toMatch(/操作员补充目标：关注 SoLV 排名/);
   });
 
-  it("degrades gracefully without merchant/location", () => {
-    const m = buildAgentRunMessage({
-      runType: "REPORT",
-      task,
-      merchant: null,
-      location: null,
-      goal: null,
-    });
-    expect(m).toContain("（未提供）");
-    expect(m).toContain("（任务未绑定地点）");
+  it("tolerates a merchant without locations", () => {
+    const m = message("KEYWORDS", { location: null });
+    expect(m).toContain("Only Bear");
+    expect(m).not.toContain("地点：");
+  });
+});
+
+describe("excerptForPrompt", () => {
+  it("keeps short text verbatim and truncates long text on a line boundary", () => {
+    expect(excerptForPrompt("短文本")).toBe("短文本");
+    const long = Array.from({ length: 400 }, (_, i) => `keyword-${i},local`).join("\n");
+    const cut = excerptForPrompt(long);
+    expect(cut.length).toBeLessThan(PRIOR_EXCERPT_LIMIT + 100);
+    expect(cut).toMatch(/已截断，原文共 \d+ 字符/);
+    // 截断落在整行边界：截断标注前的最后一行是完整行
+    const lines = cut.split("\n");
+    expect(lines[lines.length - 2]).toMatch(/^keyword-\d+,local$/);
+  });
+});
+
+describe("priorStagesFor", () => {
+  it("encodes the stage chain", () => {
+    expect(priorStagesFor("KEYWORDS")).toEqual([]);
+    expect(priorStagesFor("RANKING_BASELINE")).toEqual(["KEYWORDS"]);
+    expect(priorStagesFor("PLAN")).toEqual(["AUDIT", "RANKING_BASELINE"]);
+    expect(priorStagesFor("REVIEW")).toEqual(["PLAN", "RANKING_BASELINE"]);
   });
 });

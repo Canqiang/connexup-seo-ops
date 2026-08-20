@@ -1,4 +1,4 @@
-import { BarChart3, Bot, FileBarChart, Inbox, LayoutGrid, ListChecks, Settings2, Sparkles } from "lucide-react";
+import { Bot, LayoutGrid, ListChecks, Settings2, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { seoOpsApi } from "../api/seoOpsApi";
@@ -9,12 +9,10 @@ import { MerchantSwitcher } from "../features/merchant/MerchantSwitcher";
 import { useResource } from "../hooks/useResource";
 import { useWorkspace } from "../workspace/WorkspaceContext";
 
+/** 导航只留两项：商户（异常清单首页）与任务。复盘/报告下沉到商户页与任务链路里。 */
 const navigation = [
-  { to: "/", label: "商户组合", icon: LayoutGrid, end: true },
-  { to: "/inbox", label: "行动收件箱", icon: Inbox },
-  { to: "/inbox?view=all", label: "执行任务", icon: ListChecks },
-  { to: "/reviews", label: "复盘与因果", icon: BarChart3 },
-  { to: "/reports", label: "数据与报告", icon: FileBarChart }
+  { to: "/", label: "商户", icon: LayoutGrid, end: true },
+  { to: "/inbox", label: "任务", icon: ListChecks }
 ];
 
 export function AppShell() {

@@ -65,9 +65,14 @@ export const SCHEMA_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_tasks_owner_status_due ON seo_tasks(owner_id, status, due_at)`,
   `CREATE INDEX IF NOT EXISTS idx_tasks_merchant_updated ON seo_tasks(merchant_id, updated_at DESC)`,
 
+  /** 阶段运行：归属于（商户，地点，阶段），不挂在 task 上。task_id 仅作溯源
+   * （Plan 转出的任务回指来源运行），永远可空。 */
   `CREATE TABLE IF NOT EXISTS seo_agent_runs (
     id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    location_id TEXT,
+    stage TEXT NOT NULL,
+    task_id TEXT,
     run_type TEXT NOT NULL,
     goal TEXT,
     status TEXT NOT NULL,
@@ -78,10 +83,6 @@ export const SCHEMA_STATEMENTS: string[] = [
     error TEXT,
     error_code TEXT,
     token_usage TEXT NOT NULL DEFAULT '{}',
-    artifact_path TEXT,
-    artifact_sha256 TEXT,
-    evidence_id TEXT,
-    evidence_skipped_reason TEXT,
     triggered_by TEXT NOT NULL,
     triggered_at TEXT NOT NULL,
     last_polled_at TEXT,
@@ -92,6 +93,49 @@ export const SCHEMA_STATEMENTS: string[] = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
-  `CREATE INDEX IF NOT EXISTS idx_agent_runs_task_created ON seo_agent_runs(task_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_runs_merchant_stage ON seo_agent_runs(merchant_id, stage, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON seo_agent_runs(status)`,
+
+  /** 交付物：一文件一行。SUMMARY = 运行正文落盘；ATTACHMENT = agent 返回的附件；
+   * MANUAL = 运营手工上传兜底。按 id 服务下载（数组下标会因补下载而错位）。
+   * id 由 (run_id, 来源) 决定性生成，终态重放时 INSERT OR REPLACE 天然幂等。 */
+  `CREATE TABLE IF NOT EXISTS seo_run_deliverables (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    file_id TEXT,
+    file_name TEXT NOT NULL,
+    content_type TEXT,
+    size INTEGER,
+    title TEXT,
+    description TEXT,
+    sha256 TEXT,
+    local_path TEXT,
+    remote_url TEXT,
+    downloaded_at TEXT,
+    download_error TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_deliverables_run ON seo_run_deliverables(run_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_deliverables_sha ON seo_run_deliverables(sha256)`,
+
+  `CREATE TABLE IF NOT EXISTS seo_merchant_questionnaires (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    share_slug TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    base_info TEXT NOT NULL DEFAULT '{}',
+    questions TEXT NOT NULL DEFAULT '[]',
+    answers TEXT,
+    send_count INTEGER NOT NULL DEFAULT 0,
+    sent_at TEXT,
+    last_sent_at TEXT,
+    filled_at TEXT,
+    creation_idempotency_key TEXT,
+    request_fingerprint TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_questionnaires_merchant_created ON seo_merchant_questionnaires(merchant_id, created_at DESC)`,
 ];

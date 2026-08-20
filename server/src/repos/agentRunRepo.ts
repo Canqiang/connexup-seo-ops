@@ -1,10 +1,13 @@
 import type { Db } from "../db/connection.js";
 import type { AgentRunStatus } from "../domain/enums.js";
-import type { AgentRun } from "./agentRunTypes.js";
+import type { AgentRun, RunDeliverable } from "./agentRunTypes.js";
 
 interface AgentRunRow {
   id: string;
-  task_id: string;
+  merchant_id: string;
+  location_id: string | null;
+  stage: string;
+  task_id: string | null;
   run_type: string;
   goal: string | null;
   status: string;
@@ -15,10 +18,6 @@ interface AgentRunRow {
   error: string | null;
   error_code: string | null;
   token_usage: string;
-  artifact_path: string | null;
-  artifact_sha256: string | null;
-  evidence_id: string | null;
-  evidence_skipped_reason: string | null;
   triggered_by: string;
   triggered_at: string;
   last_polled_at: string | null;
@@ -33,6 +32,9 @@ interface AgentRunRow {
 export function toAgentRun(row: AgentRunRow): AgentRun {
   return {
     id: row.id,
+    merchantId: row.merchant_id,
+    locationId: row.location_id,
+    stage: row.stage as AgentRun["stage"],
     taskId: row.task_id,
     runType: row.run_type as AgentRun["runType"],
     goal: row.goal,
@@ -44,10 +46,6 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
     error: row.error,
     errorCode: row.error_code,
     tokenUsage: JSON.parse(row.token_usage || "{}"),
-    artifactPath: row.artifact_path,
-    artifactSha256: row.artifact_sha256,
-    evidenceId: row.evidence_id,
-    evidenceSkippedReason: row.evidence_skipped_reason,
     triggeredBy: row.triggered_by,
     triggeredAt: row.triggered_at,
     lastPolledAt: row.last_polled_at,
@@ -60,13 +58,18 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
   };
 }
 
-const RUN_COLUMNS = `id, task_id, run_type, goal, status, core_run_id, core_status,
-  input_message, output, error, error_code, token_usage, artifact_path, artifact_sha256,
-  evidence_id, evidence_skipped_reason, triggered_by, triggered_at, last_polled_at,
-  completed_at, creation_idempotency_key, request_fingerprint, created_by, created_at, updated_at`;
+const RUN_COLUMNS = `id, merchant_id, location_id, stage, task_id, run_type, goal, status,
+  core_run_id, core_status, input_message, output, error, error_code, token_usage,
+  triggered_by, triggered_at, last_polled_at, completed_at,
+  creation_idempotency_key, request_fingerprint, created_by, created_at, updated_at`;
+
+const RUN_COLUMN_COUNT = 24;
 
 function runParams(run: AgentRun): unknown[] {
   return [
+    run.merchantId,
+    run.locationId,
+    run.stage,
     run.taskId,
     run.runType,
     run.goal,
@@ -78,10 +81,6 @@ function runParams(run: AgentRun): unknown[] {
     run.error,
     run.errorCode,
     JSON.stringify(run.tokenUsage),
-    run.artifactPath,
-    run.artifactSha256,
-    run.evidenceId,
-    run.evidenceSkippedReason,
     run.triggeredBy,
     run.triggeredAt,
     run.lastPolledAt,
@@ -96,7 +95,7 @@ function runParams(run: AgentRun): unknown[] {
 
 export function insertAgentRun(db: Db, run: AgentRun): AgentRun {
   db.prepare(
-    `INSERT INTO seo_agent_runs (${RUN_COLUMNS}) VALUES (${"?, ".repeat(24)}?)`,
+    `INSERT INTO seo_agent_runs (${RUN_COLUMNS}) VALUES (${"?, ".repeat(RUN_COLUMN_COUNT - 1)}?)`,
   ).run(run.id, ...runParams(run));
   return run;
 }
@@ -105,12 +104,12 @@ export function insertAgentRun(db: Db, run: AgentRun): AgentRun {
  * through transitionAgentRun so exactly one writer wins). */
 export function updateAgentRun(db: Db, run: AgentRun): void {
   db.prepare(
-    `UPDATE seo_agent_runs SET task_id = ?, run_type = ?, goal = ?, status = ?,
-       core_run_id = ?, core_status = ?, input_message = ?, output = ?, error = ?,
-       error_code = ?, token_usage = ?, artifact_path = ?, artifact_sha256 = ?,
-       evidence_id = ?, evidence_skipped_reason = ?, triggered_by = ?, triggered_at = ?,
-       last_polled_at = ?, completed_at = ?, creation_idempotency_key = ?,
-       request_fingerprint = ?, created_by = ?, created_at = ?, updated_at = ?
+    `UPDATE seo_agent_runs SET merchant_id = ?, location_id = ?, stage = ?, task_id = ?,
+       run_type = ?, goal = ?, status = ?, core_run_id = ?, core_status = ?,
+       input_message = ?, output = ?, error = ?, error_code = ?, token_usage = ?,
+       triggered_by = ?, triggered_at = ?, last_polled_at = ?, completed_at = ?,
+       creation_idempotency_key = ?, request_fingerprint = ?, created_by = ?,
+       created_at = ?, updated_at = ?
      WHERE id = ?`,
   ).run(...runParams(run), run.id);
 }
@@ -118,6 +117,9 @@ export function updateAgentRun(db: Db, run: AgentRun): void {
 /** camelCase AgentRun key -> snake_case column. */
 const COLUMN_BY_KEY: Record<keyof AgentRun, string> = {
   id: "id",
+  merchantId: "merchant_id",
+  locationId: "location_id",
+  stage: "stage",
   taskId: "task_id",
   runType: "run_type",
   goal: "goal",
@@ -129,10 +131,6 @@ const COLUMN_BY_KEY: Record<keyof AgentRun, string> = {
   error: "error",
   errorCode: "error_code",
   tokenUsage: "token_usage",
-  artifactPath: "artifact_path",
-  artifactSha256: "artifact_sha256",
-  evidenceId: "evidence_id",
-  evidenceSkippedReason: "evidence_skipped_reason",
   triggeredBy: "triggered_by",
   triggeredAt: "triggered_at",
   lastPolledAt: "last_polled_at",
@@ -190,13 +188,40 @@ export function findAgentRunByIdempotencyKey(
   return row ? toAgentRun(row) : null;
 }
 
-export function listAgentRunsByTask(db: Db, taskId: string): AgentRun[] {
-  const rows = db
-    .prepare(
-      `SELECT ${RUN_COLUMNS} FROM seo_agent_runs WHERE task_id = ? ORDER BY created_at DESC, id DESC`,
-    )
-    .all(taskId) as AgentRunRow[];
+export function listAgentRunsByMerchant(
+  db: Db,
+  merchantId: string,
+  stage?: string,
+): AgentRun[] {
+  const rows = (
+    stage
+      ? db
+          .prepare(
+            `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+             WHERE merchant_id = ? AND stage = ? ORDER BY created_at DESC, id DESC`,
+          )
+          .all(merchantId, stage)
+      : db
+          .prepare(
+            `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+             WHERE merchant_id = ? ORDER BY created_at DESC, id DESC`,
+          )
+          .all(merchantId)
+  ) as AgentRunRow[];
   return rows.map(toAgentRun);
+}
+
+export function countAgentRunsByMerchantSince(
+  db: Db,
+  merchantId: string,
+  sinceIso: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM seo_agent_runs WHERE merchant_id = ? AND created_at >= ?`,
+    )
+    .get(merchantId, sinceIso) as { n: number };
+  return row.n;
 }
 
 export function listActiveAgentRuns(db: Db): AgentRun[] {
@@ -207,4 +232,117 @@ export function listActiveAgentRuns(db: Db): AgentRun[] {
     )
     .all() as AgentRunRow[];
   return rows.map(toAgentRun);
+}
+
+// ---------------------------------------------------------------------------
+// Deliverables
+
+interface DeliverableRow {
+  id: string;
+  run_id: string;
+  kind: string;
+  file_id: string | null;
+  file_name: string;
+  content_type: string | null;
+  size: number | null;
+  title: string | null;
+  description: string | null;
+  sha256: string | null;
+  local_path: string | null;
+  remote_url: string | null;
+  downloaded_at: string | null;
+  download_error: string | null;
+  created_at: string;
+}
+
+function toDeliverable(row: DeliverableRow): RunDeliverable {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    kind: row.kind as RunDeliverable["kind"],
+    fileId: row.file_id,
+    fileName: row.file_name,
+    contentType: row.content_type,
+    size: row.size,
+    title: row.title,
+    description: row.description,
+    sha256: row.sha256,
+    localPath: row.local_path,
+    remoteUrl: row.remote_url,
+    downloadedAt: row.downloaded_at,
+    downloadError: row.download_error,
+    createdAt: row.created_at,
+  };
+}
+
+const DELIVERABLE_COLUMNS = `id, run_id, kind, file_id, file_name, content_type, size,
+  title, description, sha256, local_path, remote_url, downloaded_at, download_error, created_at`;
+
+/** Idempotent by primary key — crash-replay may re-insert the same rows. */
+export function upsertDeliverable(db: Db, d: RunDeliverable): RunDeliverable {
+  db.prepare(
+    `INSERT INTO seo_run_deliverables (${DELIVERABLE_COLUMNS})
+     VALUES (${"?, ".repeat(14)}?)
+     ON CONFLICT(id) DO UPDATE SET
+       sha256 = excluded.sha256,
+       size = excluded.size,
+       local_path = excluded.local_path,
+       downloaded_at = excluded.downloaded_at,
+       download_error = excluded.download_error`,
+  ).run(
+    d.id,
+    d.runId,
+    d.kind,
+    d.fileId,
+    d.fileName,
+    d.contentType,
+    d.size,
+    d.title,
+    d.description,
+    d.sha256,
+    d.localPath,
+    d.remoteUrl,
+    d.downloadedAt,
+    d.downloadError,
+    d.createdAt,
+  );
+  return d;
+}
+
+export function getDeliverable(db: Db, id: string): RunDeliverable | null {
+  const row = db
+    .prepare(`SELECT ${DELIVERABLE_COLUMNS} FROM seo_run_deliverables WHERE id = ?`)
+    .get(id) as DeliverableRow | undefined;
+  return row ? toDeliverable(row) : null;
+}
+
+export function listDeliverablesByRun(db: Db, runId: string): RunDeliverable[] {
+  const rows = db
+    .prepare(
+      `SELECT ${DELIVERABLE_COLUMNS} FROM seo_run_deliverables
+       WHERE run_id = ? ORDER BY created_at ASC, id ASC`,
+    )
+    .all(runId) as DeliverableRow[];
+  return rows.map(toDeliverable);
+}
+
+export function listDeliverablesByRunIds(
+  db: Db,
+  runIds: string[],
+): Map<string, RunDeliverable[]> {
+  const byRun = new Map<string, RunDeliverable[]>();
+  if (runIds.length === 0) return byRun;
+  const placeholders = runIds.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT ${DELIVERABLE_COLUMNS} FROM seo_run_deliverables
+       WHERE run_id IN (${placeholders}) ORDER BY created_at ASC, id ASC`,
+    )
+    .all(...runIds) as DeliverableRow[];
+  for (const row of rows) {
+    const list = byRun.get(row.run_id) ?? [];
+    list.push(toDeliverable(row));
+    byRun.set(row.run_id, list);
+  }
+  return byRun;
 }

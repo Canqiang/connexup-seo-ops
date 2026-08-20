@@ -19,6 +19,8 @@ export interface ServerConfig {
   agentRunAgentId: string | null;
   agentRunPollIntervalMs: number;
   agentRunHttpTimeoutMs: number;
+  /** Per-merchant daily stage-run cap (core-ai token quota protection). */
+  agentRunDailyLimit: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -32,5 +34,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     agentRunAgentId: env.AGENT_RUN_AGENT_ID?.trim() || null,
     agentRunPollIntervalMs: positiveInt(env.AGENT_RUN_POLL_INTERVAL_MS, 3000),
     agentRunHttpTimeoutMs: positiveInt(env.AGENT_RUN_HTTP_TIMEOUT_MS, 15000),
+    agentRunDailyLimit: positiveInt(env.AGENT_RUN_DAILY_LIMIT, 20),
   };
 }

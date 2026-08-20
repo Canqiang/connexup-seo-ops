@@ -6,7 +6,7 @@ import {
   transitionAgentRun,
 } from "../repos/agentRunRepo.js";
 import type { AgentRun } from "../repos/agentRunTypes.js";
-import { applyTerminalTransition, type AgentRunDeps } from "./agentRunService.js";
+import { applyTerminalTransition, recordDeliverables, type AgentRunDeps } from "./agentRunService.js";
 
 /** Injectable clock/scheduler so tests never sleep. */
 export interface PollerScheduler {
@@ -116,6 +116,9 @@ export class AgentRunPoller {
     if (!fresh || fresh.status !== "RUNNING") return;
 
     if ((CORE_RUN_TERMINAL_STATUSES as readonly string[]).includes(core.status)) {
+      // Deliverables land first (upsert by deterministic id = idempotent); a
+      // crash here leaves the row RUNNING and the next poll replays both steps.
+      await recordDeliverables(this.deps, fresh, core);
       applyTerminalTransition(this.deps, fresh, core);
     } else {
       transitionAgentRun(

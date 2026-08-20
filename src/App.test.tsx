@@ -4,19 +4,110 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthContext";
-import { portfolioFixture, taskFixture, userFixture } from "./test/fixtures";
+import type { LifecycleView, RankingOverviewView } from "./api/types";
+import { portfolioFixture, stageRunRunningFixture, taskFixture, userFixture } from "./test/fixtures";
+
+const lifecycleFixture: LifecycleView = {
+  merchant_id: "only-bear", stage: "QUESTIONNAIRE",
+  stages: [
+    { key: "QUESTIONNAIRE", status: "CURRENT", note: "问卷未回收" },
+    { key: "KEYWORDS", status: "OFF", note: "等问卷" },
+    { key: "AUDIT", status: "OFF", note: "等关键词" },
+    { key: "RANKING_BASELINE", status: "OFF", note: "等审计" },
+    { key: "PLAN", status: "OFF", note: "等基线" },
+    { key: "EXECUTE", status: "OFF", note: "等任务授权" },
+    { key: "VERIFY", status: "OFF", note: "等执行回填" },
+  ],
+  questionnaire: { id: "q-1", status: "SENT", share_slug: "ab12cd34", send_count: 1, sent_at: "2026-08-18T08:00:00Z", last_sent_at: "2026-08-18T08:00:00Z", filled_at: null },
+  latest_runs: {},
+  plan_converted: false,
+  open_task_count: 0, approved_task_count: 0, ready_for_approval_count: 0, unverified_evidence_count: 0,
+  last_report: null,
+  ranking_round_count: 0,
+  exception: { type: "WAITING_MERCHANT", waiting_days: 1, send_count: 1, questionnaire_id: "q-1" },
+};
+
+const keywordsLifecycleFixture: LifecycleView = {
+  ...lifecycleFixture,
+  stage: "KEYWORDS",
+  stages: [
+    { key: "QUESTIONNAIRE", status: "DONE", note: "问卷已回收" },
+    { key: "KEYWORDS", status: "CURRENT", note: "未生成" },
+    { key: "AUDIT", status: "OFF", note: "等关键词" },
+    { key: "RANKING_BASELINE", status: "OFF", note: "等审计" },
+    { key: "PLAN", status: "OFF", note: "等基线" },
+    { key: "EXECUTE", status: "OFF", note: "等任务授权" },
+    { key: "VERIFY", status: "OFF", note: "等执行回填" },
+  ],
+  questionnaire: { ...lifecycleFixture.questionnaire!, status: "FILLED", filled_at: "2026-08-18T09:00:00Z" },
+  exception: { type: "NONE" },
+};
+
+// 老店稳态：走完一整轮，处于第 2 轮（两次排名快照），带与上期对比。
+const steadyLifecycleFixture: LifecycleView = {
+  ...lifecycleFixture,
+  stage: "EXECUTE",
+  stages: [
+    { key: "QUESTIONNAIRE", status: "DONE", note: "8-12 商家已填" },
+    { key: "KEYWORDS", status: "DONE", note: "8-13" },
+    { key: "AUDIT", status: "DONE", note: "8-14 GBP+站内" },
+    { key: "RANKING_BASELINE", status: "DONE", note: "8-15 local+organic" },
+    { key: "PLAN", status: "DONE", note: "已转执行任务" },
+    { key: "EXECUTE", status: "CURRENT", note: "任务 1 个 · 人工执行" },
+    { key: "VERIFY", status: "OFF", note: "—" },
+  ],
+  questionnaire: { ...lifecycleFixture.questionnaire!, status: "FILLED", filled_at: "2026-08-12T09:00:00Z" },
+  plan_converted: true,
+  open_task_count: 1,
+  last_report: { captured_at: "2026-08-15T10:00:00Z", age_days: 4 },
+  ranking_round_count: 2,
+  exception: { type: "NONE" },
+};
+
+const emptyRankingFixture: RankingOverviewView = { round_count: 0, latest: null, previous: null, comparison: null };
+
+const rankingFixture: RankingOverviewView = {
+  round_count: 2,
+  latest: {
+    run_id: "run-new",
+    captured_at: "2026-08-15T10:00:00.000Z",
+    keyword_count: 2,
+    rows: [
+      { keyword: "ramen near me", local_rank: 9, organic_rank: 8, local_delta: 3, organic_delta: 3, is_new: false },
+      { keyword: "ramen delivery", local_rank: 5, organic_rank: 30, local_delta: null, organic_delta: null, is_new: true },
+    ],
+  },
+  previous: { run_id: "run-old", captured_at: "2026-08-08T10:00:00.000Z" },
+  comparison: {
+    local_avg: { current: 7, previous: 12, delta: 5 },
+    organic_top10: { current: 1, previous: 1, total: 2 },
+    new_keyword_count: 1,
+  },
+};
+
+let lifecycleData: LifecycleView = lifecycleFixture;
+let rankingData: RankingOverviewView = emptyRankingFixture;
+const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
+  lifecycleData = lifecycleFixture;
+  rankingData = emptyRankingFixture;
+  calls.length = 0;
+  vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   localStorage.setItem("apiKey", "test-key");
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
+    calls.push({ path, init });
     if (path === "/api/auth/me") return json(userFixture);
     if (path === "/api/seo-ops/portfolio") return json(portfolioFixture);
-    if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe" });
+    if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
     if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
+    if (path === "/api/seo-ops/merchants/only-bear/lifecycle") return json(lifecycleData);
+    if (path === "/api/seo-ops/merchants/only-bear/ranking") return json(rankingData);
+    if (path === "/api/seo-ops/merchants/only-bear/stage-runs" && init?.method === "POST") return json(stageRunRunningFixture, 202);
+    if (path.startsWith("/api/seo-ops/merchants/only-bear/stage-runs")) return json({ items: [], offset: 0, limit: 1, total: 0 });
+    if (path.startsWith("/api/seo-ops/agent-runs/")) return json(stageRunRunningFixture);
     if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
-    if (path.startsWith("/api/seo-ops/tasks/task-1/agent-runs")) return json({ items: [], offset: 0, limit: 50, total: 0 });
-    if (path.startsWith("/api/seo-ops/agent-runs/")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reports")) return json({ items: [], offset: 0, limit: 50, total: 0 });
@@ -24,15 +115,72 @@ beforeEach(() => {
   }));
 });
 
-afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 
-test("portfolio keeps merchants in a searchable switcher", async () => {
+test("homepage is an exception list with merchants in a searchable switcher", async () => {
   const user = userEvent.setup();
   renderApp("/");
-  expect(await screen.findByRole("heading", { name: "代运营组合" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "商户" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "周期内无待办" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Only Bear Chicken & Boba" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("combobox", { name: "选择商户工作范围" }));
   expect(screen.getByRole("option", { name: /Only Bear Chicken & Boba/ })).toBeInTheDocument();
+});
+
+test("merchant lifecycle page walks the stage rail and surfaces the waiting questionnaire", async () => {
+  renderApp("/merchants/only-bear");
+  expect(await screen.findByRole("heading", { name: "Only Bear Chicken & Boba" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "生命周期阶段" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "等待商家回复" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /重发问卷/ })).toBeInTheDocument();
+  expect(screen.getByText(/q\/ab12cd34/)).toBeInTheDocument();
+});
+
+test("KEYWORDS stage card triggers a stage run in place, no task created", async () => {
+  lifecycleData = keywordsLifecycleFixture;
+  const user = userEvent.setup();
+  renderApp("/merchants/only-bear");
+  await user.click(await screen.findByRole("button", { name: /一键生成关键词/ }));
+
+  const trigger = calls.find(
+    (call) => call.path === "/api/seo-ops/merchants/only-bear/stage-runs" && call.init?.method === "POST",
+  );
+  expect(trigger).toBeDefined();
+  expect(JSON.parse(String(trigger?.init?.body))).toEqual({
+    stage: "KEYWORDS",
+    location_id: "mineola",
+    idempotency_key: "stage-KEYWORDS-22222222-2222-2222-2222-222222222222",
+  });
+  // 就地闭环：留在生命周期页，卡片自身变活（RUNNING + 可取消），不建任务、不跳转
+  expect(await screen.findByRole("button", { name: "取消运行" })).toBeInTheDocument();
+  expect(screen.getByText("RUNNING")).toBeInTheDocument();
+  expect(calls.some((call) => call.path === "/api/seo-ops/tasks" && call.init?.method === "POST")).toBe(false);
+  expect(screen.queryByRole("heading", { name: /Only Bear Chicken/ })).toBeInTheDocument();
+});
+
+test("first-round merchant shows the onboarding round badge and no ranking comparison", async () => {
+  renderApp("/merchants/only-bear");
+  expect(await screen.findByRole("heading", { name: "Only Bear Chicken & Boba" })).toBeInTheDocument();
+  expect(screen.getByText("⟳ 首轮接入")).toBeInTheDocument();
+  expect(screen.queryByText(/LOCAL 包内均值/)).not.toBeInTheDocument();
+});
+
+test("steady-state merchant shows round badge, ranking comparison numbers, and the snapshot table", async () => {
+  lifecycleData = steadyLifecycleFixture;
+  rankingData = rankingFixture;
+  renderApp("/merchants/only-bear");
+  expect(await screen.findByText("⟳ 第 2 轮 · 8 月")).toBeInTheDocument();
+  // 与上期对比（只放数字）：均值 12 → 7、首页词占比、新挖机会词
+  expect(await screen.findByText(/LOCAL 包内均值/)).toBeInTheDocument();
+  expect(screen.getByText("12 → 7")).toBeInTheDocument();
+  expect(screen.getByText(/上升 5 位/)).toBeInTheDocument();
+  expect(screen.getByText("1 / 2")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: /排名快照/ })).toBeInTheDocument();
+  // 快照表：词 / local / organic / 较上期；新词打标
+  const table = screen.getByRole("table");
+  expect(table).toHaveTextContent("ramen near me");
+  expect(table).toHaveTextContent("ramen delivery");
+  expect(screen.getByText("新词")).toBeInTheDocument();
 });
 
 test("task deep link exposes revision hash evidence and approval boundary", async () => {
@@ -50,6 +198,6 @@ function renderApp(route: string) {
   return render(<MemoryRouter initialEntries={[route]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
 }
 
-function json(body: unknown) {
-  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }

@@ -1,5 +1,6 @@
 import type { Location, Merchant } from "../repos/types.js";
 import type { Task } from "../repos/taskTypes.js";
+import type { Questionnaire } from "../repos/questionnaireTypes.js";
 
 /** Wire views — snake_case shapes that match the frontend types in
  * `src/api/types.ts` exactly. */
@@ -50,6 +51,40 @@ export function locationView(l: Location): LocationView {
     missing_requirements: l.missingRequirements,
     created_at: l.createdAt,
     updated_at: l.updatedAt,
+  };
+}
+
+export interface QuestionnaireView {
+  id: string;
+  merchant_id: string;
+  status: string;
+  share_slug: string;
+  base_info: Record<string, string>;
+  questions: Array<{ id: string; question: string; hint?: string; required: boolean }>;
+  answers: Record<string, string> | null;
+  send_count: number;
+  sent_at: string | null;
+  last_sent_at: string | null;
+  filled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function questionnaireView(q: Questionnaire): QuestionnaireView {
+  return {
+    id: q.id,
+    merchant_id: q.merchantId,
+    status: q.status,
+    share_slug: q.shareSlug,
+    base_info: q.baseInfo,
+    questions: q.questions,
+    answers: q.answers,
+    send_count: q.sendCount,
+    sent_at: q.sentAt,
+    last_sent_at: q.lastSentAt,
+    filled_at: q.filledAt,
+    created_at: q.createdAt,
+    updated_at: q.updatedAt,
   };
 }
 

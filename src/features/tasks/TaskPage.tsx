@@ -6,7 +6,6 @@ import type { SeoTask } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { hasPermission } from "../../auth/permissions";
 import { useResource } from "../../hooks/useResource";
-import { AgentRunsPanel } from "./AgentRunsPanel";
 import { ApprovalPanel } from "./ApprovalPanel";
 import { EvidenceForm } from "./EvidenceForm";
 import { EvidenceRail } from "./EvidenceRail";
@@ -34,7 +33,6 @@ export function TaskPage() {
     <div className="task-layout"><div className="task-primary">
       <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">IMMUTABLE EXECUTION SPEC</span><h2>执行定义</h2></div><code className="hash-badge"><FileKey2 size={13} /> {task.execution_spec_hash}</code></div><pre className="execution-spec">{task.execution_spec}</pre></section>
       <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>事件时间线</h2></div><span className="result-count">{eventResource.data?.total ?? "—"}</span></div>{eventResource.loading ? <div className="page-state" role="status">读取事件…</div> : <TaskTimeline events={eventResource.data?.items ?? []} />}</section>
-      <AgentRunsPanel canManage={canManage} onTaskChanged={() => { taskResource.reload(); eventResource.reload(); }} taskId={task.id} />
     </div><aside className="task-context">
       <section className="data-panel evidence-panel"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE SPINE</span><h2>证据脊柱</h2></div></div><EvidenceRail task={task} /></section>
       <ApprovalPanel canApprove={hasPermission(user?.permissions, "seoops.approve")} onReadback={readback} task={task} />
