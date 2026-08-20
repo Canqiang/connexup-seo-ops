@@ -43,7 +43,7 @@ connexup-seo-ops(本仓库,唯一实施对象)
 │   └── scheduler  —— 周期调度(老店自动分析/Plan/候选任务、核验超时扫描)
 └── PostgreSQL(自有数据库)
 
-Core AI(只读依赖):POST trigger-run / GET run / GET artifact / POST cancel —— 现有 API,原样使用
+Core AI(外部能力依赖,代码库只读):POST trigger-run / GET run / GET artifact / POST cancel —— 现有 API,原样使用
 operation-assistant(间接依赖):由执行 agent 的 seo-gbp-execution skill 调用,本系统不直连
 ```
 
@@ -110,7 +110,7 @@ AUTO_WRITE: 创建 → READY_FOR_APPROVAL → APPROVED → EXECUTION_CONFIRMED �
 
 ### 6.2 Execution Attempt(运行状态,独立表)
 
-`PENDING(outbox 已建) → CLAIMED → RUNNING → SUCCEEDED | FAILED_CONFIRMED | OUTCOME_UNKNOWN | CANCELLED`
+`PENDING(outbox 已建) → CLAIMED → DISPATCHING(已持久化、Trigger 前) → RUNNING(run_id 已持久化) → SUCCEEDED | FAILED_CONFIRMED | OUTCOME_UNKNOWN | CANCELLED`
 
 Task 状态由 attempt 终态驱动;历史尝试全部保留可查。
 
@@ -141,7 +141,7 @@ Task 状态由 attempt 终态驱动;历史尝试全部保留可查。
 
 ### 6.6 尝试与幂等语义(P0)
 
-- 每次执行 = 一行 attempt,`attempt_no` 单调递增;幂等键 = `exec-{taskId}-rev{revision}-attempt{attemptNo}`,绑定业务指令。
+- 每次执行 = 一行 attempt,`attempt_no` 单调递增;确定性尝试标识 = `exec-{taskId}-rev{revision}-attempt{attemptNo}`,绑定业务指令,经 Prompt 以 `SEO_OPS_ATTEMPT_ID` 携带——**仅作人工对账线索,Core AI 不提供幂等查询,at-most-once 由 §7.3 派发协议保证**。
 - **AUTO_WRITE**:新 attempt 只能从 EXECUTION_FAILED(确认未写入)经门 2 产生;OUTCOME_UNKNOWN 期间禁产生。无自动重试。
 - **ARTIFACT**:失败可自动重试(新 attempt,上限 2,指数退避)——无外部副作用。
 - **降级不静默**:AUTO_WRITE 任务缺资产授权时,不改任务模式;操作员可显式选择「按成品执行」,产生 `mode=DEGRADED_ARTIFACT` 的 attempt(免门 2,因无外部写入),任务 UI 始终显示 `requested_mode=AUTO_WRITE` + 降级标识。
@@ -153,8 +153,15 @@ Task 状态由 attempt 终态驱动;历史尝试全部保留可查。
 ## 7. 执行链路与可靠性
 
 1. **API(门 2)**:PostgreSQL 事务内写 attempt(PENDING)+ outbox(PENDING)+ task→QUEUED。事务失败则全部回滚,不存在"确认了但没入队"。
-2. **Worker(独立进程)**:`SELECT ... FOR UPDATE SKIP LOCKED` + lease(`claimed_by, lease_expires_at`)认领 outbox;认领后触发 Core AI Agent Run(幂等键见 §6.6),轮询至终态,下载 Artifact,校验回执(§12),事务内回写 attempt 终态 + task 状态 + evidence。
-3. **崩溃/重启安全**:lease 过期后条目可被其他副本接管;接管者先查 Core AI 侧是否已有该幂等键的 run——有则续接轮询,**绝不重复触发**;查不到且无法确认 → OUTCOME_UNKNOWN(宁可人工对账,不可能重复写入)。
+2. **Worker(独立进程)**:`SELECT ... FOR UPDATE SKIP LOCKED` + lease(`claimed_by, lease_expires_at`)认领 outbox;按第 3 条的 at-most-once 协议触发 Core AI Agent Run,轮询至终态,下载 Artifact,校验回执(§12),事务内回写 attempt 终态 + task 状态 + evidence。
+3. **AUTO_WRITE 派发 = 严格 at-most-once**(前提事实:Core AI 现有 API 无幂等键能力——`TriggerRunRequest` 仅 input/attachments、`ListRunsRequest` 仅 status/limit、无幂等键查询接口;本协议不依赖任何 Core AI 改动):
+   1. Trigger 前先持久化 attempt → `DISPATCHING`(确定性 attempt_id 在门 2 已生成);
+   2. 每个 AUTO_WRITE attempt **至多发送一次** Trigger 请求;
+   3. 收到 `run_id` 先持久化,再转 RUNNING;
+   4. 凡"请求可能已发出但本地无 run_id"(发送超时、连接中断、进程崩溃于 DISPATCHING)→ 一律 OUTCOME_UNKNOWN → RECONCILIATION_REQUIRED,**绝不自动重发**;
+   5. lease 接管者**仅当本地已有 run_id 时**续接轮询;无 run_id 绝不重新 Trigger;
+   6. Prompt 携带确定性 `SEO_OPS_ATTEMPT_ID`,供人工从近期 Run/Trace 对账——仅对账线索,不构成幂等保证;
+   7. **outbox 网络错误自动重试仅适用于 ARTIFACT**(无外部副作用);AUTO_WRITE 一旦进入网络发送阶段,任何模糊失败都转未知结果。
 4. **多副本安全**:SKIP LOCKED + lease 保证一条 outbox 同时只有一个 owner;门 2 的"无在途尝试"校验保证一条业务指令同时只有一个 attempt。
 5. **并发上限**:每商户在途 1、全局在途 2(可配),worker 认领时检查。
 6. **Dead Letter**:outbox `retry_count` 超限(基础设施性失败,如 Core AI 不可达)→ `DEAD`,进监控告警与首页异常,人工处置。
@@ -236,14 +243,14 @@ expires_at, revoked_at, revoked_by, note
 
 - 拓扑:`api` / `worker` / `scheduler` 三 Deployment(同镜像不同 args)+ PostgreSQL(集群内实例或托管)+ 前端静态 Deployment(沿用现有 ingress 结构)。
 - Secret:Core AI Token、PG 连接串、Session 密钥,全部 K8s Secret,不入镜像不入日志。
-- 监控最低集:outbox 深度与 DEAD 数、OUTCOME_UNKNOWN 数、VERIFICATION_OVERDUE 数、scheduler 心跳、worker lease 过期数;超阈值告警。
+- 监控最低集:outbox 深度与 DEAD 数、DISPATCHING 滞留数、OUTCOME_UNKNOWN 数、VERIFICATION_OVERDUE 数、scheduler 心跳、worker lease 过期数;超阈值告警。
 - 暂停/恢复:全局与商户级开关(§7.7);发布顺序:PG 迁移 → api → worker/scheduler → 前端;回滚按镜像 digest。
 
 ## 15. 测试策略(全程 TDD)
 
 - **状态机**:两 mode 全部合法/非法转换;双门顺序与越权拒绝;revision 使门 1 失效;OUTCOME_UNKNOWN 禁重试;VERIFIED 三来源;VERIFICATION_OVERDUE 触发;降级 attempt 不改 requested_mode;应用证据缺失不放行。
 - **门 2 事务校验**:五项校验各自失败路径;并发确认只成功一次(事务+唯一在途约束)。
-- **Worker**:SKIP LOCKED 互斥(两 worker 并发认领不重复);lease 过期接管先查 Core AI 幂等 run;崩溃重放不重复触发;并发上限;回执 Zod 校验失败 → OUTCOME_UNKNOWN;DEAD letter。
+- **Worker(at-most-once)**:SKIP LOCKED 互斥(两 worker 并发认领不重复);DISPATCHING 崩溃/发送超时 → OUTCOME_UNKNOWN 且不重发;接管者无 run_id 不重新 Trigger、有 run_id 续接轮询;AUTO_WRITE 每 attempt 至多一次 Trigger;ARTIFACT 网络错误自动重试而 AUTO_WRITE 不重试;并发上限;回执 Zod 校验失败 → OUTCOME_UNKNOWN;DEAD letter。
 - **Scheduler**:显式开启前不跑;到期判定;活跃抑制;日上限;暂停;候选任务停在门外。
 - **鉴权**:权限点与商户范围;Chat/服务身份调执行/授权/requeue/capability 接口被拒。
 - **契约**:三类 schema 的正反例。
