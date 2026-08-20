@@ -539,63 +539,66 @@ describe("task sub-mutations (evidence → preview → decision)", () => {
 describe("blocked location blocks approval", () => {
   it("task linked to a BLOCKED location stays BLOCKED even with verified evidence", async () => {
     const app = await makeApp();
-    const merchant = (
-      await app.inject({
-        method: "POST",
-        url: "/api/seo-ops/merchants",
-        payload: MERCHANT,
-      })
-    ).json();
-    const blocked = (
-      await app.inject({
-        method: "POST",
-        url: `/api/seo-ops/merchants/${merchant.id}/locations`,
-        payload: {
-          slug: "stuck",
-          readiness_status: "BLOCKED",
-          missing_requirements: ["GOOGLE_ACCESS"],
-          external_identities: {},
-          idempotency_key: "lk-2",
-        },
-      })
-    ).json();
-    const task = (
-      await app.inject({
-        method: "POST",
-        url: "/api/seo-ops/tasks",
-        payload: {
-          merchant_id: merchant.id,
-          location_id: blocked.id,
-          definition: definition(),
-          idempotency_key: "tk-b1",
-        },
-      })
-    ).json();
-    expect(task.status).toBe("BLOCKED");
+    try {
+      const merchant = (
+        await app.inject({
+          method: "POST",
+          url: "/api/seo-ops/merchants",
+          payload: MERCHANT,
+        })
+      ).json();
+      const blocked = (
+        await app.inject({
+          method: "POST",
+          url: `/api/seo-ops/merchants/${merchant.id}/locations`,
+          payload: {
+            slug: "stuck",
+            readiness_status: "BLOCKED",
+            missing_requirements: ["GOOGLE_ACCESS"],
+            external_identities: {},
+            idempotency_key: "lk-2",
+          },
+        })
+      ).json();
+      const task = (
+        await app.inject({
+          method: "POST",
+          url: "/api/seo-ops/tasks",
+          payload: {
+            merchant_id: merchant.id,
+            location_id: blocked.id,
+            definition: definition(),
+            idempotency_key: "tk-b1",
+          },
+        })
+      ).json();
+      expect(task.status).toBe("BLOCKED");
 
-    const withEvidence = await app.inject({
-      method: "POST",
-      url: `/api/seo-ops/tasks/${task.id}/evidence`,
-      payload: {
-        type: "APPROVAL_REPORT",
-        source_ref: "s",
-        captured_at: "2026-08-19T10:00:00.000Z",
-        verification_status: "VERIFIED",
-        requirement_key: "APPROVAL_REPORT",
-        expected_state_version: 1,
-        idempotency_key: "ev-b1",
-      },
-    });
-    expect(withEvidence.json().status).toBe("BLOCKED");
-    expect(withEvidence.json().evidence_state).toBe("VERIFIED");
+      const withEvidence = await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/evidence`,
+        payload: {
+          type: "APPROVAL_REPORT",
+          source_ref: "s",
+          captured_at: "2026-08-19T10:00:00.000Z",
+          verification_status: "VERIFIED",
+          requirement_key: "APPROVAL_REPORT",
+          expected_state_version: 1,
+          idempotency_key: "ev-b1",
+        },
+      });
+      expect(withEvidence.json().status).toBe("BLOCKED");
+      expect(withEvidence.json().evidence_state).toBe("VERIFIED");
 
-    const preview = await app.inject({
-      method: "POST",
-      url: `/api/seo-ops/tasks/${task.id}/approval-previews`,
-      payload: { task_revision: 1, expected_state_version: 2 },
-    });
-    expect(preview.json().reviewable).toBe(false);
-    expect(preview.json().blockers.join(" ")).toMatch(/location_not_ready/);
-    await app.close();
+      const preview = await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/approval-previews`,
+        payload: { task_revision: 1, expected_state_version: 2 },
+      });
+      expect(preview.json().reviewable).toBe(false);
+      expect(preview.json().blockers.join(" ")).toMatch(/location_not_ready/);
+    } finally {
+      await app.close();
+    }
   });
 });

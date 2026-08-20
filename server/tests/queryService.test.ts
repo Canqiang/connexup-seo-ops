@@ -78,33 +78,39 @@ async function createTask(
 describe("auth + config stubs", () => {
   it("GET /api/auth/me returns the fixed identity", async () => {
     const app = await makeApp();
-    const res = await app.inject({ method: "GET", url: "/api/auth/me" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      user_id: "local-dev",
-      name: "Local Operator",
-      role: "seo_lead",
-      permissions: ["*"],
-    });
-    await app.close();
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/auth/me" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        user_id: "local-dev",
+        name: "Local Operator",
+        role: "seo_lead",
+        permissions: ["*"],
+      });
+    } finally {
+      await app.close();
+    }
   });
 
   it("GET /api/seo-ops/config reports copilot disabled and agent runs off without env", async () => {
     const app = await makeApp();
-    const res = await app.inject({ method: "GET", url: "/api/seo-ops/config" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      copilot_enabled: false,
-      agent_run_enabled: false,
-      agent_run_stages: [
-        "KEYWORDS",
-        "AUDIT",
-        "RANKING_BASELINE",
-        "PLAN",
-        "REVIEW",
-      ],
-    });
-    await app.close();
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/seo-ops/config" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        copilot_enabled: false,
+        agent_run_enabled: false,
+        agent_run_stages: [
+          "KEYWORDS",
+          "AUDIT",
+          "RANKING_BASELINE",
+          "PLAN",
+          "REVIEW",
+        ],
+      });
+    } finally {
+      await app.close();
+    }
   });
 });
 
@@ -163,12 +169,15 @@ describe("portfolio", () => {
 
   it("empty merchant list -> empty portfolio", async () => {
     const emptyApp = await makeApp();
-    const res = await emptyApp.inject({ method: "GET", url: "/api/seo-ops/portfolio" });
-    expect(res.json()).toEqual({
-      merchants: [],
-      totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 },
-    });
-    await emptyApp.close();
+    try {
+      const res = await emptyApp.inject({ method: "GET", url: "/api/seo-ops/portfolio" });
+      expect(res.json()).toEqual({
+        merchants: [],
+        totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 },
+      });
+    } finally {
+      await emptyApp.close();
+    }
   });
 });
 
