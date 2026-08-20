@@ -1,9 +1,17 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/index.js";
 import { loadConfig } from "../src/config.js";
+import { createTestDb } from "./helpers/pgTest.js";
 
-function makeApp() {
-  return buildApp({ ...loadConfig(), dbPath: ":memory:" }).app;
+/** Fresh app + fresh schema-isolated postgres db per test. */
+async function makeApp(): Promise<FastifyInstance> {
+  const ctx = await createTestDb();
+  const { app } = await buildApp({ ...loadConfig() }, { db: ctx.db });
+  app.addHook("onClose", async () => {
+    await ctx.teardown();
+  });
+  return app;
 }
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
@@ -17,7 +25,7 @@ const definition = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-async function seedMerchantWithLocation(app: ReturnType<typeof makeApp>) {
+async function seedMerchantWithLocation(app: FastifyInstance) {
   const merchant = (
     await app.inject({
       method: "POST",
@@ -47,7 +55,7 @@ async function seedMerchantWithLocation(app: ReturnType<typeof makeApp>) {
 }
 
 async function createTask(
-  app: ReturnType<typeof makeApp>,
+  app: FastifyInstance,
   merchantId: string,
   locationId: string,
   overrides: Record<string, unknown> = {},
@@ -69,7 +77,8 @@ async function createTask(
 
 describe("auth + config stubs", () => {
   it("GET /api/auth/me returns the fixed identity", async () => {
-    const res = await makeApp().inject({ method: "GET", url: "/api/auth/me" });
+    const app = await makeApp();
+    const res = await app.inject({ method: "GET", url: "/api/auth/me" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       user_id: "local-dev",
@@ -77,10 +86,12 @@ describe("auth + config stubs", () => {
       role: "seo_lead",
       permissions: ["*"],
     });
+    await app.close();
   });
 
   it("GET /api/seo-ops/config reports copilot disabled and agent runs off without env", async () => {
-    const res = await makeApp().inject({ method: "GET", url: "/api/seo-ops/config" });
+    const app = await makeApp();
+    const res = await app.inject({ method: "GET", url: "/api/seo-ops/config" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       copilot_enabled: false,
@@ -93,18 +104,20 @@ describe("auth + config stubs", () => {
         "REVIEW",
       ],
     });
+    await app.close();
   });
 });
 
 describe("portfolio", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let merchant: { id: string };
   let location: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     ({ merchant, location } = await seedMerchantWithLocation(app));
   });
+  afterEach(() => app.close());
 
   it("aggregates counts, owners, locations, and health", async () => {
     await createTask(app, merchant.id, location.id, { priority: "URGENT", owner_id: "op-1" }, "t1");
@@ -149,23 +162,26 @@ describe("portfolio", () => {
   });
 
   it("empty merchant list -> empty portfolio", async () => {
-    const res = await makeApp().inject({ method: "GET", url: "/api/seo-ops/portfolio" });
+    const emptyApp = await makeApp();
+    const res = await emptyApp.inject({ method: "GET", url: "/api/seo-ops/portfolio" });
     expect(res.json()).toEqual({
       merchants: [],
       totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 },
     });
+    await emptyApp.close();
   });
 });
 
 describe("inbox", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let merchant: { id: string };
   let location: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     ({ merchant, location } = await seedMerchantWithLocation(app));
   });
+  afterEach(() => app.close());
 
   it("paginates, filters by status, sorts URGENT first", async () => {
     await createTask(app, merchant.id, location.id, { priority: "LOW" }, "t1");
@@ -202,11 +218,11 @@ describe("inbox", () => {
 });
 
 describe("task detail + events", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let task: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     const { merchant, location } = await seedMerchantWithLocation(app);
     task = await createTask(app, merchant.id, location.id);
     await app.inject({
@@ -223,6 +239,7 @@ describe("task detail + events", () => {
       },
     });
   });
+  afterEach(() => app.close());
 
   it("GET /tasks/:id returns the full aggregate", async () => {
     const res = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}` });
@@ -255,16 +272,17 @@ describe("task detail + events", () => {
 });
 
 describe("reviews + reports", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let merchant: { id: string };
   let location: { id: string };
   let task: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     ({ merchant, location } = await seedMerchantWithLocation(app));
     task = await createTask(app, merchant.id, location.id);
   });
+  afterEach(() => app.close());
 
   const addEvidence = async (
     type: string,

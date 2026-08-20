@@ -1,10 +1,18 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/index.js";
 import { loadConfig } from "../src/config.js";
 import { executionSpecHash } from "../src/domain/hashing.js";
+import { createTestDb } from "./helpers/pgTest.js";
 
-function makeApp() {
-  return buildApp({ ...loadConfig(), dbPath: ":memory:" }).app;
+/** Fresh app + fresh schema-isolated postgres db per test. */
+async function makeApp(): Promise<FastifyInstance> {
+  const ctx = await createTestDb();
+  const { app } = await buildApp({ ...loadConfig() }, { db: ctx.db });
+  app.addHook("onClose", async () => {
+    await ctx.teardown();
+  });
+  return app;
 }
 
 const MERCHANT = {
@@ -37,7 +45,7 @@ const definition = (overrides: Record<string, unknown> = {}) => ({
 });
 
 /** Full happy-path fixture: ready merchant + location. */
-async function seededTask(app: ReturnType<typeof makeApp>, overrides: Record<string, unknown> = {}) {
+async function seededTask(app: FastifyInstance, overrides: Record<string, unknown> = {}) {
   const merchant = (
     await app.inject({
       method: "POST",
@@ -68,10 +76,11 @@ async function seededTask(app: ReturnType<typeof makeApp>, overrides: Record<str
 }
 
 describe("POST /api/seo-ops/tasks", () => {
-  let app: ReturnType<typeof makeApp>;
-  beforeEach(() => {
-    app = makeApp();
+  let app: FastifyInstance;
+  beforeEach(async () => {
+    app = await makeApp();
   });
+  afterEach(() => app.close());
 
   it("creates a task (201) with derived status NEEDS_INPUT", async () => {
     const { task } = await seededTask(app);
@@ -206,13 +215,14 @@ describe("POST /api/seo-ops/tasks", () => {
 });
 
 describe("task sub-mutations (evidence → preview → decision)", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let task: Record<string, unknown> & { id: string; state_version: number };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     task = (await seededTask(app)).task;
   });
+  afterEach(() => app.close());
 
   const evidence = (overrides: Record<string, unknown> = {}) => ({
     type: "APPROVAL_REPORT",
@@ -528,7 +538,7 @@ describe("task sub-mutations (evidence → preview → decision)", () => {
 
 describe("blocked location blocks approval", () => {
   it("task linked to a BLOCKED location stays BLOCKED even with verified evidence", async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const merchant = (
       await app.inject({
         method: "POST",
@@ -586,5 +596,6 @@ describe("blocked location blocks approval", () => {
     });
     expect(preview.json().reviewable).toBe(false);
     expect(preview.json().blockers.join(" ")).toMatch(/location_not_ready/);
+    await app.close();
   });
 });
