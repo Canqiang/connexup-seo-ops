@@ -87,15 +87,16 @@ const INSERT_SQL = `INSERT INTO seo_tasks
    execution_spec_hash, required_evidence_types, revisions, evidence_refs,
    approval_decisions, events, conversation_links, agent_run_links, mutation_keys,
    creation_idempotency_key, request_fingerprint, created_by, created_at, updated_at)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+   $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)`;
 
 const UPDATE_SQL = `UPDATE seo_tasks SET
-   location_id = ?, task_type = ?, source = ?, priority = ?, impact = ?, owner_id = ?, due_at = ?,
-   status = ?, evidence_state = ?, task_revision = ?, state_version = ?, title = ?,
-   execution_spec = ?, execution_spec_hash = ?, required_evidence_types = ?, revisions = ?,
-   evidence_refs = ?, approval_decisions = ?, events = ?, conversation_links = ?,
-   agent_run_links = ?, mutation_keys = ?, updated_at = ?
- WHERE id = ? AND state_version = ?`;
+   location_id = $1, task_type = $2, source = $3, priority = $4, impact = $5, owner_id = $6, due_at = $7,
+   status = $8, evidence_state = $9, task_revision = $10, state_version = $11, title = $12,
+   execution_spec = $13, execution_spec_hash = $14, required_evidence_types = $15, revisions = $16,
+   evidence_refs = $17, approval_decisions = $18, events = $19, conversation_links = $20,
+   agent_run_links = $21, mutation_keys = $22, updated_at = $23
+ WHERE id = $24 AND state_version = $25`;
 
 // Sanity: placeholders must line up with taskParams() + (updated_at, id, prev).
 
@@ -129,8 +130,8 @@ function taskParams(task: Task): unknown[] {
   ];
 }
 
-export function insertTask(db: Db, task: Task): Task {
-  db.prepare(INSERT_SQL).run(
+export async function insertTask(db: Db, task: Task): Promise<Task> {
+  await db.exec(INSERT_SQL, [
     task.id,
     task.merchantId,
     ...taskParams(task), // location_id .. mutation_keys
@@ -139,7 +140,7 @@ export function insertTask(db: Db, task: Task): Task {
     task.createdBy,
     task.createdAt,
     task.updatedAt, // last column in INSERT column list
-  );
+  ]);
   return task;
 }
 
@@ -148,46 +149,42 @@ export function insertTask(db: Db, task: Task): Task {
  * WHERE clause pins the previous one. Returns false when the row moved
  * underneath us (caller re-reads and decides replay vs 409).
  */
-export function updateTaskCas(
+export async function updateTaskCas(
   db: Db,
   task: Task,
   previousStateVersion: number,
-): boolean {
-  const result = db.prepare(UPDATE_SQL).run(
+): Promise<boolean> {
+  const rowCount = await db.exec(UPDATE_SQL, [
     ...taskParams(task),
     task.updatedAt,
     task.id,
     previousStateVersion,
+  ]);
+  return rowCount === 1;
+}
+
+export async function getTask(db: Db, id: string): Promise<Task | null> {
+  const row = await db.one<TaskRow>(`SELECT * FROM seo_tasks WHERE id = $1`, [id]);
+  return row ? toTask(row) : null;
+}
+
+export async function findTaskByIdempotencyKey(db: Db, key: string): Promise<Task | null> {
+  const row = await db.one<TaskRow>(
+    `SELECT * FROM seo_tasks WHERE creation_idempotency_key = $1`,
+    [key],
   );
-  return result.changes === 1;
-}
-
-export function getTask(db: Db, id: string): Task | null {
-  const row = db
-    .prepare(`SELECT * FROM seo_tasks WHERE id = ?`)
-    .get(id) as TaskRow | undefined;
   return row ? toTask(row) : null;
 }
 
-export function findTaskByIdempotencyKey(db: Db, key: string): Task | null {
-  const row = db
-    .prepare(`SELECT * FROM seo_tasks WHERE creation_idempotency_key = ?`)
-    .get(key) as TaskRow | undefined;
-  return row ? toTask(row) : null;
-}
-
-export function listTasks(db: Db): Task[] {
-  const rows = db
-    .prepare(`SELECT * FROM seo_tasks ORDER BY updated_at DESC`)
-    .all() as TaskRow[];
+export async function listTasks(db: Db): Promise<Task[]> {
+  const rows = await db.query<TaskRow>(`SELECT * FROM seo_tasks ORDER BY updated_at DESC`);
   return rows.map(toTask);
 }
 
-export function listTasksByMerchant(db: Db, merchantId: string): Task[] {
-  const rows = db
-    .prepare(
-      `SELECT * FROM seo_tasks WHERE merchant_id = ? ORDER BY updated_at DESC`,
-    )
-    .all(merchantId) as TaskRow[];
+export async function listTasksByMerchant(db: Db, merchantId: string): Promise<Task[]> {
+  const rows = await db.query<TaskRow>(
+    `SELECT * FROM seo_tasks WHERE merchant_id = $1 ORDER BY updated_at DESC`,
+    [merchantId],
+  );
   return rows.map(toTask);
 }

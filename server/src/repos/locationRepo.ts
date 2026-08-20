@@ -36,61 +36,60 @@ function toLocation(row: LocationRow): Location {
   };
 }
 
-export function insertLocation(db: Db, location: Location): Location {
-  db.prepare(
+export async function insertLocation(db: Db, location: Location): Promise<Location> {
+  await db.exec(
     `INSERT INTO seo_locations
       (id, merchant_id, slug, display_name, timezone, external_identities,
        readiness_status, missing_requirements,
        creation_idempotency_key, request_fingerprint, created_by,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    location.id,
-    location.merchantId,
-    location.slug,
-    location.displayName,
-    location.timezone,
-    JSON.stringify(location.externalIdentities),
-    location.readinessStatus,
-    JSON.stringify(location.missingRequirements),
-    location.creationIdempotencyKey,
-    location.requestFingerprint,
-    location.createdBy,
-    location.createdAt,
-    location.updatedAt,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+    [
+      location.id,
+      location.merchantId,
+      location.slug,
+      location.displayName,
+      location.timezone,
+      JSON.stringify(location.externalIdentities),
+      location.readinessStatus,
+      JSON.stringify(location.missingRequirements),
+      location.creationIdempotencyKey,
+      location.requestFingerprint,
+      location.createdBy,
+      location.createdAt,
+      location.updatedAt,
+    ],
   );
   return location;
 }
 
-export function getLocation(db: Db, id: string): Location | null {
-  const row = db
-    .prepare(`SELECT * FROM seo_locations WHERE id = ?`)
-    .get(id) as LocationRow | undefined;
+export async function getLocation(db: Db, id: string): Promise<Location | null> {
+  const row = await db.one<LocationRow>(`SELECT * FROM seo_locations WHERE id = $1`, [id]);
   return row ? toLocation(row) : null;
 }
 
-export function findLocationByIdempotencyKey(
+export async function findLocationByIdempotencyKey(
   db: Db,
   key: string,
-): Location | null {
-  const row = db
-    .prepare(`SELECT * FROM seo_locations WHERE creation_idempotency_key = ?`)
-    .get(key) as LocationRow | undefined;
+): Promise<Location | null> {
+  const row = await db.one<LocationRow>(
+    `SELECT * FROM seo_locations WHERE creation_idempotency_key = $1`,
+    [key],
+  );
   return row ? toLocation(row) : null;
 }
 
-export function listLocationsByMerchant(db: Db, merchantId: string): Location[] {
-  const rows = db
-    .prepare(
-      `SELECT * FROM seo_locations WHERE merchant_id = ? ORDER BY display_name`,
-    )
-    .all(merchantId) as LocationRow[];
+export async function listLocationsByMerchant(db: Db, merchantId: string): Promise<Location[]> {
+  const rows = await db.query<LocationRow>(
+    `SELECT * FROM seo_locations WHERE merchant_id = $1 ORDER BY display_name`,
+    [merchantId],
+  );
   return rows.map(toLocation);
 }
 
-export function listLocations(db: Db): Location[] {
-  const rows = db
-    .prepare(`SELECT * FROM seo_locations ORDER BY merchant_id, display_name`)
-    .all() as LocationRow[];
+export async function listLocations(db: Db): Promise<Location[]> {
+  const rows = await db.query<LocationRow>(
+    `SELECT * FROM seo_locations ORDER BY merchant_id, display_name`,
+  );
   return rows.map(toLocation);
 }
