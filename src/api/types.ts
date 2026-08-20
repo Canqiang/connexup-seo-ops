@@ -72,12 +72,13 @@ export interface RankingOverviewView {
   } | null;
 }
 
-/** 交付物：附件是主交付物；download_path 是本地服务路由（不暴露远端 URL）。 */
+/** 交付物：附件是主交付物；download_path 是本地服务路由（证据主通道）。
+ * core_url 是 core-ai 原始附件直链（本地 demo 跳转用，可能不可达）。 */
 export interface DeliverableWire {
   id: string; kind: DeliverableKind; file_name: string; content_type: string | null;
   size: number | null; title: string | null; description: string | null;
   sha256: string | null; downloaded: boolean; download_error?: string;
-  download_path: string; created_at: string;
+  download_path: string; core_url?: string | null; created_at: string;
 }
 /** 阶段运行：归属于（商户，地点，阶段），不挂在 task 上。 */
 export interface StageRunView {

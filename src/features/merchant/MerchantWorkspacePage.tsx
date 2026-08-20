@@ -431,6 +431,7 @@ function StageRunCard({ stage, merchantId, locations, priorDone, reload, canMana
             {d.downloaded
               ? <a href={d.download_path} download={d.file_name}>{d.file_name}</a>
               : <span>{d.file_name}{d.download_error ? ` · 下载失败：${d.download_error}` : " · 未落盘"}</span>}
+            {d.core_url ? <a className="text-button" href={d.core_url} rel="noreferrer" target="_blank">在 core-ai 打开 ↗</a> : null}
             <small>{formatSize(d.size)} · {d.content_type ?? "未知类型"}</small>
           </li>
         ))}

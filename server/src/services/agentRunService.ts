@@ -523,8 +523,11 @@ export interface DeliverableWire {
   sha256: string | null;
   downloaded: boolean;
   download_error?: string;
-  /** Local serving route — the remote core-ai URL is deliberately not exposed. */
+  /** Local serving route — the durable evidence copy. */
   download_path: string;
+  /** 本地 demo 便利:core-ai 原始附件直链(浏览器可达且有权限时可用);
+   * 证据主通道仍是 download_path,该字段仅供「在 core-ai 打开」跳转。 */
+  core_url: string | null;
   created_at: string;
 }
 
@@ -541,6 +544,7 @@ export function deliverableView(d: RunDeliverable): DeliverableWire {
     downloaded: d.localPath !== null,
     ...(d.downloadError ? { download_error: d.downloadError } : {}),
     download_path: `/api/seo-ops/deliverables/${d.id}/download`,
+    core_url: d.remoteUrl,
     created_at: d.createdAt,
   };
 }
