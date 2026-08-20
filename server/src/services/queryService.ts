@@ -79,12 +79,12 @@ function isOverdue(task: Task, now: Date): boolean {
   return Date.parse(task.dueAt) < now.getTime();
 }
 
-export function portfolio(db: Db, now: Date = new Date()): PortfolioResponseWire {
-  const merchants = listMerchants(db);
-  const locations = listLocations(db);
-  const tasks = listTasks(db);
+export async function portfolio(db: Db, now: Date = new Date()): Promise<PortfolioResponseWire> {
+  const merchants = await listMerchants(db);
+  const locations = await listLocations(db);
+  const tasks = await listTasks(db);
 
-  const lifecycleInputs = loadLifecycleInputs(db, merchants.map((m) => m.id));
+  const lifecycleInputs = await loadLifecycleInputs(db, merchants.map((m) => m.id));
   const tasksByMerchant = new Map<string, Task[]>();
   for (const task of tasks) {
     const list = tasksByMerchant.get(task.merchantId) ?? [];
@@ -213,9 +213,9 @@ export function taskSummary(
   };
 }
 
-function nameLookup(db: Db) {
-  const merchants = new Map(listMerchants(db).map((m) => [m.id, m.displayName]));
-  const locations = new Map(listLocations(db).map((l) => [l.id, l.displayName]));
+async function nameLookup(db: Db): Promise<(task: Task) => { merchantName: string; locationName?: string }> {
+  const merchants = new Map((await listMerchants(db)).map((m) => [m.id, m.displayName]));
+  const locations = new Map((await listLocations(db)).map((l) => [l.id, l.displayName]));
   return (task: Task) => ({
     merchantName: merchants.get(task.merchantId) ?? task.merchantId,
     ...(task.locationId && locations.has(task.locationId)
@@ -224,10 +224,10 @@ function nameLookup(db: Db) {
   });
 }
 
-export function inbox(
+export async function inbox(
   db: Db,
   query: InboxQuery & PageParams,
-): PageResult<TaskSummaryWire> {
+): Promise<PageResult<TaskSummaryWire>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
   const locationId = str(query.location_id);
@@ -235,8 +235,8 @@ export function inbox(
   const ownerId = str(query.owner_id);
   const evidenceState = str(query.evidence_state);
 
-  const names = nameLookup(db);
-  const filtered = listTasks(db).filter((t) => {
+  const names = await nameLookup(db);
+  const filtered = (await listTasks(db)).filter((t) => {
     if (merchantId && t.merchantId !== merchantId) return false;
     if (locationId && t.locationId !== locationId) return false;
     if (status && t.status !== status) return false;
@@ -264,13 +264,13 @@ export function inbox(
 // ---------------------------------------------------------------------------
 // Task events
 
-export function taskEvents(
+export async function taskEvents(
   db: Db,
   taskId: string,
   query: PageParams,
-): PageResult<Record<string, unknown>> {
+): Promise<PageResult<Record<string, unknown>>> {
   const { offset, limit } = parsePageParams(query);
-  const task = getTask(db, taskId);
+  const task = await getTask(db, taskId);
   if (!task) throw notFound(`task ${taskId} not found`);
   const newestFirst = [...task.events].reverse().map((e) => ({
     id: e.id,
@@ -308,13 +308,13 @@ const STRENGTH_BY_CLASS: Record<string, string> = {
   CAUSAL_READY: "HIGH",
 };
 
-export function reviews(
+export async function reviews(
   db: Db,
   query: PageParams & { merchant_id?: unknown },
-): PageResult<Record<string, unknown>> {
+): Promise<PageResult<Record<string, unknown>>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
-  const items = listTasks(db)
+  const items = (await listTasks(db))
     .filter((t) => !merchantId || t.merchantId === merchantId)
     .filter((t) => t.evidenceRefs.some((e) => e.taskRevision === t.taskRevision))
     .map((t) => {
@@ -342,7 +342,7 @@ export function reviews(
 // ---------------------------------------------------------------------------
 // Reports (freshness projection over *_REPORT evidence)
 
-export function reports(
+export async function reports(
   db: Db,
   query: PageParams & {
     merchant_id?: unknown;
@@ -353,7 +353,7 @@ export function reports(
     freshness?: unknown;
   },
   now: Date = new Date(),
-): PageResult<Record<string, unknown>> {
+): Promise<PageResult<Record<string, unknown>>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
   const locationId = str(query.location_id);
@@ -371,7 +371,7 @@ export function reports(
   }
 
   const DAY_MS = 24 * 60 * 60 * 1000;
-  const items = listTasks(db)
+  const items = (await listTasks(db))
     .flatMap((t) =>
       t.evidenceRefs
         .filter((e) => e.type.endsWith("_REPORT"))

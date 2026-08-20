@@ -77,18 +77,17 @@ function isTextDeliverable(d: RunDeliverable): boolean {
 
 /** 阶段串联：上游阶段最近一次 COMPLETED 运行的交付物内容（附件优先，正文兜底），
  * 截断后内联进下游 prompt。 */
-export function gatherPriorExcerpts(
+export async function gatherPriorExcerpts(
   db: Db,
   merchantId: string,
   stage: AgentRunStage,
-): Partial<Record<AgentRunStage, string>> {
+): Promise<Partial<Record<AgentRunStage, string>>> {
   const excerpts: Partial<Record<AgentRunStage, string>> = {};
   for (const priorStage of priorStagesFor(stage)) {
-    const run = listAgentRunsByMerchant(db, merchantId, priorStage).find(
-      (r) => r.status === "COMPLETED",
-    );
+    const runs = await listAgentRunsByMerchant(db, merchantId, priorStage);
+    const run = runs.find((r) => r.status === "COMPLETED");
     if (!run) continue;
-    const deliverables = listDeliverablesByRun(db, run.id);
+    const deliverables = await listDeliverablesByRun(db, run.id);
     const candidate =
       deliverables.find(
         (d) => d.kind !== "SUMMARY" && d.localPath !== null && isTextDeliverable(d),
@@ -140,28 +139,28 @@ export async function triggerStageRun(
     goal,
   });
   const replay = resolveIdempotentCreate(
-    findAgentRunByIdempotencyKey(deps.db, key),
+    await findAgentRunByIdempotencyKey(deps.db, key),
     fingerprint,
   );
   if (replay) return { run: replay, replayed: true };
 
-  const merchant = getMerchant(deps.db, merchantId);
+  const merchant = await getMerchant(deps.db, merchantId);
   if (!merchant) throw notFound(`merchant ${merchantId} not found`);
 
   let location = null;
   if (input.location_id) {
-    location = getLocation(deps.db, input.location_id);
+    location = await getLocation(deps.db, input.location_id);
     if (!location || location.merchantId !== merchantId) {
       throw badRequest(`location ${input.location_id} does not belong to merchant ${merchantId}`);
     }
   } else {
     // 单地点商户是常态：不传 location 就用第一个（多地点时提示显式选择）。
-    const locations = listLocationsByMerchant(deps.db, merchantId);
+    const locations = await listLocationsByMerchant(deps.db, merchantId);
     location = locations[0] ?? null;
   }
 
   const limit = deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT;
-  if (countAgentRunsByMerchantSince(deps.db, merchantId, startOfUtcDayIso()) >= limit) {
+  if ((await countAgentRunsByMerchantSince(deps.db, merchantId, startOfUtcDayIso())) >= limit) {
     throw new ApiError(
       429,
       `merchant ${merchantId} reached the daily run limit (${limit})`,
@@ -169,13 +168,13 @@ export async function triggerStageRun(
     );
   }
 
-  const questionnaire = latestQuestionnaireByMerchant(deps.db, merchantId);
+  const questionnaire = await latestQuestionnaireByMerchant(deps.db, merchantId);
   const message = buildStageRunMessage({
     stage,
     merchant,
     location,
     questionnaire,
-    priorExcerpts: gatherPriorExcerpts(deps.db, merchantId, stage),
+    priorExcerpts: await gatherPriorExcerpts(deps.db, merchantId, stage),
     goal,
   });
 
@@ -208,25 +207,27 @@ export async function triggerStageRun(
   };
 
   // Row lands first so the 202/response always has a durable record.
-  const inserted = deps.db.transaction(() => {
+  const inserted = await deps.db.withTransaction(async (tx) => {
     const raced = resolveIdempotentCreate(
-      findAgentRunByIdempotencyKey(deps.db, key),
+      await findAgentRunByIdempotencyKey(tx, key),
       fingerprint,
     );
     if (raced) return raced;
-    insertAgentRun(deps.db, run);
+    await insertAgentRun(tx, run);
     return run;
-  })();
+  });
   if (inserted !== run) return { run: inserted, replayed: true };
 
-  // Network I/O must stay OUTSIDE db.transaction (better-sqlite3 is sync).
+  // Network I/O must stay OUTSIDE db.withTransaction (a dedicated pool client
+  // is held for the transaction's duration; awaiting the HTTP call inside it
+  // would starve the pool for as long as core-ai takes to answer).
   try {
     const triggered = await deps.client.trigger(deps.agentId, run.inputMessage);
     run.coreRunId = triggered.run_id;
     run.coreStatus = triggered.status;
     run.status = "RUNNING";
     run.updatedAt = nowIso();
-    updateAgentRun(deps.db, run);
+    await updateAgentRun(deps.db, run);
   } catch (err) {
     const detail = err instanceof Error ? err.message : "network error";
     run.status = "FAILED";
@@ -234,7 +235,7 @@ export async function triggerStageRun(
     run.errorCode = "TRIGGER_FAILED";
     run.completedAt = nowIso();
     run.updatedAt = run.completedAt;
-    updateAgentRun(deps.db, run);
+    await updateAgentRun(deps.db, run);
     throw new ApiError(502, `core-ai trigger failed: ${detail}`, "CORE_AI_TRIGGER_FAILED");
   }
   return { run, replayed: false };
@@ -271,7 +272,7 @@ export async function recordDeliverables(
     const filePath = path.join(deps.artifactsDir, `${run.id}.md`);
     writeFileAtomic(filePath, output);
     saved.push(
-      upsertDeliverable(deps.db, {
+      await upsertDeliverable(deps.db, {
         id: `${run.id}-summary`,
         runId: run.id,
         kind: "SUMMARY",
@@ -313,7 +314,7 @@ export async function recordDeliverables(
       );
     }
     saved.push(
-      upsertDeliverable(deps.db, {
+      await upsertDeliverable(deps.db, {
         id: `${run.id}-att-${artifact.file_id}`,
         runId: run.id,
         kind: "ATTACHMENT",
@@ -347,29 +348,29 @@ function mapCoreStatus(coreStatus: string): AgentRunStatus {
 
 /** 终态第二步：条件翻转 run 行（单写者守卫）。调用顺序是崩溃安全的关键——
  * recordDeliverables 先行；这里失败或崩溃时行仍 RUNNING，下轮 poll 整体重放。 */
-export function applyTerminalTransition(
+export async function applyTerminalTransition(
   deps: AgentRunDeps,
   run: AgentRun,
   core: CoreAgentRunDetail,
-): AgentRun {
+): Promise<AgentRun> {
   if (!isCoreTerminal(core.status)) return run;
   if (run.status !== "RUNNING" && run.status !== "TRIGGERING") return run;
 
-  const final =
-    transitionAgentRun(
-      deps.db,
-      run.id,
-      {
-        status: mapCoreStatus(core.status),
-        coreStatus: core.status,
-        output: core.output ?? null,
-        error: core.error ?? null,
-        tokenUsage: core.token_usage ?? {},
-        completedAt: core.completed_at ?? nowIso(),
-        lastPolledAt: nowIso(),
-      },
-      ["RUNNING", "TRIGGERING"],
-    ) ?? getAgentRun(deps.db, run.id);
+  const transitioned = await transitionAgentRun(
+    deps.db,
+    run.id,
+    {
+      status: mapCoreStatus(core.status),
+      coreStatus: core.status,
+      output: core.output ?? null,
+      error: core.error ?? null,
+      tokenUsage: core.token_usage ?? {},
+      completedAt: core.completed_at ?? nowIso(),
+      lastPolledAt: nowIso(),
+    },
+    ["RUNNING", "TRIGGERING"],
+  );
+  const final = transitioned ?? (await getAgentRun(deps.db, run.id));
   return final ?? run;
 }
 
@@ -388,7 +389,7 @@ export async function cancelStageRun(
   deps: AgentRunDeps,
   id: string,
 ): Promise<AgentRun> {
-  const run = getAgentRun(deps.db, id);
+  const run = await getAgentRun(deps.db, id);
   if (!run) throw notFound(`agent run ${id} not found`);
   if (run.status !== "TRIGGERING" && run.status !== "RUNNING") {
     throw conflict(
@@ -432,12 +433,12 @@ export interface ManualDeliverableInput {
 }
 
 /** 兜底：agent 只回正文不回附件时，运营手工上传交付物解锁阶段。 */
-export function addManualDeliverable(
+export async function addManualDeliverable(
   deps: Pick<AgentRunDeps, "db" | "artifactsDir">,
   runId: string,
   input: ManualDeliverableInput,
-): RunDeliverable {
-  const run = getAgentRun(deps.db, runId);
+): Promise<RunDeliverable> {
+  const run = await getAgentRun(deps.db, runId);
   if (!run) throw notFound(`agent run ${runId} not found`);
   if (run.status !== "COMPLETED") {
     throw conflict(
@@ -484,29 +485,29 @@ export function addManualDeliverable(
   });
 }
 
-export function listStageRuns(
+export async function listStageRuns(
   db: Db,
   merchantId: string,
   params: { stage?: string; offset: number; limit: number },
-): PageResult<AgentRun> {
-  if (!getMerchant(db, merchantId)) {
+): Promise<PageResult<AgentRun>> {
+  if (!(await getMerchant(db, merchantId))) {
     throw notFound(`merchant ${merchantId} not found`);
   }
   return paginate(
-    listAgentRunsByMerchant(db, merchantId, params.stage),
+    await listAgentRunsByMerchant(db, merchantId, params.stage),
     params.offset,
     params.limit,
   );
 }
 
-export function getAgentRunOr404(db: Db, id: string): AgentRun {
-  const run = getAgentRun(db, id);
+export async function getAgentRunOr404(db: Db, id: string): Promise<AgentRun> {
+  const run = await getAgentRun(db, id);
   if (!run) throw notFound(`agent run ${id} not found`);
   return run;
 }
 
-export function getDeliverableOr404(db: Db, id: string): RunDeliverable {
-  const deliverable = getDeliverable(db, id);
+export async function getDeliverableOr404(db: Db, id: string): Promise<RunDeliverable> {
+  const deliverable = await getDeliverable(db, id);
   if (!deliverable) throw notFound(`deliverable ${id} not found`);
   return deliverable;
 }

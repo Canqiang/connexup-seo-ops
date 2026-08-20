@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { Db } from "../db/connection.js";
+import { isUniqueViolation, type Db } from "../db/connection.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { requestFingerprint } from "../domain/hashing.js";
 import {
@@ -14,7 +14,6 @@ import { getMerchant } from "../repos/merchantRepo.js";
 import {
   requireIdempotencyKey,
   resolveIdempotentCreate,
-  isUniqueViolation,
 } from "./merchantService.js";
 import type { Questionnaire, QuestionnaireItem } from "../repos/questionnaireTypes.js";
 
@@ -55,13 +54,13 @@ export interface CreateQuestionnaireInput {
   createdBy?: string | null;
 }
 
-export function createQuestionnaire(
+export async function createQuestionnaire(
   db: Db,
   merchantId: string,
   input: CreateQuestionnaireInput,
-): { entity: Questionnaire; replayed: boolean } {
+): Promise<{ entity: Questionnaire; replayed: boolean }> {
   const key = requireIdempotencyKey(input.idempotencyKey, "idempotency_key");
-  const merchant = getMerchant(db, merchantId);
+  const merchant = await getMerchant(db, merchantId);
   if (!merchant) throw notFound(`merchant ${merchantId} not found`);
 
   const baseInfo: Record<string, string> = { name: merchant.displayName };
@@ -73,8 +72,8 @@ export function createQuestionnaire(
     base_info: baseInfo,
   });
 
-  return db.transaction(() => {
-    const existing = findQuestionnaireByIdempotencyKey(db, key);
+  return db.withTransaction(async (tx) => {
+    const existing = await findQuestionnaireByIdempotencyKey(tx, key);
     const replay = resolveIdempotentCreate(existing, fingerprint);
     if (replay) return { entity: replay, replayed: true };
 
@@ -97,7 +96,7 @@ export function createQuestionnaire(
       updatedAt: nowIso(),
     };
     try {
-      insertQuestionnaire(db, questionnaire);
+      await insertQuestionnaire(tx, questionnaire);
     } catch (err) {
       if (isUniqueViolation(err)) {
         throw conflict("share slug collision, retry", "SHARE_SLUG_COLLISION");
@@ -105,16 +104,16 @@ export function createQuestionnaire(
       throw err;
     }
     return { entity: questionnaire, replayed: false };
-  })();
+  });
 }
 
 /** 发放/重发：状态置 SENT 并滚动 sent 计数。外发动作本身（短信/邮件）不在
  * 系统内——这里只记录外发事实，供首页按天数排序与催填。 */
-export function sendQuestionnaire(
+export async function sendQuestionnaire(
   db: Db,
   questionnaireId: string,
-): Questionnaire {
-  const questionnaire = getQuestionnaire(db, questionnaireId);
+): Promise<Questionnaire> {
+  const questionnaire = await getQuestionnaire(db, questionnaireId);
   if (!questionnaire) {
     throw notFound(`questionnaire ${questionnaireId} not found`);
   }
@@ -152,12 +151,12 @@ function requireAnswers(
 }
 
 /** 商家提交（公开回收端点调用）。重复提交幂等返回已填问卷。 */
-export function submitQuestionnaire(
+export async function submitQuestionnaire(
   db: Db,
   shareSlugValue: string,
   answers: Record<string, unknown>,
-): Questionnaire {
-  const questionnaire = getQuestionnaireByShareSlug(db, shareSlugValue);
+): Promise<Questionnaire> {
+  const questionnaire = await getQuestionnaireByShareSlug(db, shareSlugValue);
   if (!questionnaire) {
     throw notFound(`questionnaire form ${shareSlugValue} not found`);
   }

@@ -202,14 +202,14 @@ function looksLikeCsv(deliverable: RunDeliverable): boolean {
 
 /** 每个 COMPLETED 排名运行取第一个可解析的 CSV 附件为一期快照（最新在前）。
  * 文件缺失/解析失败的运行自然跳过——不算轮次也不参与对比。 */
-export function loadRankingSnapshots(
+export async function loadRankingSnapshots(
   db: Db,
   merchantId: string,
-): RankingSnapshot[] {
-  const runs = listAgentRunsByMerchant(db, merchantId).filter(
+): Promise<RankingSnapshot[]> {
+  const runs = (await listAgentRunsByMerchant(db, merchantId)).filter(
     (run) => run.stage === "RANKING_BASELINE" && run.status === "COMPLETED",
   );
-  const deliverablesByRun = listDeliverablesByRunIds(
+  const deliverablesByRun = await listDeliverablesByRunIds(
     db,
     runs.map((run) => run.id),
   );

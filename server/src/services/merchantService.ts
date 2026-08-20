@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { Db } from "../db/connection.js";
+import { isUniqueViolation, type Db } from "../db/connection.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { requestFingerprint } from "../domain/hashing.js";
 import {
@@ -106,10 +106,10 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function createMerchant(
+export async function createMerchant(
   db: Db,
   input: CreateMerchantInput,
-): MutationResult<Merchant> {
+): Promise<MutationResult<Merchant>> {
   const key = requireIdempotencyKey(input.idempotencyKey, "idempotency_key");
   const slug = normalizeSlug(requireNonEmpty(input.slug, "slug"));
   const displayName = input.displayName ?? slug;
@@ -125,8 +125,8 @@ export function createMerchant(
     operator_user_ids: operatorUserIds,
   });
 
-  return db.transaction(() => {
-    const existing = findMerchantByIdempotencyKey(db, key);
+  return db.withTransaction(async (tx) => {
+    const existing = await findMerchantByIdempotencyKey(tx, key);
     const replay = resolveIdempotentCreate(existing, fingerprint);
     if (replay) return { entity: replay, replayed: true };
 
@@ -143,7 +143,7 @@ export function createMerchant(
       updatedAt: nowIso(),
     };
     try {
-      insertMerchant(db, merchant);
+      await insertMerchant(tx, merchant);
     } catch (err) {
       if (isUniqueViolation(err)) {
         throw conflict(`merchant slug "${slug}" already exists`, "DUPLICATE_SLUG");
@@ -151,16 +151,7 @@ export function createMerchant(
       throw err;
     }
     return { entity: merchant, replayed: false };
-  })();
-}
-
-/** Detect a better-sqlite3 UNIQUE constraint failure so callers can map it
- * to a friendly 409 instead of a raw 500. */
-export function isUniqueViolation(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    err.message.includes("UNIQUE constraint failed")
-  );
+  });
 }
 
 function validateLocationSemantics(input: CreateLocationInput): {
@@ -206,14 +197,14 @@ function validateLocationSemantics(input: CreateLocationInput): {
   return { readiness, missing, identities };
 }
 
-export function createLocation(
+export async function createLocation(
   db: Db,
   merchantId: string,
   input: CreateLocationInput,
-): MutationResult<Location> {
+): Promise<MutationResult<Location>> {
   const key = requireIdempotencyKey(input.idempotencyKey, "idempotency_key");
   const slug = normalizeSlug(requireNonEmpty(input.slug, "slug"));
-  const merchant = getMerchant(db, merchantId);
+  const merchant = await getMerchant(db, merchantId);
   if (!merchant) throw notFound(`merchant ${merchantId} not found`);
 
   const { readiness, missing, identities } = validateLocationSemantics(input);
@@ -228,8 +219,8 @@ export function createLocation(
     missing_requirements: missing,
   });
 
-  return db.transaction(() => {
-    const existing = findLocationByIdempotencyKey(db, key);
+  return db.withTransaction(async (tx) => {
+    const existing = await findLocationByIdempotencyKey(tx, key);
     const replay = resolveIdempotentCreate(existing, fingerprint);
     if (replay) return { entity: replay, replayed: true };
 
@@ -249,7 +240,7 @@ export function createLocation(
       updatedAt: nowIso(),
     };
     try {
-      insertLocation(db, location);
+      await insertLocation(tx, location);
     } catch (err) {
       if (isUniqueViolation(err)) {
         throw conflict(
@@ -260,7 +251,7 @@ export function createLocation(
       throw err;
     }
     return { entity: location, replayed: false };
-  })();
+  });
 }
 
 export { getMerchant, listMerchants, listLocationsByMerchant };

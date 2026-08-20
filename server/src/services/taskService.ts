@@ -152,32 +152,39 @@ export function buildEvent(
   };
 }
 
-function locationReadiness(db: Db, task: Task): string | null {
+async function locationReadiness(db: Db, task: Task): Promise<string | null> {
   if (!task.locationId) return null;
-  return getLocation(db, task.locationId)?.readinessStatus ?? null;
+  const location = await getLocation(db, task.locationId);
+  return location?.readinessStatus ?? null;
 }
 
-export function reevaluate(db: Db, task: Task): { status: Task["status"]; evidenceState: Task["evidenceState"] } {
+export async function reevaluate(
+  db: Db,
+  task: Task,
+): Promise<{ status: Task["status"]; evidenceState: Task["evidenceState"] }> {
   return evaluate(
     task.requiredEvidenceTypes,
     task.evidenceRefs,
     task.taskRevision,
-    locationReadiness(db, task),
+    await locationReadiness(db, task),
   );
 }
 
-/** Idempotency + optimistic-lock wrapper shared by all task sub-mutations. */
-function mutateTask(
+/** Idempotency + optimistic-lock wrapper shared by all task sub-mutations.
+ * `mutate` runs inside the transaction and receives the tx-bound `Db` so any
+ * repo calls it makes (e.g. via `reevaluate`) participate in the same
+ * transaction rather than escaping to a separate pooled connection. */
+async function mutateTask(
   db: Db,
   taskId: string,
   idempotencyKey: string,
   fingerprint: string,
   expectedStateVersion: number,
-  mutate: (task: Task) => Task,
-): { task: Task; replayed: boolean } {
+  mutate: (task: Task, tx: Db) => Task | Promise<Task>,
+): Promise<{ task: Task; replayed: boolean }> {
   requireIdempotencyKey(idempotencyKey, "idempotency_key");
-  return db.transaction(() => {
-    const task = getTask(db, taskId);
+  return db.withTransaction(async (tx) => {
+    const task = await getTask(tx, taskId);
     if (!task) throw notFound(`task ${taskId} not found`);
 
     const seen = task.mutationKeys[idempotencyKey];
@@ -195,10 +202,10 @@ function mutateTask(
       );
     }
 
-    const updated = mutate(task);
+    const updated = await mutate(task, tx);
     updated.mutationKeys[idempotencyKey] = fingerprint;
-    if (!updateTaskCas(db, updated, expectedStateVersion)) {
-      const fresh = getTask(db, taskId);
+    if (!(await updateTaskCas(tx, updated, expectedStateVersion))) {
+      const fresh = await getTask(tx, taskId);
       if (fresh && fresh.mutationKeys[idempotencyKey] === fingerprint) {
         return { task: fresh, replayed: true };
       }
@@ -208,27 +215,27 @@ function mutateTask(
       );
     }
     return { task: updated, replayed: false };
-  })();
+  });
 }
 
 /** Server-initiated mutation (no client expected_state_version): re-read the
  * freshest version and retry the CAS on STALE_STATE. Replay semantics still
  * come from mutationKeys — a crash between task commit and caller bookkeeping
  * replays instead of duplicating. */
-export function mutateTaskRetry(
+export async function mutateTaskRetry(
   db: Db,
   taskId: string,
   idempotencyKey: string,
   fingerprint: string,
-  mutate: (task: Task) => Task,
+  mutate: (task: Task, tx: Db) => Task | Promise<Task>,
   attempts = 5,
-): { task: Task; replayed: boolean } {
+): Promise<{ task: Task; replayed: boolean }> {
   let lastStale: ApiError | null = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const current = getTask(db, taskId);
+    const current = await getTask(db, taskId);
     if (!current) throw notFound(`task ${taskId} not found`);
     try {
-      return mutateTask(
+      return await mutateTask(
         db,
         taskId,
         idempotencyKey,
@@ -254,7 +261,10 @@ export interface CreateTaskInput {
   idempotency_key: string;
 }
 
-export function createTask(db: Db, input: CreateTaskInput): { task: Task; replayed: boolean } {
+export async function createTask(
+  db: Db,
+  input: CreateTaskInput,
+): Promise<{ task: Task; replayed: boolean }> {
   const key = requireIdempotencyKey(input.idempotency_key, "idempotency_key");
   validateDefinition(input.definition);
 
@@ -264,16 +274,16 @@ export function createTask(db: Db, input: CreateTaskInput): { task: Task; replay
     definition: input.definition,
   });
 
-  return db.transaction(() => {
-    const existing = findTaskByIdempotencyKey(db, key);
+  return db.withTransaction(async (tx) => {
+    const existing = await findTaskByIdempotencyKey(tx, key);
     const replay = resolveIdempotentCreate(existing, fingerprint);
     if (replay) return { task: replay, replayed: true };
 
-    const merchant = getMerchant(db, input.merchant_id);
+    const merchant = await getMerchant(tx, input.merchant_id);
     if (!merchant) throw notFound(`merchant ${input.merchant_id} not found`);
     let locationId: string | null = null;
     if (input.location_id !== undefined) {
-      const location = getLocation(db, input.location_id);
+      const location = await getLocation(tx, input.location_id);
       if (!location) throw notFound(`location ${input.location_id} not found`);
       if (location.merchantId !== merchant.id) {
         throw badRequest(`location ${input.location_id} belongs to a different merchant`);
@@ -328,7 +338,7 @@ export function createTask(db: Db, input: CreateTaskInput): { task: Task; replay
       base.requiredEvidenceTypes,
       [],
       1,
-      locationId ? (getLocation(db, locationId)?.readinessStatus ?? null) : null,
+      locationId ? ((await getLocation(tx, locationId))?.readinessStatus ?? null) : null,
     );
     base.status = derived.status;
     base.evidenceState = derived.evidenceState;
@@ -336,9 +346,9 @@ export function createTask(db: Db, input: CreateTaskInput): { task: Task; replay
       buildEvent("TASK_CREATED", 1, 1, { toStatus: derived.status }),
     ];
 
-    insertTask(db, base);
+    await insertTask(tx, base);
     return { task: base, replayed: false };
-  })();
+  });
 }
 
 export interface CreateRevisionInput {
@@ -351,7 +361,7 @@ export function createRevision(
   db: Db,
   taskId: string,
   input: CreateRevisionInput,
-): { task: Task; replayed: boolean } {
+): Promise<{ task: Task; replayed: boolean }> {
   validateDefinition(input.definition);
   const fingerprint = requestFingerprint({ definition: input.definition });
   return mutateTask(
@@ -360,7 +370,7 @@ export function createRevision(
     input.idempotency_key,
     fingerprint,
     input.expected_state_version,
-    (task) => {
+    async (task, tx) => {
       if (!canCreateRevision(task.status)) {
         throw conflict(
           `cannot revise a task in status ${task.status} (revoke approval first)`,
@@ -385,7 +395,7 @@ export function createRevision(
         stateVersion: task.stateVersion + 1,
         updatedAt: nowIso(),
       };
-      const derived = reevaluate(db, updated);
+      const derived = await reevaluate(tx, updated);
       updated.status = derived.status;
       updated.evidenceState = derived.evidenceState;
       updated.events = [
@@ -417,7 +427,7 @@ export function appendEvidence(
   db: Db,
   taskId: string,
   input: AppendEvidenceInput,
-): { task: Task; replayed: boolean } {
+): Promise<{ task: Task; replayed: boolean }> {
   requireNonEmpty(input.type, "type");
   requireNonEmpty(input.requirement_key, "requirement_key");
   requireIso(input.captured_at, "captured_at");
@@ -456,7 +466,7 @@ export function appendEvidence(
     input.idempotency_key,
     fingerprint,
     input.expected_state_version,
-    (task) => {
+    async (task, tx) => {
       if (!canAppendEvidence(task.status)) {
         throw conflict(
           `cannot append evidence to a task in status ${task.status}`,
@@ -483,7 +493,7 @@ export function appendEvidence(
         stateVersion: task.stateVersion + 1,
         updatedAt: nowIso(),
       };
-      const derived = reevaluate(db, updated);
+      const derived = await reevaluate(tx, updated);
       updated.status = derived.status;
       updated.evidenceState = derived.evidenceState;
       updated.events = [
@@ -509,7 +519,7 @@ export function linkConversation(
   db: Db,
   taskId: string,
   input: LinkConversationInput,
-): { task: Task; replayed: boolean } {
+): Promise<{ task: Task; replayed: boolean }> {
   requireNonEmpty(input.conversation_id, "conversation_id");
   const fingerprint = requestFingerprint({ conversation_id: input.conversation_id });
   return mutateTask(
@@ -556,12 +566,12 @@ export interface ApprovalPreviewResult {
 }
 
 /** Non-mutating re-check of whether the task can be approved right now. */
-export function approvalPreview(
+export async function approvalPreview(
   db: Db,
   taskId: string,
   input: ApprovalPreviewInput,
-): ApprovalPreviewResult {
-  const task = getTask(db, taskId);
+): Promise<ApprovalPreviewResult> {
+  const task = await getTask(db, taskId);
   if (!task) throw notFound(`task ${taskId} not found`);
   if (task.taskRevision !== input.task_revision) {
     throw conflict(
@@ -576,7 +586,7 @@ export function approvalPreview(
     );
   }
 
-  const { evidenceState } = reevaluate(db, task);
+  const { evidenceState } = await reevaluate(db, task);
   const blockers: string[] = [];
   if (task.status !== "READY_FOR_APPROVAL") {
     blockers.push(`status_must_be_ready_for_approval (current ${task.status})`);
@@ -584,7 +594,7 @@ export function approvalPreview(
   if (evidenceState !== "VERIFIED") {
     blockers.push(`evidence_not_verified (current ${evidenceState})`);
   }
-  const readiness = locationReadiness(db, task);
+  const readiness = await locationReadiness(db, task);
   if (readiness !== null && readiness !== "READY") {
     blockers.push(`location_not_ready (current ${readiness})`);
   }
@@ -612,7 +622,7 @@ export function approvalDecision(
   db: Db,
   taskId: string,
   input: ApprovalDecisionInput,
-): { task: Task; replayed: boolean } {
+): Promise<{ task: Task; replayed: boolean }> {
   const action = input.decision as ApprovalAction;
   if (!["APPROVE", "REJECT", "REVOKE"].includes(action)) {
     throw badRequest(`decision must be one of APPROVE/REJECT/REVOKE`);
