@@ -12,6 +12,22 @@ function sessionTtlHours(raw: string | undefined): number {
   return parsed;
 }
 
+function sessionCookieSecure(raw: string | undefined, nodeEnv: string | undefined): boolean {
+  if (raw === undefined) {
+    if (nodeEnv === "production") {
+      throw new Error("SESSION_COOKIE_SECURE must be explicitly true in production");
+    }
+    return false;
+  }
+  if (raw !== "true" && raw !== "false") {
+    throw new Error("SESSION_COOKIE_SECURE must be exactly true or false");
+  }
+  if (nodeEnv === "production" && raw !== "true") {
+    throw new Error("SESSION_COOKIE_SECURE must be explicitly true in production");
+  }
+  return raw === "true";
+}
+
 export interface ServerConfig {
   port: number;
   host: string;
@@ -42,7 +58,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     databaseUrl: env.DATABASE_URL ?? "postgres://seo_ops:seo_ops@localhost:5432/seo_ops_dev",
     sessionSecret,
     sessionTtlHours: sessionTtlHours(env.SESSION_TTL_HOURS),
-    sessionCookieSecure: env.SESSION_COOKIE_SECURE === "true",
+    sessionCookieSecure: sessionCookieSecure(env.SESSION_COOKIE_SECURE, env.NODE_ENV),
     coreAiBaseUrl: env.CORE_AI_BASE_URL?.trim() || null,
     coreAiToken: env.CORE_AI_TOKEN?.trim() || null,
     copilotAgentId: env.COPILOT_AGENT_ID?.trim() || null,

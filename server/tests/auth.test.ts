@@ -114,6 +114,9 @@ describe("cookie session authentication", () => {
       payload: { email: "operator@example.com", password: PASSWORD },
     });
     expect(cookiesFrom(login)).toContain("Secure");
+    expect(cookiesFrom(login)).toContain("HttpOnly");
+    expect(cookiesFrom(login)).toContain("SameSite=Strict");
+    expect(cookiesFrom(login)).toContain("Path=/");
   });
 
   it("does not disclose why an invalid login failed", async () => {
@@ -234,6 +237,27 @@ describe("session configuration", () => {
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "12.5" })).toThrow("SESSION_TTL_HOURS");
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "9007199254740992" })).toThrow("SESSION_TTL_HOURS");
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "721" })).toThrow("SESSION_TTL_HOURS");
-    expect(loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "720" }).sessionTtlHours).toBe(720);
+    expect(loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "720", SESSION_COOKIE_SECURE: "true" }).sessionTtlHours).toBe(720);
+  });
+
+  it("parses SESSION_COOKIE_SECURE exactly and requires true in production", () => {
+    const production = {
+      NODE_ENV: "production",
+      SESSION_SECRET: "production-session-secret-must-have-at-least-32-characters",
+    };
+    expect(() => loadConfig(production)).toThrow("SESSION_COOKIE_SECURE");
+    expect(() => loadConfig({ ...production, SESSION_COOKIE_SECURE: "false" })).toThrow("SESSION_COOKIE_SECURE");
+    expect(loadConfig({ ...production, SESSION_COOKIE_SECURE: "true" }).sessionCookieSecure).toBe(true);
+    for (const invalid of ["TRUE", "1", "yes", "treu", "", " ", " true", "false "]) {
+      expect(() => loadConfig({ ...production, SESSION_COOKIE_SECURE: invalid })).toThrow("SESSION_COOKIE_SECURE");
+    }
+
+    const development = {
+      NODE_ENV: "development",
+      SESSION_SECRET: "development-session-secret-must-have-at-least-32-characters",
+    };
+    expect(loadConfig(development).sessionCookieSecure).toBe(false);
+    expect(loadConfig({ ...development, SESSION_COOKIE_SECURE: "false" }).sessionCookieSecure).toBe(false);
+    expect(loadConfig({ ...development, SESSION_COOKIE_SECURE: "true" }).sessionCookieSecure).toBe(true);
   });
 });
