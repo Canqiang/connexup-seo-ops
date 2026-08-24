@@ -133,17 +133,27 @@ export function createCoreAiClient(opts: {
       await request("POST", `/api/runs/${encodeURIComponent(runId)}/cancel`);
     },
     async downloadArtifact(url) {
-      // Absolute caller-resolvable URL per the core-ai ArtifactRef contract;
-      // tolerate relative paths by resolving against the configured base.
-      const target = /^https?:\/\//i.test(url) ? url : `${baseUrl}${url.startsWith("/") ? "" : "/"}${url}`;
+      let target: URL;
+      let configuredBase: URL;
+      try {
+        configuredBase = new URL(baseUrl);
+        target = new URL(url, configuredBase);
+      } catch {
+        throw new CoreAiError(0, "artifact download URL is invalid");
+      }
+      if (target.protocol !== "http:" && target.protocol !== "https:") {
+        throw new CoreAiError(0, "artifact download URL must use http(s)");
+      }
       let response: Response;
       try {
         response = await doFetch(target, {
-          headers: { Authorization: `Bearer ${token}` },
+          ...(target.origin === configuredBase.origin
+            ? { headers: { Authorization: `Bearer ${token}` } }
+            : {}),
           signal: AbortSignal.timeout(timeoutMs),
         });
-      } catch (err) {
-        throw new CoreAiError(0, `artifact download failed: ${err instanceof Error ? err.message : "network error"}`);
+      } catch {
+        throw new CoreAiError(0, "artifact download failed");
       }
       if (!response.ok) {
         throw new CoreAiError(response.status, `artifact download returned ${response.status}`);
