@@ -117,6 +117,8 @@ describe("stage-run routes", () => {
     const row = (await getAgentRun(db, body.id))!;
     expect(row.status).toBe("RUNNING");
     expect(row.taskId).toBeNull();
+    expect(body.triggered_by).toBe("op-1");
+    expect(row.createdBy).toBe("op-1");
   });
 
   it("replays the same key+body as 200 with the same id, rejects a different body", async () => {

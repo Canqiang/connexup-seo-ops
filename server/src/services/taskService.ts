@@ -37,9 +37,6 @@ import type {
 } from "../repos/taskTypes.js";
 import { requireIdempotencyKey, resolveIdempotentCreate } from "./merchantService.js";
 
-/** Fixed actor until real auth exists (matches /api/auth/me stub). */
-export const ACTOR_ID = "local-dev";
-
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -111,6 +108,7 @@ function buildRevision(
   def: DefinitionInput,
   revision: number,
   createdAt: string,
+  actorId: string,
 ): TaskDefinitionRecord {
   return {
     revision,
@@ -124,7 +122,7 @@ function buildRevision(
     executionSpec: def.execution_spec,
     executionSpecHash: executionSpecHash(def.execution_spec),
     requiredEvidenceTypes: def.required_evidence_types,
-    createdBy: ACTOR_ID,
+    createdBy: actorId,
     createdAt,
   };
 }
@@ -133,6 +131,7 @@ export function buildEvent(
   type: string,
   taskRevision: number,
   resultingStateVersion: number,
+  actorId: string,
   options: {
     fromStatus?: Task["status"];
     toStatus?: Task["status"];
@@ -142,7 +141,7 @@ export function buildEvent(
   return {
     id: crypto.randomUUID(),
     type,
-    actorId: ACTOR_ID,
+    actorId,
     ...(options.fromStatus ? { fromStatus: options.fromStatus } : {}),
     ...(options.toStatus ? { toStatus: options.toStatus } : {}),
     taskRevision,
@@ -264,6 +263,7 @@ export interface CreateTaskInput {
 export async function createTask(
   db: Db,
   input: CreateTaskInput,
+  actorId: string,
 ): Promise<{ task: Task; replayed: boolean }> {
   const key = requireIdempotencyKey(input.idempotency_key, "idempotency_key");
   validateDefinition(input.definition);
@@ -292,13 +292,13 @@ export async function createTask(
     }
 
     const createdAt = nowIso();
-    const revision = buildRevision(input.definition, 1, createdAt);
+    const revision = buildRevision(input.definition, 1, createdAt, actorId);
     const conversationLinks: ConversationLinkRecord[] = [];
     if (input.definition.conversation_id) {
       conversationLinks.push({
         conversationId: input.definition.conversation_id,
         relationship: "ORIGINATING_DRAFT",
-        linkedBy: ACTOR_ID,
+        linkedBy: actorId,
         linkedAt: createdAt,
       });
     }
@@ -330,7 +330,7 @@ export async function createTask(
       mutationKeys: {},
       creationIdempotencyKey: key,
       requestFingerprint: fingerprint,
-      createdBy: ACTOR_ID,
+      createdBy: actorId,
       createdAt,
       updatedAt: createdAt,
     };
@@ -343,7 +343,7 @@ export async function createTask(
     base.status = derived.status;
     base.evidenceState = derived.evidenceState;
     base.events = [
-      buildEvent("TASK_CREATED", 1, 1, { toStatus: derived.status }),
+      buildEvent("TASK_CREATED", 1, 1, actorId, { toStatus: derived.status }),
     ];
 
     await insertTask(tx, base);
@@ -361,6 +361,7 @@ export function createRevision(
   db: Db,
   taskId: string,
   input: CreateRevisionInput,
+  actorId: string,
 ): Promise<{ task: Task; replayed: boolean }> {
   validateDefinition(input.definition);
   const fingerprint = requestFingerprint({ definition: input.definition });
@@ -377,7 +378,7 @@ export function createRevision(
           "INVALID_TRANSITION",
         );
       }
-      const revision = buildRevision(input.definition, task.taskRevision + 1, nowIso());
+      const revision = buildRevision(input.definition, task.taskRevision + 1, nowIso(), actorId);
       const updated: Task = {
         ...task,
         taskType: revision.taskType,
@@ -400,7 +401,7 @@ export function createRevision(
       updated.evidenceState = derived.evidenceState;
       updated.events = [
         ...task.events,
-        buildEvent("TASK_REVISED", updated.taskRevision, updated.stateVersion, {
+        buildEvent("TASK_REVISED", updated.taskRevision, updated.stateVersion, actorId, {
           fromStatus: task.status,
           toStatus: updated.status,
         }),
@@ -427,6 +428,7 @@ export function appendEvidence(
   db: Db,
   taskId: string,
   input: AppendEvidenceInput,
+  actorId: string,
 ): Promise<{ task: Task; replayed: boolean }> {
   requireNonEmpty(input.type, "type");
   requireNonEmpty(input.requirement_key, "requirement_key");
@@ -484,7 +486,7 @@ export function appendEvidence(
         capturedAt: input.captured_at,
         verificationStatus: input.verification_status as EvidenceVerification,
         requirementKey: input.requirement_key,
-        createdBy: ACTOR_ID,
+        createdBy: actorId,
         createdAt: nowIso(),
       };
       const updated: Task = {
@@ -498,7 +500,7 @@ export function appendEvidence(
       updated.evidenceState = derived.evidenceState;
       updated.events = [
         ...task.events,
-        buildEvent("EVIDENCE_APPENDED", updated.taskRevision, updated.stateVersion, {
+        buildEvent("EVIDENCE_APPENDED", updated.taskRevision, updated.stateVersion, actorId, {
           fromStatus: task.status,
           toStatus: updated.status,
           referenceId: evidence.id,
@@ -519,6 +521,7 @@ export function linkConversation(
   db: Db,
   taskId: string,
   input: LinkConversationInput,
+  actorId: string,
 ): Promise<{ task: Task; replayed: boolean }> {
   requireNonEmpty(input.conversation_id, "conversation_id");
   const fingerprint = requestFingerprint({ conversation_id: input.conversation_id });
@@ -532,7 +535,7 @@ export function linkConversation(
       const link: ConversationLinkRecord = {
         conversationId: input.conversation_id,
         relationship: "TASK_CHAT",
-        linkedBy: ACTOR_ID,
+        linkedBy: actorId,
         linkedAt: nowIso(),
       };
       const updated: Task = {
@@ -543,7 +546,7 @@ export function linkConversation(
       };
       updated.events = [
         ...task.events,
-        buildEvent("CONVERSATION_LINKED", updated.taskRevision, updated.stateVersion),
+        buildEvent("CONVERSATION_LINKED", updated.taskRevision, updated.stateVersion, actorId),
       ];
       return updated;
     },
@@ -622,6 +625,7 @@ export function approvalDecision(
   db: Db,
   taskId: string,
   input: ApprovalDecisionInput,
+  actorId: string,
 ): Promise<{ task: Task; replayed: boolean }> {
   const action = input.decision as ApprovalAction;
   if (!["APPROVE", "REJECT", "REVOKE"].includes(action)) {
@@ -673,7 +677,7 @@ export function approvalDecision(
         executionSpecHash: task.executionSpecHash,
         expectedStateVersion: input.expected_state_version,
         resultingStateVersion: resultingVersion,
-        actorId: ACTOR_ID,
+        actorId,
         decidedAt: nowIso(),
       };
       const eventType =
@@ -686,7 +690,7 @@ export function approvalDecision(
         approvalDecisions: [...task.approvalDecisions, decision],
         events: [
           ...task.events,
-          buildEvent(eventType, task.taskRevision, resultingVersion, {
+          buildEvent(eventType, task.taskRevision, resultingVersion, actorId, {
             fromStatus: task.status,
             toStatus: next,
             referenceId: decision.id,

@@ -275,7 +275,7 @@ export function registerSeoOpsRoutes(
         dailyRunLimit: ctx.config.agentRunDailyLimit,
         log: { warn: (message) => request.log.warn(message) },
       };
-      const { run, replayed } = await triggerStageRun(deps, merchantId, body);
+      const { run, replayed } = await triggerStageRun(deps, merchantId, body, actor.userId);
       reply.status(replayed ? 200 : 202);
       return stageRunView(run, await listDeliverablesByRun(ctx.db, run.id));
     },
@@ -499,7 +499,7 @@ export function registerSeoOpsRoutes(
     if (body.location_id) {
       await requireLocationAccess(ctx.db, actor, body.merchant_id, body.location_id);
     }
-    const { task, replayed } = await createTask(ctx.db, body);
+    const { task, replayed } = await createTask(ctx.db, body, actor.userId);
     reply.status(replayed ? 200 : 201);
     return taskView(task, await taskNames(ctx, task));
   });
@@ -509,7 +509,7 @@ export function registerSeoOpsRoutes(
     const { taskId } = request.params as { taskId: string };
     await requireTaskAccess(ctx.db, actor, taskId);
     const body = createRevisionSchema.parse(request.body);
-    const { task, replayed } = await createRevision(ctx.db, taskId, body);
+    const { task, replayed } = await createRevision(ctx.db, taskId, body, actor.userId);
     reply.status(replayed ? 200 : 201);
     return taskView(task, await taskNames(ctx, task));
   });
@@ -519,7 +519,7 @@ export function registerSeoOpsRoutes(
     const { taskId } = request.params as { taskId: string };
     await requireTaskAccess(ctx.db, actor, taskId);
     const body = appendEvidenceSchema.parse(request.body);
-    const { task, replayed } = await appendEvidence(ctx.db, taskId, body);
+    const { task, replayed } = await appendEvidence(ctx.db, taskId, body, actor.userId);
     reply.status(replayed ? 200 : 201);
     return taskView(task, await taskNames(ctx, task));
   });
@@ -531,7 +531,7 @@ export function registerSeoOpsRoutes(
       const { taskId } = request.params as { taskId: string };
       await requireTaskAccess(ctx.db, actor, taskId);
       const body = linkConversationSchema.parse(request.body);
-      const { task, replayed } = await linkConversation(ctx.db, taskId, body);
+      const { task, replayed } = await linkConversation(ctx.db, taskId, body, actor.userId);
       reply.status(replayed ? 200 : 201);
       return taskView(task, await taskNames(ctx, task));
     },
@@ -555,7 +555,7 @@ export function registerSeoOpsRoutes(
       const { taskId } = request.params as { taskId: string };
       await requireTaskAccess(ctx.db, actor, taskId);
       const body = approvalDecisionSchema.parse(request.body);
-      const { task, replayed } = await approvalDecision(ctx.db, taskId, body);
+      const { task, replayed } = await approvalDecision(ctx.db, taskId, body, actor.userId);
       reply.status(replayed ? 200 : 201);
       return taskView(task, await taskNames(ctx, task));
     },

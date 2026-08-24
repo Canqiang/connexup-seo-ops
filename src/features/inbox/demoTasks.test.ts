@@ -20,6 +20,18 @@ test("demo task owner filter uses the operator id exposed by the real filter", (
   expect(filterDemoTasks(tasks, { owner_id: "user-1" })).toHaveLength(7);
 });
 
+test("demo tasks without an operator remain visibly unassigned", () => {
+  const merchant = {
+    ...portfolioFixture.merchants[0],
+    operators: [],
+    operator_user_ids: [],
+  };
+
+  const tasks = buildDemoTasks([merchant], new Date("2026-08-20T08:00:00Z"));
+
+  expect(tasks.every((task) => task.owner_id === "unassigned")).toBe(true);
+});
+
 test("weekly GBP schedule materializes as four independent dated tasks", () => {
   const tasks = buildDemoTasks(portfolioFixture.merchants, new Date("2026-08-20T08:00:00Z"));
   const posts = tasks.filter((task) => task.task_type === "GBP_POST");

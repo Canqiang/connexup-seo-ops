@@ -60,7 +60,7 @@ describe("SEO Ops authorization", () => {
       merchant_id: merchantB.entity.id,
       definition: taskDefinition,
       idempotency_key: "task-b",
-    });
+    }, userB.id);
     const locationB = await createLocation(userA.db, merchantB.entity.id, {
       slug: "merchant-b-location",
       readinessStatus: "INCOMPLETE",
@@ -76,7 +76,7 @@ describe("SEO Ops authorization", () => {
       requirement_key: "audit",
       expected_state_version: 1,
       idempotency_key: "hidden-audit",
-    });
+    }, userB.id);
     const questionnaireB = await createQuestionnaire(userA.db, merchantB.entity.id, {
       idempotencyKey: "questionnaire-b",
     });
@@ -234,7 +234,7 @@ describe("SEO Ops authorization", () => {
       merchant_id: merchant.entity.id,
       definition: taskDefinition,
       idempotency_key: "approval-task",
-    });
+    }, manager.actor.userId);
 
     const response = await manager.inject({
       method: "POST",

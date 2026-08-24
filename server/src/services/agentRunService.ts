@@ -119,6 +119,7 @@ export async function triggerStageRun(
   deps: AgentRunDeps,
   merchantId: string,
   input: TriggerStageRunInput,
+  actorId: string,
 ): Promise<{ run: AgentRun; replayed: boolean }> {
   const key = requireIdempotencyKey(input.idempotency_key, "idempotency_key");
   const stage = input.stage as AgentRunStage;
@@ -195,13 +196,13 @@ export async function triggerStageRun(
     error: null,
     errorCode: null,
     tokenUsage: {},
-    triggeredBy: "local-dev",
+    triggeredBy: actorId,
     triggeredAt: now,
     lastPolledAt: null,
     completedAt: null,
     creationIdempotencyKey: key,
     requestFingerprint: fingerprint,
-    createdBy: "local-dev",
+    createdBy: actorId,
     createdAt: now,
     updatedAt: now,
   };

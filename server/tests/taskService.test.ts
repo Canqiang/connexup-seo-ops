@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { executionSpecHash } from "../src/domain/hashing.js";
+import { getTask } from "../src/repos/taskRepo.js";
+import { createTask } from "../src/services/taskService.js";
 import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 /** Fresh app + fresh schema-isolated postgres db per test. */
@@ -85,6 +87,93 @@ describe("POST /api/seo-ops/tasks", () => {
     expect(task.evidence_refs).toEqual([]);
     expect(task.merchant_name).toBe("Acme");
     expect(task.location_name).toBe("Downtown");
+  });
+
+  it("records the authenticated operator on every task audit record", async () => {
+    const built = await createAuthenticatedTestApp();
+    const { app: actorApp, actor, db } = built;
+    try {
+      const { task: created } = await seededTask(actorApp);
+      expect((await getTask(db, created.id))!.createdBy).toBe(actor.userId);
+
+      const revised = await actorApp.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${created.id}/revisions`,
+        payload: {
+          definition: definition({ title: "Fix revised title" }),
+          expected_state_version: 1,
+          idempotency_key: "actor-revision",
+        },
+      });
+      expect(revised.statusCode).toBe(201);
+
+      const withEvidence = await actorApp.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${created.id}/evidence`,
+        payload: {
+          type: "APPROVAL_REPORT",
+          source_ref: "gsheets://row/actor",
+          captured_at: "2026-08-19T10:00:00.000Z",
+          verification_status: "VERIFIED",
+          requirement_key: "APPROVAL_REPORT",
+          expected_state_version: 2,
+          idempotency_key: "actor-evidence",
+        },
+      });
+      expect(withEvidence.statusCode).toBe(201);
+
+      const preview = await actorApp.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${created.id}/approval-previews`,
+        payload: { task_revision: 2, expected_state_version: 3 },
+      });
+      const approved = await actorApp.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${created.id}/approval-decisions`,
+        payload: {
+          decision: "APPROVE",
+          task_revision: 2,
+          execution_spec_hash: preview.json().execution_spec_hash,
+          expected_state_version: 3,
+          idempotency_key: "actor-approval",
+        },
+      });
+      expect(approved.statusCode).toBe(201);
+
+      const stored = (await getTask(db, created.id))!;
+      expect(stored.revisions.at(-1)!.createdBy).toBe(actor.userId);
+      expect(stored.evidenceRefs.at(-1)!.createdBy).toBe(actor.userId);
+      expect(stored.approvalDecisions.at(-1)!.actorId).toBe(actor.userId);
+      expect(stored.events.every((event) => event.actorId === actor.userId)).toBe(true);
+    } finally {
+      await actorApp.close();
+    }
+  });
+
+  it("keeps the original task actor on an idempotent replay", async () => {
+    const { app: actorApp, db, actor } = await createAuthenticatedTestApp();
+    try {
+      const merchant = (
+        await actorApp.inject({
+          method: "POST",
+          url: "/api/seo-ops/merchants",
+          payload: { ...MERCHANT, idempotency_key: "actor-merchant" },
+        })
+      ).json();
+      const input = {
+        merchant_id: merchant.id,
+        definition: definition(),
+        idempotency_key: "actor-task-replay",
+      };
+      const first = await createTask(db, input, actor.userId);
+      const replay = await createTask(db, input, "op-replaying-operator");
+
+      expect(replay.replayed).toBe(true);
+      expect(replay.task.id).toBe(first.task.id);
+      expect(replay.task.createdBy).toBe(actor.userId);
+    } finally {
+      await actorApp.close();
+    }
   });
 
   it("404 when merchant is missing or location belongs elsewhere", async () => {

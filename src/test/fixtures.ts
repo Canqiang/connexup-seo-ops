@@ -31,7 +31,7 @@ export const stageRunRunningFixture: StageRunView = {
   core_run_id: "core-1", core_status: "RUNNING", input_message: "为该商户生成关键词库…",
   output_preview: null, token_usage: {},
   deliverables: [],
-  triggered_by: "local-dev", triggered_at: "2026-08-18T08:00:00Z",
+  triggered_by: "user-1", triggered_at: "2026-08-18T08:00:00Z",
   created_at: "2026-08-18T08:00:00Z", updated_at: "2026-08-18T08:00:05Z",
 };
 
