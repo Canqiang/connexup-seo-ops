@@ -22,8 +22,24 @@ test.each([
   expect(safeReturnTo(path)).toBe("/seo-ops/");
 });
 
-test("keeps a same-origin SEO Ops route", () => {
-  expect(safeReturnTo("/seo-ops/tasks/task-1?tab=evidence")).toBe("/seo-ops/tasks/task-1?tab=evidence");
+test("browser normalization turns an encoded parent segment into an out-of-scope path", () => {
+  expect(new URL("/seo-ops/%2e%2e/settings", "https://seo-ops.invalid").pathname).toBe("/settings");
+  expect(safeReturnTo("/seo-ops/%2e%2e/settings")).toBe("/seo-ops/");
+});
+
+test.each([
+  ["literal parent", "/seo-ops/../settings"],
+  ["literal current", "/seo-ops/./tasks"],
+  ["encoded parent", "/seo-ops/%2e%2e/settings"],
+  ["mixed-case double encoding", "/seo-ops/%252E%252e%252Fsettings"],
+  ["mixed slash", "/seo-ops/%2e%2e%5csettings"],
+  ["query and fragment", "/seo-ops/%2e%2e/settings?tab=evidence#review"],
+])("rejects a %s dot-segment escape", (_label, path) => {
+  expect(safeReturnTo(path)).toBe("/seo-ops/");
+});
+
+test("keeps a same-origin SEO Ops deep link query and fragment", () => {
+  expect(safeReturnTo("/seo-ops/tasks/task-1?tab=evidence#review")).toBe("/seo-ops/tasks/task-1?tab=evidence#review");
 });
 
 test("recognizes the canonical login route with one trailing slash", () => {
