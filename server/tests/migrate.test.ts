@@ -45,4 +45,40 @@ describe("migrate on postgres", () => {
       definition.includes("identity_type") && definition.includes("HUMAN") && definition.includes("SERVICE"),
     )).toBe(true);
   });
+
+  it("upgrades an existing seo_users table with an idempotent identity-type check", async () => {
+    const legacy = await createTestDb();
+    try {
+      await legacy.db.exec(`CREATE TABLE seo_users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        identity_type TEXT NOT NULL,
+        permissions TEXT NOT NULL DEFAULT '[]',
+        password_hash TEXT,
+        status TEXT NOT NULL,
+        failed_login_count INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT,
+        last_login_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+
+      await migrate(legacy.db);
+      await migrate(legacy.db);
+
+      await expect(legacy.db.exec(
+        `INSERT INTO seo_users
+          (id, email, display_name, role, identity_type, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          "legacy-user", "legacy@example.com", "Legacy", "seo_lead", "MACHINE", "ACTIVE",
+          "2026-08-24T00:00:00.000Z", "2026-08-24T00:00:00.000Z",
+        ],
+      )).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await legacy.teardown();
+    }
+  });
 });

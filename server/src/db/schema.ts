@@ -4,7 +4,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     email TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     role TEXT NOT NULL,
-    identity_type TEXT NOT NULL CHECK (identity_type IN ('HUMAN', 'SERVICE')),
+    identity_type TEXT NOT NULL CONSTRAINT seo_users_identity_type_check CHECK (identity_type IN ('HUMAN', 'SERVICE')),
     permissions TEXT NOT NULL DEFAULT '[]',
     password_hash TEXT,
     status TEXT NOT NULL,
