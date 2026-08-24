@@ -19,7 +19,6 @@ import {
   loadRankingSnapshots,
 } from "../services/rankingService.js";
 import {
-  ACTOR_ID,
   appendEvidence,
   approvalDecision,
   approvalPreview,
@@ -201,20 +200,11 @@ async function getQuestionnaireByShareSlugOr404(
   return questionnaire;
 }
 
-/** Register all /api/seo-ops/* routes + auth/config stubs. */
+/** Register all /api/seo-ops/* routes. */
 export function registerSeoOpsRoutes(
   app: FastifyInstance,
   ctx: AppContext,
 ): void {
-  // Fixed identity until real auth exists; `*` lets every frontend
-  // hasPermission() check pass.
-  app.get("/api/auth/me", async () => ({
-    user_id: ACTOR_ID,
-    name: "Local Operator",
-    role: "seo_lead",
-    permissions: ["*"],
-  }));
-
   app.get("/api/seo-ops/config", async () => {
     // Copilot is intentionally not wired this phase. Hardcode false so stray
     // CORE_AI_* env vars can't surface a UI that calls unimplemented

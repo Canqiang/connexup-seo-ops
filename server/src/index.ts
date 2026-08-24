@@ -1,6 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
+import { registerActorResolution } from "./auth/httpAuth.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { createDb, type Db } from "./db/connection.js";
 import { migrate } from "./db/migrate.js";
@@ -8,6 +10,7 @@ import {
   registerErrorHandler,
   registerSeoOpsRoutes,
 } from "./routes/seoOps.js";
+import { registerAuthRoutes } from "./routes/auth.js";
 import { createCoreAiClient, type CoreAiClient } from "./services/coreAiClient.js";
 import { AgentRunPoller } from "./services/agentRunPoller.js";
 
@@ -56,9 +59,13 @@ export async function buildApp(
 
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
 
+  await app.register(cookie);
+
   app.get("/health-check", async () => ({ status: "ok" }));
 
   registerErrorHandler(app);
+  registerActorResolution(app, ctx);
+  registerAuthRoutes(app, ctx);
   registerSeoOpsRoutes(app, ctx);
 
   let poller: AgentRunPoller | null = null;

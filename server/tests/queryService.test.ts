@@ -85,18 +85,13 @@ async function createTask(
   return res.json();
 }
 
-describe("auth + config stubs", () => {
-  it("GET /api/auth/me returns the fixed identity", async () => {
+describe("auth + config", () => {
+  it("GET /api/auth/me requires authentication", async () => {
     const app = await makeApp();
     try {
       const res = await app.inject({ method: "GET", url: "/api/auth/me" });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({
-        user_id: "local-dev",
-        name: "Local Operator",
-        role: "seo_lead",
-        permissions: ["*"],
-      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toMatchObject({ error_code: "AUTH_REQUIRED" });
     } finally {
       await app.close();
     }
