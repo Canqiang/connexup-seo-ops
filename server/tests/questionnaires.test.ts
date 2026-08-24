@@ -1,24 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildApp } from "../src/index.js";
-import { loadConfig } from "../src/config.js";
-import { createTestDb } from "./helpers/pgTest.js";
+import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 /** Fresh app + fresh schema-isolated postgres db per test. */
 async function makeApp() {
-  const ctx = await createTestDb();
-  const result = await buildApp(
-    {
-      ...loadConfig(),
-      coreAiBaseUrl: null,
-      coreAiToken: null,
-      agentRunAgentId: null,
-    },
-    { db: ctx.db },
-  );
-  result.app.addHook("onClose", async () => {
-    await ctx.teardown();
-  });
-  return result;
+  return createAuthenticatedTestApp();
 }
 
 async function seedMerchant(app: Awaited<ReturnType<typeof makeApp>>["app"]) {

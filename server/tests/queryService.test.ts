@@ -1,27 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildApp } from "../src/index.js";
-import { loadConfig } from "../src/config.js";
 import { insertAgentRun, upsertDeliverable } from "../src/repos/agentRunRepo.js";
-import { createTestDb } from "./helpers/pgTest.js";
+import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 /** Fresh app + fresh schema-isolated postgres db per test. */
 async function makeApp(): Promise<FastifyInstance> {
-  const ctx = await createTestDb();
-  const { app } = await buildApp({ ...loadConfig() }, { db: ctx.db });
-  app.addHook("onClose", async () => {
-    await ctx.teardown();
-  });
-  return app;
+  return (await createAuthenticatedTestApp()).app;
 }
 
 async function makeBuiltApp() {
-  const ctx = await createTestDb();
-  const built = await buildApp({ ...loadConfig() }, { db: ctx.db });
-  built.app.addHook("onClose", async () => {
-    await ctx.teardown();
-  });
-  return built;
+  return createAuthenticatedTestApp();
 }
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
@@ -86,12 +74,12 @@ async function createTask(
 }
 
 describe("auth + config", () => {
-  it("GET /api/auth/me requires authentication", async () => {
+  it("GET /api/auth/me resolves the authenticated route-test actor", async () => {
     const app = await makeApp();
     try {
       const res = await app.inject({ method: "GET", url: "/api/auth/me" });
-      expect(res.statusCode).toBe(401);
-      expect(res.json()).toMatchObject({ error_code: "AUTH_REQUIRED" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ user_id: "op-1" });
     } finally {
       await app.close();
     }

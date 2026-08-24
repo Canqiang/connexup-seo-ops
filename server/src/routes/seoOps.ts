@@ -4,6 +4,13 @@ import fsPromises from "node:fs/promises";
 import type { AppContext } from "../index.js";
 import { ApiError } from "../errors.js";
 import {
+  requireDeliverableAccess,
+  requireMerchantAccess,
+  requirePermission,
+  requireRunAccess,
+  requireTaskAccess,
+} from "../auth/httpAuth.js";
+import {
   createLocation,
   createMerchant,
 } from "../services/merchantService.js";
@@ -38,8 +45,6 @@ import {
   addManualDeliverable,
   cancelStageRun,
   deliverableView,
-  getAgentRunOr404,
-  getDeliverableOr404,
   listStageRuns,
   stageRunView,
   triggerStageRun,
@@ -52,7 +57,6 @@ import {
 import { getMerchant } from "../repos/merchantRepo.js";
 import { getQuestionnaireByShareSlug } from "../repos/questionnaireRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
-import { getTask } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import { locationView, merchantView, taskView, questionnaireView } from "../views/mappers.js";
 import {
@@ -180,15 +184,6 @@ async function taskNames(ctx: AppContext, task: Task): Promise<{
   };
 }
 
-async function taskOr404(ctx: AppContext, taskId: string): Promise<Task> {
-  const task = await getTask(ctx.db, taskId);
-  if (!task) {
-    const err = new ApiError(404, `task ${taskId} not found`, undefined);
-    throw err;
-  }
-  return task;
-}
-
 async function getQuestionnaireByShareSlugOr404(
   ctx: AppContext,
   slug: string,
@@ -205,7 +200,8 @@ export function registerSeoOpsRoutes(
   app: FastifyInstance,
   ctx: AppContext,
 ): void {
-  app.get("/api/seo-ops/config", async () => {
+  app.get("/api/seo-ops/config", async (request) => {
+    requirePermission(request, "seoops.view");
     // Copilot is intentionally not wired this phase. Hardcode false so stray
     // CORE_AI_* env vars can't surface a UI that calls unimplemented
     // /api/sessions endpoints.
@@ -216,29 +212,38 @@ export function registerSeoOpsRoutes(
     };
   });
 
-  app.get("/api/seo-ops/portfolio", async () => portfolio(ctx.db));
+  app.get("/api/seo-ops/portfolio", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    return portfolio(ctx.db, actor.userId);
+  });
 
-  app.get("/api/seo-ops/inbox", async (request) =>
-    inbox(ctx.db, request.query as Record<string, unknown>),
-  );
+  app.get("/api/seo-ops/inbox", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    return inbox(ctx.db, request.query as Record<string, unknown>, actor.userId);
+  });
 
-  app.get("/api/seo-ops/reviews", async (request) =>
-    reviews(ctx.db, request.query as Record<string, unknown>),
-  );
+  app.get("/api/seo-ops/reviews", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    return reviews(ctx.db, request.query as Record<string, unknown>, actor.userId);
+  });
 
-  app.get("/api/seo-ops/reports", async (request) =>
-    reports(ctx.db, request.query as Record<string, unknown>),
-  );
+  app.get("/api/seo-ops/reports", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    return reports(ctx.db, request.query as Record<string, unknown>, actor.userId);
+  });
 
   app.get("/api/seo-ops/tasks/:taskId", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.view");
     const { taskId } = request.params as { taskId: string };
-    const task = await taskOr404(ctx, taskId);
+    const task = await requireTaskAccess(ctx.db, actor, taskId);
     reply.status(200);
     return taskView(task, await taskNames(ctx, task));
   });
 
   app.get("/api/seo-ops/tasks/:taskId/events", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
     const { taskId } = request.params as { taskId: string };
+    await requireTaskAccess(ctx.db, actor, taskId);
     return taskEvents(ctx.db, taskId, request.query as Record<string, unknown>);
   });
 
@@ -247,7 +252,9 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/merchants/:merchantId/stage-runs",
     async (request, reply) => {
+      const actor = requirePermission(request, "seoops.manage");
       const { merchantId } = request.params as { merchantId: string };
+      await requireMerchantAccess(ctx.db, actor, merchantId);
       if (!ctx.coreAi || !ctx.config.agentRunAgentId) {
         throw new ApiError(
           503,
@@ -271,7 +278,9 @@ export function registerSeoOpsRoutes(
   );
 
   app.get("/api/seo-ops/merchants/:merchantId/stage-runs", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
     const { merchantId } = request.params as { merchantId: string };
+    await requireMerchantAccess(ctx.db, actor, merchantId);
     const query = request.query as Record<string, unknown>;
     const { offset, limit } = parsePageParams(query);
     const stage = typeof query.stage === "string" && query.stage !== "" ? query.stage : undefined;
@@ -289,8 +298,9 @@ export function registerSeoOpsRoutes(
   });
 
   app.get("/api/seo-ops/agent-runs/:runId", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
     const { runId } = request.params as { runId: string };
-    const run = await getAgentRunOr404(ctx.db, runId);
+    const run = await requireRunAccess(ctx.db, actor, runId);
     return stageRunView(run, await listDeliverablesByRun(ctx.db, run.id), {
       includeFullOutput: true,
     });
@@ -300,7 +310,9 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/agent-runs/:runId/deliverables",
     async (request, reply) => {
+      const actor = requirePermission(request, "seoops.manage");
       const { runId } = request.params as { runId: string };
+      await requireRunAccess(ctx.db, actor, runId);
       const body = manualDeliverableSchema.parse(request.body);
       const deliverable = await addManualDeliverable(
         { db: ctx.db, artifactsDir: ctx.artifactsDir },
@@ -315,8 +327,9 @@ export function registerSeoOpsRoutes(
   app.get(
     "/api/seo-ops/deliverables/:deliverableId/download",
     async (request, reply) => {
+      const actor = requirePermission(request, "seoops.view");
       const { deliverableId } = request.params as { deliverableId: string };
-      const deliverable = await getDeliverableOr404(ctx.db, deliverableId);
+      const deliverable = await requireDeliverableAccess(ctx.db, actor, deliverableId);
       if (!deliverable.localPath) {
         throw new ApiError(
           404,
@@ -338,7 +351,9 @@ export function registerSeoOpsRoutes(
   );
 
   app.post("/api/seo-ops/agent-runs/:runId/cancel", async (request) => {
+    const actor = requirePermission(request, "seoops.manage");
     const { runId } = request.params as { runId: string };
+    await requireRunAccess(ctx.db, actor, runId);
     if (!ctx.coreAi || !ctx.config.agentRunAgentId) {
       throw new ApiError(
         503,
@@ -362,6 +377,7 @@ export function registerSeoOpsRoutes(
   });
 
   app.post("/api/seo-ops/merchants", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
     const body = createMerchantSchema.parse(request.body);
     const result = await createMerchant(ctx.db, {
       slug: body.slug,
@@ -369,7 +385,8 @@ export function registerSeoOpsRoutes(
       tags: body.tags,
       operatorUserIds: body.operator_user_ids,
       idempotencyKey: body.idempotency_key,
-      createdBy: "local-dev",
+      createdBy: actor.userId,
+      actorUserId: actor.userId,
     });
     reply.status(result.replayed ? 200 : 201);
     return merchantView(result.entity);
@@ -378,7 +395,9 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/merchants/:merchantId/locations",
     async (request, reply) => {
+      const actor = requirePermission(request, "seoops.manage");
       const { merchantId } = request.params as { merchantId: string };
+      await requireMerchantAccess(ctx.db, actor, merchantId);
       const body = createLocationSchema.parse(request.body);
       const result = await createLocation(ctx.db, merchantId, {
         slug: body.slug,
@@ -388,7 +407,7 @@ export function registerSeoOpsRoutes(
         readinessStatus: body.readiness_status,
         missingRequirements: body.missing_requirements,
         idempotencyKey: body.idempotency_key,
-        createdBy: "local-dev",
+        createdBy: actor.userId,
       });
       reply.status(result.replayed ? 200 : 201);
       return locationView(result.entity);
@@ -400,12 +419,14 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/merchants/:merchantId/questionnaires",
     async (request, reply) => {
+      const actor = requirePermission(request, "seoops.manage");
       const { merchantId } = request.params as { merchantId: string };
+      await requireMerchantAccess(ctx.db, actor, merchantId);
       const body = createQuestionnaireSchema.parse(request.body);
       const result = await createQuestionnaire(ctx.db, merchantId, {
         website: body.website ?? null,
         idempotencyKey: body.idempotency_key,
-        createdBy: "local-dev",
+        createdBy: actor.userId,
       });
       reply.status(result.replayed ? 200 : 201);
       return questionnaireView(result.entity);
@@ -415,7 +436,11 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/questionnaires/:questionnaireId/send",
     async (request) => {
+      const actor = requirePermission(request, "seoops.manage");
       const { questionnaireId } = request.params as { questionnaireId: string };
+      const questionnaire = await getQuestionnaire(ctx.db, questionnaireId);
+      if (!questionnaire) throw new ApiError(404, "resource not found");
+      await requireMerchantAccess(ctx.db, actor, questionnaire.merchantId);
       return questionnaireView(await sendQuestionnaire(ctx.db, questionnaireId));
     },
   );
@@ -449,32 +474,33 @@ export function registerSeoOpsRoutes(
   // ---- 生命周期（阶段轨 + 异常，全部从证据链推导） ----
 
   app.get("/api/seo-ops/merchants/:merchantId/lifecycle", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
     const { merchantId } = request.params as { merchantId: string };
-    if (!(await getMerchant(ctx.db, merchantId))) {
-      throw new ApiError(404, `merchant ${merchantId} not found`, undefined);
-    }
+    await requireMerchantAccess(ctx.db, actor, merchantId);
     return deriveLifecycleForDb(ctx.db, merchantId);
   });
 
   // 排名快照 + 与上期对比（老店轮次骨架）；数据源是排名运行的 CSV 附件。
   app.get("/api/seo-ops/merchants/:merchantId/ranking", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
     const { merchantId } = request.params as { merchantId: string };
-    if (!(await getMerchant(ctx.db, merchantId))) {
-      throw new ApiError(404, `merchant ${merchantId} not found`, undefined);
-    }
+    await requireMerchantAccess(ctx.db, actor, merchantId);
     return deriveRankingOverview(await loadRankingSnapshots(ctx.db, merchantId));
   });
 
   app.post("/api/seo-ops/tasks", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
     const body = createTaskSchema.parse(request.body);
+    await requireMerchantAccess(ctx.db, actor, body.merchant_id);
     const { task, replayed } = await createTask(ctx.db, body);
     reply.status(replayed ? 200 : 201);
     return taskView(task, await taskNames(ctx, task));
   });
 
   app.post("/api/seo-ops/tasks/:taskId/revisions", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
     const { taskId } = request.params as { taskId: string };
-    await taskOr404(ctx, taskId);
+    await requireTaskAccess(ctx.db, actor, taskId);
     const body = createRevisionSchema.parse(request.body);
     const { task, replayed } = await createRevision(ctx.db, taskId, body);
     reply.status(replayed ? 200 : 201);
@@ -482,8 +508,9 @@ export function registerSeoOpsRoutes(
   });
 
   app.post("/api/seo-ops/tasks/:taskId/evidence", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
     const { taskId } = request.params as { taskId: string };
-    await taskOr404(ctx, taskId);
+    await requireTaskAccess(ctx.db, actor, taskId);
     const body = appendEvidenceSchema.parse(request.body);
     const { task, replayed } = await appendEvidence(ctx.db, taskId, body);
     reply.status(replayed ? 200 : 201);
@@ -493,8 +520,9 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/tasks/:taskId/conversation-links",
     async (request, reply) => {
+      const actor = requirePermission(request, "seoops.manage");
       const { taskId } = request.params as { taskId: string };
-      await taskOr404(ctx, taskId);
+      await requireTaskAccess(ctx.db, actor, taskId);
       const body = linkConversationSchema.parse(request.body);
       const { task, replayed } = await linkConversation(ctx.db, taskId, body);
       reply.status(replayed ? 200 : 201);
@@ -505,8 +533,9 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/tasks/:taskId/approval-previews",
     async (request) => {
+      const actor = requirePermission(request, "seoops.approve");
       const { taskId } = request.params as { taskId: string };
-      await taskOr404(ctx, taskId);
+      await requireTaskAccess(ctx.db, actor, taskId);
       const body = approvalPreviewSchema.parse(request.body);
       return approvalPreview(ctx.db, taskId, body);
     },
@@ -515,8 +544,9 @@ export function registerSeoOpsRoutes(
   app.post(
     "/api/seo-ops/tasks/:taskId/approval-decisions",
     async (request, reply) => {
+      const actor = requirePermission(request, "seoops.approve");
       const { taskId } = request.params as { taskId: string };
-      await taskOr404(ctx, taskId);
+      await requireTaskAccess(ctx.db, actor, taskId);
       const body = approvalDecisionSchema.parse(request.body);
       const { task, replayed } = await approvalDecision(ctx.db, taskId, body);
       reply.status(replayed ? 200 : 201);

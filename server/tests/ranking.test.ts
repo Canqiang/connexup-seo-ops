@@ -2,8 +2,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildApp } from "../src/index.js";
-import { loadConfig } from "../src/config.js";
 import { insertAgentRun, upsertDeliverable } from "../src/repos/agentRunRepo.js";
 import type { Db } from "../src/db/connection.js";
 import {
@@ -11,7 +9,7 @@ import {
   parseRankingCsv,
   type RankingSnapshot,
 } from "../src/services/rankingService.js";
-import { createTestDb } from "./helpers/pgTest.js";
+import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 const CSV = [
   "keyword,local_rank,organic_rank,checked_at",
@@ -150,15 +148,7 @@ describe("GET /api/seo-ops/merchants/:merchantId/ranking", () => {
 
   /** Fresh app + fresh schema-isolated postgres db per call. */
   async function makeApp() {
-    const ctx = await createTestDb();
-    const result = await buildApp(
-      { ...loadConfig(), coreAiBaseUrl: null, coreAiToken: null },
-      { coreAi: null, artifactsDir, db: ctx.db },
-    );
-    result.app.addHook("onClose", async () => {
-      await ctx.teardown();
-    });
-    return result;
+    return createAuthenticatedTestApp({ deps: { coreAi: null, artifactsDir } });
   }
 
   type TestApp = Awaited<ReturnType<typeof makeApp>>["app"];

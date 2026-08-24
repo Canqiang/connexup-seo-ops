@@ -15,6 +15,8 @@ import {
 } from "../repos/locationRepo.js";
 import type { LocationReadiness } from "../domain/enums.js";
 import type { Location, Merchant } from "../repos/types.js";
+import { getUserById } from "../repos/userRepo.js";
+import { ApiError } from "../errors.js";
 
 const SLUG_PATTERN = /^[a-z0-9-]+$/;
 
@@ -50,6 +52,9 @@ export interface CreateMerchantInput {
   operatorUserIds?: string[] | null;
   idempotencyKey: string;
   createdBy?: string | null;
+  /** The authenticated creator is always an operator, preventing invisible
+   * merchants created with an empty or unrelated operator list. */
+  actorUserId: string;
 }
 
 export interface CreateLocationInput {
@@ -114,10 +119,17 @@ export async function createMerchant(
   const slug = normalizeSlug(requireNonEmpty(input.slug, "slug"));
   const displayName = input.displayName ?? slug;
   const tags = optionalStrings(input.tags, "tags");
-  const operatorUserIds = optionalStrings(
+  const requestedOperatorUserIds = optionalStrings(
     input.operatorUserIds,
     "operator_user_ids",
   );
+  const operatorUserIds = [...new Set([input.actorUserId, ...requestedOperatorUserIds])];
+  for (const operatorUserId of operatorUserIds) {
+    const operator = await getUserById(db, operatorUserId);
+    if (!operator || operator.status !== "ACTIVE" || operator.identityType !== "HUMAN") {
+      throw new ApiError(400, `operator ${operatorUserId} is not an active human user`, "INVALID_OPERATOR");
+    }
+  }
   const fingerprint = requestFingerprint({
     slug,
     display_name: displayName,

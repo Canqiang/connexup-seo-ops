@@ -1,18 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildApp } from "../src/index.js";
-import { loadConfig } from "../src/config.js";
 import { executionSpecHash } from "../src/domain/hashing.js";
-import { createTestDb } from "./helpers/pgTest.js";
+import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 /** Fresh app + fresh schema-isolated postgres db per test. */
 async function makeApp(): Promise<FastifyInstance> {
-  const ctx = await createTestDb();
-  const { app } = await buildApp({ ...loadConfig() }, { db: ctx.db });
-  app.addHook("onClose", async () => {
-    await ctx.teardown();
-  });
-  return app;
+  return (await createAuthenticatedTestApp()).app;
 }
 
 const MERCHANT = {

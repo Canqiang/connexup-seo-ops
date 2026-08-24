@@ -2,15 +2,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildApp } from "../src/index.js";
-import { loadConfig } from "../src/config.js";
+import { type ServerConfig } from "../src/config.js";
 import type { CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiClient.js";
 import {
   getAgentRun,
   transitionAgentRun,
   upsertDeliverable,
 } from "../src/repos/agentRunRepo.js";
-import { createTestDb } from "./helpers/pgTest.js";
+import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 function fakeCoreAi(
   opts: {
@@ -55,21 +54,16 @@ describe("stage-run routes", () => {
   /** Fresh app + fresh schema-isolated postgres db per call. */
   async function makeApp(
     coreAi: CoreAiClient | null = fakeCoreAi(),
-    configOverrides: Partial<ReturnType<typeof loadConfig>> = {},
+    configOverrides: Partial<ServerConfig> = {},
   ) {
-    const ctx = await createTestDb();
-    const result = await buildApp(
-      {
-        ...loadConfig(),
+    const result = await createAuthenticatedTestApp({
+      configOverrides: {
         coreAiBaseUrl: coreAi ? "https://core-ai.example" : null,
         coreAiToken: coreAi ? "secret-token" : null,
         agentRunAgentId: coreAi ? "agent-1" : null,
         ...configOverrides,
       },
-      { coreAi, artifactsDir, db: ctx.db },
-    );
-    result.app.addHook("onClose", async () => {
-      await ctx.teardown();
+      deps: { coreAi, artifactsDir },
     });
     apps.push(result.app);
     return result;

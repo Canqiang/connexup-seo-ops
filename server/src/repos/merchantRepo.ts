@@ -77,3 +77,10 @@ export async function listMerchants(db: Db): Promise<Merchant[]> {
   const rows = await db.query<MerchantRow>(`SELECT * FROM seo_merchants ORDER BY display_name`);
   return rows.map(toMerchant);
 }
+
+/** Scope collection roots before callers join locations, tasks, runs, or
+ * deliverables. JSON operator lists are stored portably, so membership is
+ * checked after decoding rather than relying on database-specific JSON SQL. */
+export async function listMerchantsForOperator(db: Db, userId: string): Promise<Merchant[]> {
+  return (await listMerchants(db)).filter((merchant) => merchant.operatorUserIds.includes(userId));
+}

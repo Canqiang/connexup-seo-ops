@@ -1,6 +1,6 @@
 import type { Db } from "../db/connection.js";
 import { badRequest, notFound } from "../errors.js";
-import { listMerchants } from "../repos/merchantRepo.js";
+import { listMerchants, listMerchantsForOperator } from "../repos/merchantRepo.js";
 import { listLocations } from "../repos/locationRepo.js";
 import { getTask, listTasks } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
@@ -83,10 +83,15 @@ function isOverdue(task: Task, now: Date): boolean {
   return Date.parse(task.dueAt) < now.getTime();
 }
 
-export async function portfolio(db: Db, now: Date = new Date()): Promise<PortfolioResponseWire> {
-  const merchants = await listMerchants(db);
+export async function portfolio(
+  db: Db,
+  actorUserId: string,
+  now: Date = new Date(),
+): Promise<PortfolioResponseWire> {
+  const merchants = await listMerchantsForOperator(db, actorUserId);
+  const merchantIds = new Set(merchants.map((merchant) => merchant.id));
   const locations = await listLocations(db);
-  const tasks = await listTasks(db);
+  const tasks = (await listTasks(db)).filter((task) => merchantIds.has(task.merchantId));
 
   const lifecycleInputs = await loadLifecycleInputs(db, merchants.map((m) => m.id));
   const tasksByMerchant = new Map<string, Task[]>();
@@ -231,6 +236,7 @@ async function nameLookup(db: Db): Promise<(task: Task) => { merchantName: strin
 export async function inbox(
   db: Db,
   query: InboxQuery & PageParams,
+  actorUserId: string,
 ): Promise<PageResult<TaskSummaryWire>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
@@ -239,8 +245,10 @@ export async function inbox(
   const ownerId = str(query.owner_id);
   const evidenceState = str(query.evidence_state);
 
+  const allowedMerchantIds = new Set((await listMerchantsForOperator(db, actorUserId)).map((m) => m.id));
   const names = await nameLookup(db);
   const filtered = (await listTasks(db)).filter((t) => {
+    if (!allowedMerchantIds.has(t.merchantId)) return false;
     if (merchantId && t.merchantId !== merchantId) return false;
     if (locationId && t.locationId !== locationId) return false;
     if (status && t.status !== status) return false;
@@ -315,10 +323,13 @@ const STRENGTH_BY_CLASS: Record<string, string> = {
 export async function reviews(
   db: Db,
   query: PageParams & { merchant_id?: unknown },
+  actorUserId: string,
 ): Promise<PageResult<Record<string, unknown>>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
+  const allowedMerchantIds = new Set((await listMerchantsForOperator(db, actorUserId)).map((m) => m.id));
   const items = (await listTasks(db))
+    .filter((t) => allowedMerchantIds.has(t.merchantId))
     .filter((t) => !merchantId || t.merchantId === merchantId)
     .filter((t) => t.evidenceRefs.some((e) => e.taskRevision === t.taskRevision))
     .map((t) => {
@@ -369,6 +380,7 @@ export async function reports(
     captured_to?: unknown;
     freshness?: unknown;
   },
+  actorUserId: string,
   now: Date = new Date(),
 ): Promise<PageResult<Record<string, unknown>>> {
   const { offset, limit } = parsePageParams(query);
@@ -387,9 +399,12 @@ export async function reports(
     }
   }
 
-  const merchantsById = new Map((await listMerchants(db)).map((merchant) => [merchant.id, merchant]));
+  const merchants = await listMerchantsForOperator(db, actorUserId);
+  const allowedMerchantIds = new Set(merchants.map((merchant) => merchant.id));
+  const merchantsById = new Map(merchants.map((merchant) => [merchant.id, merchant]));
   const locationsById = new Map((await listLocations(db)).map((location) => [location.id, location]));
   const evidenceReports = (await listTasks(db))
+    .filter((task) => allowedMerchantIds.has(task.merchantId))
     .flatMap((t) =>
       t.evidenceRefs
         .filter((e) => e.type.endsWith("_REPORT"))
@@ -417,7 +432,9 @@ export async function reports(
       };
     });
 
-  const completedRuns = (await listAgentRuns(db)).filter((run) => run.status === "COMPLETED");
+  const completedRuns = (await listAgentRuns(db)).filter(
+    (run) => run.status === "COMPLETED" && allowedMerchantIds.has(run.merchantId),
+  );
   const deliverablesByRun = await listDeliverablesByRunIds(
     db,
     completedRuns.map((run) => run.id),

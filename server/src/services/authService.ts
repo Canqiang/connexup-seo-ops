@@ -41,6 +41,13 @@ function isActiveHuman(user: SeoUser): boolean {
   return user.identityType === "HUMAN" && user.status === "ACTIVE";
 }
 
+/** Password login is human-only, but a separately provisioned, valid session
+ * may represent either supported identity type. User repository mapping has
+ * already rejected unknown identities and illegal SERVICE permissions. */
+function isActiveSessionIdentity(user: SeoUser): boolean {
+  return user.status === "ACTIVE" && (user.identityType === "HUMAN" || user.identityType === "SERVICE");
+}
+
 function isLocked(user: SeoUser, now: Date): boolean {
   return user.lockedUntil !== null && new Date(user.lockedUntil).getTime() > now.getTime();
 }
@@ -117,7 +124,7 @@ export async function resolveActorFromToken(
   const session = await getActiveSessionByHash(db, tokenHash, now.toISOString());
   if (!session) return null;
   const user = await getUserById(db, session.userId);
-  return user && isActiveHuman(user) ? toActor(user) : null;
+  return user && isActiveSessionIdentity(user) ? toActor(user) : null;
 }
 
 export async function logout(
