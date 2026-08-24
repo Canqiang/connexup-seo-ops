@@ -14,16 +14,20 @@
 - 事实、相关、因果就绪度分级的复盘分析
 - 无工具、无技能、无记忆、无外部写入的上下文 Copilot
 
-## Core AI 边界
+## 服务拓扑与 Core AI 边界
 
-前端从同源 Core AI 调用 `/api/auth/me`、`/api/seo-ops/*` 和最小会话接口。认证使用现有 `apiKey`；身份与权限必须由 `/api/auth/me` 回读后才进入受保护页面。
+浏览器仅通过同源 Cookie 调用本项目 SEO Ops backend。`/api/auth/*` 与 `/api/seo-ops/*` 都由本服务提供；浏览器不会接收或发送 API key、令牌或任何后端凭据。公开问卷路径同样由本服务在 `/api/public/*` 提供。
 
 权限分为：
 
 - `seoops.view`：读取组合、任务、报告、复盘和事件
 - `seoops.manage`：创建商户/地点/任务、修订和证据、链接对话
 - `seoops.approve`：审批预览与正式决定
-- `chat.use`：显示只读 Copilot
+- `seoops.execute`：触发受控阶段运行
+- `seoops.capability.manage`：管理已批准的执行能力
+- `seoops.schedule.manage`：管理已批准的运行计划
+
+本服务仅在后端通过 `CORE_AI_BASE_URL` 与 `CORE_AI_TOKEN` 调用现有 Core AI API（例如受控阶段运行和工件读取）。`CORE_AI_TOKEN` 永不进入浏览器；此集成不要求、也不暗示修改 Core AI 服务，且不提供浏览器到 Core AI 的转发层。
 
 任何页面都没有可用的外部执行按钮。`APPROVED` 只是一条授权记录；实际执行、第三方写入与执行后回读属于独立阶段。
 
@@ -69,7 +73,7 @@ npm ci
 npm run dev
 ```
 
-Vite 开发入口为 `http://localhost:5173/seo-ops/`。生产环境必须把 `/seo-ops/api` 所需的同源 `/api/*` 请求转发给 Core AI。
+Vite 开发入口为 `http://localhost:5173/seo-ops/`，开发服务器把根路径 `/api/*` 代理到本项目 SEO Ops backend（默认 `http://localhost:8787`）。生产部署也必须把根路径 `/api/*` 反代到该 Fastify backend；不能改写为 `/seo-ops/api/*`。静态 Nginx 镜像只承载 SPA 与 `/seo-ops/healthz`，部署网关负责把 `/seo-ops/*` 的 UI 与根路径 `/api/*` 的 backend 路由组合为同源站点。
 
 ## 验证与容器
 

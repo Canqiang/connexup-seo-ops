@@ -4,7 +4,7 @@ import { assertAllowedIdentityPermissions, isSeoPermission, type SeoPermission }
 import { hashPassword } from "../src/auth/password.js";
 import { createDb, type Db } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
-import { replaceMerchantOperatorId } from "../src/repos/merchantRepo.js";
+import { replaceMerchantOperatorIdInTransaction } from "../src/repos/merchantRepo.js";
 import { upsertUser } from "../src/repos/userRepo.js";
 
 export interface BootstrapArgs {
@@ -123,24 +123,27 @@ export async function runBootstrap(
   const input = validateBootstrapInput(args, env);
   const passwordHash = await hashPassword(input.password);
   const now = new Date().toISOString();
-  const user = await upsertUser(db, {
-    id: randomUUID(),
-    email: input.email,
-    displayName: input.name,
-    role: input.role,
-    identityType: "HUMAN",
-    permissions: input.permissions,
-    passwordHash,
-    status: "ACTIVE",
-    failedLoginCount: 0,
-    lockedUntil: null,
-    lastLoginAt: null,
-    createdAt: now,
-    updatedAt: now,
+  const { user, claimedMerchantCount } = await db.withTransaction(async (tx) => {
+    const user = await upsertUser(tx, {
+      id: randomUUID(),
+      email: input.email,
+      displayName: input.name,
+      role: input.role,
+      identityType: "HUMAN",
+      permissions: input.permissions,
+      passwordHash,
+      status: "ACTIVE",
+      failedLoginCount: 0,
+      lockedUntil: null,
+      lastLoginAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const claimedMerchantCount = args.claimLocalDevMerchants
+      ? await replaceMerchantOperatorIdInTransaction(tx, "local-dev", user.id)
+      : 0;
+    return { user, claimedMerchantCount };
   });
-  const claimedMerchantCount = args.claimLocalDevMerchants
-    ? await replaceMerchantOperatorId(db, "local-dev", user.id)
-    : 0;
   return {
     id: user.id,
     email: user.email,

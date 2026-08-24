@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseBootstrapArgs, runBootstrap, runCli } from "../scripts/bootstrap-user.js";
 import { migrate } from "../src/db/migrate.js";
 import { getMerchant, insertMerchant, replaceMerchantOperatorId } from "../src/repos/merchantRepo.js";
-import { getUserByEmail } from "../src/repos/userRepo.js";
+import { getUserByEmail, upsertUser } from "../src/repos/userRepo.js";
 import { createTestDb } from "./helpers/pgTest.js";
 import type { Db } from "../src/db/connection.js";
+import type { SeoUser } from "../src/auth/types.js";
 
 const ctx = await createTestDb();
 beforeAll(() => migrate(ctx.db));
@@ -222,5 +223,81 @@ describe("user bootstrap", () => {
 
     await expect(replaceMerchantOperatorId(db, "local-dev", "new-operator")).resolves.toBe(1);
     expect(selectText).toMatch(/FOR UPDATE/);
+  });
+
+  it("rolls back every user and merchant write when a legacy claim is malformed", async () => {
+    const isolated = await createTestDb();
+    try {
+      await migrate(isolated.db);
+      const originalUser: SeoUser = {
+        id: "atomic-existing-user",
+        email: "atomic@example.com",
+        displayName: "Original Operator",
+        role: "viewer",
+        identityType: "HUMAN",
+        permissions: ["seoops.view"],
+        passwordHash: "existing-password-hash",
+        status: "SUSPENDED",
+        failedLoginCount: 4,
+        lockedUntil: "2026-08-25T00:00:00.000Z",
+        lastLoginAt: "2026-08-23T00:00:00.000Z",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        updatedAt: "2026-08-23T00:00:00.000Z",
+      };
+      await upsertUser(isolated.db, originalUser);
+      await insertMerchant(isolated.db, {
+        id: "atomic-a-claimable", slug: "atomic-claimable", displayName: "Atomic claimable",
+        tags: [], operatorUserIds: ["local-dev", "other-operator"], creationIdempotencyKey: null,
+        requestFingerprint: null, createdBy: null, createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-20T00:00:00.000Z",
+      });
+      await isolated.db.exec(
+        `INSERT INTO seo_merchants (id, slug, display_name, tags, operator_user_ids, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        ["atomic-z-malformed", "atomic-malformed", "Atomic malformed", "[]", "not-json", "2026-08-20T00:00:00.000Z", "2026-08-20T00:00:00.000Z"],
+      );
+      const beforeUser = await getUserByEmail(isolated.db, originalUser.email);
+      const beforeMerchants = await isolated.db.query<{ id: string; operator_user_ids: string; updated_at: string }>(
+        `SELECT id, operator_user_ids, updated_at FROM seo_merchants ORDER BY id`,
+      );
+
+      await expect(runBootstrap(
+        { ...args, email: originalUser.email, name: "Replacement Operator", role: "admin", permissions: ["seoops.manage"], claimLocalDevMerchants: true },
+        { SEO_OPS_BOOTSTRAP_PASSWORD: "correct horse battery staple" },
+        isolated.db,
+      )).rejects.toThrow(/invalid operator_user_ids/);
+
+      expect(await getUserByEmail(isolated.db, originalUser.email)).toEqual(beforeUser);
+      expect(await isolated.db.query<{ id: string; operator_user_ids: string; updated_at: string }>(
+        `SELECT id, operator_user_ids, updated_at FROM seo_merchants ORDER BY id`,
+      )).toEqual(beforeMerchants);
+    } finally {
+      await isolated.teardown();
+    }
+  });
+
+  it("commits user upsert and exact legacy claim together, then remains idempotent", async () => {
+    const isolated = await createTestDb();
+    try {
+      await migrate(isolated.db);
+      await insertMerchant(isolated.db, {
+        id: "atomic-success-claimable", slug: "atomic-success-claimable", displayName: "Atomic success",
+        tags: [], operatorUserIds: ["local-dev", "other-operator", "local-dev"], creationIdempotencyKey: null,
+        requestFingerprint: null, createdBy: null, createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-20T00:00:00.000Z",
+      });
+      const bootstrapArgs = { ...args, email: "atomic-success@example.com", claimLocalDevMerchants: true };
+      const env = { SEO_OPS_BOOTSTRAP_PASSWORD: "correct horse battery staple" };
+
+      const first = await runBootstrap(bootstrapArgs, env, isolated.db);
+      const second = await runBootstrap(bootstrapArgs, env, isolated.db);
+
+      expect(first.claimedMerchantCount).toBe(1);
+      expect(second).toMatchObject({ id: first.id, claimedMerchantCount: 0 });
+      expect(await getUserByEmail(isolated.db, bootstrapArgs.email)).toMatchObject({ id: first.id, status: "ACTIVE" });
+      expect((await getMerchant(isolated.db, "atomic-success-claimable"))?.operatorUserIds).toEqual([
+        first.id, "other-operator",
+      ]);
+    } finally {
+      await isolated.teardown();
+    }
   });
 });
