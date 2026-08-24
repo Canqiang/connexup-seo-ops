@@ -1,5 +1,6 @@
 import { requestJson } from "./client";
 import type { IdName } from "./types";
+import { redirectToLogin } from "../auth/redirect";
 
 export type SessionCreateResponse = { sessionId: string; loaded_tools?: IdName[]; loaded_skills?: IdName[]; loaded_sub_agents?: IdName[] };
 export type StreamEvent = { type: string; content?: string; message?: string; status?: string; output?: string };
@@ -15,6 +16,7 @@ export const sessionApi = {
     xhr.setRequestHeader("Accept", "text/event-stream");
     let lastIndex = 0;
     let buffer = "";
+    let redirectedForUnauthorized = false;
     xhr.onreadystatechange = () => {
       if (xhr.readyState === xhr.HEADERS_RECEIVED || xhr.readyState === xhr.LOADING) {
         buffer += xhr.responseText.slice(lastIndex); lastIndex = xhr.responseText.length;
@@ -24,6 +26,10 @@ export const sessionApi = {
         });
       }
       if (xhr.readyState === xhr.DONE) {
+        if (xhr.status === 401 && !redirectedForUnauthorized) {
+          redirectedForUnauthorized = true;
+          redirectToLogin();
+        }
         if (xhr.status >= 400) handlers.onError(new Error(`SSE connection failed: ${xhr.status}`));
         handlers.onClose?.();
       }

@@ -10,6 +10,10 @@ export function navigateTo(path: string): void {
   window.location.assign(path);
 }
 
+export function isLoginPath(path: string): boolean {
+  return path === "/seo-ops/login" || path === "/seo-ops/login/";
+}
+
 export function safeReturnTo(path: string | null | undefined): string {
   if (typeof path !== "string" || !path.startsWith("/seo-ops/")) return "/seo-ops/";
   if (hasControlCharacter(path)) return "/seo-ops/";
@@ -31,9 +35,7 @@ export function safeReturnTo(path: string | null | undefined): string {
     || decoded.includes("//")
     || decoded.includes("\\")
     || decoded.includes("://")
-    || decoded === "/seo-ops/login"
-    || decoded.startsWith("/seo-ops/login?")
-    || decoded.startsWith("/seo-ops/login#")
+    || /^\/seo-ops\/login(?:[/?#]|$)/.test(decoded)
   ) return "/seo-ops/";
   return path;
 }

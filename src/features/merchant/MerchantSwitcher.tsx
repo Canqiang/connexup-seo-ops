@@ -5,16 +5,14 @@ import type { MerchantSummary } from "../../api/types";
 type Props = {
   merchants: MerchantSummary[];
   currentId?: string;
-  userId: string;
   onPortfolio: () => void;
   onSelect: (id: string) => void;
 };
 
-export function MerchantSwitcher({ merchants, currentId, userId, onPortfolio, onSelect }: Props) {
+export function MerchantSwitcher({ merchants, currentId, onPortfolio, onSelect }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const storageKey = `seoops.favorite_merchants.${userId}`;
-  const [favorites, setFavorites] = useState<string[]>(() => readFavorites(storageKey));
+  const [favorites, setFavorites] = useState<string[]>([]);
   const current = merchants.find((item) => item.id === currentId);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -30,7 +28,6 @@ export function MerchantSwitcher({ merchants, currentId, userId, onPortfolio, on
   const toggleFavorite = (id: string) => {
     const next = favorites.includes(id) ? favorites.filter((value) => value !== id) : [...favorites, id];
     setFavorites(next);
-    localStorage.setItem(storageKey, JSON.stringify(next));
   };
   return (
     <div className="merchant-switcher" onKeyDown={(event) => {
@@ -95,13 +92,4 @@ export function MerchantSwitcher({ merchants, currentId, userId, onPortfolio, on
 function initials(name: string): string {
   const words = name.trim().split(/\s+/);
   return (words.length > 1 ? words.slice(0, 2).map((word) => word[0]).join("") : name.slice(0, 2)).toLocaleUpperCase();
-}
-
-function readFavorites(key: string): string[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) ?? "[]");
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
 }

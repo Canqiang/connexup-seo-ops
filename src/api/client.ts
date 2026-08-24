@@ -19,11 +19,10 @@ export async function requestJson<T>(
   init: RequestInit = {},
   options: { redirectOn401?: boolean } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  new Headers(init.headers).forEach((value, key) => { headers[key] = value; });
-  if (init.body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
-    headers["Content-Type"] = "application/json";
-  }
+  const headers = new Headers(init.headers);
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
+  if (init.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  headers.delete("Authorization");
   const response = await fetch(path, { ...init, credentials: "same-origin", headers });
   const text = await response.text();
   const body = text ? parseBody(text) : undefined;

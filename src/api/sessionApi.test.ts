@@ -1,6 +1,13 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { sessionApi } from "./sessionApi";
 
+const redirectToLogin = vi.hoisted(() => vi.fn());
+
+vi.mock("../auth/redirect", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../auth/redirect")>();
+  return { ...original, redirectToLogin };
+});
+
 class FakeXMLHttpRequest {
   readonly HEADERS_RECEIVED = 2;
   readonly LOADING = 3;
@@ -38,6 +45,7 @@ class FakeXMLHttpRequest {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  redirectToLogin.mockReset();
   localStorage.clear();
 });
 
@@ -65,4 +73,20 @@ test("streams through the same-origin session without forwarding a stored API ke
 
   controller.abort();
   expect(xhr.aborted).toBe(true);
+});
+
+test("redirects an unauthorized SSE response once while retaining error and close callbacks", () => {
+  const xhr = new FakeXMLHttpRequest();
+  const onError = vi.fn();
+  const onClose = vi.fn();
+  vi.stubGlobal("XMLHttpRequest", class { constructor() { return xhr; } });
+
+  sessionApi.streamMessage("session-1", "summarize current work", { onEvent: vi.fn(), onError, onClose });
+  xhr.readyState = xhr.DONE;
+  xhr.status = 401;
+  xhr.onreadystatechange?.();
+
+  expect(redirectToLogin).toHaveBeenCalledTimes(1);
+  expect(onError).toHaveBeenCalledWith(new Error("SSE connection failed: 401"));
+  expect(onClose).toHaveBeenCalledTimes(1);
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { buildLoginUrl, safeReturnTo } from "./redirect";
+import { buildLoginUrl, isLoginPath, safeReturnTo } from "./redirect";
 
 test("builds a same-origin login return path", () => {
   expect(buildLoginUrl("/seo-ops/tasks/task-1?tab=evidence")).toBe(
@@ -12,6 +12,8 @@ test.each([
   ["//evil.example/x"],
   ["/seo-ops/login"],
   ["/seo-ops/login?return_to=%2Fseo-ops%2Ftasks"],
+  ["/seo-ops/login/"],
+  ["/seo-ops/login/next"],
   ["/seo-ops/%2f%2fevil.example/x"],
   ["/seo-ops/%252f%252fevil.example/x"],
   ["/seo-ops/\u0000unsafe"],
@@ -22,4 +24,10 @@ test.each([
 
 test("keeps a same-origin SEO Ops route", () => {
   expect(safeReturnTo("/seo-ops/tasks/task-1?tab=evidence")).toBe("/seo-ops/tasks/task-1?tab=evidence");
+});
+
+test("recognizes the canonical login route with one trailing slash", () => {
+  expect(isLoginPath("/seo-ops/login")).toBe(true);
+  expect(isLoginPath("/seo-ops/login/")).toBe(true);
+  expect(isLoginPath("/seo-ops/login/next")).toBe(false);
 });
