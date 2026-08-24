@@ -84,3 +84,35 @@ export async function listMerchants(db: Db): Promise<Merchant[]> {
 export async function listMerchantsForOperator(db: Db, userId: string): Promise<Merchant[]> {
   return (await listMerchants(db)).filter((merchant) => merchant.operatorUserIds.includes(userId));
 }
+
+/** Replace only a precise legacy operator marker. The JSON list is decoded in
+ * application code for PostgreSQL portability, while the full read/update
+ * sequence remains bound to one database transaction. */
+export async function replaceMerchantOperatorId(
+  db: Db,
+  fromUserId: string,
+  toUserId: string,
+): Promise<number> {
+  return db.withTransaction(async (tx) => {
+    const rows = await tx.query<Pick<MerchantRow, "id" | "operator_user_ids">>(
+      `SELECT id, operator_user_ids FROM seo_merchants`,
+    );
+    let updated = 0;
+    for (const row of rows) {
+      const operatorUserIds: unknown = JSON.parse(row.operator_user_ids || "[]");
+      if (!Array.isArray(operatorUserIds) || !operatorUserIds.every((id) => typeof id === "string")) {
+        throw new Error(`merchant ${row.id} has invalid operator_user_ids`);
+      }
+      if (!operatorUserIds.includes(fromUserId)) continue;
+      const replacement = [...new Set(operatorUserIds.map((id) => id === fromUserId ? toUserId : id))];
+      await tx.exec(
+        `UPDATE seo_merchants
+         SET operator_user_ids = $2, updated_at = CURRENT_TIMESTAMP::text
+         WHERE id = $1`,
+        [row.id, JSON.stringify(replacement)],
+      );
+      updated += 1;
+    }
+    return updated;
+  });
+}
