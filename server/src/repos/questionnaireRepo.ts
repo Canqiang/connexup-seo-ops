@@ -124,6 +124,26 @@ export async function incrementQuestionnaireSend(
   return row ? toQuestionnaire(row) : null;
 }
 
+/** Marks a SENT questionnaire filled without rewriting send or audit fields. */
+export async function markQuestionnaireFilled(
+  db: Db,
+  questionnaireId: string,
+  answers: Record<string, string>,
+  at: string,
+): Promise<Questionnaire | null> {
+  const row = await db.one<QuestionnaireRow>(
+    `UPDATE seo_merchant_questionnaires
+     SET status = 'FILLED',
+         answers = $1,
+         filled_at = $2,
+         updated_at = $2
+     WHERE id = $3 AND status = 'SENT'
+     RETURNING *`,
+    [JSON.stringify(answers), at, questionnaireId],
+  );
+  return row ? toQuestionnaire(row) : null;
+}
+
 export async function getQuestionnaire(db: Db, id: string): Promise<Questionnaire | null> {
   const row = await db.one<QuestionnaireRow>(
     `SELECT * FROM seo_merchant_questionnaires WHERE id = $1`,

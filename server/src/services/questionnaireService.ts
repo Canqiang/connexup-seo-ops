@@ -9,7 +9,7 @@ import {
   getQuestionnaireByShareSlug,
   insertQuestionnaire,
   latestQuestionnaireByMerchant,
-  updateQuestionnaire,
+  markQuestionnaireFilled,
 } from "../repos/questionnaireRepo.js";
 import { getMerchant } from "../repos/merchantRepo.js";
 import {
@@ -159,13 +159,13 @@ export async function submitQuestionnaire(
   }
   const cleaned = requireAnswers(questionnaire.questions, answers);
   const at = nowIso();
-  return updateQuestionnaire(db, {
-    ...questionnaire,
-    status: "FILLED",
-    answers: cleaned,
-    filledAt: at,
-    updatedAt: at,
-  });
+  const filled = await markQuestionnaireFilled(db, questionnaire.id, cleaned, at);
+  if (filled) return filled;
+
+  const current = await getQuestionnaire(db, questionnaire.id);
+  if (!current) throw notFound(`questionnaire form ${shareSlugValue} not found`);
+  if (current.status === "FILLED") return current;
+  throw conflict("questionnaire is not open for submission", "NOT_OPEN");
 }
 
 export { getQuestionnaire, latestQuestionnaireByMerchant };

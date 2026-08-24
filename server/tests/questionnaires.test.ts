@@ -241,6 +241,146 @@ describe("questionnaire routes", () => {
     expect((await getQuestionnaire(authenticated.db, questionnaire.id))!.sendCount).toBe(startingCount + 2);
   });
 
+  it("preserves a committed send when a public submission read the prior SENT snapshot", async () => {
+    const authenticated = await makeApp();
+    app = authenticated.app;
+    const sendingActor = await createTestUser(authenticated.db, {
+      email: "send-before-submit@example.test",
+      displayName: "Send before submit operator",
+    });
+    const merchant = (
+      await app.inject({
+        method: "POST",
+        url: "/api/seo-ops/merchants",
+        payload: {
+          slug: "send-before-submit",
+          display_name: "Send Before Submit",
+          operator_user_ids: [sendingActor.id],
+          idempotency_key: "send-before-submit-merchant",
+        },
+      })
+    ).json();
+    const questionnaire = (
+      await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/merchants/${merchant.id}/questionnaires`,
+        payload: { idempotency_key: "send-before-submit-questionnaire" },
+      })
+    ).json();
+    const firstSend = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/questionnaires/${questionnaire.id}/send`,
+    });
+    expect(firstSend.statusCode).toBe(200);
+
+    const login = await authenticated.rawInject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: sendingActor.email, password: PASSWORD },
+    });
+    expect(login.statusCode).toBe(200);
+    const setCookie = login.headers["set-cookie"];
+    const sendingCookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)!.split(";", 1)[0]!;
+
+    await authenticated.db.exec(`
+      CREATE FUNCTION hold_second_send_lock() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.status = 'SENT' AND NEW.send_count = 2 THEN
+          PERFORM pg_advisory_xact_lock(41231, 90817);
+          PERFORM pg_sleep(0.3);
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER hold_second_send_lock
+      BEFORE UPDATE ON seo_merchant_questionnaires
+      FOR EACH ROW EXECUTE FUNCTION hold_second_send_lock();
+    `);
+
+    const sendUrl = `/api/seo-ops/questionnaires/${questionnaire.id}/send`;
+    const send = authenticated.rawInject({
+      method: "POST",
+      url: sendUrl,
+      headers: { cookie: sendingCookie },
+    });
+    let sendLockHeld = false;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const lock = await authenticated.db.one<{ held: boolean }>(
+        `SELECT EXISTS (
+          SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory' AND classid = 41231 AND objid = 90817
+        ) AS held`,
+      );
+      if (lock?.held) {
+        sendLockHeld = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(sendLockHeld).toBe(true);
+
+    const answers = Object.fromEntries(
+      questionnaire.questions
+        .filter((item: { required: boolean }) => item.required)
+        .map((item: { id: string }) => [item.id, "已确认"]),
+    );
+    const submission = authenticated.rawInject({
+      method: "POST",
+      url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
+      payload: { answers },
+    });
+    const sent = await send;
+    expect(sent.statusCode).toBe(200);
+    const submitted = await submission;
+    expect(submitted.statusCode).toBe(200);
+
+    const stored = (await getQuestionnaire(authenticated.db, questionnaire.id))!;
+    expect(stored.status).toBe("FILLED");
+    expect(stored.sendCount).toBe(sent.json().send_count);
+    expect(stored.lastSentBy).toBe(sent.json().last_sent_by);
+    expect(stored.lastSentAt).toBe(sent.json().last_sent_at);
+  });
+
+  it("rejects a send after public submission commits without changing send audit", async () => {
+    const authenticated = await makeApp();
+    app = authenticated.app;
+    const merchant = await seedMerchant(app);
+    const questionnaire = (
+      await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/merchants/${merchant.id}/questionnaires`,
+        payload: { idempotency_key: "submission-before-send" },
+      })
+    ).json();
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/questionnaires/${questionnaire.id}/send`,
+    });
+    expect(sent.statusCode).toBe(200);
+    const answers = Object.fromEntries(
+      questionnaire.questions
+        .filter((item: { required: boolean }) => item.required)
+        .map((item: { id: string }) => [item.id, "已确认"]),
+    );
+    const submission = await authenticated.rawInject({
+      method: "POST",
+      url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
+      payload: { answers },
+    });
+    expect(submission.statusCode).toBe(200);
+    const beforeRejectedSend = (await getQuestionnaire(authenticated.db, questionnaire.id))!;
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/questionnaires/${questionnaire.id}/send`,
+    });
+    expect(rejected.statusCode).toBe(409);
+    const afterRejectedSend = (await getQuestionnaire(authenticated.db, questionnaire.id))!;
+    expect(afterRejectedSend.sendCount).toBe(beforeRejectedSend.sendCount);
+    expect(afterRejectedSend.lastSentBy).toBe(beforeRejectedSend.lastSentBy);
+    expect(afterRejectedSend.lastSentAt).toBe(beforeRejectedSend.lastSentAt);
+  });
+
   it("public form: fetch questions, submit with validation, then idempotent", async () => {
     const authenticated = await makeApp();
     app = authenticated.app;
