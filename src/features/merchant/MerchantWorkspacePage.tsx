@@ -5,12 +5,14 @@ import { seoOpsApi } from "../../api/seoOpsApi";
 import { requestJson } from "../../api/client";
 import type {
   AgentRunStage, DeliverableWire, LatestRunWire, LifecycleStageWire, LifecycleView, LocationSummary,
-  RankingOverviewView, RankingRowWire, StageRunView,
+  RankingOverviewView, RankingRowWire, StageRunView, TaskSummary,
 } from "../../api/types";
 import { hasPermission } from "../../auth/permissions";
 import { useAuth } from "../../auth/AuthContext";
 import { useResource } from "../../hooks/useResource";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
+import { DemoTaskDrawer } from "../inbox/DemoTaskDrawer";
+import { buildDemoTasks, isDemoTask, taskStatusView, type DemoTask } from "../inbox/demoTasks";
 import { reviewExplanation } from "../reviews/reviewCopy";
 import { STAGE_LABELS } from "./lifecycleCopy";
 import { parsePlanItems, planItemExecutionSpec, type PlanItem } from "./planItems";
@@ -32,6 +34,7 @@ export function MerchantWorkspacePage() {
   const workspace = useWorkspace();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [selectedDemoTask, setSelectedDemoTask] = useState<DemoTask>();
   const merchant = workspace.merchant;
   const merchantId = workspace.merchantId ?? useParams<{ merchantId: string }>().merchantId ?? "";
   const lifecycle = useResource((signal) => seoOpsApi.lifecycle(merchantId, signal), [merchantId]);
@@ -39,12 +42,23 @@ export function MerchantWorkspacePage() {
   const tasks = useResource((signal) => seoOpsApi.inbox({ merchant_id: merchantId, limit: 8 }, signal), [merchantId]);
   const reviews = useResource((signal) => seoOpsApi.reviews({ merchant_id: merchantId, limit: 3 }, signal), [merchantId]);
   const reports = useResource((signal) => seoOpsApi.reports({ merchant_id: merchantId, limit: 3 }, signal), [merchantId]);
+  const demoTaskPreview = useMemo(() => buildDemoTasks(workspace.merchants)
+    .filter((task) => task.merchant_id === merchantId)
+    .sort((left, right) => Date.parse(left.due_at ?? "") - Date.parse(right.due_at ?? ""))
+    .slice(0, 4), [merchantId, workspace.merchants]);
 
   if (workspace.loading) return <div className="page-state" role="status">正在读取商户…</div>;
   if (!merchant) return <div className="page-state is-error" role="alert">商户不存在或当前用户不可见。</div>;
 
   const data = lifecycle.data;
   const canManage = hasPermission(user?.permissions, "seoops.manage");
+  const useDemoTaskPreview = Boolean(tasks.data && tasks.data.items.length === 0);
+  const taskPreview = useDemoTaskPreview ? demoTaskPreview : (tasks.data?.items ?? []).slice(0, 4);
+  const onboarding = Boolean(merchant.stage && merchant.stage !== "EXECUTE" && merchant.stage !== "VERIFY");
+  const openTaskPreview = (task: typeof taskPreview[number]) => {
+    if (isDemoTask(task)) setSelectedDemoTask(task);
+    else navigate(`/tasks/${task.id}`);
+  };
   // 当前阶段若是可触发阶段：卡片自带触发热键（RANKING_BASELINE 复查到期也会落在这里）
   const triggerable: TriggerableStage | null =
     data?.stage === "KEYWORDS" || data?.stage === "AUDIT" || data?.stage === "RANKING_BASELINE"
@@ -65,7 +79,7 @@ export function MerchantWorkspacePage() {
           {" "}· 阶段由交付物推导，任一环节重跑会自动回退
         </p>
       </div>
-      <span className={`status-pill is-${merchant.health.toLocaleLowerCase()}`}>{merchant.health}</span>
+      <span className={`status-pill is-${onboarding ? "onboarding" : merchant.health.toLocaleLowerCase()}`}>{onboarding ? "接入中" : merchant.health}</span>
     </header>
 
     {lifecycle.error ? <div className="page-state is-error" role="alert">生命周期读取失败。<button onClick={lifecycle.reload}>重试</button></div> : null}
@@ -107,13 +121,38 @@ export function MerchantWorkspacePage() {
     </> : null}
 
     <div className="workspace-grid">
-      <section className="data-panel span-two"><div className="panel-heading"><div><span className="eyebrow">ACTION QUEUE · 原样下沉</span><h2>任务</h2></div><Link className="text-button" to={`/inbox?merchant_id=${merchant.id}`}>全部任务 <ArrowRight size={14} /></Link></div>
-        {tasks.loading ? <div className="page-state" role="status">读取任务…</div> : <div className="compact-list">{tasks.data?.items.map((task) => <button onClick={() => navigate(`/tasks/${task.id}`)} type="button" key={task.id}><span className={`priority-tag is-${task.priority.toLocaleLowerCase()}`}>{task.priority}</span><span><strong>{task.title}</strong><small>{task.location_name ?? "商户级"} · {task.evidence_state}</small></span><span className={`status-pill is-${task.status.toLocaleLowerCase()}`}>{task.status}</span></button>)}</div>}
+      <section className="data-panel span-two"><div className="panel-heading"><div><span className="eyebrow">ACTION QUEUE · NEXT ACTIONS</span><div className="task-panel-title"><h2>任务</h2>{useDemoTaskPreview ? <span>FRONTEND DEMO · 最近 4 项</span> : <span>最近 {taskPreview.length} 项</span>}</div></div><Link className="text-button" to={`/inbox?merchant_id=${merchant.id}`}>全部任务 <ArrowRight size={14} /></Link></div>
+        {tasks.loading ? <div className="page-state" role="status">读取任务…</div> : <div className="merchant-task-list">{taskPreview.map((task) => {
+          const due = compactDue(task.due_at);
+          const statusView = taskStatusView(task);
+          return <button aria-label={`${isDemoTask(task) ? "打开任务摘要" : "打开任务"} ${task.title}`} className={isDemoTask(task) ? "is-demo" : undefined} onClick={() => openTaskPreview(task)} type="button" key={task.id}>
+            <time dateTime={task.due_at}><strong>{due.date}</strong><small>{due.time}</small></time>
+            <span className="merchant-task-copy"><strong>{task.title}</strong><small>{taskPreviewMeta(task)}</small></span>
+            <span className="merchant-task-state"><span className={`priority-tag is-${task.priority.toLocaleLowerCase()}`}>{task.priority}</span><span className={`status-pill is-${statusView.className}`}>{statusView.label}</span></span>
+            <ArrowRight aria-hidden size={15} />
+          </button>;
+        })}</div>}
       </section>
       <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">CAUSAL REVIEW</span><h2>复盘信号</h2></div><Link className="text-button" to={`/reviews?merchant_id=${merchant.id}`}>查看全部</Link></div><div className="mini-cards">{reviews.data?.items.map((item) => <article key={item.task_id}><span className={`classification is-${item.classification.toLocaleLowerCase()}`}>{item.classification}</span><strong>{item.goal ?? "目标未记录"}</strong><p>{reviewExplanation(item.classification)}</p></article>)}{reviews.data && !reviews.data.items.length ? <p className="unavailable">暂无可复盘数据</p> : null}</div></section>
-      <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">REPORT FRESHNESS</span><h2>报告与数据</h2></div><Link className="text-button" to={`/reports?merchant_id=${merchant.id}`}>查看全部</Link></div><div className="mini-cards">{reports.data?.items.map((item) => <article key={item.evidence_id}><span className={`freshness is-${item.freshness.toLocaleLowerCase()}`}>{item.freshness}</span><strong>{item.report_type}</strong><p>{new Date(item.captured_at).toLocaleString("zh-CN")} · {item.sha256?.slice(0, 10) ?? "无哈希"}</p></article>)}{reports.data && !reports.data.items.length ? <p className="unavailable">暂无报告证据</p> : null}</div></section>
+      <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">REPORT FRESHNESS</span><h2>报告与数据</h2></div><Link className="text-button" to={`/reports?merchant_id=${merchant.id}`}>查看全部</Link></div><div className="mini-cards">{reports.data?.items.map((item) => <article key={item.report_id}><span className={`freshness is-${item.freshness.toLocaleLowerCase()}`}>{item.freshness}</span><strong>{item.title ?? item.report_type}</strong><p>{item.source_type === "CORE_AI_ARTIFACT" ? "Core AI 附件" : "任务证据"} · {new Date(item.captured_at).toLocaleString("zh-CN")}</p>{item.source_ref ? <a className="text-button" href={item.source_ref} rel="noreferrer" target="_blank">打开报告 ↗</a> : null}</article>)}{reports.data && !reports.data.items.length ? <p className="unavailable">暂无报告证据</p> : null}</div></section>
     </div>
+    {selectedDemoTask ? <DemoTaskDrawer onClose={() => setSelectedDemoTask(undefined)} task={selectedDemoTask} /> : null}
   </>;
+}
+
+function compactDue(value?: string): { date: string; time: string } {
+  if (!value) return { date: "待排期", time: "—" };
+  const date = new Date(value);
+  return {
+    date: `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`,
+    time: `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`,
+  };
+}
+
+function taskPreviewMeta(task: TaskSummary | DemoTask): string {
+  if (isDemoTask(task) && task.post_occurrence) return task.post_occurrence.primary_keyword_cluster;
+  if (isDemoTask(task)) return `${task.task_type} · ${task.cadence}`;
+  return `${task.location_name ?? "商户级"} · ${task.task_type}`;
 }
 
 /** 轮次徽标：轮次 = 排名快照期数（首轮基线 + 每次复查）；月份取最新基线所在月。 */

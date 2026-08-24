@@ -297,7 +297,7 @@ export async function recordDeliverables(
     let size: number | null = artifact.size ?? null;
     let downloadError: string | null = null;
     try {
-      const bytes = await deps.client.downloadArtifact(artifact.url);
+      const bytes = await deps.client.downloadArtifact(artifact.download_url);
       const filePath = path.join(
         deps.artifactsDir,
         deliverableFileName(run.id, String(index), artifact.file_name),
@@ -325,7 +325,7 @@ export async function recordDeliverables(
         description: artifact.description ?? null,
         sha256: sha,
         localPath,
-        remoteUrl: artifact.url,
+        remoteUrl: artifact.download_url,
         downloadedAt: localPath ? nowIso() : null,
         downloadError,
         createdAt: stamp,

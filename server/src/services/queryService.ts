@@ -5,6 +5,10 @@ import { listLocations } from "../repos/locationRepo.js";
 import { getTask, listTasks } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import {
+  listAgentRuns,
+  listDeliverablesByRunIds,
+} from "../repos/agentRunRepo.js";
+import {
   deriveLifecycle,
   loadLifecycleInputs,
   type ExceptionWire,
@@ -340,7 +344,20 @@ export function reviews(
 }
 
 // ---------------------------------------------------------------------------
-// Reports (freshness projection over *_REPORT evidence)
+// Reports (task evidence + real Core AI run attachments)
+
+const REPORT_TYPE_BY_STAGE: Record<string, string> = {
+  KEYWORDS: "KEYWORD_RESEARCH_REPORT",
+  AUDIT: "AUDIT_REPORT",
+  RANKING_BASELINE: "RANKING_REPORT",
+  PLAN: "PLAN_REPORT",
+  REVIEW: "REVIEW_REPORT",
+};
+
+function reportFreshness(capturedAt: string, now: Date): string {
+  const ageDays = (now.getTime() - Date.parse(capturedAt)) / (24 * 60 * 60 * 1000);
+  return ageDays <= 7 ? "FRESH" : ageDays <= 30 ? "AGING" : "STALE";
+}
 
 export function reports(
   db: Db,
@@ -370,20 +387,25 @@ export function reports(
     }
   }
 
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  const items = listTasks(db)
+  const merchantsById = new Map(listMerchants(db).map((merchant) => [merchant.id, merchant]));
+  const locationsById = new Map(listLocations(db).map((location) => [location.id, location]));
+  const evidenceReports = listTasks(db)
     .flatMap((t) =>
       t.evidenceRefs
         .filter((e) => e.type.endsWith("_REPORT"))
         .map((e) => ({ task: t, evidence: e })),
     )
     .map(({ task, evidence }) => {
-      const ageDays = (now.getTime() - Date.parse(evidence.capturedAt)) / DAY_MS;
-      const freshness = ageDays <= 7 ? "FRESH" : ageDays <= 30 ? "AGING" : "STALE";
+      const merchant = merchantsById.get(task.merchantId);
+      const location = task.locationId ? locationsById.get(task.locationId) : undefined;
       return {
+        report_id: `evidence:${evidence.id}`,
+        source_type: "TASK_EVIDENCE",
         task_id: task.id,
         merchant_id: task.merchantId,
+        merchant_name: merchant?.displayName ?? task.merchantId,
         ...(task.locationId ? { location_id: task.locationId } : {}),
+        ...(location ? { location_name: location.displayName } : {}),
         evidence_id: evidence.id,
         report_type: evidence.type,
         ...(evidence.artifactId ? { artifact_id: evidence.artifactId } : {}),
@@ -391,9 +413,44 @@ export function reports(
         ...(evidence.sourceRef ? { source_ref: evidence.sourceRef } : {}),
         ...(evidence.sha256 ? { sha256: evidence.sha256 } : {}),
         captured_at: evidence.capturedAt,
-        freshness,
+        freshness: reportFreshness(evidence.capturedAt, now),
       };
-    })
+    });
+
+  const completedRuns = listAgentRuns(db).filter((run) => run.status === "COMPLETED");
+  const deliverablesByRun = listDeliverablesByRunIds(
+    db,
+    completedRuns.map((run) => run.id),
+  );
+  const coreAiReports = completedRuns.flatMap((run) => {
+    const merchant = merchantsById.get(run.merchantId);
+    const location = run.locationId ? locationsById.get(run.locationId) : undefined;
+    return (deliverablesByRun.get(run.id) ?? [])
+      .filter((deliverable) => deliverable.kind === "ATTACHMENT" && deliverable.remoteUrl)
+      .map((deliverable) => ({
+        report_id: `core-ai:${deliverable.id}`,
+        source_type: "CORE_AI_ARTIFACT",
+        merchant_id: run.merchantId,
+        merchant_name: merchant?.displayName ?? run.merchantId,
+        ...(run.locationId ? { location_id: run.locationId } : {}),
+        ...(location ? { location_name: location.displayName } : {}),
+        agent_run_id: run.id,
+        ...(run.coreRunId ? { core_run_id: run.coreRunId } : {}),
+        report_type: REPORT_TYPE_BY_STAGE[run.stage] ?? `${run.runType}_REPORT`,
+        ...(deliverable.fileId ? { file_id: deliverable.fileId } : {}),
+        file_name: deliverable.fileName,
+        ...(deliverable.title ? { title: deliverable.title } : {}),
+        ...(deliverable.contentType ? { content_type: deliverable.contentType } : {}),
+        ...(deliverable.size !== null ? { size: deliverable.size } : {}),
+        source_ref: deliverable.remoteUrl!,
+        download_path: `/api/seo-ops/deliverables/${deliverable.id}/download`,
+        ...(deliverable.sha256 ? { sha256: deliverable.sha256 } : {}),
+        captured_at: deliverable.createdAt,
+        freshness: reportFreshness(deliverable.createdAt, now),
+      }));
+  });
+
+  const items = [...evidenceReports, ...coreAiReports]
     .filter((r) => {
       if (merchantId && r.merchant_id !== merchantId) return false;
       if (locationId && r.location_id !== locationId) return false;

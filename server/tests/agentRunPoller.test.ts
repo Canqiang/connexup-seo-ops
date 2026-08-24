@@ -147,8 +147,8 @@ describe("AgentRunPoller", () => {
     const core = {
       ...completedCore("# 关键词报告"),
       artifacts: [
-        { file_id: "f-1", file_name: "keywords.csv", content_type: "text/csv", size: csv.byteLength, url: "https://core.example/files/f-1" },
-        { file_id: "f-2", file_name: "chart.png", content_type: "image/png", url: "https://core.example/files/f-2" },
+        { file_id: "f-1", file_name: "keywords.csv", content_type: "text/csv", size: csv.byteLength, download_url: "https://core.example/files/f-1" },
+        { file_id: "f-2", file_name: "chart.png", content_type: "image/png", download_url: "https://core.example/files/f-2" },
       ],
     };
     const poller = makePoller(

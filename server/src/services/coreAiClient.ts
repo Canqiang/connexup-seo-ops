@@ -30,7 +30,8 @@ export interface CoreRunArtifact {
   file_name: string;
   content_type?: string | null;
   size?: number | null;
-  url: string;
+  /** Public attachment link returned by AgentRunDetailView.ArtifactView. */
+  download_url: string;
   title?: string | null;
   description?: string | null;
 }

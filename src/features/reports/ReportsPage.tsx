@@ -23,8 +23,16 @@ export function ReportsPage() {
     {resource.loading ? <div className="page-state" role="status">正在读取报告索引…</div> : null}
     {resource.error ? <div className="page-state is-error" role="alert">报告读取失败。<button onClick={resource.reload}>重试</button></div> : null}
     {resource.data ? <div className="table-wrap"><table><thead><tr><th>报告类型</th><th>商户 / 地点</th><th>采集时间</th><th>新鲜度</th><th>来源</th><th>校验</th><th /></tr></thead><tbody>
-      {resource.data.items.map((item) => <tr key={item.evidence_id}><td><strong>{item.report_type}</strong><small>{item.evidence_id}</small></td><td>{item.merchant_id}<small>{item.location_id ?? "商户级"}</small></td><td>{formatDate(item.captured_at)}</td><td><span className={`freshness is-${item.freshness.toLocaleLowerCase()}`}>{item.freshness}</span></td><td>{item.artifact_id ?? item.file_id ?? item.source_ref ?? "不可用"}</td><td><code>{item.sha256?.slice(0, 12) ?? "—"}</code></td><td>{item.source_ref ? <a aria-label={`打开报告 ${item.report_type}`} className="row-arrow" href={item.source_ref} rel="noreferrer" target="_blank"><ExternalLink size={14} /></a> : null}</td></tr>)}
-    </tbody></table>{!resource.data.items.length ? <div className="empty-state"><h2>没有匹配的报告</h2><p>报告证据必须以 <code>_REPORT</code> 结尾并绑定当前任务版本。</p></div> : null}</div> : null}</section>
+      {resource.data.items.map((item) => <tr key={item.report_id}>
+        <td><strong>{item.title ?? item.report_type}</strong><small>{item.file_name ?? item.report_type}</small></td>
+        <td>{item.merchant_name}<small>{item.location_name ?? "商户级"}</small></td>
+        <td>{formatDate(item.captured_at)}</td>
+        <td><span className={`freshness is-${item.freshness.toLocaleLowerCase()}`}>{item.freshness}</span></td>
+        <td><strong>{item.source_type === "CORE_AI_ARTIFACT" ? "Core AI 附件" : "任务证据"}</strong><small>{item.core_run_id ?? item.evidence_id ?? "—"}</small></td>
+        <td><code>{item.sha256?.slice(0, 12) ?? "—"}</code></td>
+        <td>{item.source_ref ? <a aria-label={item.source_type === "CORE_AI_ARTIFACT" ? `打开 Core AI 附件 ${item.file_name ?? item.report_type}` : `打开报告 ${item.report_type}`} className="row-arrow" href={item.source_ref} rel="noreferrer" target="_blank"><ExternalLink size={14} /></a> : null}</td>
+      </tr>)}
+    </tbody></table>{!resource.data.items.length ? <div className="empty-state"><h2>没有匹配的报告</h2><p>Core AI 尚未生成附件，或当前任务还没有报告证据。</p></div> : null}</div> : null}</section>
   </>;
 }
 

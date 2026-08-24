@@ -165,9 +165,12 @@ export interface ReviewItem {
   conclusion_strength: string; follow_up_test?: string; evidence_ids: string[]; updated_at: string;
 }
 export interface ReportItem {
-  task_id: string; merchant_id: string; location_id?: string; evidence_id: string; report_type: string;
-  artifact_id?: string; file_id?: string; source_ref?: string; sha256?: string; captured_at: string;
-  freshness: ReportFreshness;
+  report_id: string; source_type: "TASK_EVIDENCE" | "CORE_AI_ARTIFACT";
+  merchant_id: string; merchant_name: string; location_id?: string; location_name?: string;
+  task_id?: string; evidence_id?: string; agent_run_id?: string; core_run_id?: string;
+  report_type: string; artifact_id?: string; file_id?: string; file_name?: string; title?: string;
+  content_type?: string; size?: number; source_ref?: string; download_path?: string;
+  sha256?: string; captured_at: string; freshness: ReportFreshness;
 }
 export interface AppendEvidenceRequest {
   type: string; artifact_id?: string; file_id?: string; source_ref?: string; sha256?: string;

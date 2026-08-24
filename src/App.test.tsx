@@ -87,11 +87,15 @@ const rankingFixture: RankingOverviewView = {
 
 let lifecycleData: LifecycleView = lifecycleFixture;
 let rankingData: RankingOverviewView = emptyRankingFixture;
+let reportsData: unknown = { items: [], offset: 0, limit: 50, total: 0 };
+let portfolioData = portfolioFixture;
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
   lifecycleData = lifecycleFixture;
   rankingData = emptyRankingFixture;
+  reportsData = { items: [], offset: 0, limit: 50, total: 0 };
+  portfolioData = portfolioFixture;
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   localStorage.setItem("apiKey", "test-key");
@@ -99,7 +103,7 @@ beforeEach(() => {
     const path = String(input);
     calls.push({ path, init });
     if (path === "/api/auth/me") return json(userFixture);
-    if (path === "/api/seo-ops/portfolio") return json(portfolioFixture);
+    if (path === "/api/seo-ops/portfolio") return json(portfolioData);
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
     if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
     if (path === "/api/seo-ops/merchants/only-bear/lifecycle") return json(lifecycleData);
@@ -110,7 +114,7 @@ beforeEach(() => {
     if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
-    if (path.startsWith("/api/seo-ops/reports")) return json({ items: [], offset: 0, limit: 50, total: 0 });
+    if (path.startsWith("/api/seo-ops/reports")) return json(reportsData);
     return new Response(null, { status: 404 });
   }));
 });
@@ -134,6 +138,32 @@ test("merchant lifecycle page walks the stage rail and surfaces the waiting ques
   expect(screen.getByRole("heading", { name: "等待商家回复" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /重发问卷/ })).toBeInTheDocument();
   expect(screen.getByText(/q\/ab12cd34/)).toBeInTheDocument();
+});
+
+test("merchant workspace presents onboarding health in operator-facing Chinese", async () => {
+  portfolioData = {
+    ...portfolioFixture,
+    merchants: [{ ...portfolioFixture.merchants[0], health: "STABLE", stage: "QUESTIONNAIRE" }],
+  };
+
+  renderApp("/merchants/only-bear");
+
+  expect(await screen.findByText("接入中")).toBeInTheDocument();
+  expect(screen.queryByText("ONBOARDING")).not.toBeInTheDocument();
+});
+
+test("merchant workspace previews four upcoming demo tasks when its real queue is empty", async () => {
+  const user = userEvent.setup();
+  renderApp("/merchants/only-bear");
+
+  expect(await screen.findByText("FRONTEND DEMO · 最近 4 项")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: /打开任务摘要/ })).toHaveLength(4);
+  expect(screen.getByText("fried chicken lunch Mineola")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: /打开任务摘要 .*发布 GBP Post｜午餐选择/ }));
+
+  expect(screen.getByRole("dialog", { name: "演示任务详情" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "本次发布 Brief" })).toBeInTheDocument();
 });
 
 test("KEYWORDS stage card triggers a stage run in place, no task created", async () => {
@@ -181,6 +211,77 @@ test("steady-state merchant shows round badge, ranking comparison numbers, and t
   expect(table).toHaveTextContent("ramen near me");
   expect(table).toHaveTextContent("ramen delivery");
   expect(screen.getByText("新词")).toBeInTheDocument();
+});
+
+test("reports page opens the real Core AI attachment for a partner merchant", async () => {
+  const coreUrl = "https://core-ai-server.connexup-uat.net/api/public/artifacts/demo-token/content";
+  reportsData = {
+    items: [{
+      report_id: "core-ai:deliverable-1",
+      source_type: "CORE_AI_ARTIFACT",
+      merchant_id: "only-bear",
+      merchant_name: "Only Bear Chicken & Boba",
+      location_id: "mineola",
+      location_name: "Mineola",
+      agent_run_id: "run-1",
+      core_run_id: "core-run-1",
+      report_type: "AUDIT_REPORT",
+      file_id: "file-1",
+      file_name: "only-bear-audit.html",
+      title: "Only Bear Local SEO Audit",
+      content_type: "text/html",
+      size: 54553,
+      source_ref: coreUrl,
+      download_path: "/api/seo-ops/deliverables/deliverable-1/download",
+      sha256: "sha256:abc",
+      captured_at: "2026-08-19T10:00:00Z",
+      freshness: "FRESH",
+    }],
+    offset: 0,
+    limit: 50,
+    total: 1,
+  };
+
+  renderApp("/reports");
+
+  expect(await screen.findByText("Only Bear Local SEO Audit")).toBeInTheDocument();
+  expect(screen.getByText("Only Bear Chicken & Boba")).toBeInTheDocument();
+  expect(screen.getByText("Core AI 附件")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "打开 Core AI 附件 only-bear-audit.html" })).toHaveAttribute("href", coreUrl);
+});
+
+test("empty inbox shows front-end demo work and opens details without requesting a fake task", async () => {
+  portfolioData = { ...portfolioFixture, totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 } };
+  const user = userEvent.setup();
+  renderApp("/inbox");
+
+  expect(await screen.findByText("7 个演示任务")).toBeInTheDocument();
+  expect(screen.getAllByText(/\d{2}月\d{2}日发布 GBP Post｜/)).toHaveLength(4);
+  expect(screen.getByText("复盘分析｜上周 SEO 动作与指标变化")).toBeInTheDocument();
+  expect(screen.getByText("重新 Audit｜GBP + 官网本地页")).toBeInTheDocument();
+  expect(screen.getByText("重新生成 Plan｜未来 30 天执行方案")).toBeInTheDocument();
+
+  await user.click(screen.getByText("重新生成 Plan｜未来 30 天执行方案"));
+
+  expect(screen.getByRole("dialog", { name: "演示任务详情" })).toBeInTheDocument();
+  expect(screen.getByText("前端演示数据，不会写入后端或触发 Core AI。" )).toBeInTheDocument();
+  expect(screen.getByText("等待重新 Audit 与新排名基线完成")).toBeInTheDocument();
+  expect(calls.some((call) => call.path.includes("/api/seo-ops/tasks/demo-"))).toBe(false);
+});
+
+test("each GBP publishing date is an independent task with its own keyword brief", async () => {
+  portfolioData = { ...portfolioFixture, totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 } };
+  const user = userEvent.setup();
+  renderApp("/inbox");
+
+  await user.click(await screen.findByText(/发布 GBP Post｜午餐选择/));
+
+  expect(screen.getByRole("heading", { name: "本次发布 Brief" })).toBeInTheDocument();
+  expect(screen.getByText("来源：每周四 GBP 内容日历")).toBeInTheDocument();
+  expect(screen.getByText("fried chicken lunch Mineola")).toBeInTheDocument();
+  expect(screen.getByText("fried chicken near me")).toBeInTheDocument();
+  expect(screen.getByText("待授权")).toBeInTheDocument();
+  expect(screen.getByText("一篇 Post 只使用一个主要搜索意图 / 关键词簇。" )).toBeInTheDocument();
 });
 
 test("task deep link exposes revision hash evidence and approval boundary", async () => {

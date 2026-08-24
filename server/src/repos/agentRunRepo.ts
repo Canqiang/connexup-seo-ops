@@ -211,6 +211,16 @@ export function listAgentRunsByMerchant(
   return rows.map(toAgentRun);
 }
 
+export function listAgentRuns(db: Db): AgentRun[] {
+  const rows = db
+    .prepare(
+      `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all() as AgentRunRow[];
+  return rows.map(toAgentRun);
+}
+
 export function countAgentRunsByMerchantSince(
   db: Db,
   merchantId: string,
