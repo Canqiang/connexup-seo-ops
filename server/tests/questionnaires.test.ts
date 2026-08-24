@@ -91,7 +91,9 @@ describe("questionnaire routes", () => {
   });
 
   it("public form: fetch questions, submit with validation, then idempotent", async () => {
-    ({ app } = await makeApp());
+    const authenticated = await makeApp();
+    app = authenticated.app;
+    const { rawInject } = authenticated;
     const merchant = await seedMerchant(app);
     const questionnaire = (
       await app.inject({
@@ -106,7 +108,7 @@ describe("questionnaire routes", () => {
     });
 
     const form = (
-      await app.inject({
+      await rawInject({
         method: "GET",
         url: `/api/public/questionnaire-forms/${questionnaire.share_slug}`,
       })
@@ -131,14 +133,14 @@ describe("questionnaire routes", () => {
         payload: { idempotency_key: "qk-2" },
       })
     ).json().share_slug;
-    const tooEarly = await app.inject({
+    const tooEarly = await rawInject({
       method: "POST",
       url: `/api/public/questionnaire-forms/${draftSlug}/submissions`,
       payload: { answers: { q1: "奶茶店" } },
     });
     expect(tooEarly.statusCode).toBe(409);
 
-    const missing = await app.inject({
+    const missing = await rawInject({
       method: "POST",
       url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
       payload: { answers: { q1: "奶茶店" } },
@@ -149,7 +151,7 @@ describe("questionnaire routes", () => {
     for (const item of form.questions) {
       if (item.required) answers[item.id] = "答：奶茶与炸鸡";
     }
-    const submitted = await app.inject({
+    const submitted = await rawInject({
       method: "POST",
       url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
       payload: { answers },
@@ -159,7 +161,7 @@ describe("questionnaire routes", () => {
 
     // 已填问卷不再下发题目
     const closed = (
-      await app.inject({
+      await rawInject({
         method: "GET",
         url: `/api/public/questionnaire-forms/${questionnaire.share_slug}`,
       })
@@ -180,7 +182,7 @@ describe("questionnaire routes", () => {
     // 404s
     expect(
       (
-        await app.inject({
+        await rawInject({
           method: "GET",
           url: "/api/public/questionnaire-forms/nope1234",
         })

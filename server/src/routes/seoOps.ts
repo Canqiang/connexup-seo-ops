@@ -5,6 +5,7 @@ import type { AppContext } from "../index.js";
 import { ApiError } from "../errors.js";
 import {
   requireDeliverableAccess,
+  requireLocationAccess,
   requireMerchantAccess,
   requirePermission,
   requireRunAccess,
@@ -255,6 +256,10 @@ export function registerSeoOpsRoutes(
       const actor = requirePermission(request, "seoops.manage");
       const { merchantId } = request.params as { merchantId: string };
       await requireMerchantAccess(ctx.db, actor, merchantId);
+      const body = triggerStageRunSchema.parse(request.body);
+      if (body.location_id) {
+        await requireLocationAccess(ctx.db, actor, merchantId, body.location_id);
+      }
       if (!ctx.coreAi || !ctx.config.agentRunAgentId) {
         throw new ApiError(
           503,
@@ -262,7 +267,6 @@ export function registerSeoOpsRoutes(
           "CORE_AI_NOT_CONFIGURED",
         );
       }
-      const body = triggerStageRunSchema.parse(request.body);
       const deps: AgentRunDeps = {
         db: ctx.db,
         client: ctx.coreAi,
@@ -492,6 +496,9 @@ export function registerSeoOpsRoutes(
     const actor = requirePermission(request, "seoops.manage");
     const body = createTaskSchema.parse(request.body);
     await requireMerchantAccess(ctx.db, actor, body.merchant_id);
+    if (body.location_id) {
+      await requireLocationAccess(ctx.db, actor, body.merchant_id, body.location_id);
+    }
     const { task, replayed } = await createTask(ctx.db, body);
     reply.status(replayed ? 200 : 201);
     return taskView(task, await taskNames(ctx, task));

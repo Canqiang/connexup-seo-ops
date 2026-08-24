@@ -163,7 +163,7 @@ describe("stage-run routes", () => {
     expect(config.agent_run_stages).toContain("KEYWORDS");
   });
 
-  it("404 unknown merchant, 400 invalid stage, 400 foreign location", async () => {
+  it("404 unknown merchant/foreign location and 400 invalid stage", async () => {
     const { app } = await makeApp();
     const missing = await app.inject({
       method: "POST",
@@ -187,7 +187,7 @@ describe("stage-run routes", () => {
       url: `/api/seo-ops/merchants/${merchant.id}/stage-runs`,
       payload: { stage: "KEYWORDS", location_id: other.id, idempotency_key: "sr-3" },
     });
-    expect(foreign.statusCode).toBe(400);
+    expect(foreign.statusCode).toBe(404);
   });
 
   it("enforces the per-merchant daily run limit with 429", async () => {

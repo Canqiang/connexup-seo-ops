@@ -87,7 +87,7 @@ describe("POST /api/seo-ops/tasks", () => {
     expect(task.location_name).toBe("Downtown");
   });
 
-  it("404 when merchant missing, 400 when location belongs elsewhere", async () => {
+  it("404 when merchant is missing or location belongs elsewhere", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/seo-ops/tasks",
@@ -113,7 +113,7 @@ describe("POST /api/seo-ops/tasks", () => {
         idempotency_key: "tk-x",
       },
     });
-    expect(bad.statusCode).toBe(400);
+    expect(bad.statusCode).toBe(404);
   });
 
   it("replays create idempotently; different body -> 409", async () => {

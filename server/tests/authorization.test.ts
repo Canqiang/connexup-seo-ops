@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { SeoPermission } from "../src/auth/types.js";
-import { createTask } from "../src/services/taskService.js";
+import type { AuthActor, SeoPermission } from "../src/auth/types.js";
+import { requirePermission } from "../src/auth/httpAuth.js";
+import { appendEvidence, createTask } from "../src/services/taskService.js";
 import { createMerchant } from "../src/services/merchantService.js";
+import { createLocation } from "../src/services/merchantService.js";
 import { createQuestionnaire } from "../src/services/questionnaireService.js";
 import { insertAgentRun, upsertDeliverable } from "../src/repos/agentRunRepo.js";
 import {
@@ -59,6 +61,22 @@ describe("SEO Ops authorization", () => {
       definition: taskDefinition,
       idempotency_key: "task-b",
     });
+    const locationB = await createLocation(userA.db, merchantB.entity.id, {
+      slug: "merchant-b-location",
+      readinessStatus: "INCOMPLETE",
+      missingRequirements: ["GBP"],
+      idempotencyKey: "merchant-b-location",
+      createdBy: userB.id,
+    });
+    await appendEvidence(userA.db, taskB.task.id, {
+      type: "AUDIT_REPORT",
+      source_ref: "https://example.test/hidden-audit",
+      captured_at: "2026-08-24T00:00:00.000Z",
+      verification_status: "VERIFIED",
+      requirement_key: "audit",
+      expected_state_version: 1,
+      idempotency_key: "hidden-audit",
+    });
     const questionnaireB = await createQuestionnaire(userA.db, merchantB.entity.id, {
       idempotencyKey: "questionnaire-b",
     });
@@ -100,7 +118,7 @@ describe("SEO Ops authorization", () => {
       description: null,
       sha256: null,
       localPath: null,
-      remoteUrl: null,
+      remoteUrl: "https://example.test/hidden-report.pdf",
       downloadedAt: null,
       downloadError: null,
       createdAt: "2026-08-24T00:00:00.000Z",
@@ -113,10 +131,54 @@ describe("SEO Ops authorization", () => {
     expect(portfolio.json().merchants).toHaveLength(1);
     expect(portfolio.json().merchants[0].id).toBe(merchantA.entity.id);
     expect(task.statusCode).toBe(404);
+    for (const endpoint of ["inbox", "reviews", "reports"]) {
+      const response = await userA.inject({
+        method: "GET",
+        url: `/api/seo-ops/${endpoint}?merchant_id=${merchantB.entity.id}`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ items: [], total: 0 });
+    }
     await expect(userA.inject({
       method: "POST", url: `/api/seo-ops/merchants/${merchantB.entity.id}/locations`,
       payload: { slug: "hidden", readiness_status: "INCOMPLETE", missing_requirements: ["GBP"], idempotency_key: "hidden-location" },
     })).resolves.toMatchObject({ statusCode: 404 });
+
+    const missingLocation = await userA.inject({
+      method: "POST",
+      url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: merchantA.entity.id,
+        location_id: "missing-location",
+        definition: taskDefinition,
+        idempotency_key: "missing-location-task",
+      },
+    });
+    const hiddenLocation = await userA.inject({
+      method: "POST",
+      url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: merchantA.entity.id,
+        location_id: locationB.entity.id,
+        definition: taskDefinition,
+        idempotency_key: "hidden-location-task",
+      },
+    });
+    expect(hiddenLocation.statusCode).toBe(404);
+    expect(hiddenLocation.json()).toEqual(missingLocation.json());
+
+    const missingStageLocation = await userA.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchantA.entity.id}/stage-runs`,
+      payload: { stage: "AUDIT", location_id: "missing-location", idempotency_key: "missing-stage-location" },
+    });
+    const hiddenStageLocation = await userA.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchantA.entity.id}/stage-runs`,
+      payload: { stage: "AUDIT", location_id: locationB.entity.id, idempotency_key: "hidden-stage-location" },
+    });
+    expect(hiddenStageLocation.statusCode).toBe(404);
+    expect(hiddenStageLocation.json()).toEqual(missingStageLocation.json());
     await expect(userA.inject({
       method: "GET", url: `/api/seo-ops/merchants/${merchantB.entity.id}/stage-runs`,
     })).resolves.toMatchObject({ statusCode: 404 });
@@ -182,6 +244,72 @@ describe("SEO Ops authorization", () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ error_code: "FORBIDDEN" });
+
+    const decision = await manager.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.task.id}/approval-decisions`,
+      payload: {
+        decision: "APPROVE",
+        task_revision: 1,
+        execution_spec_hash: task.task.executionSpecHash,
+        expected_state_version: 1,
+        idempotency_key: "manager-cannot-approve",
+      },
+    });
+    expect(decision.statusCode).toBe(403);
+    expect(decision.json()).toMatchObject({ error_code: "FORBIDDEN" });
+  });
+
+  it("requires manage before stage trigger or cancel", async () => {
+    const viewer = await createAuthenticatedTestApp({ permissions: ["seoops.view"] });
+    apps.push(viewer.app);
+    const merchant = await createMerchant(viewer.db, {
+      slug: "stage-view-only",
+      operatorUserIds: [viewer.actor.userId],
+      idempotencyKey: "stage-view-only",
+      actorUserId: viewer.actor.userId,
+    });
+
+    const trigger = await viewer.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.entity.id}/stage-runs`,
+      payload: { stage: "AUDIT", idempotency_key: "view-only-stage" },
+    });
+    const cancel = await viewer.inject({
+      method: "POST",
+      url: "/api/seo-ops/agent-runs/not-a-real-run/cancel",
+    });
+    expect(trigger.statusCode).toBe(403);
+    expect(cancel.statusCode).toBe(403);
+  });
+
+  it("matches all six HUMAN permissions exactly", () => {
+    const permissions: SeoPermission[] = [
+      "seoops.view",
+      "seoops.manage",
+      "seoops.approve",
+      "seoops.execute",
+      "seoops.capability.manage",
+      "seoops.schedule.manage",
+    ];
+    for (const granted of permissions) {
+      const actor: AuthActor = {
+        userId: "permission-test",
+        email: "permission-test@example.test",
+        name: "Permission test",
+        role: "seo_operator",
+        identityType: "HUMAN",
+        permissions: [granted],
+      };
+      for (const required of permissions) {
+        const request = { actor } as never;
+        if (required === granted) {
+          expect(requirePermission(request, required)).toBe(actor);
+        } else {
+          expect(() => requirePermission(request, required)).toThrow(/permission denied/);
+        }
+      }
+    }
   });
 
   it("self-scopes merchant creation and rejects invalid operator ids", async () => {

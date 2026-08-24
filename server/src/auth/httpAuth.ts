@@ -5,9 +5,10 @@ import { ApiError } from "../errors.js";
 import { resolveActorFromToken } from "../services/authService.js";
 import type { Db } from "../db/connection.js";
 import { getMerchant } from "../repos/merchantRepo.js";
+import { getLocation } from "../repos/locationRepo.js";
 import { getTask } from "../repos/taskRepo.js";
 import { getAgentRun, getDeliverable } from "../repos/agentRunRepo.js";
-import type { Merchant } from "../repos/types.js";
+import type { Location, Merchant } from "../repos/types.js";
 import type { Task } from "../repos/taskTypes.js";
 import type { AgentRun, RunDeliverable } from "../repos/agentRunTypes.js";
 
@@ -59,6 +60,21 @@ export async function requireMerchantAccess(
   const merchant = await getMerchant(db, merchantId);
   if (!merchant || !merchant.operatorUserIds.includes(actor.userId)) hiddenResource();
   return merchant;
+}
+
+/** Location IDs are scoped both to the authenticated actor and to the target
+ * merchant. Missing, hidden, and cross-merchant IDs deliberately collapse to
+ * the same 404 response. */
+export async function requireLocationAccess(
+  db: Db,
+  actor: AuthActor,
+  merchantId: string,
+  locationId: string,
+): Promise<Location> {
+  const location = await getLocation(db, locationId);
+  if (!location || location.merchantId !== merchantId) hiddenResource();
+  await requireMerchantAccess(db, actor, merchantId);
+  return location;
 }
 
 export async function requireTaskAccess(
