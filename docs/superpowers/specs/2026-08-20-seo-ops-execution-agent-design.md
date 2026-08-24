@@ -1,7 +1,7 @@
 # SEO Ops 执行 Agent 与自动周期设计(flow v4)
 
-日期:2026-08-20(rev 2,按 P0 评审修订)
-状态:已修订,待复审
+日期:2026-08-20(rev 3,按 P0 评审修订)
+状态:已评审通过
 事实依据:Obsidian vault `~/Documents/vault/chancetop`(引用见文末)
 
 ## 0. 版本与废止声明
