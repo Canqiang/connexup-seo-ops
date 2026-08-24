@@ -14,13 +14,33 @@ interface MerchantRow {
   updated_at: string;
 }
 
+/** Decode the persisted operator list without allowing strings, objects, or
+ * mixed arrays to masquerade as a list of user IDs. */
+function decodeOperatorUserIds(value: string): string[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === "string")) {
+    throw new Error("invalid operator_user_ids");
+  }
+  return [...new Set(parsed)];
+}
+
+/** Runtime reads fail closed so malformed legacy data cannot grant scope or
+ * turn portfolio/resource reads into 500 responses. */
+function decodeOperatorUserIdsForRuntime(value: string): string[] {
+  try {
+    return decodeOperatorUserIds(value);
+  } catch {
+    return [];
+  }
+}
+
 function toMerchant(row: MerchantRow): Merchant {
   return {
     id: row.id,
     slug: row.slug,
     displayName: row.display_name,
     tags: JSON.parse(row.tags || "[]"),
-    operatorUserIds: JSON.parse(row.operator_user_ids || "[]"),
+    operatorUserIds: decodeOperatorUserIdsForRuntime(row.operator_user_ids),
     creationIdempotencyKey: row.creation_idempotency_key,
     requestFingerprint: row.request_fingerprint,
     createdBy: row.created_by,
@@ -99,13 +119,10 @@ export async function replaceMerchantOperatorId(
     );
     let updated = 0;
     for (const row of rows) {
-      let operatorUserIds: unknown;
+      let operatorUserIds: string[];
       try {
-        operatorUserIds = JSON.parse(row.operator_user_ids);
+        operatorUserIds = decodeOperatorUserIds(row.operator_user_ids);
       } catch {
-        throw new Error(`merchant ${row.id} has invalid operator_user_ids`);
-      }
-      if (!Array.isArray(operatorUserIds) || !operatorUserIds.every((id) => typeof id === "string")) {
         throw new Error(`merchant ${row.id} has invalid operator_user_ids`);
       }
       if (!operatorUserIds.includes(fromUserId)) continue;

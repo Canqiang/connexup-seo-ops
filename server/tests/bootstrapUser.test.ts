@@ -190,7 +190,7 @@ describe("user bootstrap", () => {
     }
   });
 
-  it.each(["", "not-json", JSON.stringify({ ids: ["local-dev"] }), JSON.stringify(["local-dev", 7])])(
+  it.each(["", "not-json", JSON.stringify("prefix-local-dev-suffix"), JSON.stringify({ ids: ["local-dev"] }), JSON.stringify(["local-dev", 7])])(
     "rejects non-string operator list encoding %j", async (operatorUserIds) => {
       const isolated = await createTestDb();
       try {

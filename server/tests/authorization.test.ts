@@ -21,6 +21,19 @@ const taskDefinition = {
   required_evidence_types: [],
 };
 
+async function insertRawMerchant(
+  db: Parameters<typeof createTask>[0],
+  id: string,
+  operatorUserIds: string,
+): Promise<void> {
+  await db.exec(
+    `INSERT INTO seo_merchants
+       (id, slug, display_name, tags, operator_user_ids, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [id, id, id, "[]", operatorUserIds, "2026-08-24T00:00:00.000Z", "2026-08-24T00:00:00.000Z"],
+  );
+}
+
 describe("SEO Ops authorization", () => {
   const apps: Array<{ close(): Promise<void> }> = [];
   afterEach(async () => {
@@ -35,6 +48,92 @@ describe("SEO Ops authorization", () => {
 
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({ error_code: "AUTH_REQUIRED" });
+  });
+
+  it.each([
+    ["JSON string", JSON.stringify("prefix-op-1-suffix")],
+    ["object", JSON.stringify({ operator: "op-1" })],
+    ["mixed array", JSON.stringify(["op-1", 7])],
+    ["invalid JSON", "not-json"],
+  ])("excludes a merchant with malformed %s operators without returning 500", async (_label, encoded) => {
+    const user = await createAuthenticatedTestApp({ permissions: ["seoops.view"] });
+    apps.push(user.app);
+    await insertRawMerchant(user.db, `malformed-${apps.length}`, encoded);
+
+    const portfolio = await user.inject({ method: "GET", url: "/api/seo-ops/portfolio" });
+
+    expect(portfolio.statusCode).toBe(200);
+    expect(portfolio.json().merchants).toEqual([]);
+  });
+
+  it("does not grant task, run, or deliverable access through substring operator JSON", async () => {
+    const user = await createAuthenticatedTestApp({ permissions: ["seoops.view"] });
+    apps.push(user.app);
+    const merchantId = "malformed-resource-merchant";
+    await insertRawMerchant(user.db, merchantId, JSON.stringify("prefix-op-1-suffix"));
+    const task = await createTask(user.db, {
+      merchant_id: merchantId,
+      definition: taskDefinition,
+      idempotency_key: "malformed-resource-task",
+    }, "seed-user");
+    await insertAgentRun(user.db, {
+      id: "malformed-resource-run",
+      merchantId,
+      locationId: null,
+      stage: "AUDIT",
+      taskId: null,
+      runType: "REPORT",
+      goal: null,
+      status: "COMPLETED",
+      coreRunId: null,
+      coreStatus: null,
+      inputMessage: "scope regression",
+      output: null,
+      error: null,
+      errorCode: null,
+      tokenUsage: {},
+      triggeredBy: "seed-user",
+      triggeredAt: "2026-08-24T00:00:00.000Z",
+      lastPolledAt: null,
+      completedAt: "2026-08-24T00:00:00.000Z",
+      creationIdempotencyKey: null,
+      requestFingerprint: null,
+      createdBy: "seed-user",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+    });
+    await upsertDeliverable(user.db, {
+      id: "malformed-resource-deliverable",
+      runId: "malformed-resource-run",
+      kind: "ATTACHMENT",
+      fileId: null,
+      fileName: "hidden.pdf",
+      contentType: "application/pdf",
+      size: null,
+      title: null,
+      description: null,
+      sha256: null,
+      localPath: null,
+      remoteUrl: null,
+      downloadedAt: null,
+      downloadError: null,
+      createdAt: "2026-08-24T00:00:00.000Z",
+    });
+
+    const portfolio = await user.inject({ method: "GET", url: "/api/seo-ops/portfolio" });
+    const taskResponse = await user.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.task.id}` });
+    const runResponse = await user.inject({ method: "GET", url: "/api/seo-ops/agent-runs/malformed-resource-run" });
+    const deliverableResponse = await user.inject({
+      method: "GET",
+      url: "/api/seo-ops/deliverables/malformed-resource-deliverable/download",
+    });
+
+    expect(portfolio.statusCode).toBe(200);
+    expect(portfolio.json().merchants).toEqual([]);
+    for (const response of [taskResponse, runResponse, deliverableResponse]) {
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ message: "resource not found" });
+    }
   });
 
   it("returns only merchants and tasks assigned to the authenticated operator", async () => {
