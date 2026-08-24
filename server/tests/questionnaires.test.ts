@@ -142,6 +142,105 @@ describe("questionnaire routes", () => {
     expect((await getQuestionnaire(authenticated.db, questionnaire.id))!.lastSentBy).toBe(secondActor.id);
   });
 
+  it("atomically records concurrent sends from both scoped operators", async () => {
+    const authenticated = await makeApp();
+    app = authenticated.app;
+    const secondActor = await createTestUser(authenticated.db, {
+      email: "concurrent-send-operator@example.test",
+      displayName: "Concurrent send operator",
+    });
+    const merchant = (
+      await app.inject({
+        method: "POST",
+        url: "/api/seo-ops/merchants",
+        payload: {
+          slug: "concurrent-sends",
+          display_name: "Concurrent Sends",
+          operator_user_ids: [secondActor.id],
+          idempotency_key: "concurrent-merchant",
+        },
+      })
+    ).json();
+    const questionnaire = (
+      await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/merchants/${merchant.id}/questionnaires`,
+        payload: { idempotency_key: "concurrent-questionnaire" },
+      })
+    ).json();
+    const url = `/api/seo-ops/questionnaires/${questionnaire.id}/send`;
+    const seeded = await authenticated.rawInject({
+      method: "POST",
+      url,
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(seeded.statusCode).toBe(200);
+    const startingCount = seeded.json().send_count;
+    const login = await authenticated.rawInject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: secondActor.email, password: PASSWORD },
+    });
+    expect(login.statusCode).toBe(200);
+    const setCookie = login.headers["set-cookie"];
+    const secondCookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)!.split(";", 1)[0]!;
+
+    // Make both real requests read the original row before either old-style
+    // read-modify-write update returns. The production atomic update remains
+    // correct under the same row-lock contention.
+    await authenticated.db.exec(`
+      CREATE FUNCTION delay_questionnaire_update() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        PERFORM pg_sleep(0.15);
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER delay_questionnaire_update
+      BEFORE UPDATE ON seo_merchant_questionnaires
+      FOR EACH ROW EXECUTE FUNCTION delay_questionnaire_update();
+    `);
+
+    const [first, second] = await Promise.all([
+      authenticated.rawInject({ method: "POST", url, headers: { cookie: authenticated.cookie } }),
+      authenticated.rawInject({ method: "POST", url, headers: { cookie: secondCookie } }),
+    ]);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    const responses = [
+      { actorId: authenticated.actor.userId, body: first.json() },
+      { actorId: secondActor.id, body: second.json() },
+    ];
+    expect(responses.map(({ body }) => body.send_count).sort()).toEqual([
+      startingCount + 1,
+      startingCount + 2,
+    ]);
+
+    const stored = (await getQuestionnaire(authenticated.db, questionnaire.id))!;
+    expect(stored.sendCount).toBe(startingCount + 2);
+    const latest = responses.find(({ body }) => body.send_count === startingCount + 2)!;
+    expect(stored.lastSentBy).toBe(latest.actorId);
+    expect(stored.lastSentBy).toBe(latest.body.last_sent_by);
+
+    const answers = Object.fromEntries(
+      questionnaire.questions
+        .filter((item: { required: boolean }) => item.required)
+        .map((item: { id: string }) => [item.id, "已确认"]),
+    );
+    const submitted = await authenticated.rawInject({
+      method: "POST",
+      url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
+      payload: { answers },
+    });
+    expect(submitted.statusCode).toBe(200);
+    const rejected = await authenticated.rawInject({
+      method: "POST",
+      url,
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(rejected.statusCode).toBe(409);
+    expect((await getQuestionnaire(authenticated.db, questionnaire.id))!.sendCount).toBe(startingCount + 2);
+  });
+
   it("public form: fetch questions, submit with validation, then idempotent", async () => {
     const authenticated = await makeApp();
     app = authenticated.app;

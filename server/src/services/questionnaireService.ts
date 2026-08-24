@@ -5,6 +5,7 @@ import { requestFingerprint } from "../domain/hashing.js";
 import {
   findQuestionnaireByIdempotencyKey,
   getQuestionnaire,
+  incrementQuestionnaireSend,
   getQuestionnaireByShareSlug,
   insertQuestionnaire,
   latestQuestionnaireByMerchant,
@@ -115,24 +116,13 @@ export async function sendQuestionnaire(
   questionnaireId: string,
   actorId: string,
 ): Promise<Questionnaire> {
-  const questionnaire = await getQuestionnaire(db, questionnaireId);
-  if (!questionnaire) {
-    throw notFound(`questionnaire ${questionnaireId} not found`);
-  }
-  if (questionnaire.status === "FILLED") {
-    throw conflict("questionnaire already filled", "ALREADY_FILLED");
-  }
   const at = nowIso();
-  const next: Questionnaire = {
-    ...questionnaire,
-    status: "SENT",
-    sendCount: questionnaire.sendCount + 1,
-    sentAt: questionnaire.sentAt ?? at,
-    lastSentAt: at,
-    lastSentBy: actorId,
-    updatedAt: at,
-  };
-  return updateQuestionnaire(db, next);
+  const sent = await incrementQuestionnaireSend(db, questionnaireId, actorId, at);
+  if (sent) return sent;
+
+  const questionnaire = await getQuestionnaire(db, questionnaireId);
+  if (!questionnaire) throw notFound(`questionnaire ${questionnaireId} not found`);
+  throw conflict("questionnaire already filled", "ALREADY_FILLED");
 }
 
 function requireAnswers(

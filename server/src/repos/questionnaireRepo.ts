@@ -101,6 +101,29 @@ export async function updateQuestionnaire(
   return questionnaire;
 }
 
+/** Atomically records a questionnaire send/re-send. `RETURNING` makes the
+ * caller's response authoritative even when another operator sends at once. */
+export async function incrementQuestionnaireSend(
+  db: Db,
+  questionnaireId: string,
+  actorId: string,
+  at: string,
+): Promise<Questionnaire | null> {
+  const row = await db.one<QuestionnaireRow>(
+    `UPDATE seo_merchant_questionnaires
+     SET status = 'SENT',
+         send_count = send_count + 1,
+         sent_at = COALESCE(sent_at, $1),
+         last_sent_at = $1,
+         last_sent_by = $2,
+         updated_at = $1
+     WHERE id = $3 AND status <> 'FILLED'
+     RETURNING *`,
+    [at, actorId, questionnaireId],
+  );
+  return row ? toQuestionnaire(row) : null;
+}
+
 export async function getQuestionnaire(db: Db, id: string): Promise<Questionnaire | null> {
   const row = await db.one<QuestionnaireRow>(
     `SELECT * FROM seo_merchant_questionnaires WHERE id = $1`,
