@@ -46,7 +46,10 @@ bootstrap CLI 仅创建 `HUMAN` 身份；它只接受精确的权限目录代码
 
 ```bash
 # 先启动 PG；SESSION_SECRET 至少 32 个字符，并仅保存在 gitignored 的 server/.env 中
-export SEO_OPS_BOOTSTRAP_PASSWORD='choose-a-strong-password'
+# Bash: 隐藏输入；密码不会进入 argv 或 shell history。
+read -r -s -p 'Bootstrap password: ' SEO_OPS_BOOTSTRAP_PASSWORD
+printf '\n'
+export SEO_OPS_BOOTSTRAP_PASSWORD
 npm --prefix server run user:bootstrap -- \
   --email operator@example.com --name 'SEO Operator' --role seo_lead \
   --permissions seoops.view,seoops.manage \
@@ -55,7 +58,7 @@ unset SEO_OPS_BOOTSTRAP_PASSWORD
 npm --prefix server run dev
 ```
 
-随后从 `/seo-ops/login` 登录。`--claim-local-dev-merchants` 是唯一会把遗留精确成员 ID `local-dev` 替换为该用户 ID 的方式；可安全重跑，并且不会改变其他 operator ID。
+随后从 `/seo-ops/login` 登录。不要把 bootstrap password 放在命令行参数、shell history、脚本或仓库；自动化 UAT 时由受控 Secret manager / Kubernetes Secret 注入当前 Job。`--claim-local-dev-merchants` 是唯一会把遗留精确成员 ID `local-dev` 替换为该用户 ID 的方式；可安全重跑，并且不会改变其他 operator ID。
 
 UAT 使用 Kubernetes Secrets 提供 `DATABASE_URL`、`SESSION_SECRET`、`CORE_AI_TOKEN` 和 `SEO_OPS_BOOTSTRAP_PASSWORD`；不得将它们提交或打印。UAT 必须设置 `SESSION_COOKIE_SECURE=true`，并使用至少 32 个字符的 `SESSION_SECRET`。bootstrap 密码仅在执行 bootstrap 的当前 shell 或受控 Job 中注入，完成后撤销/清除。
 

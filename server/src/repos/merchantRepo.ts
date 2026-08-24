@@ -95,11 +95,16 @@ export async function replaceMerchantOperatorId(
 ): Promise<number> {
   return db.withTransaction(async (tx) => {
     const rows = await tx.query<Pick<MerchantRow, "id" | "operator_user_ids">>(
-      `SELECT id, operator_user_ids FROM seo_merchants`,
+      `SELECT id, operator_user_ids FROM seo_merchants ORDER BY id FOR UPDATE`,
     );
     let updated = 0;
     for (const row of rows) {
-      const operatorUserIds: unknown = JSON.parse(row.operator_user_ids || "[]");
+      let operatorUserIds: unknown;
+      try {
+        operatorUserIds = JSON.parse(row.operator_user_ids);
+      } catch {
+        throw new Error(`merchant ${row.id} has invalid operator_user_ids`);
+      }
       if (!Array.isArray(operatorUserIds) || !operatorUserIds.every((id) => typeof id === "string")) {
         throw new Error(`merchant ${row.id} has invalid operator_user_ids`);
       }

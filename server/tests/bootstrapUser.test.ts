@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parseBootstrapArgs, runBootstrap } from "../scripts/bootstrap-user.js";
+import { parseBootstrapArgs, runBootstrap, runCli } from "../scripts/bootstrap-user.js";
 import { migrate } from "../src/db/migrate.js";
-import { getMerchant, insertMerchant } from "../src/repos/merchantRepo.js";
+import { getMerchant, insertMerchant, replaceMerchantOperatorId } from "../src/repos/merchantRepo.js";
 import { getUserByEmail } from "../src/repos/userRepo.js";
 import { createTestDb } from "./helpers/pgTest.js";
+import type { Db } from "../src/db/connection.js";
 
 const ctx = await createTestDb();
 beforeAll(() => migrate(ctx.db));
@@ -16,6 +17,36 @@ const args = {
   permissions: ["seoops.view", "seoops.manage"] as const,
   claimLocalDevMerchants: false,
 };
+
+const validCliArgv = [
+  "--email", "operator@example.com", "--name", "Operator", "--role", "seo_lead",
+  "--permissions", "seoops.view,seoops.manage",
+];
+
+async function preflightFailure(
+  argv: string[],
+  env: Record<string, string | undefined> = { SEO_OPS_BOOTSTRAP_PASSWORD: "correct horse battery staple" },
+): Promise<{ error: string; stdout: string[]; stderr: string[]; createDbCalls: number; migrateCalls: number }> {
+  let createDbCalls = 0;
+  let migrateCalls = 0;
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  let error = "";
+  try {
+    await runCli(argv, env, {
+      createDb: () => {
+        createDbCalls += 1;
+        throw new Error("database must not be created during preflight");
+      },
+      migrate: async () => { migrateCalls += 1; },
+      writeStdout: (line) => stdout.push(line),
+      writeStderr: (line) => stderr.push(line),
+    });
+  } catch (caught) {
+    error = caught instanceof Error ? caught.message : String(caught);
+  }
+  return { error, stdout, stderr, createDbCalls, migrateCalls };
+}
 
 describe("user bootstrap", () => {
   it("fails before a database mutation when SEO_OPS_BOOTSTRAP_PASSWORD is missing", async () => {
@@ -98,6 +129,98 @@ describe("user bootstrap", () => {
     expect(() => parseBootstrapArgs([
       "--email", "operator@example.com", "--name", "Operator", "--role", "seo_lead",
       "--permissions", "seoops.view", "--password", "not-allowed",
-    ])).toThrow(/unknown argument: --password/);
+    ])).toThrow("bootstrap preflight failed");
+  });
+
+  it.each([
+    ["missing required argument", ["--email", "operator@example.com"], undefined],
+    ["unknown arbitrary argument", [...validCliArgv, "--flag=SENTINEL"], "SENTINEL"],
+    ["split password argument", [...validCliArgv, "--password", "SENTINEL"], "SENTINEL"],
+    ["equals password argument", [...validCliArgv, "--password=SENTINEL"], "SENTINEL"],
+    ["mixed-case password argument", [...validCliArgv, "--PassWord=SENTINEL"], "SENTINEL"],
+    ["empty trimmed field", [...validCliArgv.slice(0, 2), "--name", "   ", "--role", "seo_lead", "--permissions", "seoops.view"], undefined],
+    ["invalid permission", [...validCliArgv.slice(0, 6), "--permissions", "seoops.view,SENTINEL"], "SENTINEL"],
+    ["missing bootstrap environment password", validCliArgv, undefined, {}],
+  ])("runs %s entirely before database initialization", async (_label, argv, sentinel, env) => {
+    const result = await preflightFailure(argv, env ?? undefined);
+    const visible = [result.error, ...result.stdout, ...result.stderr].join("\n");
+    expect(result.createDbCalls).toBe(0);
+    expect(result.migrateCalls).toBe(0);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr).toEqual(["bootstrap preflight failed"]);
+    if (sentinel) expect(visible).not.toContain(sentinel);
+  });
+
+  it("uses the server configuration database fallback after preflight", async () => {
+    let databaseUrl: string | undefined;
+    let closed = false;
+    const db = { close: async () => { closed = true; } };
+    await expect(runCli(validCliArgv, { SEO_OPS_BOOTSTRAP_PASSWORD: "correct horse battery staple" }, {
+      createDb: (url) => {
+        databaseUrl = url;
+        return db as never;
+      },
+      migrate: async () => { throw new Error("migration stopped for test"); },
+      writeStdout: () => undefined,
+      writeStderr: () => undefined,
+    })).rejects.toThrow("migration stopped for test");
+    expect(databaseUrl).toBe("postgres://seo_ops:seo_ops@localhost:5432/seo_ops_dev");
+    expect(closed).toBe(true);
+  });
+
+  it("rejects malformed operator JSON and rolls back an earlier valid claim", async () => {
+    const isolated = await createTestDb();
+    try {
+      await migrate(isolated.db);
+      await insertMerchant(isolated.db, {
+        id: "merchant-rollback-claimable", slug: "rollback-claimable", displayName: "Rollback claimable",
+        tags: [], operatorUserIds: ["local-dev", "other"], creationIdempotencyKey: null,
+        requestFingerprint: null, createdBy: null, createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z",
+      });
+      await isolated.db.exec(
+        `INSERT INTO seo_merchants (id, slug, display_name, tags, operator_user_ids, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        ["merchant-rollback-malformed", "rollback-malformed", "Rollback malformed", "[]", "", "2026-08-24T00:00:00.000Z", "2026-08-24T00:00:00.000Z"],
+      );
+
+      await expect(replaceMerchantOperatorId(isolated.db, "local-dev", "new-operator")).rejects.toThrow(/invalid operator_user_ids/);
+      expect((await getMerchant(isolated.db, "merchant-rollback-claimable"))?.operatorUserIds).toEqual(["local-dev", "other"]);
+    } finally {
+      await isolated.teardown();
+    }
+  });
+
+  it.each(["", "not-json", JSON.stringify({ ids: ["local-dev"] }), JSON.stringify(["local-dev", 7])])(
+    "rejects non-string operator list encoding %j", async (operatorUserIds) => {
+      const isolated = await createTestDb();
+      try {
+        await migrate(isolated.db);
+        await isolated.db.exec(
+          `INSERT INTO seo_merchants (id, slug, display_name, tags, operator_user_ids, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          ["merchant-invalid-list", "invalid-list", "Invalid list", "[]", operatorUserIds, "2026-08-24T00:00:00.000Z", "2026-08-24T00:00:00.000Z"],
+        );
+        await expect(replaceMerchantOperatorId(isolated.db, "local-dev", "new-operator")).rejects.toThrow(/invalid operator_user_ids/);
+      } finally {
+        await isolated.teardown();
+      }
+    },
+  );
+
+  it("locks operator rows while replacing the legacy marker", async () => {
+    let selectText = "";
+    const tx = {
+      query: async <T>(text: string): Promise<T[]> => {
+        selectText = text;
+        return [{ id: "merchant-lock", operator_user_ids: JSON.stringify(["local-dev", "other"]) }] as T[];
+      },
+      exec: async () => 1,
+    };
+    const db = {
+      withTransaction: async <T>(fn: (transaction: Db) => Promise<T>) => fn(tx as never),
+    } as Db;
+
+    await expect(replaceMerchantOperatorId(db, "local-dev", "new-operator")).resolves.toBe(1);
+    expect(selectText).toMatch(/FOR UPDATE/);
   });
 });
