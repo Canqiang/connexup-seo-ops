@@ -1,7 +1,5 @@
 import { redirectToLogin } from "../auth/redirect";
 
-const IDENTITY_KEYS = ["apiKey", "userId", "userName", "userRole", "userPermissions"] as const;
-
 export class ApiError extends Error {
   status: number;
   code?: string;
@@ -16,21 +14,21 @@ export class ApiError extends Error {
   }
 }
 
-export async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+  options: { redirectOn401?: boolean } = {},
+): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   new Headers(init.headers).forEach((value, key) => { headers[key] = value; });
   if (init.body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
     headers["Content-Type"] = "application/json";
   }
-  const apiKey = localStorage.getItem("apiKey");
-  if (apiKey && apiKey !== "local") headers.Authorization = `Bearer ${apiKey}`;
-
-  const response = await fetch(path, { ...init, headers });
+  const response = await fetch(path, { ...init, credentials: "same-origin", headers });
   const text = await response.text();
   const body = text ? parseBody(text) : undefined;
   if (!response.ok) {
-    if (response.status === 401) {
-      IDENTITY_KEYS.forEach((key) => localStorage.removeItem(key));
+    if (response.status === 401 && options.redirectOn401 !== false) {
       redirectToLogin();
     }
     const errorBody = typeof body === "object" && body !== null ? body as Record<string, unknown> : {};

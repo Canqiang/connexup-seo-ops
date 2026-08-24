@@ -19,7 +19,7 @@ test("preserves structured conflict responses", async () => {
   } satisfies Partial<ApiError>);
 });
 
-test("adds bearer auth without inventing a fixture fallback", async () => {
+test("uses same-origin cookies and never forwards a persisted API key", async () => {
   localStorage.setItem("apiKey", "key-1");
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
     status: 200,
@@ -30,6 +30,7 @@ test("adds bearer auth without inventing a fixture fallback", async () => {
   await requestJson("/api/seo-ops/config");
 
   expect(fetchMock).toHaveBeenCalledWith("/api/seo-ops/config", expect.objectContaining({
-    headers: expect.objectContaining({ Authorization: "Bearer key-1" })
+    credentials: "same-origin",
+    headers: expect.not.objectContaining({ Authorization: expect.anything() })
   }));
 });

@@ -13,8 +13,6 @@ export const sessionApi = {
     xhr.open("POST", `/api/sessions/messages/stream?agent-session-id=${encodeURIComponent(sessionId)}`, true);
     xhr.setRequestHeader("Content-Type", "application/json");
     xhr.setRequestHeader("Accept", "text/event-stream");
-    const apiKey = localStorage.getItem("apiKey");
-    if (apiKey && apiKey !== "local") xhr.setRequestHeader("Authorization", `Bearer ${apiKey}`);
     let lastIndex = 0;
     let buffer = "";
     xhr.onreadystatechange = () => {

@@ -7,6 +7,13 @@ import { AuthProvider } from "./auth/AuthContext";
 import type { LifecycleView, RankingOverviewView } from "./api/types";
 import { portfolioFixture, stageRunRunningFixture, taskFixture, userFixture } from "./test/fixtures";
 
+const navigateTo = vi.hoisted(() => vi.fn());
+
+vi.mock("./auth/redirect", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./auth/redirect")>();
+  return { ...original, navigateTo };
+});
+
 const lifecycleFixture: LifecycleView = {
   merchant_id: "only-bear", stage: "QUESTIONNAIRE",
   stages: [
@@ -89,6 +96,7 @@ let lifecycleData: LifecycleView = lifecycleFixture;
 let rankingData: RankingOverviewView = emptyRankingFixture;
 let reportsData: unknown = { items: [], offset: 0, limit: 50, total: 0 };
 let portfolioData = portfolioFixture;
+let authenticatedUser = userFixture;
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
@@ -96,13 +104,14 @@ beforeEach(() => {
   rankingData = emptyRankingFixture;
   reportsData = { items: [], offset: 0, limit: 50, total: 0 };
   portfolioData = portfolioFixture;
+  authenticatedUser = userFixture;
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
-  localStorage.setItem("apiKey", "test-key");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     calls.push({ path, init });
-    if (path === "/api/auth/me") return json(userFixture);
+    if (path === "/api/auth/me") return json(authenticatedUser);
+    if (path === "/api/auth/logout") return new Response(null, { status: 204 });
     if (path === "/api/seo-ops/portfolio") return json(portfolioData);
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
     if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
@@ -119,7 +128,28 @@ beforeEach(() => {
   }));
 });
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); navigateTo.mockReset(); });
+
+test("logout posts the cookie-session endpoint before returning to internal login", async () => {
+  const user = userEvent.setup();
+  renderApp("/");
+
+  await user.click(await screen.findByRole("button", { name: "退出登录" }));
+
+  await vi.waitFor(() => expect(calls).toContainEqual(expect.objectContaining({
+    path: "/api/auth/logout",
+    init: expect.objectContaining({ method: "POST", credentials: "same-origin" }),
+  })));
+  expect(navigateTo).toHaveBeenCalledWith("/seo-ops/login");
+});
+
+test("Copilot requires SEO Ops view scope instead of the retired chat scope", async () => {
+  authenticatedUser = { ...userFixture, permissions: ["chat.use"] };
+  renderApp("/");
+
+  expect(await screen.findByText("Copilot 未配置")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "打开 SEO Ops Copilot" })).not.toBeInTheDocument();
+});
 
 test("homepage is an exception list with merchants in a searchable switcher", async () => {
   const user = userEvent.setup();

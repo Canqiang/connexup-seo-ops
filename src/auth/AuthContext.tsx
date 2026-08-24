@@ -1,12 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { authApi } from "../api/authApi";
 import type { AuthenticatedUser } from "../api/types";
+import { navigateTo } from "./redirect";
 
 type AuthContextValue = {
   user?: AuthenticatedUser;
   loading: boolean;
   error?: unknown;
   refresh: () => Promise<void>;
+  logout: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -21,10 +23,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const next = await authApi.me();
       setUser(next);
-      localStorage.setItem("userId", next.user_id);
-      localStorage.setItem("userName", next.name);
-      localStorage.setItem("userRole", next.role);
-      localStorage.setItem("userPermissions", JSON.stringify(next.permissions));
     } catch (reason) {
       setUser(undefined);
       setError(reason);
@@ -32,9 +30,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     }
   }, []);
+  const logout = useCallback(async () => {
+    try {
+      await authApi.logout();
+    } finally {
+      setUser(undefined);
+      navigateTo("/seo-ops/login");
+    }
+  }, []);
   useEffect(() => { void refresh(); }, [refresh]);
-  const value = useMemo(() => ({ user, loading, error, refresh }), [user, loading, error, refresh]);
-  if (loading) return <div className="app-state" role="status">正在确认 Core AI 身份…</div>;
+  const value = useMemo(() => ({ user, loading, error, refresh, logout }), [user, loading, error, refresh, logout]);
+  if (loading) return <div className="app-state" role="status">正在确认 SEO Ops 身份…</div>;
   if (error || !user) return <div className="app-state is-error" role="alert">无法确认身份，请重新登录。</div>;
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
