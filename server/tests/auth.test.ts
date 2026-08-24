@@ -21,7 +21,7 @@ function cookiesFrom(response: Awaited<ReturnType<FastifyInstance["inject"]>>): 
   return Array.isArray(setCookie) ? setCookie.join("\n") : setCookie ?? "";
 }
 
-async function makeApp(sessionCookieSecure = false, authDisabled = false): Promise<{
+async function makeApp(sessionCookieSecure = false): Promise<{
   app: FastifyInstance;
   db: Awaited<ReturnType<typeof createTestDb>>["db"];
 }> {
@@ -31,7 +31,6 @@ async function makeApp(sessionCookieSecure = false, authDisabled = false): Promi
     sessionSecret: "test-session-secret-must-have-at-least-32-characters",
     sessionTtlHours: 12,
     sessionCookieSecure,
-    authDisabled,
   };
   const { app } = await buildApp(config, { db: ctx.db });
   app.addHook("onClose", async () => ctx.teardown());
@@ -72,29 +71,6 @@ describe("cookie session authentication", () => {
     const response = await app.inject({ method: "GET", url: "/api/auth/me" });
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({ error_code: "AUTH_REQUIRED" });
-  });
-
-  it("resolves the local development actor without a cookie when authentication is disabled", async () => {
-    await app.close();
-    ({ app, db } = await makeApp(false, true));
-
-    const response = await app.inject({ method: "GET", url: "/api/auth/me" });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
-      user_id: "local-dev",
-      name: "Local Operator",
-      role: "seo_lead",
-      permissions: [
-        "seoops.view",
-        "seoops.manage",
-        "seoops.approve",
-        "seoops.execute",
-        "seoops.capability.manage",
-        "seoops.schedule.manage",
-      ],
-      auth_disabled: true,
-    });
   });
 
   it("logs in an active human, sets a strict cookie, and resolves /me", async () => {
@@ -285,23 +261,16 @@ describe("session configuration", () => {
     expect(loadConfig({ ...development, SESSION_COOKIE_SECURE: "true" }).sessionCookieSecure).toBe(true);
   });
 
-  it("allows authentication bypass only when explicitly enabled outside production", () => {
+  it("rejects the retired authentication bypass in every environment", () => {
     const development = {
       NODE_ENV: "development",
       SESSION_SECRET: "development-session-secret-must-have-at-least-32-characters",
     };
-    expect(loadConfig(development).authDisabled).toBe(false);
-    expect(loadConfig({ ...development, SEO_OPS_AUTH_DISABLED: "false" }).authDisabled).toBe(false);
-    expect(loadConfig({ ...development, SEO_OPS_AUTH_DISABLED: "true" }).authDisabled).toBe(true);
-    for (const invalid of ["TRUE", "1", "yes", "", " true", "false "]) {
-      expect(() => loadConfig({ ...development, SEO_OPS_AUTH_DISABLED: invalid })).toThrow("SEO_OPS_AUTH_DISABLED");
-    }
-
-    expect(() => loadConfig({
-      NODE_ENV: "production",
-      SESSION_SECRET: "production-session-secret-must-have-at-least-32-characters",
-      SESSION_COOKIE_SECURE: "true",
-      SEO_OPS_AUTH_DISABLED: "true",
-    })).toThrow("SEO_OPS_AUTH_DISABLED");
+    expect(loadConfig({ ...development, SEO_OPS_AUTH_DISABLED: "false" })).toMatchObject({
+      sessionCookieSecure: false,
+    });
+    expect(() => loadConfig({ ...development, SEO_OPS_AUTH_DISABLED: "true" })).toThrow(
+      "SEO_OPS_AUTH_DISABLED is no longer supported",
+    );
   });
 });

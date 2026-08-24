@@ -28,15 +28,10 @@ function sessionCookieSecure(raw: string | undefined, nodeEnv: string | undefine
   return raw === "true";
 }
 
-function authenticationDisabled(raw: string | undefined, nodeEnv: string | undefined): boolean {
-  if (raw === undefined) return false;
-  if (raw !== "true" && raw !== "false") {
-    throw new Error("SEO_OPS_AUTH_DISABLED must be exactly true or false");
+function rejectRetiredAuthenticationBypass(raw: string | undefined): void {
+  if (raw !== undefined && raw !== "false") {
+    throw new Error("SEO_OPS_AUTH_DISABLED is no longer supported");
   }
-  if (raw === "true" && nodeEnv === "production") {
-    throw new Error("SEO_OPS_AUTH_DISABLED cannot be true in production");
-  }
-  return raw === "true";
 }
 
 export interface ServerConfig {
@@ -46,7 +41,6 @@ export interface ServerConfig {
   sessionSecret: string;
   sessionTtlHours: number;
   sessionCookieSecure: boolean;
-  authDisabled: boolean;
   coreAiBaseUrl: string | null;
   coreAiToken: string | null;
   copilotAgentId: string | null;
@@ -59,6 +53,7 @@ export interface ServerConfig {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  rejectRetiredAuthenticationBypass(env.SEO_OPS_AUTH_DISABLED);
   const sessionSecret = env.SESSION_SECRET?.trim()
     || (env.NODE_ENV === "test" ? "test-session-secret-must-have-at-least-32-characters" : "");
   if (sessionSecret.length < 32) {
@@ -71,7 +66,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     sessionSecret,
     sessionTtlHours: sessionTtlHours(env.SESSION_TTL_HOURS),
     sessionCookieSecure: sessionCookieSecure(env.SESSION_COOKIE_SECURE, env.NODE_ENV),
-    authDisabled: authenticationDisabled(env.SEO_OPS_AUTH_DISABLED, env.NODE_ENV),
     coreAiBaseUrl: env.CORE_AI_BASE_URL?.trim() || null,
     coreAiToken: env.CORE_AI_TOKEN?.trim() || null,
     copilotAgentId: env.COPILOT_AGENT_ID?.trim() || null,

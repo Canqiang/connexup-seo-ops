@@ -57,14 +57,12 @@ export SEO_OPS_BOOTSTRAP_PASSWORD
 npm --prefix server run user:bootstrap -- \
   --email operator@example.com --name 'SEO Operator' --role seo_lead \
   --permissions seoops.view,seoops.manage \
-  --claim-local-dev-merchants
+  --merchant-id <merchant-id> --merchant-id <another-merchant-id>
 unset SEO_OPS_BOOTSTRAP_PASSWORD
 npm --prefix server run dev
 ```
 
-随后从 `/seo-ops/login` 登录。不要把 bootstrap password 放在命令行参数、shell history、脚本或仓库；自动化 UAT 时由受控 Secret manager / Kubernetes Secret 注入当前 Job。`--claim-local-dev-merchants` 是唯一会把遗留精确成员 ID `local-dev` 替换为该用户 ID 的方式；可安全重跑，并且不会改变其他 operator ID。
-
-本地演示可临时设置 `SEO_OPS_AUTH_DISABLED=true`：服务端会使用 `local-dev / Local Operator` 作为审计身份，浏览器无需登录。该开关默认关闭，且在 `NODE_ENV=production` 下设置为 `true` 会拒绝启动；不得用于 UAT 或生产。
+随后从 `/seo-ops/login` 登录。不要把 bootstrap password 放在命令行参数、shell history、脚本或仓库；自动化 UAT 时由受控 Secret manager / Kubernetes Secret 注入当前 Job。重复的 `--merchant-id` 只会把该账号追加到明确指定的商户范围，并保留已有 operator；任一 ID 不存在时用户与商户修改会整体回滚。遗留的 `--claim-local-dev-merchants` 只替换精确成员 ID `local-dev`，不会改变其他 operator ID。
 
 UAT 使用 Kubernetes Secrets 提供 `DATABASE_URL`、`SESSION_SECRET`、`CORE_AI_TOKEN` 和 `SEO_OPS_BOOTSTRAP_PASSWORD`；不得将它们提交或打印。UAT 必须设置 `SESSION_COOKIE_SECURE=true`，并使用至少 32 个字符的 `SESSION_SECRET`。bootstrap 密码仅在执行 bootstrap 的当前 shell 或受控 Job 中注入，完成后撤销/清除。
 

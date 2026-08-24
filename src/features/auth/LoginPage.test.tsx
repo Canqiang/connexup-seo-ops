@@ -78,13 +78,12 @@ test("shows the credential form without redirecting when the session probe is un
   expect(redirectToLogin).not.toHaveBeenCalled();
 });
 
-test("skips the credential form when the server reports authentication is disabled", async () => {
+test("skips the credential form when a valid session already exists", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({
     user_id: "local-dev",
     name: "Local Operator",
     role: "seo_lead",
     permissions: ["seoops.view"],
-    auth_disabled: true,
   })));
 
   render(<MemoryRouter initialEntries={["/login?return_to=/seo-ops/inbox"]}><LoginPage /></MemoryRouter>);

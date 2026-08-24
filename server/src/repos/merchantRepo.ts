@@ -137,6 +137,47 @@ export async function replaceMerchantOperatorIdInTransaction(
   return updated;
 }
 
+/** Add an operator to an explicit merchant set. Every requested merchant is
+ * locked and must exist before any update is allowed to commit. */
+export async function assignMerchantOperatorIdsInTransaction(
+  tx: Db,
+  merchantIds: readonly string[],
+  userId: string,
+): Promise<number> {
+  const uniqueIds = [...new Set(merchantIds)];
+  if (uniqueIds.length === 0) return 0;
+  const rows = await tx.query<Pick<MerchantRow, "id" | "operator_user_ids">>(
+    `SELECT id, operator_user_ids
+     FROM seo_merchants
+     WHERE id = ANY($1::text[])
+     ORDER BY id
+     FOR UPDATE`,
+    [uniqueIds],
+  );
+  if (rows.length !== uniqueIds.length) throw new Error("merchant assignment failed");
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  let updated = 0;
+  for (const id of uniqueIds) {
+    const row = rowsById.get(id);
+    if (!row) throw new Error("merchant assignment failed");
+    let operatorUserIds: string[];
+    try {
+      operatorUserIds = decodeOperatorUserIds(row.operator_user_ids);
+    } catch {
+      throw new Error("merchant assignment failed");
+    }
+    if (operatorUserIds.includes(userId)) continue;
+    await tx.exec(
+      `UPDATE seo_merchants
+       SET operator_user_ids = $2, updated_at = CURRENT_TIMESTAMP::text
+       WHERE id = $1`,
+      [id, JSON.stringify([...operatorUserIds, userId])],
+    );
+    updated += 1;
+  }
+  return updated;
+}
+
 /** Standalone callers get one transaction, while composite callers use the
  * transaction-aware helper above to avoid nested pool transactions. */
 export async function replaceMerchantOperatorId(

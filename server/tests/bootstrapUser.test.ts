@@ -17,6 +17,7 @@ const args = {
   role: "seo_lead",
   permissions: ["seoops.view", "seoops.manage"] as const,
   claimLocalDevMerchants: false,
+  merchantIds: [],
 };
 
 const validCliArgv = [
@@ -73,6 +74,87 @@ describe("user bootstrap", () => {
       identityType: "HUMAN",
     });
     expect(await ctx.db.query<{ count: string }>("SELECT count(*)::text AS count FROM seo_users WHERE email = $1", ["operator@example.com"])).toEqual([{ count: "1" }]);
+  });
+
+  it("parses and deduplicates explicit merchant assignments", () => {
+    expect(parseBootstrapArgs([
+      ...validCliArgv,
+      "--merchant-id", "merchant-a",
+      "--merchant-id", "merchant-b",
+      "--merchant-id", "merchant-a",
+    ])).toMatchObject({
+      merchantIds: ["merchant-a", "merchant-b"],
+    });
+  });
+
+  it("assigns only explicit merchants, preserves existing operators, and reruns idempotently", async () => {
+    const isolated = await createTestDb();
+    try {
+      await migrate(isolated.db);
+      for (const merchant of [
+        { id: "merchant-explicit-a", slug: "explicit-a", operatorUserIds: ["op-1"] },
+        { id: "merchant-explicit-b", slug: "explicit-b", operatorUserIds: [] },
+        { id: "merchant-explicit-unaffected", slug: "explicit-unaffected", operatorUserIds: ["op-2"] },
+      ]) {
+        await insertMerchant(isolated.db, {
+          ...merchant,
+          displayName: merchant.id,
+          tags: [],
+          creationIdempotencyKey: null,
+          requestFingerprint: null,
+          createdBy: null,
+          createdAt: "2026-08-24T00:00:00.000Z",
+          updatedAt: "2026-08-24T00:00:00.000Z",
+        });
+      }
+      const bootstrapArgs = {
+        ...args,
+        email: "explicit@example.com",
+        merchantIds: ["merchant-explicit-a", "merchant-explicit-b", "merchant-explicit-a"],
+      };
+      const env = { SEO_OPS_BOOTSTRAP_PASSWORD: "correct horse battery staple" };
+
+      const first = await runBootstrap(bootstrapArgs, env, isolated.db);
+      const second = await runBootstrap(bootstrapArgs, env, isolated.db);
+
+      expect(first.assignedMerchantCount).toBe(2);
+      expect(second).toMatchObject({ id: first.id, assignedMerchantCount: 0 });
+      expect((await getMerchant(isolated.db, "merchant-explicit-a"))?.operatorUserIds).toEqual(["op-1", first.id]);
+      expect((await getMerchant(isolated.db, "merchant-explicit-b"))?.operatorUserIds).toEqual([first.id]);
+      expect((await getMerchant(isolated.db, "merchant-explicit-unaffected"))?.operatorUserIds).toEqual(["op-2"]);
+    } finally {
+      await isolated.teardown();
+    }
+  });
+
+  it("rolls back the user and every assignment when an explicit merchant is missing", async () => {
+    const isolated = await createTestDb();
+    try {
+      await migrate(isolated.db);
+      await insertMerchant(isolated.db, {
+        id: "merchant-explicit-existing",
+        slug: "explicit-existing",
+        displayName: "Explicit existing",
+        tags: [],
+        operatorUserIds: ["op-1"],
+        creationIdempotencyKey: null,
+        requestFingerprint: null,
+        createdBy: null,
+        createdAt: "2026-08-24T00:00:00.000Z",
+        updatedAt: "2026-08-24T00:00:00.000Z",
+      });
+
+      await expect(runBootstrap(
+        { ...args, email: "missing-merchant@example.com", merchantIds: ["merchant-explicit-existing", "merchant-missing"] },
+        { SEO_OPS_BOOTSTRAP_PASSWORD: "correct horse battery staple" },
+        isolated.db,
+      )).rejects.toThrow("merchant assignment failed");
+
+      expect(await getUserByEmail(isolated.db, "missing-merchant@example.com")).toBeNull();
+      expect((await getMerchant(isolated.db, "merchant-explicit-existing"))?.operatorUserIds).toEqual(["op-1"]);
+    } finally {
+      await isolated.teardown();
+    }
   });
 
   it("claims only exact local-dev membership when explicitly requested", async () => {

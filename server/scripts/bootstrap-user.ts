@@ -4,7 +4,10 @@ import { assertAllowedIdentityPermissions, isSeoPermission, type SeoPermission }
 import { hashPassword } from "../src/auth/password.js";
 import { createDb, type Db } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
-import { replaceMerchantOperatorIdInTransaction } from "../src/repos/merchantRepo.js";
+import {
+  assignMerchantOperatorIdsInTransaction,
+  replaceMerchantOperatorIdInTransaction,
+} from "../src/repos/merchantRepo.js";
 import { upsertUser } from "../src/repos/userRepo.js";
 
 export interface BootstrapArgs {
@@ -13,6 +16,7 @@ export interface BootstrapArgs {
   role: string;
   permissions: readonly SeoPermission[];
   claimLocalDevMerchants: boolean;
+  merchantIds: readonly string[];
 }
 
 export interface BootstrapEnv {
@@ -25,6 +29,7 @@ export interface BootstrapOutput {
   role: string;
   permissions: SeoPermission[];
   claimedMerchantCount: number;
+  assignedMerchantCount: number;
 }
 
 export const DEFAULT_DATABASE_URL = "postgres://seo_ops:seo_ops@localhost:5432/seo_ops_dev";
@@ -66,6 +71,7 @@ export function parseBootstrapArgs(argv: string[]): BootstrapArgs {
   let role: string | undefined;
   let permissions: SeoPermission[] | undefined;
   let claimLocalDevMerchants = false;
+  const merchantIds: string[] = [];
 
   while (remaining.length > 0) {
     const argument = remaining.shift();
@@ -75,6 +81,7 @@ export function parseBootstrapArgs(argv: string[]): BootstrapArgs {
       case "--role": role = requiredValue(remaining); break;
       case "--permissions": permissions = parsePermissions(requiredValue(remaining)); break;
       case "--claim-local-dev-merchants": claimLocalDevMerchants = true; break;
+      case "--merchant-id": merchantIds.push(requiredValue(remaining)); break;
       default: throw new Error(PREFLIGHT_FAILURE);
     }
   }
@@ -82,7 +89,7 @@ export function parseBootstrapArgs(argv: string[]): BootstrapArgs {
   if (!email || !name || !role || !permissions) {
     throw new Error(PREFLIGHT_FAILURE);
   }
-  return { email, name, role, permissions, claimLocalDevMerchants };
+  return { email, name, role, permissions, claimLocalDevMerchants, merchantIds: [...new Set(merchantIds)] };
 }
 
 interface ValidatedBootstrapInput {
@@ -90,6 +97,7 @@ interface ValidatedBootstrapInput {
   name: string;
   role: string;
   permissions: SeoPermission[];
+  merchantIds: string[];
   password: string;
 }
 
@@ -103,7 +111,9 @@ export function validateBootstrapInput(args: BootstrapArgs, env: BootstrapEnv): 
   const name = args.name.trim();
   const role = args.role.trim();
   const permissions = [...args.permissions];
+  const merchantIds = [...new Set(args.merchantIds.map((id) => id.trim()))];
   if (!email || !name || !role) throw new Error("email, name, and role must not be empty");
+  if (merchantIds.some((id) => !id)) throw new Error("merchant ids must not be empty");
   if (permissions.length === 0 || permissions.some((permission) => !isSeoPermission(permission))) {
     throw new Error("permissions must be exact SEO permission codes");
   }
@@ -112,7 +122,7 @@ export function validateBootstrapInput(args: BootstrapArgs, env: BootstrapEnv): 
   } catch {
     throw new Error("permissions must be exact SEO permission codes");
   }
-  return { email, name, role, permissions: [...new Set(permissions)], password };
+  return { email, name, role, permissions: [...new Set(permissions)], merchantIds, password };
 }
 
 export async function runBootstrap(
@@ -123,7 +133,7 @@ export async function runBootstrap(
   const input = validateBootstrapInput(args, env);
   const passwordHash = await hashPassword(input.password);
   const now = new Date().toISOString();
-  const { user, claimedMerchantCount } = await db.withTransaction(async (tx) => {
+  const { user, claimedMerchantCount, assignedMerchantCount } = await db.withTransaction(async (tx) => {
     const user = await upsertUser(tx, {
       id: randomUUID(),
       email: input.email,
@@ -142,7 +152,8 @@ export async function runBootstrap(
     const claimedMerchantCount = args.claimLocalDevMerchants
       ? await replaceMerchantOperatorIdInTransaction(tx, "local-dev", user.id)
       : 0;
-    return { user, claimedMerchantCount };
+    const assignedMerchantCount = await assignMerchantOperatorIdsInTransaction(tx, input.merchantIds, user.id);
+    return { user, claimedMerchantCount, assignedMerchantCount };
   });
   return {
     id: user.id,
@@ -150,6 +161,7 @@ export async function runBootstrap(
     role: user.role,
     permissions: user.permissions,
     claimedMerchantCount,
+    assignedMerchantCount,
   };
 }
 
