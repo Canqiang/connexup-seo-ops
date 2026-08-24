@@ -1,4 +1,33 @@
 export const SCHEMA_STATEMENTS: string[] = [
+  `CREATE TABLE IF NOT EXISTS seo_users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    identity_type TEXT NOT NULL,
+    permissions TEXT NOT NULL DEFAULT '[]',
+    password_hash TEXT,
+    status TEXT NOT NULL,
+    failed_login_count INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT,
+    last_login_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_users_status ON seo_users(status)`,
+
+  `CREATE TABLE IF NOT EXISTS seo_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_user ON seo_sessions(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON seo_sessions(expires_at)`,
+
   `CREATE TABLE IF NOT EXISTS seo_merchants (
     id TEXT PRIMARY KEY,
     slug TEXT NOT NULL UNIQUE,

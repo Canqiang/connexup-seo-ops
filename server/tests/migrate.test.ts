@@ -21,6 +21,8 @@ describe("migrate on postgres", () => {
       "seo_agent_runs",
       "seo_run_deliverables",
       "seo_merchant_questionnaires",
+      "seo_users",
+      "seo_sessions",
     ]) {
       expect(names).toContain(expected);
     }
