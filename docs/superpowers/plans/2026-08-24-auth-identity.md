@@ -107,7 +107,7 @@
 - Produces: `hashPassword(password: string): Promise<string>` and `verifyPassword(password: string, encoded: string): Promise<boolean>`.
 - Produces: user/session repository functions consumed by Task 2.
 
-- [ ] **Step 1: Write migration and password tests that fail before the tables/modules exist**
+- [x] **Step 1: Write migration and password tests that fail before the tables/modules exist**
 
 ```ts
 expect(tableNames).toContain("seo_users");
@@ -120,13 +120,13 @@ expect(await verifyPassword("wrong password", encoded)).toBe(false);
 expect(await verifyPassword("anything", "broken")).toBe(false);
 ```
 
-- [ ] **Step 2: Run the focused tests and observe module/table failures**
+- [x] **Step 2: Run the focused tests and observe module/table failures**
 
 Run: `npm --prefix server test -- tests/migrate.test.ts tests/password.test.ts tests/authRepo.test.ts`
 
 Expected: FAIL because auth modules and tables do not exist.
 
-- [ ] **Step 3: Add exact auth types and service-identity prohibition**
+- [x] **Step 3: Add exact auth types and service-identity prohibition**
 
 ```ts
 export const SEO_PERMISSIONS = [
@@ -157,7 +157,7 @@ const SERVICE_FORBIDDEN = new Set<SeoPermission>([
 
 `assertAllowedIdentityPermissions("SERVICE", permissions)` must throw `400` when any forbidden permission is present and must reject unknown strings or `*`.
 
-- [ ] **Step 4: Add PostgreSQL user/session tables and indexes**
+- [x] **Step 4: Add PostgreSQL user/session tables and indexes**
 
 ```sql
 CREATE TABLE IF NOT EXISTS seo_users (
@@ -191,11 +191,11 @@ CREATE TABLE IF NOT EXISTS seo_sessions (
 
 Add indexes `idx_users_status`, `idx_sessions_user`, and `idx_sessions_expiry`.
 
-- [ ] **Step 5: Implement scrypt encoding without logging password material**
+- [x] **Step 5: Implement scrypt encoding without logging password material**
 
 Use encoding `scrypt$16384$8$1$<base64url salt>$<base64url derivedKey>`, a 16-byte random salt, a 64-byte key, `maxmem: 64 * 1024 * 1024`, and `timingSafeEqual`. Reject passwords outside 12–128 Unicode code points before hashing; `verifyPassword` returns `false` for malformed encodings.
 
-- [ ] **Step 6: Implement repositories with explicit row mappers**
+- [x] **Step 6: Implement repositories with explicit row mappers**
 
 ```ts
 export async function getUserByEmail(db: Db, email: string): Promise<SeoUser | null>;
@@ -212,7 +212,7 @@ export async function deleteExpiredSessions(db: Db, nowIso: string): Promise<num
 
 Normalize emails with `trim().toLocaleLowerCase("en-US")`; parse permissions through the exact catalog rather than unchecked casts.
 
-- [ ] **Step 7: Run focused tests and typecheck**
+- [x] **Step 7: Run focused tests and typecheck**
 
 Run: `npm --prefix server test -- tests/migrate.test.ts tests/password.test.ts tests/authRepo.test.ts`
 
@@ -220,7 +220,7 @@ Run: `npm --prefix server run typecheck`
 
 Expected: all focused tests PASS; typecheck exits `0`.
 
-- [ ] **Step 8: Commit the auth persistence foundation**
+- [x] **Step 8: Commit the auth persistence foundation**
 
 ```bash
 git add server/src/auth server/src/repos/userRepo.ts server/src/repos/sessionRepo.ts server/src/db/schema.ts server/tests/migrate.test.ts server/tests/password.test.ts server/tests/authRepo.test.ts
@@ -246,7 +246,7 @@ git commit -m "feat(auth): add user and session persistence"
 - Consumes: Task 1 `SeoUser`, repositories, `verifyPassword()`.
 - Produces: `createSessionToken()`, `resolveActorFromToken()`, `requireActor()`, `requirePermission()` and authenticated `/api/auth/*` routes.
 
-- [ ] **Step 1: Add failing endpoint tests for unauthenticated, valid, invalid, expired, logout, and lockout flows**
+- [x] **Step 1: Add failing endpoint tests for unauthenticated, valid, invalid, expired, logout, and lockout flows**
 
 ```ts
 expect((await rawInject({ method: "GET", url: "/api/auth/me" })).statusCode).toBe(401);
@@ -257,13 +257,13 @@ expect((await rawInject({ method: "POST", url: "/api/auth/logout", headers: { co
 
 Assert the Cookie contains `HttpOnly`, `SameSite=Strict`, `Path=/`, and contains `Secure` only when `sessionCookieSecure=true`. After five invalid attempts, a correct password before `locked_until` still returns the same generic 401.
 
-- [ ] **Step 2: Run the auth test and observe the fixed `/me` stub failure**
+- [x] **Step 2: Run the auth test and observe the fixed `/me` stub failure**
 
 Run: `npm --prefix server test -- tests/auth.test.ts`
 
 Expected: FAIL because `/api/auth/me` still returns `local-dev` and login/logout do not exist.
 
-- [ ] **Step 3: Add fail-closed Session configuration**
+- [x] **Step 3: Add fail-closed Session configuration**
 
 ```ts
 export interface ServerConfig {
@@ -275,13 +275,13 @@ export interface ServerConfig {
 
 `SESSION_SECRET` must be at least 32 characters. `loadConfig()` may use a fixed test-only value only when `NODE_ENV === "test"`; every non-test startup without a valid secret throws before listening. Defaults: `SESSION_TTL_HOURS=12`, `SESSION_COOKIE_SECURE=false` locally; UAT sets it to `true`.
 
-- [ ] **Step 4: Install and register Cookie parsing before SEO Ops routes**
+- [x] **Step 4: Install and register Cookie parsing before SEO Ops routes**
 
 Run: `npm --prefix server install @fastify/cookie@^11`
 
 In `buildApp()`, `await app.register(cookie)` before auth/SEO routes. Add `request.actor: AuthActor | null` through Fastify module augmentation and an `onRequest` hook that resolves the cookie without logging it.
 
-- [ ] **Step 5: Implement token hashing and credential authentication**
+- [x] **Step 5: Implement token hashing and credential authentication**
 
 ```ts
 export function sessionTokenHash(secret: string, rawToken: string): string {
@@ -298,7 +298,7 @@ export async function login(
 
 Unknown email must run `verifyPassword()` against a module-level dummy scrypt hash before returning `INVALID_CREDENTIALS`. A disabled, service, locked, unknown, or wrong-password identity receives the same external response.
 
-- [ ] **Step 6: Replace the fixed identity with three auth routes**
+- [x] **Step 6: Replace the fixed identity with three auth routes**
 
 ```ts
 POST /api/auth/login  { email, password } -> 200 AuthenticatedUser + Set-Cookie
@@ -308,7 +308,7 @@ GET  /api/auth/me     -> 200 AuthenticatedUser or 401 AUTH_REQUIRED
 
 The wire user remains `{user_id,name,role,permissions}`; email and password hash are never returned. Remove `ACTOR_ID` import and the fixed `/api/auth/me` route from `seoOps.ts`.
 
-- [ ] **Step 7: Run auth tests and typecheck**
+- [x] **Step 7: Run auth tests and typecheck**
 
 Run: `npm --prefix server test -- tests/auth.test.ts`
 
@@ -316,7 +316,7 @@ Run: `npm --prefix server run typecheck`
 
 Expected: endpoint tests PASS and typecheck exits `0`.
 
-- [ ] **Step 8: Commit Session authentication**
+- [x] **Step 8: Commit Session authentication**
 
 ```bash
 git add server/package.json server/package-lock.json server/src/config.ts server/src/index.ts server/src/auth/httpAuth.ts server/src/routes/auth.ts server/src/routes/seoOps.ts server/src/services/authService.ts server/tests/auth.test.ts
@@ -341,7 +341,7 @@ git commit -m "feat(auth): add cookie session login"
 - Consumes: Task 2 request actor and permission catalog.
 - Produces: `requireMerchantAccess()`, `requireTaskAccess()`, `requireRunAccess()`, `requireDeliverableAccess()` and actor-scoped projections.
 
-- [ ] **Step 1: Build a real authenticated test harness before turning on route guards**
+- [x] **Step 1: Build a real authenticated test harness before turning on route guards**
 
 ```ts
 export async function createAuthenticatedTestApp(options?: {
@@ -357,11 +357,11 @@ export async function createAuthenticatedTestApp(options?: {
 
 The helper creates a real hashed HUMAN user, calls `/api/auth/login`, captures only the `name=value` Cookie, and wraps `app.inject()` to add that Cookie. `rawInject` bypasses only the wrapper, not production auth, so 401/403 tests exercise the real hook.
 
-- [ ] **Step 2: Convert existing route tests to the authenticated helper**
+- [x] **Step 2: Convert existing route tests to the authenticated helper**
 
 Replace per-file `createTestDb()`/`buildApp()` setup with `createAuthenticatedTestApp()`. Keep `connection.test.ts`, pure domain tests, and public questionnaire submission tests independent. No production `AUTH_DISABLED` or test actor switch is allowed.
 
-- [ ] **Step 3: Add failing permission and isolation tests**
+- [x] **Step 3: Add failing permission and isolation tests**
 
 Create two users and two merchants. Assert:
 
@@ -374,13 +374,13 @@ expect((await serviceWithManage.inject({ method: "POST", url: approvalUrl, paylo
 
 Cover task, location, stage run, agent run, questionnaire send and deliverable download inherited scope. Cover all six permission strings and the service-identity forbidden set.
 
-- [ ] **Step 4: Run authorization tests and observe unscoped data/unguarded writes**
+- [x] **Step 4: Run authorization tests and observe unscoped data/unguarded writes**
 
 Run: `npm --prefix server test -- tests/authorization.test.ts`
 
 Expected: FAIL because current routes do not enforce permissions or merchant scope.
 
-- [ ] **Step 5: Add reusable permission and scope guards**
+- [x] **Step 5: Add reusable permission and scope guards**
 
 ```ts
 export function requirePermission(request: FastifyRequest, code: SeoPermission): AuthActor;
@@ -392,11 +392,11 @@ export async function requireDeliverableAccess(db: Db, actor: AuthActor, deliver
 
 `requirePermission` returns `401 AUTH_REQUIRED` without actor and `403 FORBIDDEN` without the exact permission. Resource scope helpers return the same not-found response for absent and inaccessible resources.
 
-- [ ] **Step 6: Apply the locked permission matrix to every SEO Ops route**
+- [x] **Step 6: Apply the locked permission matrix to every SEO Ops route**
 
 Use route-level `preHandler` or a first-line guard; do not rely on frontend visibility. Public questionnaire routes remain outside these guards. Approval preview and decision require `seoops.approve`, not `seoops.manage`.
 
-- [ ] **Step 7: Scope all collection projections in the service layer**
+- [x] **Step 7: Scope all collection projections in the service layer**
 
 Change signatures to require actor identity:
 
@@ -409,11 +409,11 @@ reports(db: Db, query: ReportQuery, actorUserId: string, now?: Date): Promise<Pa
 
 Filter merchants first through `merchant.operatorUserIds.includes(actorUserId)`, then filter every task/run/deliverable projection through those merchant IDs. A query parameter naming a hidden merchant returns an empty collection; a direct resource path returns 404.
 
-- [ ] **Step 8: Make merchant creation self-scoping and validate operators**
+- [x] **Step 8: Make merchant creation self-scoping and validate operators**
 
 When `operator_user_ids` is absent, store `[actor.userId]`; when present, deduplicate `[actor.userId, ...requested]`. Reject unknown, disabled, or SERVICE operator IDs with `400 INVALID_OPERATOR`. This prevents creation of an immediately invisible merchant.
 
-- [ ] **Step 9: Run authorization plus the full server suite**
+- [x] **Step 9: Run authorization plus the full server suite**
 
 Run: `npm --prefix server test -- tests/authorization.test.ts`
 
@@ -421,7 +421,7 @@ Run: `npm --prefix server test`
 
 Expected: authorization tests and all migrated server tests PASS.
 
-- [ ] **Step 10: Commit protected route and scope enforcement**
+- [x] **Step 10: Commit protected route and scope enforcement**
 
 ```bash
 git add server/src/auth/httpAuth.ts server/src/routes/seoOps.ts server/src/services/queryService.ts server/src/services/merchantService.ts server/src/repos/merchantRepo.ts server/tests
@@ -449,7 +449,7 @@ git commit -m "feat(auth): enforce permissions and merchant scope"
 - Consumes: Task 2 `AuthActor` and Task 3 route guards.
 - Produces: actor-aware task events, revisions, evidence, conversation links, approvals, merchant/location/questionnaire creation and stage runs.
 
-- [ ] **Step 1: Add failing audit assertions using a non-placeholder user id**
+- [x] **Step 1: Add failing audit assertions using a non-placeholder user id**
 
 ```ts
 expect(created.created_by).toBe(actor.userId);
@@ -460,13 +460,13 @@ expect(run.triggered_by).toBe(actor.userId);
 expect(events.every((event) => event.actor_id !== "local-dev")).toBe(true);
 ```
 
-- [ ] **Step 2: Run focused mutation tests and observe `local-dev` failures**
+- [x] **Step 2: Run focused mutation tests and observe `local-dev` failures**
 
 Run: `npm --prefix server test -- tests/taskService.test.ts tests/agentRuns.test.ts tests/merchantService.test.ts tests/questionnaires.test.ts`
 
 Expected: FAIL on current fixed actor fields.
 
-- [ ] **Step 3: Remove `ACTOR_ID` and make actor explicit in task service signatures**
+- [x] **Step 3: Remove `ACTOR_ID` and make actor explicit in task service signatures**
 
 ```ts
 createTask(db, input, actorId)
@@ -479,21 +479,21 @@ buildEvent(type, taskRevision, stateVersion, actorId, options)
 
 Every nested revision/evidence/decision/event record uses the passed actor. Idempotent replay returns the original audit identity and does not overwrite it with the replaying caller.
 
-- [ ] **Step 4: Thread actor through route-owned mutations**
+- [x] **Step 4: Thread actor through route-owned mutations**
 
 Use `const actor = requirePermission(request, code)` once per handler. Pass `actor.userId` to merchant/location/questionnaire/task/stage-run service inputs. Extend `triggerStageRun(..., actorId)` so both `triggeredBy` and `createdBy` are the actor.
 
-- [ ] **Step 5: Remove runtime placeholders from frontend demo data**
+- [x] **Step 5: Remove runtime placeholders from frontend demo data**
 
 Replace fallback owner `local-dev` with `unassigned`; update display copy to `未分配`. Replace fixture `triggered_by: "local-dev"` with `triggered_by: "user-1"`.
 
-- [ ] **Step 6: Prove the placeholder is absent from runtime code**
+- [x] **Step 6: Prove the placeholder is absent from runtime code**
 
 Run: `rg -n 'local-dev|ACTOR_ID' server/src src`
 
 Expected: no output. Historical migration documentation and old Git commits are not rewritten.
 
-- [ ] **Step 7: Run focused and full tests**
+- [x] **Step 7: Run focused and full tests**
 
 Run: `npm --prefix server test`
 
@@ -501,7 +501,7 @@ Run: `npm run test:run`
 
 Expected: server and frontend suites PASS.
 
-- [ ] **Step 8: Commit real identity propagation**
+- [x] **Step 8: Commit real identity propagation**
 
 ```bash
 git add server/src/services/taskService.ts server/src/services/agentRunService.ts server/src/routes/seoOps.ts server/tests src/features/inbox/demoTasks.ts src/features/inbox/demoTasks.test.ts src/test/fixtures.ts
@@ -531,7 +531,7 @@ git commit -m "feat(auth): record real operator identities"
 - Consumes: Task 2 `/api/auth/login|logout|me` Cookie contract.
 - Produces: `LoginPage`, `authApi.login/logout`, `AuthContext.logout`, safe self-hosted login redirect.
 
-- [ ] **Step 1: Add failing client and login-page tests**
+- [x] **Step 1: Add failing client and login-page tests**
 
 ```ts
 expect(fetch).toHaveBeenCalledWith("/api/seo-ops/portfolio", expect.objectContaining({
@@ -546,13 +546,13 @@ expect(safeReturnTo("https://evil.example/x")).toBe("/seo-ops/");
 
 Login-page tests submit email/password, show generic invalid-credential copy, never persist the password, and navigate only to a safe `/seo-ops/...` return path.
 
-- [ ] **Step 2: Run focused frontend tests and observe Bearer/redirect failures**
+- [x] **Step 2: Run focused frontend tests and observe Bearer/redirect failures**
 
 Run: `npm run test:run -- src/api/client.test.ts src/auth/redirect.test.ts src/features/auth/LoginPage.test.tsx`
 
 Expected: FAIL because current client reads `apiKey` and redirects to external `/login`.
 
-- [ ] **Step 3: Make the API client Cookie-only**
+- [x] **Step 3: Make the API client Cookie-only**
 
 ```ts
 export async function requestJson<T>(
@@ -564,7 +564,7 @@ export async function requestJson<T>(
 
 Always set `credentials: "same-origin"`; never read `apiKey`, user identity, role, or permissions from `localStorage`; on 401 redirect unless `redirectOn401 === false` (login itself uses false).
 
-- [ ] **Step 4: Add auth API and safe redirects**
+- [x] **Step 4: Add auth API and safe redirects**
 
 ```ts
 login: (email: string, password: string) => requestJson<AuthenticatedUser>(
@@ -577,19 +577,19 @@ logout: () => requestJson<void>("/api/auth/logout", { method: "POST" }, { redire
 
 `safeReturnTo()` accepts only strings beginning exactly with `/seo-ops/` and rejects `//`, encoded external schemes, control characters and `/seo-ops/login` loops.
 
-- [ ] **Step 5: Implement the internal login page**
+- [x] **Step 5: Implement the internal login page**
 
 Render Connexup SEO Ops branding, email/password inputs, submit state and generic error. After successful login call `window.location.assign(safeReturnTo(searchParams.get("return_to")))`. The page must not mention Core AI credentials.
 
-- [ ] **Step 6: Update app routing and AuthContext**
+- [x] **Step 6: Update app routing and AuthContext**
 
 `main.tsx` branches in this order: `/seo-ops/q/:slug` public questionnaire, `/seo-ops/login` LoginPage, otherwise `AuthProvider + App`. AuthContext stores actor only in React memory and exposes `logout()` which POSTs logout then navigates to `/seo-ops/login`.
 
-- [ ] **Step 7: Add logout UI and align permission copy**
+- [x] **Step 7: Add logout UI and align permission copy**
 
 Add an accessible `退出登录` button in `AppShell`. Change Copilot user gating from legacy `chat.use` to `seoops.view` plus `copilot_enabled`; keep Copilot read-only. Update loading copy to `正在确认 SEO Ops 身份…`.
 
-- [ ] **Step 8: Run frontend tests and production build**
+- [x] **Step 8: Run frontend tests and production build**
 
 Run: `npm run test:run`
 
@@ -597,7 +597,7 @@ Run: `npm run build`
 
 Expected: all frontend tests PASS and Vite production build exits `0`.
 
-- [ ] **Step 9: Commit self-hosted frontend auth**
+- [x] **Step 9: Commit self-hosted frontend auth**
 
 ```bash
 git add src
@@ -620,17 +620,17 @@ git commit -m "feat(auth): add internal login and logout UI"
 - Consumes: Task 1 user/password repository and Task 3 merchant operator update.
 - Produces: `npm --prefix server run user:bootstrap -- --email <email> --name <name> --role <role> --permissions <csv> [--claim-local-dev-merchants]`.
 
-- [ ] **Step 1: Add failing bootstrap argument and idempotence tests**
+- [x] **Step 1: Add failing bootstrap argument and idempotence tests**
 
 Test exported `runBootstrap(args, env, db)` directly. Assert missing `SEO_OPS_BOOTSTRAP_PASSWORD` fails before DB mutation; a second identical run updates the existing user instead of inserting a duplicate; `--claim-local-dev-merchants` replaces only the exact `local-dev` membership and preserves every other operator ID.
 
-- [ ] **Step 2: Run the bootstrap test and observe the missing module failure**
+- [x] **Step 2: Run the bootstrap test and observe the missing module failure**
 
 Run: `npm --prefix server test -- tests/bootstrapUser.test.ts`
 
 Expected: FAIL because the script does not exist.
 
-- [ ] **Step 3: Implement secret-safe bootstrap behavior**
+- [x] **Step 3: Implement secret-safe bootstrap behavior**
 
 ```ts
 const password = env.SEO_OPS_BOOTSTRAP_PASSWORD;
@@ -639,7 +639,7 @@ if (!password) throw new Error("SEO_OPS_BOOTSTRAP_PASSWORD is required");
 
 Do not accept password on argv, do not print it, and do not print password/session hashes. Validate permissions against the exact catalog and call `assertAllowedIdentityPermissions`. Print only user id, normalized email, role, permission codes and claimed merchant count.
 
-- [ ] **Step 4: Add explicit legacy membership claiming**
+- [x] **Step 4: Add explicit legacy membership claiming**
 
 ```ts
 export async function replaceMerchantOperatorId(
@@ -651,7 +651,7 @@ export async function replaceMerchantOperatorId(
 
 The repository reads each affected JSON operator list, replaces exact IDs, deduplicates, and updates `updated_at` in one transaction. The bootstrap CLI invokes it only with the explicit flag.
 
-- [ ] **Step 5: Document local and UAT setup**
+- [x] **Step 5: Document local and UAT setup**
 
 Add these non-secret variables to `.env.example`:
 
@@ -664,7 +664,7 @@ SEO_OPS_BOOTSTRAP_PASSWORD=
 
 README local flow: start PG, set a 32+ character Session secret, export bootstrap password in the current shell, run the CLI, unset the password, start server, log in at `/seo-ops/login`. UAT contract: `DATABASE_URL`, `SESSION_SECRET`, `CORE_AI_TOKEN`, and bootstrap password are Kubernetes Secrets; `SESSION_COOKIE_SECURE=true`; no secret is committed or printed.
 
-- [ ] **Step 6: Run bootstrap, server tests and typecheck**
+- [x] **Step 6: Run bootstrap, server tests and typecheck**
 
 Run: `npm --prefix server test -- tests/bootstrapUser.test.ts`
 
@@ -674,7 +674,7 @@ Run: `npm --prefix server run typecheck`
 
 Expected: all commands exit `0`.
 
-- [ ] **Step 7: Commit bootstrap and documentation**
+- [x] **Step 7: Commit bootstrap and documentation**
 
 ```bash
 git add server/scripts/bootstrap-user.ts server/tests/bootstrapUser.test.ts server/src/repos/merchantRepo.ts server/package.json server/.env.example README.md
@@ -693,7 +693,7 @@ git commit -m "feat(auth): add internal user bootstrap"
 - Consumes: Tasks 1–6 complete.
 - Produces: a verified auth phase ready for the separate Task Execution Domain plan.
 
-- [ ] **Step 1: Run repository-wide secret and placeholder scans**
+- [x] **Step 1: Run repository-wide secret and placeholder scans**
 
 Run: `rg -n 'local-dev|ACTOR_ID|localStorage\.getItem\("apiKey"\)|Authorization.*Bearer' server/src src`
 
@@ -703,7 +703,7 @@ Run: `rg -n 'CORE_AI_TOKEN=.+|SESSION_SECRET=.+|SEO_OPS_BOOTSTRAP_PASSWORD=.+' -
 
 Expected: examples have empty values and no credential material is present.
 
-- [ ] **Step 2: Run the complete quality gate**
+- [x] **Step 2: Run the complete quality gate**
 
 ```bash
 npm --prefix server test
@@ -715,7 +715,7 @@ git diff --check
 
 Expected: server tests, server typecheck, frontend tests, build and diff check all exit `0`.
 
-- [ ] **Step 3: Perform a local authenticated smoke test**
+- [x] **Step 3: Perform a local authenticated smoke test**
 
 Start PostgreSQL and the server with non-secret local values, bootstrap one HUMAN user, then verify:
 
@@ -730,11 +730,11 @@ GET  /api/auth/me after logout   -> 401 AUTH_REQUIRED
 
 Open `/seo-ops/login`, sign in, deep-link to one accessible merchant/task, verify a hidden merchant cannot be opened, then log out. Do not use or expose Core AI Token during this smoke test.
 
-- [ ] **Step 4: Mark the roadmap phase complete only after all evidence is green**
+- [x] **Step 4: Mark the roadmap phase complete only after all evidence is green**
 
 Change the auth row status from `已写` to `已完成` and check every completed checkbox in this plan. If any gate is red, leave the row `实施中` and record the exact failing command beneath that task.
 
-- [ ] **Step 5: Commit phase completion**
+- [x] **Step 5: Commit phase completion**
 
 ```bash
 git add docs/superpowers/plans/2026-08-20-execution-agent-roadmap.md docs/superpowers/plans/2026-08-24-auth-identity.md
