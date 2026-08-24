@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { portfolioFixture } from "../../test/fixtures";
 import { DemoTaskDrawer } from "./DemoTaskDrawer";
 import { buildDemoTasks, filterDemoTasks } from "./demoTasks";
+import { formatTaskOwner } from "./taskOwner";
 
 function makeKekeMerchant() {
   return {
@@ -30,6 +31,27 @@ test("demo tasks without an operator remain visibly unassigned", () => {
   const tasks = buildDemoTasks([merchant], new Date("2026-08-20T08:00:00Z"));
 
   expect(tasks.every((task) => task.owner_id === "unassigned")).toBe(true);
+});
+
+test("unassigned demo owners render as 未分配 while named owners stay unchanged", () => {
+  const unassigned = {
+    ...buildDemoTasks([makeKekeMerchant()], new Date("2026-08-20T08:00:00Z"))[0]!,
+    owner_id: "unassigned",
+  };
+  const named = { ...unassigned, owner_id: "operator-7" };
+
+  const { rerender } = render(DemoTaskDrawer({ task: unassigned, onClose: () => undefined }));
+  expect(screen.getByText("未分配")).toBeInTheDocument();
+
+  rerender(DemoTaskDrawer({ task: named, onClose: () => undefined }));
+  expect(screen.getByText("operator-7")).toBeInTheDocument();
+});
+
+test("owner formatter localizes nullish and demo sentinel owners", () => {
+  expect(formatTaskOwner(null)).toBe("未分配");
+  expect(formatTaskOwner(undefined)).toBe("未分配");
+  expect(formatTaskOwner("unassigned")).toBe("未分配");
+  expect(formatTaskOwner("operator-7")).toBe("operator-7");
 });
 
 test("weekly GBP schedule materializes as four independent dated tasks", () => {

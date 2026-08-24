@@ -81,4 +81,41 @@ describe("migrate on postgres", () => {
       await legacy.teardown();
     }
   });
+
+  it("adds nullable last_sent_by to an existing questionnaire table idempotently", async () => {
+    const legacy = await createTestDb();
+    try {
+      await legacy.db.exec(`CREATE TABLE seo_merchant_questionnaires (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        share_slug TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL,
+        base_info TEXT NOT NULL DEFAULT '{}',
+        questions TEXT NOT NULL DEFAULT '[]',
+        answers TEXT,
+        send_count INTEGER NOT NULL DEFAULT 0,
+        sent_at TEXT,
+        last_sent_at TEXT,
+        filled_at TEXT,
+        creation_idempotency_key TEXT,
+        request_fingerprint TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+
+      await migrate(legacy.db);
+      await migrate(legacy.db);
+
+      const columns = await legacy.db.query<{ column_name: string; is_nullable: string }>(
+        `SELECT column_name, is_nullable
+         FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = 'seo_merchant_questionnaires'`,
+        [legacy.schema],
+      );
+      expect(columns).toContainEqual({ column_name: "last_sent_by", is_nullable: "YES" });
+    } finally {
+      await legacy.teardown();
+    }
+  });
 });

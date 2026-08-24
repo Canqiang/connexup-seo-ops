@@ -11,6 +11,7 @@ import { TaskForm } from "../tasks/TaskForm";
 import { DemoTaskDrawer } from "./DemoTaskDrawer";
 import { buildDemoTasks, filterDemoTasks, isDemoTask, taskStatusView, type DemoTask } from "./demoTasks";
 import { InboxFilters } from "./InboxFilters";
+import { formatTaskOwner } from "./taskOwner";
 
 export function InboxPage() {
   const [params, setParams] = useSearchParams();
@@ -58,7 +59,7 @@ export function InboxPage() {
           <td><span className={`priority-tag is-${task.priority.toLocaleLowerCase()}`}>{task.priority}</span></td>
           <td><button className="table-link" onClick={() => openTask(task)} type="button"><strong>{task.title}</strong><small>{task.merchant_name} · {task.task_type}{isDemoTask(task) ? demoTaskMeta(task) : ` · rev ${task.task_revision}`}</small></button></td>
           <td>{task.location_name ?? "商户级"}</td><td>{task.impact}</td><td><span className={`status-pill is-${statusView.className}`}>{statusView.label}</span></td>
-          <td>{task.evidence_state}</td><td>{task.owner_id ?? "未分配"}</td><td>{formatDate(task.due_at)}</td><td>{formatDate(task.updated_at)}</td>
+          <td>{task.evidence_state}</td><td>{formatTaskOwner(task.owner_id)}</td><td>{formatDate(task.due_at)}</td><td>{formatDate(task.updated_at)}</td>
           <td><button aria-label={`打开任务 ${task.title}`} className="row-arrow" onClick={() => openTask(task)} type="button"><ArrowRight size={15} /></button></td>
         </tr>;
         })}</tbody></table>

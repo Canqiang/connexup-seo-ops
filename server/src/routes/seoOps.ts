@@ -445,7 +445,7 @@ export function registerSeoOpsRoutes(
       const questionnaire = await getQuestionnaire(ctx.db, questionnaireId);
       if (!questionnaire) throw new ApiError(404, "resource not found");
       await requireMerchantAccess(ctx.db, actor, questionnaire.merchantId);
-      return questionnaireView(await sendQuestionnaire(ctx.db, questionnaireId));
+      return questionnaireView(await sendQuestionnaire(ctx.db, questionnaireId, actor.userId));
     },
   );
 

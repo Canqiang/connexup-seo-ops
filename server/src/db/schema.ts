@@ -159,6 +159,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     send_count INTEGER NOT NULL DEFAULT 0,
     sent_at TEXT,
     last_sent_at TEXT,
+    last_sent_by TEXT,
     filled_at TEXT,
     creation_idempotency_key TEXT,
     request_fingerprint TEXT,

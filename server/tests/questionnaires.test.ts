@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createAuthenticatedTestApp } from "./helpers/authTest.js";
+import { getQuestionnaire } from "../src/repos/questionnaireRepo.js";
+import { PASSWORD, createAuthenticatedTestApp, createTestUser } from "./helpers/authTest.js";
 
 /** Fresh app + fresh schema-isolated postgres db per test. */
 async function makeApp() {
@@ -88,6 +89,57 @@ describe("questionnaire routes", () => {
     expect(portfolio.merchants[0].stage).toBe("QUESTIONNAIRE");
     expect(portfolio.merchants[0].exception.type).toBe("WAITING_MERCHANT");
     expect(portfolio.merchants[0].exception.waiting_days).toBe(0);
+  });
+
+  it("records the actor who sent and resent a questionnaire", async () => {
+    const authenticated = await makeApp();
+    app = authenticated.app;
+    const secondActor = await createTestUser(authenticated.db, {
+      email: "resend-operator@example.test",
+      displayName: "Resend operator",
+    });
+    const merchant = (
+      await app.inject({
+        method: "POST",
+        url: "/api/seo-ops/merchants",
+        payload: {
+          slug: "audit-actors",
+          display_name: "Audit Actors",
+          operator_user_ids: [secondActor.id],
+          idempotency_key: "actor-merchant",
+        },
+      })
+    ).json();
+    const questionnaire = (
+      await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/merchants/${merchant.id}/questionnaires`,
+        payload: { idempotency_key: "actor-questionnaire" },
+      })
+    ).json();
+
+    const firstSend = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/questionnaires/${questionnaire.id}/send`,
+    });
+    expect(firstSend.statusCode).toBe(200);
+    expect(firstSend.json().last_sent_by).toBe(authenticated.actor.userId);
+
+    const login = await authenticated.rawInject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: secondActor.email, password: PASSWORD },
+    });
+    const setCookie = login.headers["set-cookie"];
+    const resendCookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)!.split(";", 1)[0]!;
+    const resend = await authenticated.rawInject({
+      method: "POST",
+      url: `/api/seo-ops/questionnaires/${questionnaire.id}/send`,
+      headers: { cookie: resendCookie },
+    });
+    expect(resend.statusCode).toBe(200);
+    expect(resend.json().last_sent_by).toBe(secondActor.id);
+    expect((await getQuestionnaire(authenticated.db, questionnaire.id))!.lastSentBy).toBe(secondActor.id);
   });
 
   it("public form: fetch questions, submit with validation, then idempotent", async () => {

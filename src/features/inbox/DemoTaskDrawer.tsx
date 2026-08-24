@@ -1,5 +1,6 @@
 import { CalendarClock, CheckCircle2, CircleDot, LockKeyhole, X } from "lucide-react";
 import { taskStatusView, type DemoTask } from "./demoTasks";
+import { formatTaskOwner } from "./taskOwner";
 
 export function DemoTaskDrawer({ task, onClose }: { task: DemoTask; onClose: () => void }) {
   const statusView = taskStatusView(task);
@@ -17,7 +18,7 @@ export function DemoTaskDrawer({ task, onClose }: { task: DemoTask; onClose: () 
           <div><span>商户 / 地点</span><strong>{task.merchant_name}</strong><small>{task.location_name ?? "商户级"}</small></div>
           <div><span>周期</span><strong>{task.cadence}</strong><small>{task.trigger}</small></div>
           <div><span>当前状态</span><strong><i className={`status-pill is-${statusView.className}`}>{statusView.label}</i></strong><small>{task.evidence_state} EVIDENCE</small></div>
-          <div><span>下一步</span><strong>{task.next_step}</strong><small>{task.owner_id ?? "未分配"}</small></div>
+          <div><span>下一步</span><strong>{task.next_step}</strong><small>{formatTaskOwner(task.owner_id)}</small></div>
         </section>
 
         <section className="demo-task-section">
@@ -71,7 +72,7 @@ function PostOccurrence({ task }: { task: DemoTask }) {
       <div className="span-two"><span>主关键词簇</span><strong className="keyword-primary">{item.primary_keyword_cluster}</strong><small>本次 Post 的唯一主要搜索意图</small></div>
       <div className="span-two"><span>辅助词</span><div className="demo-keyword-tags">{item.supporting_keywords.map((keyword) => <i key={keyword}>{keyword}</i>)}</div></div>
       <div><span>CTA</span><strong>{item.cta}</strong></div>
-      <div><span>负责人</span><strong>{task.owner_id ?? "未分配"}</strong></div>
+      <div><span>负责人</span><strong>{formatTaskOwner(task.owner_id)}</strong></div>
     </div>
   </section>;
 }

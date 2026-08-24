@@ -20,6 +20,7 @@ export interface Questionnaire {
   sendCount: number;
   sentAt: string | null;
   lastSentAt: string | null;
+  lastSentBy: string | null;
   filledAt: string | null;
   creationIdempotencyKey: string | null;
   requestFingerprint: string | null;

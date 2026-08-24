@@ -12,6 +12,7 @@ interface QuestionnaireRow {
   send_count: number;
   sent_at: string | null;
   last_sent_at: string | null;
+  last_sent_by: string | null;
   filled_at: string | null;
   creation_idempotency_key: string | null;
   request_fingerprint: string | null;
@@ -32,6 +33,7 @@ function toQuestionnaire(row: QuestionnaireRow): Questionnaire {
     sendCount: row.send_count,
     sentAt: row.sent_at,
     lastSentAt: row.last_sent_at,
+    lastSentBy: row.last_sent_by,
     filledAt: row.filled_at,
     creationIdempotencyKey: row.creation_idempotency_key,
     requestFingerprint: row.request_fingerprint,
@@ -48,10 +50,10 @@ export async function insertQuestionnaire(
   await db.exec(
     `INSERT INTO seo_merchant_questionnaires
       (id, merchant_id, share_slug, status, base_info, questions, answers,
-       send_count, sent_at, last_sent_at, filled_at,
+       send_count, sent_at, last_sent_at, last_sent_by, filled_at,
        creation_idempotency_key, request_fingerprint, created_by,
        created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
     [
       questionnaire.id,
       questionnaire.merchantId,
@@ -63,6 +65,7 @@ export async function insertQuestionnaire(
       questionnaire.sendCount,
       questionnaire.sentAt,
       questionnaire.lastSentAt,
+      questionnaire.lastSentBy,
       questionnaire.filledAt,
       questionnaire.creationIdempotencyKey,
       questionnaire.requestFingerprint,
@@ -80,14 +83,16 @@ export async function updateQuestionnaire(
 ): Promise<Questionnaire> {
   await db.exec(
     `UPDATE seo_merchant_questionnaires SET status = $1, answers = $2,
-       send_count = $3, sent_at = $4, last_sent_at = $5, filled_at = $6, updated_at = $7
-     WHERE id = $8`,
+       send_count = $3, sent_at = $4, last_sent_at = $5, last_sent_by = $6,
+       filled_at = $7, updated_at = $8
+     WHERE id = $9`,
     [
       questionnaire.status,
       questionnaire.answers ? JSON.stringify(questionnaire.answers) : null,
       questionnaire.sendCount,
       questionnaire.sentAt,
       questionnaire.lastSentAt,
+      questionnaire.lastSentBy,
       questionnaire.filledAt,
       questionnaire.updatedAt,
       questionnaire.id,

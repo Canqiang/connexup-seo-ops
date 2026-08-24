@@ -65,6 +65,7 @@ export interface QuestionnaireView {
   send_count: number;
   sent_at: string | null;
   last_sent_at: string | null;
+  last_sent_by: string | null;
   filled_at: string | null;
   created_at: string;
   updated_at: string;
@@ -82,6 +83,7 @@ export function questionnaireView(q: Questionnaire): QuestionnaireView {
     send_count: q.sendCount,
     sent_at: q.sentAt,
     last_sent_at: q.lastSentAt,
+    last_sent_by: q.lastSentBy,
     filled_at: q.filledAt,
     created_at: q.createdAt,
     updated_at: q.updatedAt,

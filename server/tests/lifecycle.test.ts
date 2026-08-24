@@ -27,6 +27,7 @@ function mkQuestionnaire(
     sendCount: 1,
     sentAt: new Date(NOW.getTime() - 3 * DAYS).toISOString(),
     lastSentAt: new Date(NOW.getTime() - 3 * DAYS).toISOString(),
+    lastSentBy: "op-1",
     filledAt: null,
     creationIdempotencyKey: null,
     requestFingerprint: null,

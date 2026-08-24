@@ -88,6 +88,7 @@ export async function createQuestionnaire(
       sendCount: 0,
       sentAt: null,
       lastSentAt: null,
+      lastSentBy: null,
       filledAt: null,
       creationIdempotencyKey: key,
       requestFingerprint: fingerprint,
@@ -112,6 +113,7 @@ export async function createQuestionnaire(
 export async function sendQuestionnaire(
   db: Db,
   questionnaireId: string,
+  actorId: string,
 ): Promise<Questionnaire> {
   const questionnaire = await getQuestionnaire(db, questionnaireId);
   if (!questionnaire) {
@@ -127,6 +129,7 @@ export async function sendQuestionnaire(
     sendCount: questionnaire.sendCount + 1,
     sentAt: questionnaire.sentAt ?? at,
     lastSentAt: at,
+    lastSentBy: actorId,
     updatedAt: at,
   };
   return updateQuestionnaire(db, next);

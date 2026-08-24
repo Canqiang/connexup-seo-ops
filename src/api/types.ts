@@ -23,7 +23,7 @@ export interface QuestionnaireView {
   id: string; merchant_id: string; status: QuestionnaireStatus; share_slug: string;
   base_info: Record<string, string>; questions: QuestionnaireItemWire[];
   answers: Record<string, string> | null; send_count: number;
-  sent_at: string | null; last_sent_at: string | null; filled_at: string | null;
+  sent_at: string | null; last_sent_at: string | null; last_sent_by: string | null; filled_at: string | null;
   created_at: string; updated_at: string;
 }
 

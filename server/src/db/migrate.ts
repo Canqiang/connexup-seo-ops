@@ -4,6 +4,7 @@ import { SCHEMA_STATEMENTS } from "./schema.js";
 /** 老库补列(PG 版:用 IF NOT EXISTS,天然幂等)。 */
 const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE seo_tasks ADD COLUMN IF NOT EXISTS mutation_keys TEXT NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE seo_merchant_questionnaires ADD COLUMN IF NOT EXISTS last_sent_by TEXT`,
 ];
 
 const IDENTITY_TYPE_CHECK = "seo_users_identity_type_check";

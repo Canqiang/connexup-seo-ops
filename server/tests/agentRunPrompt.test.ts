@@ -53,6 +53,7 @@ const filledQuestionnaire: Questionnaire = {
   sendCount: 1,
   sentAt: "2026-08-18T08:00:00.000Z",
   lastSentAt: "2026-08-18T08:00:00.000Z",
+  lastSentBy: "op-1",
   filledAt: "2026-08-18T09:00:00.000Z",
   creationIdempotencyKey: null,
   requestFingerprint: null,
