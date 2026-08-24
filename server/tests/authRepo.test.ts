@@ -41,7 +41,7 @@ function user(overrides: Partial<SeoUser> = {}): SeoUser {
 }
 
 describe("auth repositories", () => {
-  it("normalizes emails and maps only catalog permissions from stored rows", async () => {
+  it("normalizes emails and fails closed on a corrupted stored permission list", async () => {
     const saved = await upsertUser(ctx.db, user());
     expect(saved.email).toBe("operator@example.com");
 
@@ -52,7 +52,12 @@ describe("auth repositories", () => {
       JSON.stringify(["seoops.view", "*", "not.a.permission"]),
       "user-1",
     ]);
-    expect((await getUserById(ctx.db, "user-1"))?.permissions).toEqual(["seoops.view"]);
+    expect(await getUserById(ctx.db, "user-1")).toBeNull();
+
+    await ctx.db.exec(`UPDATE seo_users SET permissions = $1 WHERE id = $2`, [
+      JSON.stringify(["seoops.view", "seoops.manage"]),
+      "user-1",
+    ]);
   });
 
   it("updates login counters and clears a lock after successful login", async () => {
@@ -87,6 +92,29 @@ describe("auth repositories", () => {
     expect(unknownError).toMatchObject({ status: 400 });
     expect(serviceError).toMatchObject({ status: 400 });
     expect(() => assertAllowedIdentityPermissions("SERVICE", ["seoops.view", "seoops.manage"])).not.toThrow();
+  });
+
+  it("rejects an unrecognized runtime identity type before persistence", async () => {
+    await expect(upsertUser(ctx.db, user({
+      id: "user-invalid-identity",
+      email: "invalid-identity@example.com",
+      identityType: "MACHINE" as SeoUser["identityType"],
+    }))).rejects.toMatchObject({ status: 400 });
+    expect(await getUserByEmail(ctx.db, "invalid-identity@example.com")).toBeNull();
+  });
+
+  it("fails closed when a stored service user has a prohibited permission", async () => {
+    await upsertUser(ctx.db, user({
+      id: "user-service",
+      email: "service@example.com",
+      identityType: "SERVICE",
+      permissions: ["seoops.view"],
+    }));
+    await ctx.db.exec(`UPDATE seo_users SET permissions = $1 WHERE id = $2`, [
+      JSON.stringify(["seoops.view", "seoops.approve"]),
+      "user-service",
+    ]);
+    expect(await getUserById(ctx.db, "user-service")).toBeNull();
   });
 
   it("returns only active sessions and removes expired sessions", async () => {

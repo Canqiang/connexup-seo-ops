@@ -32,5 +32,17 @@ describe("migrate on postgres", () => {
       [ctx.schema],
     );
     expect(cols.map((c) => c.column_name)).toContain("mutation_keys");
+
+    const checks = await ctx.db.query<{ definition: string }>(
+      `SELECT pg_get_constraintdef(c.oid) AS definition
+       FROM pg_constraint c
+       JOIN pg_class t ON t.oid = c.conrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+       WHERE n.nspname = $1 AND t.relname = 'seo_users' AND c.contype = 'c'`,
+      [ctx.schema],
+    );
+    expect(checks.some(({ definition }) =>
+      definition.includes("identity_type") && definition.includes("HUMAN") && definition.includes("SERVICE"),
+    )).toBe(true);
   });
 });

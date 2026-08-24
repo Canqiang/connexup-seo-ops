@@ -1,8 +1,8 @@
 import type { Db } from "../db/connection.js";
 import {
   assertAllowedIdentityPermissions,
+  isIdentityType,
   isSeoPermission,
-  type IdentityType,
   type SeoPermission,
   type SeoUser,
 } from "../auth/types.js";
@@ -27,27 +27,37 @@ function normalizeEmail(email: string): string {
   return email.trim().toLocaleLowerCase("en-US");
 }
 
-function toIdentityType(value: string): IdentityType {
-  return value === "SERVICE" ? "SERVICE" : "HUMAN";
-}
-
-function parsePermissions(value: string): SeoPermission[] {
+function parsePermissions(value: string): SeoPermission[] | null {
   try {
     const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter(isSeoPermission) : [];
+    if (!Array.isArray(parsed)) return null;
+    const permissions: SeoPermission[] = [];
+    for (const permission of parsed) {
+      if (!isSeoPermission(permission)) return null;
+      permissions.push(permission);
+    }
+    return permissions;
   } catch {
-    return [];
+    return null;
   }
 }
 
-function toUser(row: UserRow): SeoUser {
+function toUser(row: UserRow): SeoUser | null {
+  if (!isIdentityType(row.identity_type)) return null;
+  const permissions = parsePermissions(row.permissions);
+  if (!permissions) return null;
+  try {
+    assertAllowedIdentityPermissions(row.identity_type, permissions);
+  } catch {
+    return null;
+  }
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
     role: row.role,
-    identityType: toIdentityType(row.identity_type),
-    permissions: parsePermissions(row.permissions),
+    identityType: row.identity_type,
+    permissions,
     passwordHash: row.password_hash,
     status: row.status,
     failedLoginCount: row.failed_login_count,
@@ -103,8 +113,9 @@ export async function upsertUser(db: Db, user: SeoUser): Promise<SeoUser> {
       user.updatedAt,
     ],
   );
-  if (!row) throw new Error("user upsert did not return a row");
-  return toUser(row);
+  const mapped = row ? toUser(row) : null;
+  if (!mapped) throw new Error("user upsert did not return a valid row");
+  return mapped;
 }
 
 export async function recordLoginFailure(db: Db, id: string, lockedUntil: string | null): Promise<void> {

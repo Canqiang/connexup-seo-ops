@@ -48,11 +48,18 @@ export function isSeoPermission(value: unknown): value is SeoPermission {
   return typeof value === "string" && (SEO_PERMISSIONS as readonly string[]).includes(value);
 }
 
+export function isIdentityType(value: unknown): value is IdentityType {
+  return value === "HUMAN" || value === "SERVICE";
+}
+
 /** Reject unknown/wildcard permission strings and privileged service identities. */
 export function assertAllowedIdentityPermissions(
-  identityType: IdentityType,
-  permissions: readonly string[],
-): asserts permissions is readonly SeoPermission[] {
+  identityType: unknown,
+  permissions: readonly unknown[],
+): void {
+  if (!isIdentityType(identityType)) {
+    throw badRequest(`unknown identity type: ${String(identityType)}`);
+  }
   for (const permission of permissions) {
     if (!isSeoPermission(permission)) {
       throw badRequest(`unknown SEO permission: ${permission}`);
