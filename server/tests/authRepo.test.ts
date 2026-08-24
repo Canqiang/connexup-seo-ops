@@ -3,6 +3,7 @@ import { assertAllowedIdentityPermissions, type SeoUser } from "../src/auth/type
 import {
   getUserByEmail,
   getUserById,
+  recordAuthLoginFailure,
   recordLoginFailure,
   recordLoginSuccess,
   upsertUser,
@@ -73,6 +74,20 @@ describe("auth repositories", () => {
       failedLoginCount: 0,
       lockedUntil: null,
       lastLoginAt: "2026-08-24T00:01:00.000Z",
+    });
+  });
+
+  it("atomically locks after five concurrent password failures", async () => {
+    await Promise.all(Array.from({ length: 5 }, () => recordAuthLoginFailure(
+      ctx.db,
+      "user-1",
+      "2026-08-24T00:00:00.000Z",
+      5,
+      "2026-08-24T00:15:00.000Z",
+    )));
+    expect(await getUserById(ctx.db, "user-1")).toMatchObject({
+      failedLoginCount: 5,
+      lockedUntil: "2026-08-24T00:15:00.000Z",
     });
   });
 

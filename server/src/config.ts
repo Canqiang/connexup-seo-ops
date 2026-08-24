@@ -3,6 +3,15 @@ function positiveInt(raw: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function sessionTtlHours(raw: string | undefined): number {
+  if (raw === undefined) return 12;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 720) {
+    throw new Error("SESSION_TTL_HOURS must be a safe integer between 1 and 720");
+  }
+  return parsed;
+}
+
 export interface ServerConfig {
   port: number;
   host: string;
@@ -32,7 +41,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     host: env.HOST ?? "127.0.0.1",
     databaseUrl: env.DATABASE_URL ?? "postgres://seo_ops:seo_ops@localhost:5432/seo_ops_dev",
     sessionSecret,
-    sessionTtlHours: positiveInt(env.SESSION_TTL_HOURS, 12),
+    sessionTtlHours: sessionTtlHours(env.SESSION_TTL_HOURS),
     sessionCookieSecure: env.SESSION_COOKIE_SECURE === "true",
     coreAiBaseUrl: env.CORE_AI_BASE_URL?.trim() || null,
     coreAiToken: env.CORE_AI_TOKEN?.trim() || null,

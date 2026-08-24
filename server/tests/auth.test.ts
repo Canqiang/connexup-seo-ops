@@ -4,7 +4,7 @@ import { hashPassword } from "../src/auth/password.js";
 import type { SeoUser } from "../src/auth/types.js";
 import { loadConfig } from "../src/config.js";
 import { buildApp } from "../src/index.js";
-import { upsertUser } from "../src/repos/userRepo.js";
+import { getUserById, upsertUser } from "../src/repos/userRepo.js";
 import { createTestDb } from "./helpers/pgTest.js";
 
 const PASSWORD = "Correct horse battery staple 42!";
@@ -183,6 +183,42 @@ describe("cookie session authentication", () => {
     expect(correctWhileLocked.statusCode).toBe(401);
     expect(correctWhileLocked.json()).toMatchObject({ error_code: "INVALID_CREDENTIALS" });
   });
+
+  it("atomically locks an identity after five concurrent failures", async () => {
+    await seedUser(db);
+
+    const attempts = await Promise.all(Array.from({ length: 5 }, () => app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "operator@example.com", password: "wrong password 123" },
+    })));
+    for (const response of attempts) {
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toMatchObject({ error_code: "INVALID_CREDENTIALS" });
+    }
+    expect(await getUserById(db, "operator-1")).toMatchObject({
+      failedLoginCount: 5,
+      lockedUntil: expect.any(String),
+    });
+
+    const correctWhileLocked = await app.inject({
+      method: "POST", url: "/api/auth/login", payload: { email: "operator@example.com", password: PASSWORD },
+    });
+    expect(correctWhileLocked.statusCode).toBe(401);
+    expect(correctWhileLocked.json()).toMatchObject({ error_code: "INVALID_CREDENTIALS" });
+  });
+
+  it("uses a fixed valid scrypt candidate for invalid password lengths", async () => {
+    const authService = await import("../src/services/authService.js");
+    const candidate = (authService as Record<string, unknown>).passwordForScryptVerification;
+    expect(typeof candidate).toBe("function");
+    if (typeof candidate !== "function") return;
+
+    const normalize = candidate as (password: string) => string;
+    expect(normalize(PASSWORD)).toBe(PASSWORD);
+    expect(normalize("short")).toBe("invalid-password-verification-candidate");
+    expect(normalize("a".repeat(129))).toBe("invalid-password-verification-candidate");
+  });
 });
 
 describe("session configuration", () => {
@@ -193,5 +229,11 @@ describe("session configuration", () => {
       sessionTtlHours: 12,
       sessionCookieSecure: false,
     });
+    const validSecret = "production-session-secret-must-have-at-least-32-characters";
+    expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "0" })).toThrow("SESSION_TTL_HOURS");
+    expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "12.5" })).toThrow("SESSION_TTL_HOURS");
+    expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "9007199254740992" })).toThrow("SESSION_TTL_HOURS");
+    expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "721" })).toThrow("SESSION_TTL_HOURS");
+    expect(loadConfig({ NODE_ENV: "production", SESSION_SECRET: validSecret, SESSION_TTL_HOURS: "720" }).sessionTtlHours).toBe(720);
   });
 });

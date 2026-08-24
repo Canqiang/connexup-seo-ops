@@ -127,6 +127,31 @@ export async function recordLoginFailure(db: Db, id: string, lockedUntil: string
   );
 }
 
+/** Increment a password-login failure and lock on the threshold in one
+ * database statement, so concurrent attempts cannot all observe the same
+ * stale failure count. */
+export async function recordAuthLoginFailure(
+  db: Db,
+  id: string,
+  at: string,
+  lockAfterFailures: number,
+  lockedUntil: string,
+): Promise<SeoUser | null> {
+  const row = await db.one<UserRow>(
+    `UPDATE seo_users
+     SET failed_login_count = failed_login_count + 1,
+         locked_until = CASE
+           WHEN failed_login_count + 1 >= $3 THEN $4
+           ELSE locked_until
+         END,
+         updated_at = $2
+     WHERE id = $1
+     RETURNING *`,
+    [id, at, lockAfterFailures, lockedUntil],
+  );
+  return row ? toUser(row) : null;
+}
+
 export async function recordLoginSuccess(db: Db, id: string, at: string): Promise<void> {
   await db.exec(
     `UPDATE seo_users

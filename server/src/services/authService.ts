@@ -12,7 +12,7 @@ import {
 import {
   getUserByEmail,
   getUserById,
-  recordLoginFailure,
+  recordAuthLoginFailure,
   recordLoginSuccess,
 } from "../repos/userRepo.js";
 
@@ -20,21 +20,21 @@ const SESSION_TOKEN_BYTES = 32;
 const LOCKOUT_AFTER_FAILURES = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
 const DUMMY_SCRYPT_HASH = "scrypt$16384$8$1$MDEyMzQ1Njc4OWFiY2RlZg$FDHUUDaRNNA-jxValD5um46wGIkhMNYiIRrLwU1OVqL-rhA8YHdJmOFFPP35oNsSEglPcGn2oAViIBWLiaRRyw";
+const INVALID_PASSWORD_CANDIDATE = "invalid-password-verification-candidate";
 
 function invalidCredentials(): ApiError {
   return new ApiError(401, "invalid credentials", "INVALID_CREDENTIALS");
 }
 
-/** Keep unknown-user verification on scrypt even for passwords outside the
- * account-password length policy, so that existence is not exposed by timing. */
-function dummyPasswordCandidate(password: string): string {
-  const characters = Array.from(password).slice(0, 128);
-  while (characters.length < 12) characters.push("_");
-  return characters.join("");
+/** Invalid lengths must still reach scrypt with a fixed policy-valid value,
+ * avoiding a credential-length timing oracle for known or unknown identities. */
+export function passwordForScryptVerification(password: string): string {
+  const length = Array.from(password).length;
+  return length >= 12 && length <= 128 ? password : INVALID_PASSWORD_CANDIDATE;
 }
 
 async function verifyDummyPassword(password: string): Promise<void> {
-  await verifyPassword(dummyPasswordCandidate(password), DUMMY_SCRYPT_HASH);
+  await verifyPassword(passwordForScryptVerification(password), DUMMY_SCRYPT_HASH);
 }
 
 function isActiveHuman(user: SeoUser): boolean {
@@ -77,15 +77,17 @@ export async function login(
   }
 
   const passwordMatches = user.passwordHash
-    ? await verifyPassword(input.password, user.passwordHash)
+    ? await verifyPassword(passwordForScryptVerification(input.password), user.passwordHash)
     : (await verifyDummyPassword(input.password), false);
   if (!isActiveHuman(user) || isLocked(user, now) || !passwordMatches) {
     if (!isLocked(user, now) && !passwordMatches) {
-      const nextFailureCount = user.failedLoginCount + 1;
-      const lockedUntil = nextFailureCount >= LOCKOUT_AFTER_FAILURES
-        ? new Date(now.getTime() + LOCKOUT_MS).toISOString()
-        : null;
-      await recordLoginFailure(db, user.id, lockedUntil);
+      await recordAuthLoginFailure(
+        db,
+        user.id,
+        now.toISOString(),
+        LOCKOUT_AFTER_FAILURES,
+        new Date(now.getTime() + LOCKOUT_MS).toISOString(),
+      );
     }
     throw invalidCredentials();
   }
