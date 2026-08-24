@@ -58,7 +58,7 @@ export class AgentRunPoller {
     if (this.polling) return; // re-entrancy guard: skip, next tick catches up
     this.polling = true;
     try {
-      for (const run of listActiveAgentRuns(this.deps.db)) {
+      for (const run of await listActiveAgentRuns(this.deps.db)) {
         await this.processRun(run);
       }
     } catch (err) {
@@ -78,7 +78,7 @@ export class AgentRunPoller {
         (this.deps.now ? this.deps.now() : new Date()).getTime() -
         Date.parse(run.triggeredAt);
       if (ageMs > TRIGGER_GRACE_MS) {
-        transitionAgentRun(
+        await transitionAgentRun(
           this.deps.db,
           run.id,
           {
@@ -112,16 +112,16 @@ export class AgentRunPoller {
     }
 
     // The row may have gone terminal (cancel route) while the fetch was out.
-    const fresh = getAgentRun(this.deps.db, run.id);
+    const fresh = await getAgentRun(this.deps.db, run.id);
     if (!fresh || fresh.status !== "RUNNING") return;
 
     if ((CORE_RUN_TERMINAL_STATUSES as readonly string[]).includes(core.status)) {
       // Deliverables land first (upsert by deterministic id = idempotent); a
       // crash here leaves the row RUNNING and the next poll replays both steps.
       await recordDeliverables(this.deps, fresh, core);
-      applyTerminalTransition(this.deps, fresh, core);
+      await applyTerminalTransition(this.deps, fresh, core);
     } else {
-      transitionAgentRun(
+      await transitionAgentRun(
         this.deps.db,
         run.id,
         { coreStatus: core.status, lastPolledAt: this.nowIso() },

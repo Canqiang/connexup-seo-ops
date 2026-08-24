@@ -41,97 +41,99 @@ function toQuestionnaire(row: QuestionnaireRow): Questionnaire {
   };
 }
 
-export function insertQuestionnaire(
+export async function insertQuestionnaire(
   db: Db,
   questionnaire: Questionnaire,
-): Questionnaire {
-  db.prepare(
+): Promise<Questionnaire> {
+  await db.exec(
     `INSERT INTO seo_merchant_questionnaires
       (id, merchant_id, share_slug, status, base_info, questions, answers,
        send_count, sent_at, last_sent_at, filled_at,
        creation_idempotency_key, request_fingerprint, created_by,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    questionnaire.id,
-    questionnaire.merchantId,
-    questionnaire.shareSlug,
-    questionnaire.status,
-    JSON.stringify(questionnaire.baseInfo),
-    JSON.stringify(questionnaire.questions),
-    questionnaire.answers ? JSON.stringify(questionnaire.answers) : null,
-    questionnaire.sendCount,
-    questionnaire.sentAt,
-    questionnaire.lastSentAt,
-    questionnaire.filledAt,
-    questionnaire.creationIdempotencyKey,
-    questionnaire.requestFingerprint,
-    questionnaire.createdBy,
-    questionnaire.createdAt,
-    questionnaire.updatedAt,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+    [
+      questionnaire.id,
+      questionnaire.merchantId,
+      questionnaire.shareSlug,
+      questionnaire.status,
+      JSON.stringify(questionnaire.baseInfo),
+      JSON.stringify(questionnaire.questions),
+      questionnaire.answers ? JSON.stringify(questionnaire.answers) : null,
+      questionnaire.sendCount,
+      questionnaire.sentAt,
+      questionnaire.lastSentAt,
+      questionnaire.filledAt,
+      questionnaire.creationIdempotencyKey,
+      questionnaire.requestFingerprint,
+      questionnaire.createdBy,
+      questionnaire.createdAt,
+      questionnaire.updatedAt,
+    ],
   );
   return questionnaire;
 }
 
-export function updateQuestionnaire(
+export async function updateQuestionnaire(
   db: Db,
   questionnaire: Questionnaire,
-): Questionnaire {
-  db.prepare(
-    `UPDATE seo_merchant_questionnaires SET status = ?, answers = ?,
-       send_count = ?, sent_at = ?, last_sent_at = ?, filled_at = ?, updated_at = ?
-     WHERE id = ?`,
-  ).run(
-    questionnaire.status,
-    questionnaire.answers ? JSON.stringify(questionnaire.answers) : null,
-    questionnaire.sendCount,
-    questionnaire.sentAt,
-    questionnaire.lastSentAt,
-    questionnaire.filledAt,
-    questionnaire.updatedAt,
-    questionnaire.id,
+): Promise<Questionnaire> {
+  await db.exec(
+    `UPDATE seo_merchant_questionnaires SET status = $1, answers = $2,
+       send_count = $3, sent_at = $4, last_sent_at = $5, filled_at = $6, updated_at = $7
+     WHERE id = $8`,
+    [
+      questionnaire.status,
+      questionnaire.answers ? JSON.stringify(questionnaire.answers) : null,
+      questionnaire.sendCount,
+      questionnaire.sentAt,
+      questionnaire.lastSentAt,
+      questionnaire.filledAt,
+      questionnaire.updatedAt,
+      questionnaire.id,
+    ],
   );
   return questionnaire;
 }
 
-export function getQuestionnaire(db: Db, id: string): Questionnaire | null {
-  const row = db
-    .prepare(`SELECT * FROM seo_merchant_questionnaires WHERE id = ?`)
-    .get(id) as QuestionnaireRow | undefined;
+export async function getQuestionnaire(db: Db, id: string): Promise<Questionnaire | null> {
+  const row = await db.one<QuestionnaireRow>(
+    `SELECT * FROM seo_merchant_questionnaires WHERE id = $1`,
+    [id],
+  );
   return row ? toQuestionnaire(row) : null;
 }
 
-export function getQuestionnaireByShareSlug(
+export async function getQuestionnaireByShareSlug(
   db: Db,
   shareSlug: string,
-): Questionnaire | null {
-  const row = db
-    .prepare(`SELECT * FROM seo_merchant_questionnaires WHERE share_slug = ?`)
-    .get(shareSlug) as QuestionnaireRow | undefined;
+): Promise<Questionnaire | null> {
+  const row = await db.one<QuestionnaireRow>(
+    `SELECT * FROM seo_merchant_questionnaires WHERE share_slug = $1`,
+    [shareSlug],
+  );
   return row ? toQuestionnaire(row) : null;
 }
 
-export function findQuestionnaireByIdempotencyKey(
+export async function findQuestionnaireByIdempotencyKey(
   db: Db,
   key: string,
-): Questionnaire | null {
-  const row = db
-    .prepare(
-      `SELECT * FROM seo_merchant_questionnaires WHERE creation_idempotency_key = ?`,
-    )
-    .get(key) as QuestionnaireRow | undefined;
+): Promise<Questionnaire | null> {
+  const row = await db.one<QuestionnaireRow>(
+    `SELECT * FROM seo_merchant_questionnaires WHERE creation_idempotency_key = $1`,
+    [key],
+  );
   return row ? toQuestionnaire(row) : null;
 }
 
-export function latestQuestionnaireByMerchant(
+export async function latestQuestionnaireByMerchant(
   db: Db,
   merchantId: string,
-): Questionnaire | null {
-  const row = db
-    .prepare(
-      `SELECT * FROM seo_merchant_questionnaires
-       WHERE merchant_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
-    )
-    .get(merchantId) as QuestionnaireRow | undefined;
+): Promise<Questionnaire | null> {
+  const row = await db.one<QuestionnaireRow>(
+    `SELECT * FROM seo_merchant_questionnaires
+     WHERE merchant_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [merchantId],
+  );
   return row ? toQuestionnaire(row) : null;
 }

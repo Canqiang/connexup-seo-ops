@@ -26,33 +26,33 @@ export interface LifecycleInputs {
 /** 每商户任务（调用方预加载，避免逐商户 N+1；单商户场景可只装一条）。 */
 export type TasksByMerchant = Map<string, Task[]>;
 
-export function loadLifecycleInputs(
+export async function loadLifecycleInputs(
   db: Db,
   merchantIds: string[],
-): LifecycleInputs {
+): Promise<LifecycleInputs> {
   const questionnaireByMerchant = new Map<string, Questionnaire>();
   const runsByMerchant = new Map<string, AgentRun[]>();
   const allRunIds: string[] = [];
   for (const id of merchantIds) {
-    const q = latestQuestionnaireByMerchant(db, id);
+    const q = await latestQuestionnaireByMerchant(db, id);
     if (q) questionnaireByMerchant.set(id, q);
-    const runs = listAgentRunsByMerchant(db, id);
+    const runs = await listAgentRunsByMerchant(db, id);
     runsByMerchant.set(id, runs);
     for (const run of runs) allRunIds.push(run.id);
   }
   return {
     questionnaireByMerchant,
     runsByMerchant,
-    deliverablesByRun: listDeliverablesByRunIds(db, allRunIds),
+    deliverablesByRun: await listDeliverablesByRunIds(db, allRunIds),
   };
 }
 
-export function preloadTasksByMerchant(
+export async function preloadTasksByMerchant(
   db: Db,
   merchantIds: string[],
-): TasksByMerchant {
+): Promise<TasksByMerchant> {
   const map: TasksByMerchant = new Map();
-  for (const id of merchantIds) map.set(id, listTasksByMerchant(db, id));
+  for (const id of merchantIds) map.set(id, await listTasksByMerchant(db, id));
   return map;
 }
 
@@ -385,12 +385,12 @@ export function deriveLifecycle(
 }
 
 /** 首页/组合页用的轻量入口。 */
-export function deriveLifecycleForDb(
+export async function deriveLifecycleForDb(
   db: Db,
   merchantId: string,
   now: Date = new Date(),
-): LifecycleWire {
-  const inputs = loadLifecycleInputs(db, [merchantId]);
-  const tasks = preloadTasksByMerchant(db, [merchantId]);
+): Promise<LifecycleWire> {
+  const inputs = await loadLifecycleInputs(db, [merchantId]);
+  const tasks = await preloadTasksByMerchant(db, [merchantId]);
   return deriveLifecycle(merchantId, inputs, tasks, now);
 }

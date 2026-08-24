@@ -1,8 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import { loadConfig, type ServerConfig } from "./config.js";
-import { openDatabase, type Db } from "./db/connection.js";
+import { createDb, type Db } from "./db/connection.js";
 import { migrate } from "./db/migrate.js";
 import {
   registerErrorHandler,
@@ -22,16 +22,23 @@ export interface AppContext {
   artifactsDir: string;
 }
 
-/** Test seams: inject a fake client/poller, or pass null to force-disable. */
+/** Test seams: inject a fake client/poller/db, or pass null to force-disable. */
 export interface AppDeps {
   coreAi?: CoreAiClient | null;
   poller?: AgentRunPoller | null;
   artifactsDir?: string;
+  /** Injected Db (e.g. an isolated test schema). When set, buildApp does not
+   * close it in onClose — that stays the caller's responsibility. */
+  db?: Db;
 }
 
-export function buildApp(config: ServerConfig = loadConfig(), deps: AppDeps = {}) {
-  const db = openDatabase(config.dbPath);
-  migrate(db);
+export async function buildApp(
+  config: ServerConfig = loadConfig(),
+  deps: AppDeps = {},
+): Promise<{ app: FastifyInstance; config: ServerConfig; db: Db; poller: AgentRunPoller | null }> {
+  const ownsDb = !deps.db;
+  const db = deps.db ?? createDb(config.databaseUrl);
+  await migrate(db);
 
   const coreAi =
     deps.coreAi !== undefined
@@ -71,8 +78,10 @@ export function buildApp(config: ServerConfig = loadConfig(), deps: AppDeps = {}
   }
 
   app.addHook("onClose", async () => {
+    // Stop the poller before closing the pool so it can't fire a query
+    // against an already-closed connection.
     poller?.stop();
-    db.close();
+    if (ownsDb) await db.close();
   });
 
   return { app, config, db, poller };
@@ -80,7 +89,7 @@ export function buildApp(config: ServerConfig = loadConfig(), deps: AppDeps = {}
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {
-  const { app, config } = buildApp();
+  const { app, config } = await buildApp();
   app.listen({ port: config.port, host: config.host }).catch((error) => {
     app.log.error(error);
     process.exit(1);

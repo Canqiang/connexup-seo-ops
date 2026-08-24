@@ -169,20 +169,20 @@ function attachmentFileNameForHeader(fileName: string): string {
 }
 
 /** Resolve the merchant/location names a task wire view needs. */
-function taskNames(ctx: AppContext, task: Task): {
+async function taskNames(ctx: AppContext, task: Task): Promise<{
   merchantName: string;
   locationName?: string;
-} {
-  const merchant = getMerchant(ctx.db, task.merchantId);
-  const location = task.locationId ? getLocation(ctx.db, task.locationId) : null;
+}> {
+  const merchant = await getMerchant(ctx.db, task.merchantId);
+  const location = task.locationId ? await getLocation(ctx.db, task.locationId) : null;
   return {
     merchantName: merchant?.displayName ?? task.merchantId,
     ...(location ? { locationName: location.displayName } : {}),
   };
 }
 
-function taskOr404(ctx: AppContext, taskId: string): Task {
-  const task = getTask(ctx.db, taskId);
+async function taskOr404(ctx: AppContext, taskId: string): Promise<Task> {
+  const task = await getTask(ctx.db, taskId);
   if (!task) {
     const err = new ApiError(404, `task ${taskId} not found`, undefined);
     throw err;
@@ -190,11 +190,11 @@ function taskOr404(ctx: AppContext, taskId: string): Task {
   return task;
 }
 
-function getQuestionnaireByShareSlugOr404(
+async function getQuestionnaireByShareSlugOr404(
   ctx: AppContext,
   slug: string,
-): NonNullable<ReturnType<typeof getQuestionnaireByShareSlug>> {
-  const questionnaire = getQuestionnaireByShareSlug(ctx.db, slug);
+): Promise<NonNullable<Awaited<ReturnType<typeof getQuestionnaireByShareSlug>>>> {
+  const questionnaire = await getQuestionnaireByShareSlug(ctx.db, slug);
   if (!questionnaire) {
     throw new ApiError(404, `questionnaire form ${slug} not found`, undefined);
   }
@@ -242,9 +242,9 @@ export function registerSeoOpsRoutes(
 
   app.get("/api/seo-ops/tasks/:taskId", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
-    const task = taskOr404(ctx, taskId);
+    const task = await taskOr404(ctx, taskId);
     reply.status(200);
-    return taskView(task, taskNames(ctx, task));
+    return taskView(task, await taskNames(ctx, task));
   });
 
   app.get("/api/seo-ops/tasks/:taskId/events", async (request) => {
@@ -276,7 +276,7 @@ export function registerSeoOpsRoutes(
       };
       const { run, replayed } = await triggerStageRun(deps, merchantId, body);
       reply.status(replayed ? 200 : 202);
-      return stageRunView(run, listDeliverablesByRun(ctx.db, run.id));
+      return stageRunView(run, await listDeliverablesByRun(ctx.db, run.id));
     },
   );
 
@@ -285,8 +285,8 @@ export function registerSeoOpsRoutes(
     const query = request.query as Record<string, unknown>;
     const { offset, limit } = parsePageParams(query);
     const stage = typeof query.stage === "string" && query.stage !== "" ? query.stage : undefined;
-    const page = listStageRuns(ctx.db, merchantId, { stage, offset, limit });
-    const deliverablesByRun = listDeliverablesByRunIds(
+    const page = await listStageRuns(ctx.db, merchantId, { stage, offset, limit });
+    const deliverablesByRun = await listDeliverablesByRunIds(
       ctx.db,
       page.items.map((run) => run.id),
     );
@@ -300,8 +300,8 @@ export function registerSeoOpsRoutes(
 
   app.get("/api/seo-ops/agent-runs/:runId", async (request) => {
     const { runId } = request.params as { runId: string };
-    const run = getAgentRunOr404(ctx.db, runId);
-    return stageRunView(run, listDeliverablesByRun(ctx.db, run.id), {
+    const run = await getAgentRunOr404(ctx.db, runId);
+    return stageRunView(run, await listDeliverablesByRun(ctx.db, run.id), {
       includeFullOutput: true,
     });
   });
@@ -312,7 +312,7 @@ export function registerSeoOpsRoutes(
     async (request, reply) => {
       const { runId } = request.params as { runId: string };
       const body = manualDeliverableSchema.parse(request.body);
-      const deliverable = addManualDeliverable(
+      const deliverable = await addManualDeliverable(
         { db: ctx.db, artifactsDir: ctx.artifactsDir },
         runId,
         body,
@@ -326,7 +326,7 @@ export function registerSeoOpsRoutes(
     "/api/seo-ops/deliverables/:deliverableId/download",
     async (request, reply) => {
       const { deliverableId } = request.params as { deliverableId: string };
-      const deliverable = getDeliverableOr404(ctx.db, deliverableId);
+      const deliverable = await getDeliverableOr404(ctx.db, deliverableId);
       if (!deliverable.localPath) {
         throw new ApiError(
           404,
@@ -366,14 +366,14 @@ export function registerSeoOpsRoutes(
       },
       runId,
     );
-    return stageRunView(run, listDeliverablesByRun(ctx.db, run.id), {
+    return stageRunView(run, await listDeliverablesByRun(ctx.db, run.id), {
       includeFullOutput: true,
     });
   });
 
   app.post("/api/seo-ops/merchants", async (request, reply) => {
     const body = createMerchantSchema.parse(request.body);
-    const result = createMerchant(ctx.db, {
+    const result = await createMerchant(ctx.db, {
       slug: body.slug,
       displayName: body.display_name,
       tags: body.tags,
@@ -390,7 +390,7 @@ export function registerSeoOpsRoutes(
     async (request, reply) => {
       const { merchantId } = request.params as { merchantId: string };
       const body = createLocationSchema.parse(request.body);
-      const result = createLocation(ctx.db, merchantId, {
+      const result = await createLocation(ctx.db, merchantId, {
         slug: body.slug,
         displayName: body.display_name,
         timezone: body.timezone,
@@ -412,7 +412,7 @@ export function registerSeoOpsRoutes(
     async (request, reply) => {
       const { merchantId } = request.params as { merchantId: string };
       const body = createQuestionnaireSchema.parse(request.body);
-      const result = createQuestionnaire(ctx.db, merchantId, {
+      const result = await createQuestionnaire(ctx.db, merchantId, {
         website: body.website ?? null,
         idempotencyKey: body.idempotency_key,
         createdBy: "local-dev",
@@ -426,15 +426,15 @@ export function registerSeoOpsRoutes(
     "/api/seo-ops/questionnaires/:questionnaireId/send",
     async (request) => {
       const { questionnaireId } = request.params as { questionnaireId: string };
-      return questionnaireView(sendQuestionnaire(ctx.db, questionnaireId));
+      return questionnaireView(await sendQuestionnaire(ctx.db, questionnaireId));
     },
   );
 
   // 公开回收面（商家填写，无鉴权；只暴露题目，不回传答案与内部 id）。
   app.get("/api/public/questionnaire-forms/:slug", async (request) => {
     const { slug } = request.params as { slug: string };
-    const questionnaire = getQuestionnaireByShareSlugOr404(ctx, slug);
-    const merchant = getMerchant(ctx.db, questionnaire.merchantId);
+    const questionnaire = await getQuestionnaireByShareSlugOr404(ctx, slug);
+    const merchant = await getMerchant(ctx.db, questionnaire.merchantId);
     return {
       status: questionnaire.status,
       merchant_name: merchant?.displayName ?? questionnaire.merchantId,
@@ -450,7 +450,7 @@ export function registerSeoOpsRoutes(
     async (request, reply) => {
       const { slug } = request.params as { slug: string };
       const body = submitQuestionnaireSchema.parse(request.body);
-      const questionnaire = submitQuestionnaire(ctx.db, slug, body.answers);
+      const questionnaire = await submitQuestionnaire(ctx.db, slug, body.answers);
       reply.status(questionnaire.filledAt ? 200 : 201);
       return { status: questionnaire.status };
     },
@@ -460,7 +460,7 @@ export function registerSeoOpsRoutes(
 
   app.get("/api/seo-ops/merchants/:merchantId/lifecycle", async (request) => {
     const { merchantId } = request.params as { merchantId: string };
-    if (!getMerchant(ctx.db, merchantId)) {
+    if (!(await getMerchant(ctx.db, merchantId))) {
       throw new ApiError(404, `merchant ${merchantId} not found`, undefined);
     }
     return deriveLifecycleForDb(ctx.db, merchantId);
@@ -469,46 +469,46 @@ export function registerSeoOpsRoutes(
   // 排名快照 + 与上期对比（老店轮次骨架）；数据源是排名运行的 CSV 附件。
   app.get("/api/seo-ops/merchants/:merchantId/ranking", async (request) => {
     const { merchantId } = request.params as { merchantId: string };
-    if (!getMerchant(ctx.db, merchantId)) {
+    if (!(await getMerchant(ctx.db, merchantId))) {
       throw new ApiError(404, `merchant ${merchantId} not found`, undefined);
     }
-    return deriveRankingOverview(loadRankingSnapshots(ctx.db, merchantId));
+    return deriveRankingOverview(await loadRankingSnapshots(ctx.db, merchantId));
   });
 
   app.post("/api/seo-ops/tasks", async (request, reply) => {
     const body = createTaskSchema.parse(request.body);
-    const { task, replayed } = createTask(ctx.db, body);
+    const { task, replayed } = await createTask(ctx.db, body);
     reply.status(replayed ? 200 : 201);
-    return taskView(task, taskNames(ctx, task));
+    return taskView(task, await taskNames(ctx, task));
   });
 
   app.post("/api/seo-ops/tasks/:taskId/revisions", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
-    taskOr404(ctx, taskId);
+    await taskOr404(ctx, taskId);
     const body = createRevisionSchema.parse(request.body);
-    const { task, replayed } = createRevision(ctx.db, taskId, body);
+    const { task, replayed } = await createRevision(ctx.db, taskId, body);
     reply.status(replayed ? 200 : 201);
-    return taskView(task, taskNames(ctx, task));
+    return taskView(task, await taskNames(ctx, task));
   });
 
   app.post("/api/seo-ops/tasks/:taskId/evidence", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
-    taskOr404(ctx, taskId);
+    await taskOr404(ctx, taskId);
     const body = appendEvidenceSchema.parse(request.body);
-    const { task, replayed } = appendEvidence(ctx.db, taskId, body);
+    const { task, replayed } = await appendEvidence(ctx.db, taskId, body);
     reply.status(replayed ? 200 : 201);
-    return taskView(task, taskNames(ctx, task));
+    return taskView(task, await taskNames(ctx, task));
   });
 
   app.post(
     "/api/seo-ops/tasks/:taskId/conversation-links",
     async (request, reply) => {
       const { taskId } = request.params as { taskId: string };
-      taskOr404(ctx, taskId);
+      await taskOr404(ctx, taskId);
       const body = linkConversationSchema.parse(request.body);
-      const { task, replayed } = linkConversation(ctx.db, taskId, body);
+      const { task, replayed } = await linkConversation(ctx.db, taskId, body);
       reply.status(replayed ? 200 : 201);
-      return taskView(task, taskNames(ctx, task));
+      return taskView(task, await taskNames(ctx, task));
     },
   );
 
@@ -516,7 +516,7 @@ export function registerSeoOpsRoutes(
     "/api/seo-ops/tasks/:taskId/approval-previews",
     async (request) => {
       const { taskId } = request.params as { taskId: string };
-      taskOr404(ctx, taskId);
+      await taskOr404(ctx, taskId);
       const body = approvalPreviewSchema.parse(request.body);
       return approvalPreview(ctx.db, taskId, body);
     },
@@ -526,11 +526,11 @@ export function registerSeoOpsRoutes(
     "/api/seo-ops/tasks/:taskId/approval-decisions",
     async (request, reply) => {
       const { taskId } = request.params as { taskId: string };
-      taskOr404(ctx, taskId);
+      await taskOr404(ctx, taskId);
       const body = approvalDecisionSchema.parse(request.body);
-      const { task, replayed } = approvalDecision(ctx.db, taskId, body);
+      const { task, replayed } = await approvalDecision(ctx.db, taskId, body);
       reply.status(replayed ? 200 : 201);
-      return taskView(task, taskNames(ctx, task));
+      return taskView(task, await taskNames(ctx, task));
     },
   );
 }

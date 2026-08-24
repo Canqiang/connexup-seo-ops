@@ -10,6 +10,7 @@ import {
   transitionAgentRun,
   upsertDeliverable,
 } from "../src/repos/agentRunRepo.js";
+import { createTestDb } from "./helpers/pgTest.js";
 
 function fakeCoreAi(
   opts: {
@@ -38,34 +39,43 @@ function fakeCoreAi(
 describe("stage-run routes", () => {
   let artifactsDir: string;
   let counter = 0;
+  let apps: Array<{ close(): Promise<void> }> = [];
 
   beforeEach(() => {
     artifactsDir = mkdtempSync(path.join(tmpdir(), "stage-run-routes-"));
     counter = 0;
+    apps = [];
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    for (const app of apps) await app.close();
     rmSync(artifactsDir, { recursive: true, force: true });
   });
 
-  function makeApp(
+  /** Fresh app + fresh schema-isolated postgres db per call. */
+  async function makeApp(
     coreAi: CoreAiClient | null = fakeCoreAi(),
     configOverrides: Partial<ReturnType<typeof loadConfig>> = {},
   ) {
-    return buildApp(
+    const ctx = await createTestDb();
+    const result = await buildApp(
       {
         ...loadConfig(),
-        dbPath: ":memory:",
         coreAiBaseUrl: coreAi ? "https://core-ai.example" : null,
         coreAiToken: coreAi ? "secret-token" : null,
         agentRunAgentId: coreAi ? "agent-1" : null,
         ...configOverrides,
       },
-      { coreAi, artifactsDir },
+      { coreAi, artifactsDir, db: ctx.db },
     );
+    result.app.addHook("onClose", async () => {
+      await ctx.teardown();
+    });
+    apps.push(result.app);
+    return result;
   }
 
-  async function seedMerchant(app: { inject: ReturnType<typeof makeApp>["app"]["inject"] }) {
+  async function seedMerchant(app: { inject: Awaited<ReturnType<typeof makeApp>>["app"]["inject"] }) {
     counter += 1;
     const merchant = (
       await app.inject({
@@ -89,7 +99,7 @@ describe("stage-run routes", () => {
   }
 
   it("POST stage-runs returns 202: run belongs to (merchant, location, stage), no task", async () => {
-    const { app, db } = makeApp();
+    const { app, db } = await makeApp();
     const { merchant, location } = await seedMerchant(app);
 
     const res = await app.inject({
@@ -110,13 +120,13 @@ describe("stage-run routes", () => {
     expect(body.input_message).toMatch(/不得执行任何写入或变更操作/);
     expect(body.input_message).toContain("Mineola");
 
-    const row = getAgentRun(db, body.id)!;
+    const row = (await getAgentRun(db, body.id))!;
     expect(row.status).toBe("RUNNING");
     expect(row.taskId).toBeNull();
   });
 
   it("replays the same key+body as 200 with the same id, rejects a different body", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const { merchant } = await seedMerchant(app);
     const url = `/api/seo-ops/merchants/${merchant.id}/stage-runs`;
 
@@ -142,7 +152,7 @@ describe("stage-run routes", () => {
   });
 
   it("503 CORE_AI_NOT_CONFIGURED and config flags without env", async () => {
-    const { app } = makeApp(null);
+    const { app } = await makeApp(null);
     const { merchant } = await seedMerchant(app);
 
     const res = await app.inject({
@@ -160,7 +170,7 @@ describe("stage-run routes", () => {
   });
 
   it("404 unknown merchant, 400 invalid stage, 400 foreign location", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const missing = await app.inject({
       method: "POST",
       url: "/api/seo-ops/merchants/nope/stage-runs",
@@ -187,7 +197,7 @@ describe("stage-run routes", () => {
   });
 
   it("enforces the per-merchant daily run limit with 429", async () => {
-    const { app } = makeApp(fakeCoreAi(), { agentRunDailyLimit: 1 });
+    const { app } = await makeApp(fakeCoreAi(), { agentRunDailyLimit: 1 });
     const { merchant } = await seedMerchant(app);
     const url = `/api/seo-ops/merchants/${merchant.id}/stage-runs`;
 
@@ -206,7 +216,7 @@ describe("stage-run routes", () => {
   });
 
   it("lists stage runs with previews + deliverables, filters by stage", async () => {
-    const { app, db } = makeApp();
+    const { app, db } = await makeApp();
     const { merchant } = await seedMerchant(app);
     const url = `/api/seo-ops/merchants/${merchant.id}/stage-runs`;
 
@@ -223,7 +233,7 @@ describe("stage-run routes", () => {
 
     const csvPath = path.join(artifactsDir, "kw.csv");
     writeFileSync(csvPath, "keyword\n");
-    upsertDeliverable(db, {
+    await upsertDeliverable(db, {
       id: `${created.id}-att-f-1`, runId: created.id, kind: "ATTACHMENT",
       fileId: "f-1", fileName: "keywords.csv", contentType: "text/csv", size: 8,
       title: null, description: null, sha256: null, localPath: csvPath,
@@ -257,7 +267,7 @@ describe("stage-run routes", () => {
   });
 
   it("serves deliverable bytes by id, 404s undownloaded and unknown ones", async () => {
-    const { app, db } = makeApp();
+    const { app, db } = await makeApp();
     const { merchant } = await seedMerchant(app);
     const created = (
       await app.inject({
@@ -270,7 +280,7 @@ describe("stage-run routes", () => {
     const csv = Buffer.from("keyword,volume\n");
     const csvPath = path.join(artifactsDir, `${created.id}-0-keywords.csv`);
     writeFileSync(csvPath, csv);
-    upsertDeliverable(db, {
+    await upsertDeliverable(db, {
       id: "d-ok", runId: created.id, kind: "ATTACHMENT", fileId: "f-1",
       fileName: "keywords.csv", contentType: "text/csv", size: csv.byteLength,
       title: null, description: null, sha256: null, localPath: csvPath,
@@ -278,7 +288,7 @@ describe("stage-run routes", () => {
       downloadedAt: "2026-08-19T10:01:00.000Z", downloadError: null,
       createdAt: "2026-08-19T10:01:00.000Z",
     });
-    upsertDeliverable(db, {
+    await upsertDeliverable(db, {
       id: "d-miss", runId: created.id, kind: "ATTACHMENT", fileId: "f-2",
       fileName: "chart.png", contentType: "image/png", size: null,
       title: null, description: null, sha256: null, localPath: null,
@@ -301,7 +311,7 @@ describe("stage-run routes", () => {
   });
 
   it("manual deliverable upload unlocks a COMPLETED run without attachments", async () => {
-    const { app, db } = makeApp();
+    const { app, db } = await makeApp();
     const { merchant } = await seedMerchant(app);
     const created = (
       await app.inject({
@@ -320,7 +330,7 @@ describe("stage-run routes", () => {
     expect(early.statusCode).toBe(409);
     expect(early.json().error_code).toBe("RUN_NOT_COMPLETED");
 
-    transitionAgentRun(db, created.id, { status: "COMPLETED" }, ["RUNNING"]);
+    await transitionAgentRun(db, created.id, { status: "COMPLETED" }, ["RUNNING"]);
 
     const uploaded = await app.inject({
       method: "POST",
@@ -348,7 +358,7 @@ describe("stage-run routes", () => {
   });
 
   it("trigger message embeds the FILLED questionnaire and prior-stage deliverable excerpt", async () => {
-    const { app, db } = makeApp();
+    const { app, db } = await makeApp();
     const { merchant } = await seedMerchant(app);
     const q = (
       await app.inject({
@@ -375,10 +385,10 @@ describe("stage-run routes", () => {
     expect(keywords.input_message).toContain("答：答案");
 
     // 完成 KEYWORDS 并落盘一份关键词 CSV 交付物 → 下游阶段内联摘录
-    transitionAgentRun(db, keywords.id, { status: "COMPLETED" }, ["RUNNING"]);
+    await transitionAgentRun(db, keywords.id, { status: "COMPLETED" }, ["RUNNING"]);
     const csvPath = path.join(artifactsDir, "kw.csv");
     writeFileSync(csvPath, "keyword,intent\n炸鸡外卖,transactional\n");
-    upsertDeliverable(db, {
+    await upsertDeliverable(db, {
       id: `${keywords.id}-att-f-1`, runId: keywords.id, kind: "ATTACHMENT",
       fileId: "f-1", fileName: "keywords.csv", contentType: "text/csv", size: 30,
       title: null, description: null, sha256: null, localPath: csvPath,
@@ -407,7 +417,7 @@ describe("stage-run routes", () => {
         completed_at: "2026-08-19T11:00:00.000Z",
       }),
     });
-    const { app } = makeApp(client);
+    const { app } = await makeApp(client);
     const { merchant } = await seedMerchant(app);
     const created = (
       await app.inject({
@@ -438,7 +448,7 @@ describe("stage-run routes", () => {
         throw new Error("core-ai returned 429: daily token quota exceeded");
       },
     });
-    const { app } = makeApp(client);
+    const { app } = await makeApp(client);
     const { merchant } = await seedMerchant(app);
 
     const res = await app.inject({

@@ -11,6 +11,7 @@ import {
   parseRankingCsv,
   type RankingSnapshot,
 } from "../src/services/rankingService.js";
+import { createTestDb } from "./helpers/pgTest.js";
 
 const CSV = [
   "keyword,local_rank,organic_rank,checked_at",
@@ -147,14 +148,20 @@ describe("GET /api/seo-ops/merchants/:merchantId/ranking", () => {
     rmSync(artifactsDir, { recursive: true, force: true });
   });
 
-  function makeApp() {
-    return buildApp(
-      { ...loadConfig(), dbPath: ":memory:", coreAiBaseUrl: null, coreAiToken: null },
-      { coreAi: null, artifactsDir },
+  /** Fresh app + fresh schema-isolated postgres db per call. */
+  async function makeApp() {
+    const ctx = await createTestDb();
+    const result = await buildApp(
+      { ...loadConfig(), coreAiBaseUrl: null, coreAiToken: null },
+      { coreAi: null, artifactsDir, db: ctx.db },
     );
+    result.app.addHook("onClose", async () => {
+      await ctx.teardown();
+    });
+    return result;
   }
 
-  type TestApp = ReturnType<typeof makeApp>["app"];
+  type TestApp = Awaited<ReturnType<typeof makeApp>>["app"];
 
   async function createMerchant(app: TestApp) {
     const response = await app.inject({
@@ -170,14 +177,14 @@ describe("GET /api/seo-ops/merchants/:merchantId/ranking", () => {
     return response.json().id as string;
   }
 
-  function seedRankingRun(
+  async function seedRankingRun(
     db: Db,
     merchantId: string,
     runId: string,
     completedAt: string,
     csv: string | null,
   ) {
-    insertAgentRun(db, {
+    await insertAgentRun(db, {
       id: runId,
       merchantId,
       locationId: null,
@@ -206,7 +213,7 @@ describe("GET /api/seo-ops/merchants/:merchantId/ranking", () => {
     if (csv !== null) {
       const filePath = path.join(artifactsDir, `${runId}-0-ranking.csv`);
       writeFileSync(filePath, csv, "utf8");
-      upsertDeliverable(db, {
+      await upsertDeliverable(db, {
         id: `${runId}-att-0`,
         runId,
         kind: "ATTACHMENT",
@@ -227,46 +234,55 @@ describe("GET /api/seo-ops/merchants/:merchantId/ranking", () => {
   }
 
   it("404 on unknown merchant", async () => {
-    const { app } = makeApp();
-    const response = await app.inject({ method: "GET", url: "/api/seo-ops/merchants/nope/ranking" });
-    expect(response.statusCode).toBe(404);
-    await app.close();
+    const { app } = await makeApp();
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/seo-ops/merchants/nope/ranking" });
+      expect(response.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
   });
 
   it("derives the overview from CSV deliverables of completed ranking runs", async () => {
-    const { app, db } = makeApp();
-    const merchantId = await createMerchant(app);
-    seedRankingRun(db, merchantId, "run-old", "2026-08-08T10:00:00.000Z",
-      "keyword,local_rank,organic_rank\nramen near me,12,11\n");
-    seedRankingRun(db, merchantId, "run-new", "2026-08-15T10:00:00.000Z",
-      "keyword,local_rank,organic_rank\nramen near me,9,8\nramen delivery,5,30\n");
-    // 无附件的运行不算快照
-    seedRankingRun(db, merchantId, "run-empty", "2026-08-16T10:00:00.000Z", null);
+    const { app, db } = await makeApp();
+    try {
+      const merchantId = await createMerchant(app);
+      await seedRankingRun(db, merchantId, "run-old", "2026-08-08T10:00:00.000Z",
+        "keyword,local_rank,organic_rank\nramen near me,12,11\n");
+      await seedRankingRun(db, merchantId, "run-new", "2026-08-15T10:00:00.000Z",
+        "keyword,local_rank,organic_rank\nramen near me,9,8\nramen delivery,5,30\n");
+      // 无附件的运行不算快照
+      await seedRankingRun(db, merchantId, "run-empty", "2026-08-16T10:00:00.000Z", null);
 
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/seo-ops/merchants/${merchantId}/ranking`,
-    });
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.round_count).toBe(2);
-    expect(body.latest.run_id).toBe("run-new");
-    expect(body.latest.captured_at).toBe("2026-08-15T10:00:00.000Z");
-    expect(body.previous.run_id).toBe("run-old");
-    expect(body.comparison.local_avg).toEqual({ current: 7, previous: 12, delta: 5 });
-    expect(body.comparison.new_keyword_count).toBe(1);
-    await app.close();
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/seo-ops/merchants/${merchantId}/ranking`,
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.round_count).toBe(2);
+      expect(body.latest.run_id).toBe("run-new");
+      expect(body.latest.captured_at).toBe("2026-08-15T10:00:00.000Z");
+      expect(body.previous.run_id).toBe("run-old");
+      expect(body.comparison.local_avg).toEqual({ current: 7, previous: 12, delta: 5 });
+      expect(body.comparison.new_keyword_count).toBe(1);
+    } finally {
+      await app.close();
+    }
   });
 
   it("no ranking runs -> empty overview instead of 404", async () => {
-    const { app } = makeApp();
-    const merchantId = await createMerchant(app);
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/seo-ops/merchants/${merchantId}/ranking`,
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ round_count: 0, latest: null, previous: null, comparison: null });
-    await app.close();
+    const { app } = await makeApp();
+    try {
+      const merchantId = await createMerchant(app);
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/seo-ops/merchants/${merchantId}/ranking`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ round_count: 0, latest: null, previous: null, comparison: null });
+    } finally {
+      await app.close();
+    }
   });
 });

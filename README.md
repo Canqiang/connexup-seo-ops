@@ -27,6 +27,19 @@
 
 任何页面都没有可用的外部执行按钮。`APPROVED` 只是一条授权记录；实际执行、第三方写入与执行后回读属于独立阶段。
 
+## 本地开发前置（server）
+
+`server/` 使用 PostgreSQL（见 `server/src/db`）。本地起库：
+
+```bash
+docker compose up -d          # 启动 postgres:16-alpine，seo_ops_dev 库
+cp server/.env.example server/.env   # 按需填写，DATABASE_URL 默认已指向本地库
+npm --prefix server run migrate:from-sqlite -- ../data/seo-ops.db  # 可选：导入旧 SQLite 开发数据
+npm --prefix server run dev
+```
+
+`DATABASE_URL` 默认值为 `postgres://seo_ops:seo_ops@localhost:5432/seo_ops_dev`，与 `docker-compose.yml` 中的凭据一致。
+
 ## 本地运行
 
 ```bash

@@ -1,14 +1,27 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/index.js";
 import { loadConfig } from "../src/config.js";
 import { insertAgentRun, upsertDeliverable } from "../src/repos/agentRunRepo.js";
+import { createTestDb } from "./helpers/pgTest.js";
 
-function makeApp() {
-  return buildApp({ ...loadConfig(), dbPath: ":memory:" }).app;
+/** Fresh app + fresh schema-isolated postgres db per test. */
+async function makeApp(): Promise<FastifyInstance> {
+  const ctx = await createTestDb();
+  const { app } = await buildApp({ ...loadConfig() }, { db: ctx.db });
+  app.addHook("onClose", async () => {
+    await ctx.teardown();
+  });
+  return app;
 }
 
-function makeBuiltApp() {
-  return buildApp({ ...loadConfig(), dbPath: ":memory:" });
+async function makeBuiltApp() {
+  const ctx = await createTestDb();
+  const built = await buildApp({ ...loadConfig() }, { db: ctx.db });
+  built.app.addHook("onClose", async () => {
+    await ctx.teardown();
+  });
+  return built;
 }
 
 const definition = (overrides: Record<string, unknown> = {}) => ({
@@ -22,7 +35,7 @@ const definition = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-async function seedMerchantWithLocation(app: ReturnType<typeof makeApp>) {
+async function seedMerchantWithLocation(app: FastifyInstance) {
   const merchant = (
     await app.inject({
       method: "POST",
@@ -52,7 +65,7 @@ async function seedMerchantWithLocation(app: ReturnType<typeof makeApp>) {
 }
 
 async function createTask(
-  app: ReturnType<typeof makeApp>,
+  app: FastifyInstance,
   merchantId: string,
   locationId: string,
   overrides: Record<string, unknown> = {},
@@ -74,42 +87,53 @@ async function createTask(
 
 describe("auth + config stubs", () => {
   it("GET /api/auth/me returns the fixed identity", async () => {
-    const res = await makeApp().inject({ method: "GET", url: "/api/auth/me" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      user_id: "local-dev",
-      name: "Local Operator",
-      role: "seo_lead",
-      permissions: ["*"],
-    });
+    const app = await makeApp();
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/auth/me" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        user_id: "local-dev",
+        name: "Local Operator",
+        role: "seo_lead",
+        permissions: ["*"],
+      });
+    } finally {
+      await app.close();
+    }
   });
 
   it("GET /api/seo-ops/config reports copilot disabled and agent runs off without env", async () => {
-    const res = await makeApp().inject({ method: "GET", url: "/api/seo-ops/config" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      copilot_enabled: false,
-      agent_run_enabled: false,
-      agent_run_stages: [
-        "KEYWORDS",
-        "AUDIT",
-        "RANKING_BASELINE",
-        "PLAN",
-        "REVIEW",
-      ],
-    });
+    const app = await makeApp();
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/seo-ops/config" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        copilot_enabled: false,
+        agent_run_enabled: false,
+        agent_run_stages: [
+          "KEYWORDS",
+          "AUDIT",
+          "RANKING_BASELINE",
+          "PLAN",
+          "REVIEW",
+        ],
+      });
+    } finally {
+      await app.close();
+    }
   });
 });
 
 describe("portfolio", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let merchant: { id: string };
   let location: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     ({ merchant, location } = await seedMerchantWithLocation(app));
   });
+  afterEach(() => app.close());
 
   it("aggregates counts, owners, locations, and health", async () => {
     await createTask(app, merchant.id, location.id, { priority: "URGENT", owner_id: "op-1" }, "t1");
@@ -154,24 +178,30 @@ describe("portfolio", () => {
   });
 
   it("empty merchant list -> empty portfolio", async () => {
-    const res = await makeApp().inject({ method: "GET", url: "/api/seo-ops/portfolio" });
-    expect(res.json()).toEqual({
-      merchants: [],
-      totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 },
-    });
+    const emptyApp = await makeApp();
+    try {
+      const res = await emptyApp.inject({ method: "GET", url: "/api/seo-ops/portfolio" });
+      expect(res.json()).toEqual({
+        merchants: [],
+        totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 },
+      });
+    } finally {
+      await emptyApp.close();
+    }
   });
 
 });
 
 describe("inbox", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let merchant: { id: string };
   let location: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     ({ merchant, location } = await seedMerchantWithLocation(app));
   });
+  afterEach(() => app.close());
 
   it("paginates, filters by status, sorts URGENT first", async () => {
     await createTask(app, merchant.id, location.id, { priority: "LOW" }, "t1");
@@ -208,11 +238,11 @@ describe("inbox", () => {
 });
 
 describe("task detail + events", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let task: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     const { merchant, location } = await seedMerchantWithLocation(app);
     task = await createTask(app, merchant.id, location.id);
     await app.inject({
@@ -229,6 +259,7 @@ describe("task detail + events", () => {
       },
     });
   });
+  afterEach(() => app.close());
 
   it("GET /tasks/:id returns the full aggregate", async () => {
     const res = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}` });
@@ -261,16 +292,17 @@ describe("task detail + events", () => {
 });
 
 describe("reviews + reports", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let merchant: { id: string };
   let location: { id: string };
   let task: { id: string };
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     ({ merchant, location } = await seedMerchantWithLocation(app));
     task = await createTask(app, merchant.id, location.id);
   });
+  afterEach(() => app.close());
 
   const addEvidence = async (
     type: string,
@@ -353,79 +385,83 @@ describe("reviews + reports", () => {
   });
 
   it("projects a real Core AI attachment URL as a merchant report", async () => {
-    const built = makeBuiltApp();
-    const seeded = await seedMerchantWithLocation(built.app);
-    const completedAt = "2026-08-18T12:00:00.000Z";
-    insertAgentRun(built.db, {
-      id: "run-core-audit",
-      merchantId: seeded.merchant.id,
-      locationId: seeded.location.id,
-      stage: "AUDIT",
-      taskId: null,
-      runType: "AUDIT",
-      goal: null,
-      status: "COMPLETED",
-      coreRunId: "core-run-123",
-      coreStatus: "COMPLETED",
-      inputMessage: "audit",
-      output: null,
-      error: null,
-      errorCode: null,
-      tokenUsage: {},
-      triggeredBy: "local-dev",
-      triggeredAt: completedAt,
-      lastPolledAt: completedAt,
-      completedAt,
-      creationIdempotencyKey: null,
-      requestFingerprint: null,
-      createdBy: "local-dev",
-      createdAt: completedAt,
-      updatedAt: completedAt,
-    });
-    upsertDeliverable(built.db, {
-      id: "run-core-audit-att-file-1",
-      runId: "run-core-audit",
-      kind: "ATTACHMENT",
-      fileId: "file-1",
-      fileName: "acme-audit.html",
-      contentType: "text/html",
-      size: 1234,
-      title: "Acme Local SEO Audit",
-      description: null,
-      sha256: "sha256:abc",
-      localPath: "/tmp/acme-audit.html",
-      remoteUrl: "https://core-ai.example/api/public/artifacts/token/content",
-      downloadedAt: completedAt,
-      downloadError: null,
-      createdAt: completedAt,
-    });
+    const built = await makeBuiltApp();
+    try {
+      const seeded = await seedMerchantWithLocation(built.app);
+      const completedAt = "2026-08-18T12:00:00.000Z";
+      await insertAgentRun(built.db, {
+        id: "run-core-audit",
+        merchantId: seeded.merchant.id,
+        locationId: seeded.location.id,
+        stage: "AUDIT",
+        taskId: null,
+        runType: "AUDIT",
+        goal: null,
+        status: "COMPLETED",
+        coreRunId: "core-run-123",
+        coreStatus: "COMPLETED",
+        inputMessage: "audit",
+        output: null,
+        error: null,
+        errorCode: null,
+        tokenUsage: {},
+        triggeredBy: "local-dev",
+        triggeredAt: completedAt,
+        lastPolledAt: completedAt,
+        completedAt,
+        creationIdempotencyKey: null,
+        requestFingerprint: null,
+        createdBy: "local-dev",
+        createdAt: completedAt,
+        updatedAt: completedAt,
+      });
+      await upsertDeliverable(built.db, {
+        id: "run-core-audit-att-file-1",
+        runId: "run-core-audit",
+        kind: "ATTACHMENT",
+        fileId: "file-1",
+        fileName: "acme-audit.html",
+        contentType: "text/html",
+        size: 1234,
+        title: "Acme Local SEO Audit",
+        description: null,
+        sha256: "sha256:abc",
+        localPath: "/tmp/acme-audit.html",
+        remoteUrl: "https://core-ai.example/api/public/artifacts/token/content",
+        downloadedAt: completedAt,
+        downloadError: null,
+        createdAt: completedAt,
+      });
 
-    const page = (
-      await built.app.inject({
-        method: "GET",
-        url: `/api/seo-ops/reports?merchant_id=${seeded.merchant.id}`,
-      })
-    ).json();
+      const page = (
+        await built.app.inject({
+          method: "GET",
+          url: `/api/seo-ops/reports?merchant_id=${seeded.merchant.id}`,
+        })
+      ).json();
 
-    expect(page.total).toBe(1);
-    expect(page.items[0]).toMatchObject({
-      report_id: "core-ai:run-core-audit-att-file-1",
-      source_type: "CORE_AI_ARTIFACT",
-      merchant_id: seeded.merchant.id,
-      merchant_name: "Acme",
-      location_id: seeded.location.id,
-      location_name: "Downtown",
-      agent_run_id: "run-core-audit",
-      core_run_id: "core-run-123",
-      report_type: "AUDIT_REPORT",
-      file_id: "file-1",
-      file_name: "acme-audit.html",
-      title: "Acme Local SEO Audit",
-      source_ref: "https://core-ai.example/api/public/artifacts/token/content",
-      download_path: "/api/seo-ops/deliverables/run-core-audit-att-file-1/download",
-      captured_at: completedAt,
-      freshness: "FRESH",
-    });
+      expect(page.total).toBe(1);
+      expect(page.items[0]).toMatchObject({
+        report_id: "core-ai:run-core-audit-att-file-1",
+        source_type: "CORE_AI_ARTIFACT",
+        merchant_id: seeded.merchant.id,
+        merchant_name: "Acme",
+        location_id: seeded.location.id,
+        location_name: "Downtown",
+        agent_run_id: "run-core-audit",
+        core_run_id: "core-run-123",
+        report_type: "AUDIT_REPORT",
+        file_id: "file-1",
+        file_name: "acme-audit.html",
+        title: "Acme Local SEO Audit",
+        source_ref: "https://core-ai.example/api/public/artifacts/token/content",
+        download_path: "/api/seo-ops/deliverables/run-core-audit-att-file-1/download",
+        captured_at: completedAt,
+        freshness: "FRESH",
+      });
+    } finally {
+      await built.app.close();
+    }
   });
 
   it("rejects invalid captured_from with 400", async () => {

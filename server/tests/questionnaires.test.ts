@@ -1,18 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/index.js";
 import { loadConfig } from "../src/config.js";
+import { createTestDb } from "./helpers/pgTest.js";
 
-function makeApp() {
-  return buildApp({
-    ...loadConfig(),
-    dbPath: ":memory:",
-    coreAiBaseUrl: null,
-    coreAiToken: null,
-    agentRunAgentId: null,
+/** Fresh app + fresh schema-isolated postgres db per test. */
+async function makeApp() {
+  const ctx = await createTestDb();
+  const result = await buildApp(
+    {
+      ...loadConfig(),
+      coreAiBaseUrl: null,
+      coreAiToken: null,
+      agentRunAgentId: null,
+    },
+    { db: ctx.db },
+  );
+  result.app.addHook("onClose", async () => {
+    await ctx.teardown();
   });
+  return result;
 }
 
-async function seedMerchant(app: ReturnType<typeof makeApp>["app"]) {
+async function seedMerchant(app: Awaited<ReturnType<typeof makeApp>>["app"]) {
   return (
     await app.inject({
       method: "POST",
@@ -27,8 +36,11 @@ async function seedMerchant(app: ReturnType<typeof makeApp>["app"]) {
 }
 
 describe("questionnaire routes", () => {
+  let app: Awaited<ReturnType<typeof makeApp>>["app"];
+  afterEach(() => app.close());
+
   it("generates a DRAFT questionnaire from merchant + website, idempotent by key", async () => {
-    const { app } = makeApp();
+    ({ app } = await makeApp());
     const merchant = await seedMerchant(app);
 
     const res = await app.inject({
@@ -61,7 +73,7 @@ describe("questionnaire routes", () => {
   });
 
   it("send marks SENT and resend bumps the counter; portfolio reports WAITING_MERCHANT", async () => {
-    const { app } = makeApp();
+    ({ app } = await makeApp());
     const merchant = await seedMerchant(app);
     const questionnaire = (
       await app.inject({
@@ -94,7 +106,7 @@ describe("questionnaire routes", () => {
   });
 
   it("public form: fetch questions, submit with validation, then idempotent", async () => {
-    const { app } = makeApp();
+    ({ app } = await makeApp());
     const merchant = await seedMerchant(app);
     const questionnaire = (
       await app.inject({

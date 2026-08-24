@@ -1,14 +1,17 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/index.js";
 import { loadConfig } from "../src/config.js";
+import { createTestDb } from "./helpers/pgTest.js";
 
-function testConfig() {
-  return { ...loadConfig(), dbPath: ":memory:" };
-}
-
-/** Fresh app per test: real Fastify inject pipeline against :memory: SQLite. */
-function makeApp() {
-  return buildApp(testConfig()).app;
+/** Fresh app + fresh schema-isolated postgres db per test. */
+async function makeApp(): Promise<FastifyInstance> {
+  const ctx = await createTestDb();
+  const { app } = await buildApp({ ...loadConfig() }, { db: ctx.db });
+  app.addHook("onClose", async () => {
+    await ctx.teardown();
+  });
+  return app;
 }
 
 const merchantBody = (overrides: Record<string, unknown> = {}) => ({
@@ -21,11 +24,13 @@ const merchantBody = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("POST /api/seo-ops/merchants", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
 
-  beforeEach(() => {
-    app = makeApp();
+  beforeEach(async () => {
+    app = await makeApp();
   });
+
+  afterEach(() => app.close());
 
   it("creates a merchant (201) with snake_case view", async () => {
     const res = await app.inject({
@@ -123,11 +128,11 @@ describe("POST /api/seo-ops/merchants", () => {
 });
 
 describe("POST /api/seo-ops/merchants/:id/locations", () => {
-  let app: ReturnType<typeof makeApp>;
+  let app: FastifyInstance;
   let merchantId: string;
 
   beforeEach(async () => {
-    app = makeApp();
+    app = await makeApp();
     const res = await app.inject({
       method: "POST",
       url: "/api/seo-ops/merchants",
@@ -135,6 +140,8 @@ describe("POST /api/seo-ops/merchants/:id/locations", () => {
     });
     merchantId = res.json().id;
   });
+
+  afterEach(() => app.close());
 
   const locationBody = (overrides: Record<string, unknown> = {}) => ({
     slug: "downtown",
