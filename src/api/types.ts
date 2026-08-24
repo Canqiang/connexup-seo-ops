@@ -102,7 +102,7 @@ export interface RuntimeConfig {
   copilot_enabled: boolean; copilot_agent_id?: string;
   agent_run_enabled?: boolean; agent_run_stages?: AgentRunStage[];
 }
-export interface AuthenticatedUser { user_id: string; name: string; role: string; permissions: string[] }
+export interface AuthenticatedUser { user_id: string; name: string; role: string; permissions: string[]; auth_disabled?: true }
 export interface LocationSummary { id: string; display_name: string; readiness_status: LocationReadiness }
 export interface MerchantSummary {
   id: string; slug: string; display_name: string; operator_user_ids: string[]; operators: IdName[];

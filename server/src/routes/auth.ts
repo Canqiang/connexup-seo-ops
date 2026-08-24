@@ -11,17 +11,19 @@ const loginSchema = z.object({
   password: z.string(),
 });
 
-function authenticatedUser(actor: AuthActor): {
+function authenticatedUser(actor: AuthActor, authDisabled = false): {
   user_id: string;
   name: string;
   role: string;
   permissions: AuthActor["permissions"];
+  auth_disabled?: true;
 } {
   return {
     user_id: actor.userId,
     name: actor.name,
     role: actor.role,
     permissions: actor.permissions,
+    ...(authDisabled ? { auth_disabled: true as const } : {}),
   };
 }
 
@@ -52,5 +54,5 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     return reply.code(204).send();
   });
 
-  app.get("/api/auth/me", async (request) => authenticatedUser(requireActor(request)));
+  app.get("/api/auth/me", async (request) => authenticatedUser(requireActor(request), ctx.config.authDisabled));
 }

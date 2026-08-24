@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { AuthActor, SeoPermission } from "./types.js";
+import { SEO_PERMISSIONS, type AuthActor, type SeoPermission } from "./types.js";
 import type { AppContext } from "../index.js";
 import { ApiError } from "../errors.js";
 import { resolveActorFromToken } from "../services/authService.js";
@@ -18,9 +18,19 @@ declare module "fastify" {
   }
 }
 
+const LOCAL_DEVELOPMENT_ACTOR: AuthActor = {
+  userId: "local-dev",
+  email: "local-dev@connexup.local",
+  name: "Local Operator",
+  role: "seo_lead",
+  identityType: "HUMAN",
+  permissions: [...SEO_PERMISSIONS],
+};
+
 export function registerActorResolution(app: FastifyInstance, ctx: AppContext): void {
   app.addHook("onRequest", async (request) => {
-    request.actor = null;
+    request.actor = ctx.config.authDisabled ? LOCAL_DEVELOPMENT_ACTOR : null;
+    if (request.actor) return;
     const rawToken = request.cookies.seo_ops_session;
     if (rawToken) {
       request.actor = await resolveActorFromToken(ctx.db, rawToken, ctx.config);

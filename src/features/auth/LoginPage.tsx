@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useLocation } from "react-router-dom";
 import { authApi } from "../../api/authApi";
 import { navigateTo, safeReturnTo } from "../../auth/redirect";
@@ -9,6 +9,21 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [checkingSession, setCheckingSession] = useState(true);
+  const returnTo = useMemo(
+    () => safeReturnTo(new URLSearchParams(location.search).get("return_to")),
+    [location.search],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void authApi.probeSession(controller.signal).then(() => {
+      if (!controller.signal.aborted) navigateTo(returnTo);
+    }).catch(() => {
+      if (!controller.signal.aborted) setCheckingSession(false);
+    });
+    return () => controller.abort();
+  }, [returnTo]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -17,14 +32,15 @@ export function LoginPage() {
     try {
       await authApi.login(email, password);
       setPassword("");
-      const returnTo = new URLSearchParams(location.search).get("return_to");
-      navigateTo(safeReturnTo(returnTo));
+      navigateTo(returnTo);
     } catch {
       setError("邮箱或密码不正确，请重试。");
     } finally {
       setBusy(false);
     }
   };
+
+  if (checkingSession) return <div className="app-state" role="status">正在进入 SEO Ops…</div>;
 
   return <div className="login-page"><main className="login-layout">
     <section className="login-main" aria-labelledby="login-title">

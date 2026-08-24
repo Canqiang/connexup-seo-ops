@@ -143,6 +143,14 @@ test("logout posts the cookie-session endpoint before returning to internal logi
   expect(navigateTo).toHaveBeenCalledWith("/seo-ops/login");
 });
 
+test("hides logout when the server is running without authentication", async () => {
+  authenticatedUser = { ...userFixture, auth_disabled: true };
+  renderApp("/");
+
+  expect(await screen.findByRole("heading", { name: "商户" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "退出登录" })).not.toBeInTheDocument();
+});
+
 test("Copilot requires SEO Ops view scope instead of the retired chat scope", async () => {
   authenticatedUser = { ...userFixture, permissions: ["chat.use"] };
   renderApp("/");
