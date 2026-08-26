@@ -1,57 +1,6 @@
-:root {
-  color: #183246;
-  background: #f3f6f8;
-  font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  --ink: #f3f6f8;
-  --deep: #e9eff4;
-  --panel: #ffffff;
-  --panel-raised: #f8fafc;
-  --line: #ccd8e1;
-  --line-soft: rgba(53, 79, 101, .14);
-  --text: #183246;
-  --muted: #607486;
-  --quiet: #8292a0;
-  --amber: #b96b08;
-  --amber-soft: rgba(185, 107, 8, .10);
-  --cyan: #167d9a;
-  --teal: #147a6c;
-  --red: #c6433f;
-  --red-soft: rgba(198, 67, 63, .09);
-}
-
-* { box-sizing: border-box; }
-html { min-width: 320px; background: var(--ink); }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 73% -20%, #bcd1eb 0, transparent 34%), var(--ink); }
-button, input, select, textarea { font: inherit; }
-button, select { color: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
-a { color: inherit; text-decoration: none; }
-h1, h2, h3, p { margin-top: 0; }
-code, pre, .eyebrow, .priority-tag, .status-pill, .classification, .freshness, .result-count { font-family: "SFMono-Regular", Consolas, monospace; }
-
-.app-state, .page-state { display: grid; place-items: center; min-height: 180px; padding: 30px; color: var(--muted); font-size: 13px; }
-.app-state { min-height: 100vh; }
-.is-error { color: #b3382c; }
-.page-state button, .app-state button { margin-left: 10px; border: 0; background: transparent; color: var(--amber); cursor: pointer; }
-
-.app-shell { min-height: 100vh; display: flex; }
-.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: 74px; display: flex; flex-direction: column; align-items: center; padding: 18px 10px; border-right: 1px solid #b4c9e1; background: rgba(234,239,245,.96); }
-.brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid rgba(241, 174, 72, .6); color: var(--amber); font: 750 11px "SFMono-Regular", monospace; letter-spacing: .1em; clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px); }
-.sidebar nav { width: 100%; display: flex; flex-direction: column; gap: 4px; margin-top: 36px; }
-.sidebar nav a { position: relative; height: 44px; display: grid; place-items: center; border-left: 2px solid transparent; color: #63778e; }
-.sidebar nav a span { display: none; }
-.sidebar nav a:hover { color: var(--text); background: rgba(23,41,60,.03); }
-.sidebar nav a.active { color: var(--amber); border-left-color: var(--amber); background: var(--amber-soft); }
-.operator-avatar { width: 32px; height: 32px; display: grid; place-items: center; margin-top: auto; border: 1px solid #9ab1cb; border-radius: 50%; background: #e7eef7; color: #2e3f52; font-size: 9px; font-weight: 700; }
-.workspace { width: calc(100% - 74px); min-width: 0; margin-left: 74px; }
-.topbar { position: sticky; top: 0; z-index: 20; height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 28px; border-bottom: 1px solid #b0c5de; background: rgba(230,235,242,.92); backdrop-filter: blur(18px); }
-.topbar-actions { display: flex; align-items: center; gap: 16px; }
-.operator-label { display: flex; flex-direction: column; align-items: flex-end; }
-.operator-label small { color: var(--quiet); font-size: 8px; letter-spacing: .12em; }
-.operator-label strong { font-size: 11px; font-weight: 650; }
-.main-content { max-width: 1720px; margin: 0 auto; padding: 34px 32px 90px; }
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/shell.css";
 
 .merchant-switcher { position: relative; }
 .merchant-trigger { min-width: 286px; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 11px; padding: 7px 10px 7px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; text-align: left; cursor: pointer; }
@@ -392,7 +341,7 @@ textarea { padding: 9px; resize: vertical; }
 .modal .link-out { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0 4px; padding: 10px 12px; border: 1px dashed #9ab4d3; color: var(--cyan); font-size: 10px; }
 
 /* ---- 商家公开问卷页（无侧栏外壳） ---- */
-.public-page { min-height: 100vh; padding: 46px 20px 80px; background: radial-gradient(circle at 73% -20%, #bcd1eb 0, transparent 34%), var(--ink); }
+.public-page { min-height: 100vh; padding: 46px 20px 80px; background: radial-gradient(circle at 73% -20%, #bcd1eb 0, transparent 34%), var(--paper); }
 .public-card { max-width: 640px; margin: 0 auto; }
 .public-card .eyebrow { display: block; color: #44668e; font-size: 8px; letter-spacing: .16em; text-transform: uppercase; font-family: "SFMono-Regular", monospace; }
 .public-card h1 { margin: 10px 0 4px; color: var(--text); font-size: 24px; letter-spacing: -.03em; }
@@ -403,7 +352,7 @@ textarea { padding: 9px; resize: vertical; }
 .public-q textarea { width: 100%; min-height: 64px; }
 
 /* ---- Light Control Room：冷白纸面 + 运营账本式信息密度 ---- */
-body { background: linear-gradient(145deg, rgba(220, 233, 241, .72), transparent 38%), var(--ink); color: var(--text); font-size: 14px; line-height: 1.5; }
+body { background: linear-gradient(145deg, rgba(220, 233, 241, .72), transparent 38%), var(--paper); color: var(--text); font-size: 14px; line-height: 1.5; }
 .sidebar { border-right-color: #d3dde5; background: rgba(255, 255, 255, .96); box-shadow: 7px 0 24px rgba(30, 62, 83, .05); }
 .brand-mark { border-color: rgba(185, 107, 8, .55); color: var(--amber); background: #fffaf2; }
 .sidebar nav a { color: #718393; }
@@ -556,7 +505,7 @@ input, select { height: 38px; }
 .ranking-table td:first-child { color: var(--text); }
 .new-keyword-tag { font-size: 10px; }
 
-.public-page { background: linear-gradient(145deg, #e8f0f4, transparent 45%), var(--ink); }
+.public-page { background: linear-gradient(145deg, #e8f0f4, transparent 45%), var(--paper); }
 .public-card h1 { color: var(--text); font-size: 32px; }
 .public-card .sub { color: var(--muted); font-size: 14px; }
 .public-card .eyebrow { color: #55768c; font-size: 10px; }
@@ -602,7 +551,7 @@ input, select { height: 38px; }
 /* ---- 内部登录：身份 → 商户范围 → 审计 ---- */
 .logout-button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 11px; font-weight: 650; cursor: pointer; }
 .logout-button:hover { border-color: #bfd0da; background: #f3f6f8; color: var(--text); }
-.login-page { min-height: 100vh; display: grid; place-items: center; padding: 40px; background: var(--ink); }
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 40px; background: var(--paper); }
 .login-layout { width: min(1040px, 100%); min-height: 620px; display: grid; grid-template-columns: minmax(0, .94fr) minmax(320px, 1.06fr); border: 1px solid #ccd8e1; background: var(--panel); box-shadow: 0 22px 54px rgba(24, 50, 70, .08); }
 .login-main { display: flex; flex-direction: column; justify-content: center; padding: clamp(36px, 7vw, 82px); }
 .login-kicker { margin-bottom: 16px; color: var(--cyan); font: 650 10px/1.4 "SFMono-Regular", Consolas, monospace; letter-spacing: .13em; }

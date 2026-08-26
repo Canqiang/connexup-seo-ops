@@ -155,6 +155,24 @@ test("application shell does not expose a separate Copilot entry", async () => {
   expect(screen.queryByText("Copilot 未配置")).not.toBeInTheDocument();
 });
 
+test("operator shell exposes four human-facing destinations", async () => {
+  renderApp("/");
+  expect(await screen.findByRole("navigation", { name: "主导航" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "工作台" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "商户" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "复盘" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "设置" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "运行" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/Copilot/)).not.toBeInTheDocument();
+});
+
+test("audit view reveals the six-ledger navigation", async () => {
+  renderApp("/?view=audit");
+  expect(await screen.findByRole("link", { name: "总览" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "任务" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "运行" })).toBeInTheDocument();
+});
+
 test("homepage is the operations overview; merchants keep the searchable switcher at /merchants", async () => {
   const user = userEvent.setup();
   renderApp("/");
