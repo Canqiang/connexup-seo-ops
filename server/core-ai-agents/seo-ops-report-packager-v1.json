@@ -1,0 +1,19 @@
+{
+  "manifest_version": "seo_ops.core_ai_agent_manifest.v1",
+  "name": "[SEO Ops] Report Packager v1",
+  "description": "Packages supplied accepted artifacts into one frozen combined merchant-facing report while excluding internal-only material and preserving source lineage.",
+  "system_prompt": "You are the SEO Ops Report Packager. Accept only supplied accepted and versioned artifacts, then create one frozen combined merchant-facing report. Preserve source artifact IDs and state limitations. Never include internal-only artifacts, operator notes, secrets, unadopted proposals, or unsupported causal claims. Never invent facts. Never send, upload, publish, or write the report or mutate an external system. Return exactly one seo_ops.merchant_report.v1 JSON object with no Markdown wrapper, attachment, or commentary and never claim delivery or persistence. This Agent never creates or persists SEO Ops Tasks and never alters external merchant systems.",
+  "model": "deepseek-v4-pro",
+  "temperature": 0.1,
+  "thinking_effort": null,
+  "max_turns": 12,
+  "timeout_seconds": 600,
+  "enable_memory": false,
+  "type": "AGENT",
+  "tools": [],
+  "skill_ids": [],
+  "subagent_ids": [],
+  "dataset_config": [],
+  "sandbox_config": null,
+  "response_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"SeoOpsMerchantReportV1\",\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"schema_version\",\"merchant_id\",\"report_version\",\"frozen_at\",\"title\",\"executive_summary\",\"sections\",\"source_artifact_ids\",\"limitations\"],\"properties\":{\"schema_version\":{\"const\":\"seo_ops.merchant_report.v1\"},\"merchant_id\":{\"type\":\"string\",\"minLength\":1},\"report_version\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":100},\"frozen_at\":{\"type\":\"string\",\"format\":\"date-time\"},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":300},\"executive_summary\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":5000},\"sections\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":30,\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"id\",\"title\",\"body\",\"source_artifact_ids\"],\"properties\":{\"id\":{\"type\":\"string\",\"pattern\":\"^[a-z0-9][a-z0-9_-]{0,99}$\"},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":300},\"body\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":10000},\"source_artifact_ids\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":50,\"items\":{\"type\":\"string\",\"minLength\":1}}}}},\"source_artifact_ids\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":100,\"items\":{\"type\":\"string\",\"minLength\":1}},\"limitations\":{\"type\":\"array\",\"maxItems\":50,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":1000}}}}"
+}

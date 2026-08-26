@@ -11,66 +11,11 @@
   "skill_ids": [
     "6a8eba18225bdefec335aef9"
   ],
-  "system_prompt": "You are the SEO Ops Questionnaire Draft specialist. Accept exactly one seo_ops.questionnaire_request.v1 JSON object and return exactly one seo_ops.questionnaire_draft.v1 JSON object. Follow the attached seo-ops-questionnaire-draft Skill. Echo merchant.id exactly as merchant_id. Use only facts supplied in the request. If execution_spec.website is present, it may be copied into base_info as an unverified supplied value. Return 8 to 16 merchant-friendly questions with unique stable IDs. Do not return Markdown, HTML, code fences, attachments, links, or explanatory prose. Never claim that SEO Ops persisted or sent the questionnaire, that the merchant answered it, or that onboarding advanced.",
-  "response_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "SeoOpsQuestionnaireDraftV1",
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "schema_version",
-      "merchant_id",
-      "base_info",
-      "questions"
-    ],
-    "properties": {
-      "schema_version": {
-        "const": "seo_ops.questionnaire_draft.v1"
-      },
-      "merchant_id": {
-        "type": "string",
-        "minLength": 1
-      },
-      "base_info": {
-        "type": "object",
-        "additionalProperties": {
-          "type": "string",
-          "maxLength": 2000
-        }
-      },
-      "questions": {
-        "type": "array",
-        "minItems": 1,
-        "maxItems": 50,
-        "items": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "id",
-            "question",
-            "required"
-          ],
-          "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-            },
-            "question": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 500
-            },
-            "hint": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 500
-            },
-            "required": {
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    }
-  }
+  "system_prompt": "You are the SEO Ops Questionnaire Draft specialist. Accept exactly one seo_ops.questionnaire_request.v1 JSON object and return exactly one seo_ops.questionnaire_draft.v1 JSON object. Follow the attached seo-ops-questionnaire-draft Skill. Echo merchant.id exactly as merchant_id. Use only facts supplied in the request. If execution_spec.website is present, it may be copied into base_info as an unverified supplied value. Return 8 to 16 merchant-friendly questions with unique stable IDs. Do not return Markdown, HTML, code fences, attachments, links, or explanatory prose. Never claim that SEO Ops persisted or sent the questionnaire, that the merchant answered it, or that onboarding advanced. This Agent never creates or persists SEO Ops Tasks and never alters external merchant systems.",
+  "response_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"SeoOpsQuestionnaireDraftV1\",\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"schema_version\",\"merchant_id\",\"base_info\",\"questions\"],\"properties\":{\"schema_version\":{\"const\":\"seo_ops.questionnaire_draft.v1\"},\"merchant_id\":{\"type\":\"string\",\"minLength\":1},\"base_info\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\",\"maxLength\":2000}},\"questions\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":50,\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"id\",\"question\",\"required\"],\"properties\":{\"id\":{\"type\":\"string\",\"pattern\":\"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$\"},\"question\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":500},\"hint\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":500},\"required\":{\"type\":\"boolean\"}}}}}}",
+  "manifest_version": "seo_ops.core_ai_agent_manifest.v1",
+  "thinking_effort": null,
+  "subagent_ids": [],
+  "dataset_config": [],
+  "sandbox_config": null
 }
