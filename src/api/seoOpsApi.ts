@@ -6,7 +6,7 @@ import type {
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
   QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
   SchedulerTickResult, SeoOpsPageRequest, SeoTask, SpecialistArtifactType, SpecialistArtifactWire,
-  StageRunView, TaskEvent, TaskSummary, TriggerStageRunRequest
+  StageRunView, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
 } from "./types";
 
 function query(request: SeoOpsPageRequest = {}): string {
@@ -27,6 +27,8 @@ export const seoOpsApi = {
   portfolio: (signal?: AbortSignal) => requestJson<PortfolioResponse>("/api/seo-ops/portfolio", { signal }),
   inbox: (request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<TaskSummary>>(`/api/seo-ops/inbox${query(request)}`, { signal }),
+  workbench: (request: WorkbenchRequest = {}, signal?: AbortSignal) =>
+    requestJson<WorkbenchView>(`/api/seo-ops/workbench${query(request)}`, { signal }),
   reviews: (request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<ReviewItem>>(`/api/seo-ops/reviews${query(request)}`, { signal }),
   reports: (request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>

@@ -50,6 +50,34 @@ interface TaskRow {
   updated_at: string;
 }
 
+export interface WorkbenchTaskRow {
+  id: string;
+  merchantId: string;
+  merchantName: string;
+  locationName: string | null;
+  title: string;
+  severity: "URGENT" | "HIGH" | "MEDIUM" | "LOW";
+  dueAt: string | null;
+  status: string;
+  executionMode: string;
+  verifyDueAt: string | null;
+  createdAt: string;
+}
+
+interface WorkbenchTaskDbRow {
+  id: string;
+  merchant_id: string;
+  merchant_name: string;
+  location_name: string | null;
+  title: string;
+  severity: WorkbenchTaskRow["severity"];
+  due_at: string | null;
+  status: string;
+  execution_mode: string;
+  verify_due_at: string | null;
+  created_at: string;
+}
+
 export function toTask(row: TaskRow): Task {
   return {
     id: row.id,
@@ -229,4 +257,53 @@ export async function listTasksByStatus(db: Db, statuses: string[]): Promise<Tas
     statuses,
   );
   return rows.map(toTask);
+}
+
+/** Small, scope-ready task projection for the operator workbench.  It avoids
+ * loading execution specifications, evidence, run links, and other audit-only
+ * task aggregate fields into the daily action queue. */
+export async function listWorkbenchTasks(
+  db: Db,
+  merchantIds: readonly string[],
+): Promise<WorkbenchTaskRow[]> {
+  if (merchantIds.length === 0) return [];
+  const rows = await db.query<WorkbenchTaskDbRow>(
+    `SELECT * FROM (
+       SELECT
+         t.id,
+         t.merchant_id,
+         m.display_name AS merchant_name,
+         l.display_name AS location_name,
+         t.title,
+         t.priority AS severity,
+         t.due_at,
+         t.status,
+         t.execution_mode,
+         t.verify_due_at,
+         t.created_at
+       FROM seo_tasks t
+       JOIN seo_merchants m ON m.id = t.merchant_id
+       LEFT JOIN seo_locations l ON l.id = t.location_id
+       WHERE t.merchant_id = ANY($1::text[])
+         AND t.status IN ('READY_FOR_APPROVAL', 'APPROVED', 'PENDING_VERIFY', 'FAILED', 'OUTCOME_UNKNOWN')
+     ) AS workbench_tasks
+     ORDER BY
+       CASE severity WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+       COALESCE(due_at, created_at),
+       id`,
+    [merchantIds],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    merchantId: row.merchant_id,
+    merchantName: row.merchant_name,
+    locationName: row.location_name,
+    title: row.title,
+    severity: row.severity,
+    dueAt: row.due_at,
+    status: row.status,
+    executionMode: row.execution_mode,
+    verifyDueAt: row.verify_due_at,
+    createdAt: row.created_at,
+  }));
 }

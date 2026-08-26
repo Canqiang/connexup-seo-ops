@@ -126,6 +126,24 @@ export interface SeoOpsPageRequest {
   owner_id?: string; evidence_state?: EvidenceState; report_type?: string; captured_from?: string;
   captured_to?: string; freshness?: string; stage?: string;
 }
+export type HumanActionGroup = "GATEKEEPING" | "EXCEPTION" | "MERCHANT_CONTACT";
+export type HumanActionType = "PROPOSAL_DECISION" | "GATE_1_APPROVAL" | "GATE_2_CONFIRM"
+  | "OUTCOME_RECONCILIATION" | "VERIFICATION_OVERDUE" | "CONFIRMED_FAILURE"
+  | "QUESTIONNAIRE_FOLLOWUP" | "AUTHORIZATION_FOLLOWUP" | "CONTENT_CONFIRMATION" | "REPORT_DELIVERY";
+export interface WorkbenchRequest {
+  group?: HumanActionGroup; merchant_id?: string; q?: string; offset?: number; limit?: number;
+}
+export interface HumanActionWire {
+  id: string; group: HumanActionGroup; type: HumanActionType;
+  merchant_id: string; merchant_name: string; location_name: string | null;
+  title: string; reason: string;
+  primary_action: { label: string; href: string }; secondary_href: string | null;
+  priority: TaskPriority; due_at: string | null; waiting_since: string;
+}
+export interface WorkbenchView {
+  summary: { gatekeeping: number; exception: number; merchant_contact: number; total: number };
+  items: HumanActionWire[]; offset: number; limit: number; total: number;
+}
 export interface TaskDefinitionInput {
   title: string; task_type: string; source: string; priority: TaskPriority; impact: TaskImpact;
   owner_id?: string; due_at?: string; execution_spec: string; required_evidence_types: string[];

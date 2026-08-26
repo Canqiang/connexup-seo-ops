@@ -63,6 +63,30 @@ interface ProposalRow {
   created_at: string; updated_at: string;
 }
 
+export interface WorkbenchProposalRow {
+  id: string;
+  merchantId: string;
+  merchantName: string;
+  locationName: string | null;
+  title: string;
+  severity: "URGENT" | "HIGH" | "MEDIUM" | "LOW";
+  dueAt: string | null;
+  status: "PENDING" | "VALIDATION_FAILED";
+  createdAt: string;
+}
+
+interface WorkbenchProposalDbRow {
+  id: string;
+  merchant_id: string;
+  merchant_name: string;
+  location_name: string | null;
+  title: string;
+  severity: WorkbenchProposalRow["severity"];
+  due_at: string | null;
+  status: WorkbenchProposalRow["status"];
+  created_at: string;
+}
+
 function toBatch(row: BatchRow): ProposalBatch {
   return {
     id: row.id,
@@ -245,4 +269,48 @@ export async function listPendingProposalsByMerchant(db: Db, merchantId: string)
     [merchantId],
   );
   return rows.map(toProposal);
+}
+
+/** Bounded fields for proposals that still require a human decision.  An
+ * adopted proposal never appears here, even when it is linked to a task. */
+export async function listWorkbenchProposals(
+  db: Db,
+  merchantIds: readonly string[],
+): Promise<WorkbenchProposalRow[]> {
+  if (merchantIds.length === 0) return [];
+  const rows = await db.query<WorkbenchProposalDbRow>(
+    `SELECT * FROM (
+       SELECT
+         p.id,
+         p.merchant_id,
+         m.display_name AS merchant_name,
+         l.display_name AS location_name,
+         p.title,
+         p.priority AS severity,
+         p.due_at,
+         p.status,
+         p.created_at
+       FROM seo_proposals p
+       JOIN seo_merchants m ON m.id = p.merchant_id
+       LEFT JOIN seo_locations l ON l.id = p.location_id
+       WHERE p.merchant_id = ANY($1::text[])
+         AND p.status IN ('PENDING', 'VALIDATION_FAILED')
+     ) AS workbench_proposals
+     ORDER BY
+       CASE severity WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+       COALESCE(due_at, created_at),
+       id`,
+    [merchantIds],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    merchantId: row.merchant_id,
+    merchantName: row.merchant_name,
+    locationName: row.location_name,
+    title: row.title,
+    severity: row.severity,
+    dueAt: row.due_at,
+    status: row.status,
+    createdAt: row.created_at,
+  }));
 }

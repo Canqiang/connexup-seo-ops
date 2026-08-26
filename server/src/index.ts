@@ -12,6 +12,7 @@ import {
 } from "./routes/seoOps.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerExecutionRoutes } from "./routes/executionRoutes.js";
+import { registerWorkbenchRoutes } from "./routes/workbenchRoutes.js";
 import { createCoreAiClient, type CoreAiClient } from "./services/coreAiClient.js";
 import { AgentRunPoller } from "./services/agentRunPoller.js";
 import { ExecutionWorker } from "./services/executionWorker.js";
@@ -94,6 +95,7 @@ export async function buildApp(
   registerAuthRoutes(app, ctx);
   registerSeoOpsRoutes(app, ctx);
   registerExecutionRoutes(app, ctx);
+  registerWorkbenchRoutes(app, ctx);
 
   // 定时器不在测试环境下启动；手动 tick 端点始终可用。
   if (process.env.NODE_ENV !== "test") {

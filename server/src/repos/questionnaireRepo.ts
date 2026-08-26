@@ -21,6 +21,21 @@ interface QuestionnaireRow {
   updated_at: string;
 }
 
+export interface WorkbenchQuestionnaireRow {
+  id: string;
+  merchantId: string;
+  merchantName: string;
+  waitingSince: string;
+}
+
+interface WorkbenchQuestionnaireDbRow {
+  id: string;
+  merchant_id: string;
+  merchant_name: string;
+  waiting_since: string;
+  severity: "MEDIUM";
+}
+
 function toQuestionnaire(row: QuestionnaireRow): Questionnaire {
   return {
     id: row.id,
@@ -184,4 +199,38 @@ export async function latestQuestionnaireByMerchant(
     [merchantId],
   );
   return row ? toQuestionnaire(row) : null;
+}
+
+/** Sent questionnaires are merchant-contact actions.  Answers and question
+ * bodies are deliberately excluded from the workbench projection. */
+export async function listWorkbenchSentQuestionnaires(
+  db: Db,
+  merchantIds: readonly string[],
+): Promise<WorkbenchQuestionnaireRow[]> {
+  if (merchantIds.length === 0) return [];
+  const rows = await db.query<WorkbenchQuestionnaireDbRow>(
+    `SELECT * FROM (
+       SELECT
+         q.id,
+         q.merchant_id,
+         m.display_name AS merchant_name,
+         COALESCE(q.last_sent_at, q.sent_at, q.created_at) AS waiting_since,
+         'MEDIUM' AS severity
+       FROM seo_merchant_questionnaires q
+       JOIN seo_merchants m ON m.id = q.merchant_id
+       WHERE q.merchant_id = ANY($1::text[])
+         AND q.status = 'SENT'
+     ) AS workbench_questionnaires
+     ORDER BY
+       CASE severity WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+       waiting_since,
+       id`,
+    [merchantIds],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    merchantId: row.merchant_id,
+    merchantName: row.merchant_name,
+    waitingSince: row.waiting_since,
+  }));
 }
