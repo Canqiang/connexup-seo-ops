@@ -97,6 +97,7 @@ let rankingData: RankingOverviewView = emptyRankingFixture;
 let reportsData: unknown = { items: [], offset: 0, limit: 50, total: 0 };
 let cycleLedgerData: CycleLedgerView = { items: [] };
 let postProgramData: PostProgramView = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: [] };
+let stageRunPostFails = false;
 let portfolioData = portfolioFixture;
 let authenticatedUser = userFixture;
 const calls: Array<{ path: string; init?: RequestInit }> = [];
@@ -107,6 +108,7 @@ beforeEach(() => {
   reportsData = { items: [], offset: 0, limit: 50, total: 0 };
   cycleLedgerData = { items: [] };
   postProgramData = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: [] };
+  stageRunPostFails = false;
   portfolioData = portfolioFixture;
   authenticatedUser = userFixture;
   calls.length = 0;
@@ -125,7 +127,10 @@ beforeEach(() => {
     if (path === "/api/seo-ops/merchants/only-bear/cycle-ledger") return json(cycleLedgerData);
     if (path === "/api/seo-ops/merchants/only-bear/post-program") return json(postProgramData);
     if (path === "/api/seo-ops/merchants/only-bear/artifacts") return json({ items: [] });
-    if (path === "/api/seo-ops/merchants/only-bear/stage-runs" && init?.method === "POST") return json(stageRunRunningFixture, 202);
+    if (path === "/api/seo-ops/merchants/only-bear/stage-runs" && init?.method === "POST") {
+      if (stageRunPostFails) return json({ message: "diagnostic upstream unavailable" }, 503);
+      return json(stageRunRunningFixture, 202);
+    }
     if (path.startsWith("/api/seo-ops/merchants/only-bear/stage-runs")) return json({ items: [], offset: 0, limit: 1, total: 0 });
     if (path.startsWith("/api/seo-ops/agent-runs/")) return json(stageRunRunningFixture);
     if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
@@ -238,8 +243,9 @@ test("merchant workspace does not replace an empty backend cycle with demo tasks
   expect(screen.queryByRole("button", { name: /打开任务摘要/ })).not.toBeInTheDocument();
 });
 
-test("operator keeps specialist runs absent while audit mode exposes diagnostics", async () => {
+test("operator keeps specialist runs absent while audit diagnostics send a bounded Stage Run", async () => {
   lifecycleData = keywordsLifecycleFixture;
+  const user = userEvent.setup();
   const operator = renderApp("/merchants/only-bear?view=operator");
   expect(await screen.findByRole("region", { name: "当前动作" })).toHaveTextContent("补齐关键词证据");
   expect(screen.queryByRole("button", { name: "运行关键词 Agent" })).not.toBeInTheDocument();
@@ -247,7 +253,24 @@ test("operator keeps specialist runs absent while audit mode exposes diagnostics
 
   renderApp("/merchants/only-bear?view=audit");
   expect(await screen.findByRole("region", { name: "管理审计工具" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "运行关键词 Agent" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "运行关键词 Agent" }));
+  await vi.waitFor(() => expect(calls).toContainEqual(expect.objectContaining({ path: "/api/seo-ops/merchants/only-bear/stage-runs", init: expect.objectContaining({ method: "POST" }) })));
+  const trigger = calls.find((call) => call.path === "/api/seo-ops/merchants/only-bear/stage-runs" && call.init?.method === "POST");
+  expect(JSON.parse(String(trigger?.init?.body))).toEqual({ stage: "KEYWORDS", location_id: "mineola", idempotency_key: "audit-diagnostic-KEYWORDS-22222222-2222-2222-2222-222222222222" });
+  expect(await screen.findByRole("status")).toHaveTextContent("已登记诊断运行");
+  expect(calls.filter((call) => call.path === "/api/seo-ops/merchants/only-bear/lifecycle").length).toBeGreaterThanOrEqual(2);
+  expect(calls.some((call) => call.path === "/api/seo-ops/tasks" && call.init?.method === "POST")).toBe(false);
+});
+
+test("audit diagnostic exposes a failed Stage Run without creating a task", async () => {
+  lifecycleData = keywordsLifecycleFixture;
+  stageRunPostFails = true;
+  const user = userEvent.setup();
+  renderApp("/merchants/only-bear?view=audit");
+
+  await user.click(await screen.findByRole("button", { name: "运行关键词 Agent" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("诊断触发失败：diagnostic upstream unavailable");
+  expect(calls.some((call) => call.path === "/api/seo-ops/tasks" && call.init?.method === "POST")).toBe(false);
 });
 
 test("first-round merchant shows current action and no fabricated ranking comparison", async () => {
@@ -261,9 +284,9 @@ test("first-round merchant shows current action and no fabricated ranking compar
 test("steady-state merchant uses the dated ledger and persisted panels instead of legacy ranking cards", async () => {
   lifecycleData = steadyLifecycleFixture;
   cycleLedgerData = { items: [{ record_kind: "TASK", task_id: "task-1", proposal_id: null, title: "菜单页发布证据复核", task_type: "WEBSITE_SEO", priority: "URGENT", owner_id: "user-1", due_at: "2026-08-25T08:00:00Z", created_at: "2026-08-24T08:00:00Z", status: "READY_FOR_APPROVAL", execution_mode: "MANUAL", dependency_labels: ["Audit 已完成"], validation_failures: [] }] };
-  postProgramData = { voice_profile: { version: 3, voice: {}, created_at: "2026-08-20T08:00:00Z" }, cluster_signals: [], history: [], proposals: [], evidence_gaps: [] };
+  postProgramData = { voice_profile: { version: 3, summary: [{ key: "tone", label: "语气", value: "friendly" }], created_at: "2026-08-20T08:00:00Z" }, cluster_signals: [], history: [], proposals: [], evidence_gaps: [] };
   renderApp("/merchants/only-bear");
-  expect(await screen.findByRole("heading", { name: "推进已授权任务" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "审批本周期任务" })).toBeInTheDocument();
   const table = screen.getByRole("table");
   expect(table).toHaveTextContent("菜单页发布证据复核");
   expect(table).toHaveTextContent("Audit 已完成");

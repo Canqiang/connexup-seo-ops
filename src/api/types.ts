@@ -288,7 +288,13 @@ export interface CycleLedgerView { items: CycleLedgerItem[]; }
 
 export interface PostProgramView {
   voice_profile: {
-    version: number; voice: Record<string, unknown>; created_at: string;
+    version: number;
+    summary: Array<{
+      key: "tone" | "address" | "banned" | "example" | "source";
+      label: string;
+      value: string;
+    }>;
+    created_at: string;
   } | null;
   cluster_signals: Array<{
     artifact_id: string; task_id: string; cluster: string;

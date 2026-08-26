@@ -39,7 +39,11 @@ export interface CycleLedgerView {
 export interface PostProgramView {
   voice_profile: {
     version: number;
-    voice: Record<string, unknown>;
+    summary: Array<{
+      key: "tone" | "address" | "banned" | "example" | "source";
+      label: string;
+      value: string;
+    }>;
     created_at: string;
   } | null;
   cluster_signals: Array<{
@@ -73,6 +77,29 @@ const voiceSchema = z.record(z.unknown()).refine(
   (voice) => Object.keys(voice).length > 0,
   "voice profile must contain an explicit field",
 );
+
+const voiceSummaryFields = [
+  ["tone", "语气"],
+  ["address", "称呼"],
+  ["banned", "禁用表达"],
+  ["example", "示例"],
+  ["source", "来源"],
+] as const;
+
+function summaryValue(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item.trim())) {
+    return value.map((item) => item.trim()).join("、");
+  }
+  return null;
+}
+
+function voiceSummary(voice: Record<string, unknown>): NonNullable<PostProgramView["voice_profile"]>["summary"] {
+  return voiceSummaryFields.flatMap(([key, label]) => {
+    const value = summaryValue(voice[key]);
+    return value ? [{ key, label, value }] : [];
+  });
+}
 
 const clusterSignalSchema = z.object({
   cluster: z.string().trim().min(1).max(300),
@@ -199,10 +226,11 @@ export async function postProgram(
   ]);
   const gaps = new Set<string>();
   const parsedVoice = profile ? voiceSchema.safeParse(profile.voice) : null;
-  const voiceProfile = profile && parsedVoice?.success
-    ? { version: profile.version, voice: parsedVoice.data, created_at: profile.createdAt }
+  const summary = parsedVoice?.success ? voiceSummary(parsedVoice.data) : [];
+  const voiceProfile = profile && parsedVoice?.success && summary.length
+    ? { version: profile.version, summary, created_at: profile.createdAt }
     : null;
-  if (!voiceProfile) gaps.add(profile ? "INVALID_VOICE_PROFILE_ARTIFACT" : "VOICE_PROFILE_MISSING");
+  if (!voiceProfile) gaps.add(profile ? parsedVoice?.success ? "VOICE_PROFILE_NO_ALLOWLISTED_FIELDS" : "INVALID_VOICE_PROFILE_ARTIFACT" : "VOICE_PROFILE_MISSING");
 
   let clusterSignals: PostProgramView["cluster_signals"] = [];
   for (const artifact of artifacts) {
@@ -214,6 +242,10 @@ export async function postProgram(
     gaps.add(`INVALID_${artifact.artifactType}_ARTIFACT`);
   }
   if (clusterSignals.length === 0) gaps.add("CLUSTER_SIGNAL_MISSING");
+  // Signal type and coverage are not durable properties of the persisted
+  // weekly-signal artifact.  Surface that absence instead of inferring a fact.
+  gaps.add("POST_SIGNAL_TYPE_MISSING");
+  gaps.add("POST_SIGNAL_COVERAGE_MISSING");
   if (history.length === 0) gaps.add("POST_HISTORY_MISSING");
   if (proposals.length === 0) gaps.add("POST_PROPOSAL_MISSING");
 

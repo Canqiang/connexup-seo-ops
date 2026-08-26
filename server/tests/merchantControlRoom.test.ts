@@ -150,6 +150,8 @@ describe("merchant control room projections", () => {
     expect(response.json().evidence_gaps).toEqual(expect.arrayContaining([
       "VOICE_PROFILE_MISSING",
       "CLUSTER_SIGNAL_MISSING",
+      "POST_SIGNAL_TYPE_MISSING",
+      "POST_SIGNAL_COVERAGE_MISSING",
       "POST_HISTORY_MISSING",
       "POST_PROPOSAL_MISSING",
     ]));
@@ -255,7 +257,10 @@ describe("merchant control room projections", () => {
     expect(response.json()).toMatchObject({
       voice_profile: {
         version: 1,
-        voice: { tone: "friendly", banned: ["guaranteed"] },
+        summary: [
+          { key: "tone", label: "语气", value: "friendly" },
+          { key: "banned", label: "禁用表达", value: "guaranteed" },
+        ],
       },
       cluster_signals: [{
         artifact_id: expect.any(String),
@@ -271,6 +276,10 @@ describe("merchant control room projections", () => {
       }],
     });
     expect(response.json().evidence_gaps).toContain("INVALID_KEYWORD_WEEKLY_ARTIFACT");
+    expect(response.json().evidence_gaps).toEqual(expect.arrayContaining([
+      "POST_SIGNAL_TYPE_MISSING",
+      "POST_SIGNAL_COVERAGE_MISSING",
+    ]));
     expect(response.json().cluster_signals).toHaveLength(1);
   });
 });

@@ -39,12 +39,16 @@ const kekeLedger: CycleLedgerView = {
   }],
 };
 
-const emptyPostProgram: PostProgramView = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: ["缺少已验证的内容语气档案"] };
+let postProgramData: PostProgramView = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: ["VOICE_PROFILE_MISSING"] };
+const failedPaths = new Set<string>();
 
 beforeEach(() => {
+  postProgramData = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: ["VOICE_PROFILE_MISSING"] };
+  failedPaths.clear();
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
     const merchantId = path.includes("/merchants/keke/") ? "keke" : "only-bear";
+    if (failedPaths.has(path)) return new Response(JSON.stringify({ message: "projection unavailable" }), { status: 503, headers: { "Content-Type": "application/json" } });
     if (path === "/api/auth/me") return json({ user_id: "operator-1", name: "Operator", role: "operator", permissions: ["seoops.manage", "seoops.approve"] });
     if (path === "/api/seo-ops/portfolio") return json({
       totals: { tasks: 1, blocked: 0, ready_for_approval: 0, overdue: 0 },
@@ -58,7 +62,7 @@ beforeEach(() => {
     if (path.endsWith("/lifecycle")) return json(merchantId === "keke" ? kekeLifecycle : onlyBearLifecycle);
     if (path.endsWith("/ranking")) return json({ round_count: 0, latest: null, previous: null, comparison: null });
     if (path.endsWith("/cycle-ledger")) return json(merchantId === "keke" ? kekeLedger : { items: [] });
-    if (path.endsWith("/post-program")) return json(emptyPostProgram);
+    if (path.endsWith("/post-program")) return json(postProgramData);
     if (path.includes("/artifacts")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 8, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews") || path.startsWith("/api/seo-ops/reports")) return json({ items: [], offset: 0, limit: 3, total: 0 });
@@ -84,6 +88,57 @@ test("proposal rows are muted and link to judgment without pretending to be task
   const proposal = await screen.findByRole("row", { name: /执行 GBP \+ 官网双审计.*建议待判定/ });
   expect(proposal).toHaveAttribute("data-record-kind", "PROPOSAL");
   expect(within(proposal).getByRole("link", { name: "去判定" })).toHaveAttribute("href", expect.stringContaining("tab=proposals"));
+});
+
+test("pending active-cycle proposal takes precedence over lifecycle task language", async () => {
+  renderApp("/merchants/keke?view=operator");
+
+  const action = await screen.findByRole("region", { name: "当前动作" });
+  expect(within(action).getByRole("heading", { name: "判定本周期建议" })).toBeInTheDocument();
+  expect(within(action).getByRole("link", { name: "去判定" })).toHaveAttribute("href", expect.stringContaining("tab=proposals"));
+  expect(within(action).queryByText("推进已授权任务")).not.toBeInTheDocument();
+});
+
+test("projection failures are explicit and retryable instead of empty evidence", async () => {
+  failedPaths.add("/api/seo-ops/merchants/only-bear/cycle-ledger");
+  failedPaths.add("/api/seo-ops/merchants/only-bear/post-program");
+  failedPaths.add("/api/seo-ops/merchants/only-bear/artifacts");
+  failedPaths.add("/api/seo-ops/reports?merchant_id=only-bear&limit=8");
+  renderApp("/merchants/only-bear?view=operator");
+
+  expect(await screen.findByRole("alert", { name: "周期账本读取失败" })).toHaveTextContent("projection unavailable");
+  expect(screen.getByRole("alert", { name: "报告与数据读取失败" })).toHaveTextContent("projection unavailable");
+  expect(screen.getByRole("alert", { name: "Post 计划读取失败" })).toHaveTextContent("projection unavailable");
+  expect(screen.getAllByRole("button", { name: "重试" })).toHaveLength(3);
+  expect(screen.queryByText("活跃周期暂无持久化任务或建议。")).not.toBeInTheDocument();
+});
+
+test("post panel renders allowlisted persisted evidence and blocks hostile links", async () => {
+  postProgramData = {
+    voice_profile: {
+      version: 4,
+      summary: [{ key: "tone", label: "语气", value: "亲切直接" }, { key: "banned", label: "禁用表达", value: "保证" }],
+      created_at: "2026-08-25T08:00:00Z",
+    },
+    cluster_signals: [{ artifact_id: "signal-1", task_id: "task-signal", cluster: "午餐套餐", signal: "IMPROVED", observed_at: "2026-08-25T08:00:00Z", evidence_ref: "javascript:alert(1)" }],
+    history: [{ task_id: "task-post", title: "已核验 GBP Post", published_ref: "data:text/html,unsafe", published_at: "2026-08-24T08:00:00Z", verified_at: "2026-08-25T08:00:00Z", verified_by: "operator-1" }],
+    proposals: [],
+    evidence_gaps: ["POST_SIGNAL_TYPE_MISSING", "POST_SIGNAL_COVERAGE_MISSING"],
+  } as unknown as PostProgramView;
+  renderApp("/merchants/only-bear?view=operator");
+
+  const post = await screen.findByRole("region", { name: "Post 计划" });
+  expect(post).toHaveTextContent("语气：亲切直接");
+  expect(post).toHaveTextContent("禁用表达：保证");
+  expect(post).toHaveTextContent("目标簇：午餐套餐");
+  expect(post).toHaveTextContent("证据信号：IMPROVED");
+  expect(post).toHaveTextContent("已核验 GBP Post");
+  expect(post).toHaveTextContent("POST_SIGNAL_TYPE_MISSING");
+  expect(post).toHaveTextContent("POST_SIGNAL_COVERAGE_MISSING");
+  expect(within(post).queryByRole("link", { name: "证据来源 ↗" })).not.toBeInTheDocument();
+  expect(within(post).queryByRole("link", { name: "打开发布记录 ↗" })).not.toBeInTheDocument();
+  expect(post).toHaveTextContent("证据链接不安全");
+  expect(post).toHaveTextContent("发布链接不安全");
 });
 
 function renderApp(route: string) {

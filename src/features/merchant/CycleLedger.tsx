@@ -1,8 +1,13 @@
 import { Link } from "react-router-dom";
 import type { CycleLedgerItem, CycleLedgerView } from "../../api/types";
 
-export function CycleLedger({ data, loading, merchantId }: { data: CycleLedgerView | null; loading: boolean; merchantId: string }) {
-  return <section aria-label="本周期账本" className="data-panel cycle-ledger"><div className="panel-heading"><div><span className="eyebrow">ACTIVE CYCLE · DATED LEDGER</span><h2>本周期账本</h2></div><span className="result-count">任务与建议按记录类型分列</span></div>{loading && !data ? <div className="page-state" role="status">读取周期账本…</div> : null}{data && data.items.length === 0 ? <p className="unavailable">活跃周期暂无持久化任务或建议。</p> : null}{data?.items.length ? <div className="cycle-ledger-scroll"><table><thead><tr><th>时间</th><th>事项</th><th>依赖 / 波次</th><th>负责人 / 模式</th><th>状态</th><th>动作</th></tr></thead><tbody>{data.items.map((item) => <LedgerRow item={item} key={`${item.record_kind}-${item.task_id ?? item.proposal_id}`} merchantId={merchantId} />)}</tbody></table></div> : null}</section>;
+export function CycleLedger({ data, loading, error, onRetry, merchantId }: { data: CycleLedgerView | null; loading: boolean; error?: unknown; onRetry: () => void; merchantId: string }) {
+  return <section aria-label="本周期账本" className="data-panel cycle-ledger"><div className="panel-heading"><div><span className="eyebrow">ACTIVE CYCLE · DATED LEDGER</span><h2>本周期账本</h2></div><span className="result-count">任务与建议按记录类型分列</span></div>{error ? <ProjectionFailure label="周期账本读取失败" error={error} onRetry={onRetry} /> : null}{loading && !data && !error ? <div className="page-state" role="status">读取周期账本…</div> : null}{data && !error && data.items.length === 0 ? <p className="unavailable">活跃周期暂无持久化任务或建议。</p> : null}{data?.items.length && !error ? <div className="cycle-ledger-scroll"><table><thead><tr><th>时间</th><th>事项</th><th>依赖 / 波次</th><th>负责人 / 模式</th><th>状态</th><th>动作</th></tr></thead><tbody>{data.items.map((item) => <LedgerRow item={item} key={`${item.record_kind}-${item.task_id ?? item.proposal_id}`} merchantId={merchantId} />)}</tbody></table></div> : null}</section>;
+}
+
+function ProjectionFailure({ label, error, onRetry }: { label: string; error: unknown; onRetry: () => void }) {
+  const message = error instanceof Error ? error.message : "未知错误";
+  return <div aria-label={label} className="page-state is-error" role="alert"><strong>evidence_gaps</strong> · {message}<button onClick={onRetry} type="button">重试</button></div>;
 }
 
 function LedgerRow({ item, merchantId }: { item: CycleLedgerItem; merchantId: string }) {

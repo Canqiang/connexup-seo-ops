@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
-import type { LifecycleView } from "../../api/types";
+import type { CycleLedgerView, LifecycleView } from "../../api/types";
 import { BackButton } from "../../app/BackButton";
 import type { ViewMode } from "../../app/viewMode";
 import { useAuth } from "../../auth/AuthContext";
@@ -46,7 +46,7 @@ export function MerchantWorkspacePage() {
       setActionError(error instanceof Error ? `问卷登记失败：${error.message}` : "问卷登记失败，稍后重试。");
     } finally { setBusy(false); }
   };
-  const nextAction = useMemo(() => lifecycle.data && deriveNextAction({ lifecycle: lifecycle.data, merchantId, canManage, busy, onQuestionnaire: runQuestionnaireAction }), [lifecycle.data, merchantId, canManage, busy]);
+  const nextAction = lifecycle.data && deriveNextAction({ lifecycle: lifecycle.data, ledger: ledger.data, ledgerError: ledger.error, merchantId, canManage, busy, onQuestionnaire: runQuestionnaireAction, onLedgerRetry: ledger.reload });
 
   if (workspace.loading) return <div className="page-state" role="status">正在读取商户…</div>;
   if (!merchant) return <div className="page-state is-error" role="alert">商户不存在或当前用户不可见。</div>;
@@ -57,8 +57,8 @@ export function MerchantWorkspacePage() {
     {lifecycle.data ? <LifecycleRail data={lifecycle.data} /> : null}
     {nextAction ? <CurrentActionCard action={nextAction} error={actionError} /> : null}
     {mode === "audit" && lifecycle.data ? <MerchantAuditTools canManage={canManage} lifecycle={lifecycle.data} merchantId={merchantId} locations={merchant.locations} onChanged={lifecycle.reload} /> : null}
-    <CycleLedger data={ledger.data ?? null} loading={ledger.loading} merchantId={merchantId} />
-    <div className="merchant-control-grid"><ReportsDataPanel artifacts={artifacts.data?.items ?? []} loading={reports.loading || artifacts.loading} reports={reports.data?.items ?? []} /><PostProgramPanel data={postProgram.data ?? null} loading={postProgram.loading} merchantId={merchantId} /></div>
+    <CycleLedger data={ledger.data ?? null} error={ledger.error} loading={ledger.loading} merchantId={merchantId} onRetry={ledger.reload} />
+    <div className="merchant-control-grid"><ReportsDataPanel artifacts={artifacts.data?.items ?? []} error={reports.error ?? artifacts.error} loading={reports.loading || artifacts.loading} onRetry={() => { reports.reload(); artifacts.reload(); }} reports={reports.data?.items ?? []} /><PostProgramPanel data={postProgram.data ?? null} error={postProgram.error} loading={postProgram.loading} merchantId={merchantId} onRetry={postProgram.reload} /></div>
   </>;
 }
 
@@ -66,7 +66,15 @@ function LifecycleRail({ data }: { data: LifecycleView }) {
   return <section aria-label="生命周期阶段（说明）" className="lifecycle-rail lifecycle-rail-explainer">{data.stages.map((stage) => <div className={`r-step is-${stage.status === "CURRENT" ? "now" : stage.status === "DONE" ? "done" : "off"}`} key={stage.key}><strong>{STAGE_LABELS[stage.key]}</strong><small>{stage.note}</small></div>)}</section>;
 }
 
-function deriveNextAction({ lifecycle, merchantId, canManage, busy, onQuestionnaire }: { lifecycle: LifecycleView; merchantId: string; canManage: boolean; busy: boolean; onQuestionnaire: (questionnaire: CurrentQuestionnaire | null) => Promise<void> }): MerchantNextAction {
+function deriveNextAction({ lifecycle, ledger, ledgerError, merchantId, canManage, busy, onQuestionnaire, onLedgerRetry }: { lifecycle: LifecycleView; ledger?: CycleLedgerView; ledgerError?: unknown; merchantId: string; canManage: boolean; busy: boolean; onQuestionnaire: (questionnaire: CurrentQuestionnaire | null) => Promise<void>; onLedgerRetry: () => void }): MerchantNextAction {
+  if (ledgerError) return { title: "本周期动作待确认", consequence: "周期账本读取失败，不能依据生命周期推断任务动作。", actionLabel: "重试账本", action: { label: "重试账本", onClick: onLedgerRetry } };
+  const items = ledger?.items ?? [];
+  const hrefForTasks = "/inbox?merchant_id=" + encodeURIComponent(merchantId);
+  if (items.some((item) => item.record_kind === "PROPOSAL" && item.status === "PENDING")) return { title: "判定本周期建议", consequence: "建议待判定，未判定前不能作为已授权任务执行。", actionLabel: "去判定", action: { label: "去判定", href: `${hrefForTasks}&tab=proposals` } };
+  if (items.some((item) => item.record_kind === "TASK" && item.status === "READY_FOR_APPROVAL")) return { title: "审批本周期任务", consequence: "任务已具备审批条件；批准仅记录授权，不会直接执行。", actionLabel: "去审批", action: { label: "去审批", href: `${hrefForTasks}&status=READY_FOR_APPROVAL` } };
+  if (items.some((item) => item.record_kind === "TASK" && item.status === "APPROVED")) return { title: "确认已批准任务", consequence: "任务已批准，仍需确认门 2 后才可进入执行。", actionLabel: "打开门 2", action: { label: "打开门 2", href: hrefForTasks } };
+  if (items.some((item) => item.record_kind === "TASK" && item.status === "OUTCOME_UNKNOWN")) return { title: "查证执行结果", consequence: "执行结果尚未回读，不能作为完成或下一步依据。", actionLabel: "查看任务", action: { label: "查看任务", href: hrefForTasks } };
+  if (items.some((item) => item.record_kind === "TASK" && item.status === "PENDING_VERIFY")) return { title: "核验执行证据", consequence: "已有待核验证据，核验结论会影响本周期后续判断。", actionLabel: "查看任务", action: { label: "查看任务", href: hrefForTasks } };
   const copy = lifecycleActionCopy(lifecycle);
   if (lifecycle.stage === "QUESTIONNAIRE") {
     const questionnaire = lifecycle.questionnaire;
