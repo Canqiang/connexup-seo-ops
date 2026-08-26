@@ -100,6 +100,7 @@ let postProgramData: PostProgramView = { voice_profile: null, cluster_signals: [
 let stageRunPostFails = false;
 let portfolioData = portfolioFixture;
 let authenticatedUser = userFixture;
+let taskData = taskFixture;
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
@@ -111,6 +112,7 @@ beforeEach(() => {
   stageRunPostFails = false;
   portfolioData = portfolioFixture;
   authenticatedUser = userFixture;
+  taskData = taskFixture;
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -121,7 +123,7 @@ beforeEach(() => {
     if (path === "/api/seo-ops/portfolio") return json(portfolioData);
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
-    if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
+    if (path === "/api/seo-ops/tasks/task-1") return json(taskData);
     if (path === "/api/seo-ops/merchants/only-bear/lifecycle") return json(lifecycleData);
     if (path === "/api/seo-ops/merchants/only-bear/ranking") return json(rankingData);
     if (path === "/api/seo-ops/merchants/only-bear/cycle-ledger") return json(cycleLedgerData);
@@ -137,6 +139,10 @@ beforeEach(() => {
     if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/proposal-batches")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/tasks/task-1/attempts")) return json({ items: [] });
+    if (path.startsWith("/api/seo-ops/tasks/task-1/execution-preview")) return json({ confirmable: true, attempt_count: 0, gate_ready_status: true, checks: [
+      { key: "version", label: "当前版本一致", detail: "审批版本与任务一致", passed: true },
+      { key: "authorization", label: "外部授权有效", detail: "商户授权仍有效", passed: true },
+    ] });
     if (path.startsWith("/api/seo-ops/tasks/task-1/drafts")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
@@ -364,13 +370,40 @@ test("each GBP publishing date is an independent task with its own keyword brief
   expect(screen.getByText("一篇 Post 只使用一个主要搜索意图 / 关键词簇。" )).toBeInTheDocument();
 });
 
-test("task deep link exposes revision hash evidence and approval boundary", async () => {
+test("task page presents one decision before technical state", async () => {
   renderApp("/tasks/task-1");
-  expect(await screen.findByRole("heading", { name: "菜单页发布证据复核" })).toBeInTheDocument();
-  expect(screen.getByText("rev 2")).toBeInTheDocument();
-  expect(screen.getByText("sha256:abc123")).toBeInTheDocument();
-  expect(screen.getByText("批准只记录授权，不触发执行")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "现在需要批准当前版本" })).toBeInTheDocument();
+  expect(screen.getByText("菜单页发布证据复核")).toBeInTheDocument();
+  expect(screen.getByText("Only Bear Chicken & Boba")).toBeInTheDocument();
+  expect(screen.getByText('{"operation":"publish_menu"}')).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "批准当前版本" })).toBeInTheDocument();
+  expect(screen.getByText("批准不会立即发布")).toBeInTheDocument();
+  expect(screen.getByText("技术详情（审计）").closest("details")).not.toHaveAttribute("open");
+  expect(screen.queryByText("sha256:abc123")).not.toBeVisible();
   expect(screen.queryByRole("button", { name: "打开 SEO Ops Copilot" })).not.toBeInTheDocument();
+});
+
+test("task page keeps an approval decision view-only without approval permission", async () => {
+  authenticatedUser = { ...userFixture, permissions: ["seoops.manage"] };
+  renderApp("/tasks/task-1");
+
+  expect(await screen.findByRole("heading", { name: "现在需要批准当前版本" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
+  expect(screen.getByText("当前账号可查看该决定，但没有执行权限。")).toBeInTheDocument();
+});
+
+test("operator gate two summarizes passing server checks before confirmation", async () => {
+  taskData = { ...taskFixture, execution_mode: "AUTO_WRITE", status: "APPROVED" };
+  renderApp("/tasks/task-1");
+
+  expect(await screen.findByRole("heading", { name: "现在需要确认是否发布" })).toBeInTheDocument();
+  const passSummaries = await screen.findAllByText("校验通过");
+  expect(passSummaries[0]).toBeVisible();
+  expect(passSummaries[1]).not.toBeVisible();
+  const confirmationActions = screen.getAllByRole("button", { name: "确认现在发布" });
+  expect(confirmationActions[0]).toBeVisible();
+  expect(confirmationActions[1]).not.toBeVisible();
+  expect(screen.queryByText("外部授权有效")).not.toBeInTheDocument();
 });
 
 function renderApp(route: string) {

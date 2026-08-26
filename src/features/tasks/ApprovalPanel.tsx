@@ -5,7 +5,7 @@ import { formatDateTime } from "../../app/format";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import type { ApprovalAction, ApprovalPreview, SeoTask } from "../../api/types";
 
-export function ApprovalPanel({ task, canApprove, onReadback }: { task: SeoTask; canApprove: boolean; onReadback: (task: SeoTask) => void }) {
+export function ApprovalPanel({ task, canApprove, onReadback, compact = false, primaryLabel = "生成审批预览" }: { task: SeoTask; canApprove: boolean; onReadback: (task: SeoTask) => void; compact?: boolean; primaryLabel?: string }) {
   const [preview, setPreview] = useState<ApprovalPreview>();
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
@@ -38,7 +38,7 @@ export function ApprovalPanel({ task, canApprove, onReadback }: { task: SeoTask;
   const actionable = task.status === "READY_FOR_APPROVAL" || task.status === "APPROVED";
   const lastDecision = task.approval_decisions[task.approval_decisions.length - 1];
 
-  return <section className="approval-panel"><header><span><ShieldCheck size={16} /> 审批控制（门 1）</span><small>批准只记录授权，不触发执行</small></header>
+  const controls = <>
     {lastDecision ? <p className="decision-summary">
       最近决定：<strong>{{ APPROVE: "批准", REJECT: "退回修订", REVOKE: "撤销批准" }[lastDecision.decision] ?? lastDecision.decision}</strong>
       {" "}· {lastDecision.actor_id} · rev {lastDecision.task_revision} · {formatDateTime(lastDecision.decided_at)}
@@ -46,13 +46,15 @@ export function ApprovalPanel({ task, canApprove, onReadback }: { task: SeoTask;
     </p> : null}
     {!actionable ? <p className="boundary-note">{task.status === "DONE" ? "任务已归档，审批链只读。" : "任务已进入执行链，审批链只读；需要改动请先撤销批准或等执行终态。"}</p> : <>
       {!canApprove ? <p className="boundary-note">当前账号只能查看审批历史。</p> : null}
-      {canApprove && !preview ? <button className="secondary-button" disabled={busy} onClick={generate} type="button">生成审批预览</button> : null}
+      {canApprove && !preview ? <button className={compact ? "primary-button" : "secondary-button"} disabled={busy} onClick={generate} type="button">{primaryLabel}</button> : null}
       {preview ? <div className="approval-preview"><dl><div><dt>版本</dt><dd>rev {preview.task_revision} / state {preview.state_version}</dd></div><div><dt>证据</dt><dd>{preview.evidence_state}</dd></div><div><dt>执行哈希</dt><dd><code>{preview.execution_spec_hash}</code></dd></div><div><dt>影响范围</dt><dd>{task.impact}</dd></div></dl>
         {preview.blockers.length ? <ul className="blocker-list">{preview.blockers.map((item) => <li key={item}>{item}</li>)}</ul> : null}
         <label>拒绝 / 撤销原因<textarea value={reason} onChange={(event) => setReason(event.target.value)} /></label>
-        <div className="button-row">{task.status === "READY_FOR_APPROVAL" ? <><button className="primary-button" disabled={busy || !preview.reviewable} onClick={() => decide("APPROVE")} type="button">批准</button><button className="secondary-button" disabled={busy} onClick={() => decide("REJECT")} type="button">退回修订</button></> : null}{task.status === "APPROVED" ? <button className="danger-button" disabled={busy} onClick={() => decide("REVOKE")} type="button">撤销批准</button> : null}</div>
+        <div className="button-row">{task.status === "READY_FOR_APPROVAL" ? <><button className="primary-button" disabled={busy || !preview.reviewable} onClick={() => decide("APPROVE")} type="button">{primaryLabel}</button><button className="secondary-button" disabled={busy} onClick={() => decide("REJECT")} type="button">退回修订</button></> : null}{task.status === "APPROVED" ? <button className="danger-button" disabled={busy} onClick={() => decide("REVOKE")} type="button">撤销批准</button> : null}</div>
       </div> : null}
     </>}<p className="form-message" role="status">{message}</p>
     {task.status === "APPROVED" ? <p className="boundary-note is-approved">{task.execution_mode === "READ_ONLY" ? "已批准 — Ⓐ级只读任务由调度器自动派发。" : "已批准 — 等待门 2 执行确认（见执行面板）。"}</p> : null}
-  </section>;
+  </>;
+  if (compact) return <div className="approval-panel is-compact">{controls}</div>;
+  return <section className="approval-panel"><header><span><ShieldCheck size={16} /> 审批控制（门 1）</span><small>批准只记录授权，不触发执行</small></header>{controls}</section>;
 }
