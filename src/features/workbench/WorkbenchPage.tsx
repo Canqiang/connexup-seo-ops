@@ -22,7 +22,7 @@ export function WorkbenchPage() {
 
   const page = resource.data;
   const recoveryOffset = page ? pageRecoveryOffset(page) : null;
-  const correctingPage = recoveryOffset !== null;
+  const correctingPage = recoveryOffset !== null && !resource.error;
   const range = page ? visiblePageRange(page) : null;
   useEffect(() => {
     if (!parsedOffset.needsNormalization) return;

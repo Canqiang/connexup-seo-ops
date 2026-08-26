@@ -68,7 +68,7 @@ test("workbench normalizes repeated offsets while preserving the group query", a
   renderAppWithLocation("/?group=EXCEPTION&offset=50&offset=100");
 
   await vi.waitFor(() => expect(requestedPaths).toContain("/api/seo-ops/workbench?group=EXCEPTION&offset=0&limit=50"));
-  expect(screen.getByTestId("current-location")).toHaveTextContent("/?group=EXCEPTION&offset=0");
+  await vi.waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/?group=EXCEPTION&offset=0"));
 });
 
 test("an out-of-range page recovers to the last server page without showing a false empty range", async () => {
@@ -91,6 +91,19 @@ test("an out-of-range page recovers to the last server page without showing a fa
     await lastPage;
   });
   expect(await screen.findByText("显示 51–51 / 51")).toBeInTheDocument();
+});
+
+test("workbench shows only the actionable error when the recovery page request fails", async () => {
+  workbenchResponder = (offset, limit) => offset === 100
+    ? json({ ...workbenchWithActions(51, { offset, pageSize: limit }), items: [] })
+    : json({ message: "recovery unavailable" }, 503);
+  renderApp("/?group=EXCEPTION&offset=100");
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("工作台读取失败");
+  expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  expect(screen.queryByText("正在校正分页…")).not.toBeInTheDocument();
+  expect(screen.queryByText("今天没有需要人工处理的事项")).not.toBeInTheDocument();
 });
 
 test("a slow old page cannot overwrite the page selected most recently", async () => {
@@ -147,6 +160,6 @@ function renderAppWithNavigation(route: string) {
   </MemoryRouter>);
 }
 
-function json(body: unknown) {
-  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }

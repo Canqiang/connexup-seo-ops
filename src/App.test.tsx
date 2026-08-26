@@ -422,7 +422,7 @@ test("inbox normalizes repeated offsets and preserves the active filter", async 
   renderAppWithLocation("/inbox?status=APPROVED&offset=50&offset=0");
 
   await vi.waitFor(() => expect(calls.some(({ path }) => path === "/api/seo-ops/inbox?offset=0&limit=50&status=APPROVED")).toBe(true));
-  expect(screen.getByTestId("current-location")).toHaveTextContent("/inbox?status=APPROVED&offset=0");
+  await vi.waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/inbox?status=APPROVED&offset=0"));
 });
 
 test("inbox recovers after the server total shrinks without flashing a false empty range", async () => {
@@ -456,6 +456,19 @@ test("inbox recovers after the server total shrinks without flashing a false emp
     await lastPage;
   });
   expect(await screen.findByText("显示 51–51 / 51")).toBeInTheDocument();
+});
+
+test("inbox shows only the actionable error when the recovery page request fails", async () => {
+  inboxResponder = (offset, limit) => offset === 100
+    ? json({ items: [], offset, limit, total: 51 })
+    : json({ message: "recovery unavailable" }, 503);
+  renderApp("/inbox?status=APPROVED&offset=100");
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("任务读取失败");
+  expect(within(alert).getByRole("button", { name: "重试" })).toBeInTheDocument();
+  expect(screen.queryByText("正在校正分页…")).not.toBeInTheDocument();
+  expect(screen.queryByText("当前筛选没有任务")).not.toBeInTheDocument();
 });
 
 test("task page presents one decision before technical state", async () => {

@@ -42,7 +42,7 @@ export function InboxPage() {
   ]);
   const page = resource.data;
   const recoveryOffset = page ? pageRecoveryOffset(page) : null;
-  const correctingPage = recoveryOffset !== null;
+  const correctingPage = recoveryOffset !== null && !resource.error;
   const items = page?.items ?? [];
   const total = page?.total ?? 0;
   const range = page ? visiblePageRange(page) : null;
