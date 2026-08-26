@@ -20,6 +20,32 @@ export interface SpecialistArtifact {
   createdAt: string;
 }
 
+/** Raw persisted evidence for the Post-program projection.  The service owns
+ * semantic validation, while the repository deliberately returns no title,
+ * summary, or Core AI identifiers that the view does not need. */
+export interface PostProgramArtifactRow {
+  id: string;
+  taskId: string;
+  artifactType: "KEYWORD_WEEKLY" | "EFFECT_REVIEW";
+  schemaVersion: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+function parseProjectionPayload(payload: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    // Legacy rows are still evidence records.  The projection service turns
+    // this empty sentinel into an explicit INVALID_* gap rather than failing
+    // the merchant page or fabricating a replacement signal.
+    return {};
+  }
+}
+
 interface SpecialistArtifactRow {
   id: string;
   task_id: string;
@@ -123,4 +149,29 @@ export async function listSpecialistArtifactsByMerchant(
         [merchantId],
       );
   return rows.map(toArtifact);
+}
+
+export async function listPostProgramArtifacts(
+  db: Db,
+  merchantId: string,
+): Promise<PostProgramArtifactRow[]> {
+  const rows = await db.query<{
+    id: string; task_id: string; artifact_type: "KEYWORD_WEEKLY" | "EFFECT_REVIEW";
+    schema_version: string; payload: string; created_at: string;
+  }>(
+    `SELECT id, task_id, artifact_type, schema_version, payload, created_at
+       FROM seo_specialist_artifacts
+      WHERE merchant_id = $1
+        AND artifact_type IN ('KEYWORD_WEEKLY', 'EFFECT_REVIEW')
+      ORDER BY created_at DESC, id DESC`,
+    [merchantId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    taskId: row.task_id,
+    artifactType: row.artifact_type,
+    schemaVersion: row.schema_version,
+    payload: parseProjectionPayload(row.payload),
+    createdAt: row.created_at,
+  }));
 }

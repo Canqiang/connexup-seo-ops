@@ -2,9 +2,9 @@ import { requestJson } from "./client";
 import type {
   AgentBindingWire, AppendEvidenceRequest, ApprovalDecisionRequest, ApprovalPreview, AttemptWire,
   CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire,
-  DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
+  CycleLedgerView, DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
-  QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
+  PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
   SchedulerTickResult, SeoOpsPageRequest, SeoTask, SpecialistArtifactType, SpecialistArtifactWire,
   StageRunView, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
 } from "./types";
@@ -53,6 +53,10 @@ export const seoOpsApi = {
     requestJson<LifecycleView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/lifecycle`, { signal }),
   ranking: (merchantId: string, signal?: AbortSignal) =>
     requestJson<RankingOverviewView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/ranking`, { signal }),
+  cycleLedger: (merchantId: string, signal?: AbortSignal) =>
+    requestJson<CycleLedgerView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/cycle-ledger`, { signal }),
+  postProgram: (merchantId: string, signal?: AbortSignal) =>
+    requestJson<PostProgramView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/post-program`, { signal }),
   createQuestionnaire: (merchantId: string, request: { website?: string; idempotency_key: string }) =>
     post<QuestionnaireView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/questionnaires`, request),
   sendQuestionnaire: (questionnaireId: string) =>

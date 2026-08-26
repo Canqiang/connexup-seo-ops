@@ -75,6 +75,30 @@ export interface WorkbenchProposalRow {
   createdAt: string;
 }
 
+/** Dated proposal projection.  It intentionally includes only items that
+ * remain undecided; a proposal that produced a Task is represented by that
+ * Task alone in the merchant ledger. */
+export interface CycleLedgerProposalRow {
+  id: string;
+  batchId: string;
+  seq: number;
+  title: string;
+  taskType: string;
+  executionMode: string;
+  dueAt: string | null;
+  priority: string;
+  status: "PENDING" | "VALIDATION_FAILED";
+  validationFailures: string[];
+  dependsOn: number[];
+  createdAt: string;
+}
+
+export interface ProposalDependencyLabelRow {
+  batchId: string;
+  seq: number;
+  title: string;
+}
+
 interface WorkbenchProposalDbRow {
   id: string;
   merchant_id: string;
@@ -269,6 +293,67 @@ export async function listPendingProposalsByMerchant(db: Db, merchantId: string)
     [merchantId],
   );
   return rows.map(toProposal);
+}
+
+export async function listCycleLedgerProposals(
+  db: Db,
+  merchantId: string,
+): Promise<CycleLedgerProposalRow[]> {
+  const rows = await db.query<{
+    id: string; batch_id: string; seq: number; title: string; task_type: string;
+    execution_mode: string; due_at: string | null; priority: string; status: "PENDING" | "VALIDATION_FAILED";
+    validation_failures: string; depends_on: string; created_at: string;
+  }>(
+    `SELECT id, batch_id, seq, title, task_type, execution_mode, due_at,
+            priority, status, validation_failures, depends_on, created_at
+       FROM seo_proposals
+      WHERE merchant_id = $1
+        AND status IN ('PENDING', 'VALIDATION_FAILED')
+      ORDER BY due_at NULLS LAST, created_at, id`,
+    [merchantId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    batchId: row.batch_id,
+    seq: row.seq,
+    title: row.title,
+    taskType: row.task_type,
+    executionMode: row.execution_mode,
+    dueAt: row.due_at,
+    priority: row.priority,
+    status: row.status,
+    validationFailures: JSON.parse(row.validation_failures || "[]") as string[],
+    dependsOn: JSON.parse(row.depends_on || "[]") as number[],
+    createdAt: row.created_at,
+  }));
+}
+
+/** Dependency labels are needed only for the batches represented by the
+ * scoped ledger rows.  This returns names, not proposal execution specs. */
+export async function listProposalDependencyLabels(
+  db: Db,
+  merchantId: string,
+  batchIds: readonly string[],
+): Promise<ProposalDependencyLabelRow[]> {
+  if (batchIds.length === 0) return [];
+  const rows = await db.query<{
+    batch_id: string; seq: number; title: string;
+  }>(
+    `SELECT batch_id, seq, title
+       FROM seo_proposals
+      WHERE merchant_id = $1 AND batch_id = ANY($2::text[])
+      ORDER BY batch_id, seq`,
+    [merchantId, batchIds],
+  );
+  return rows.map((row) => ({ batchId: row.batch_id, seq: row.seq, title: row.title }));
+}
+
+export async function listPendingGbpPostProposals(
+  db: Db,
+  merchantId: string,
+): Promise<CycleLedgerProposalRow[]> {
+  const rows = await listCycleLedgerProposals(db, merchantId);
+  return rows.filter((row) => row.taskType === "GBP_POST");
 }
 
 /** Bounded fields for proposals that still require a human decision.  An

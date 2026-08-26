@@ -274,6 +274,38 @@ export interface CycleConfigWire {
   enabled: boolean; updated_by: string | null; updated_at: string;
 }
 
+/** Merchant control-room projections retain the Task/proposal boundary all
+ * the way to the client.  A proposal row is never executable work. */
+export interface CycleLedgerItem {
+  record_kind: "TASK" | "PROPOSAL";
+  task_id: string | null; proposal_id: string | null;
+  title: string; task_type: string; priority: TaskPriority | null; owner_id: string | null;
+  due_at: string | null; created_at: string; status: string; execution_mode: ExecutionMode;
+  dependency_labels: string[]; validation_failures: string[];
+}
+
+export interface CycleLedgerView { items: CycleLedgerItem[]; }
+
+export interface PostProgramView {
+  voice_profile: {
+    version: number; voice: Record<string, unknown>; created_at: string;
+  } | null;
+  cluster_signals: Array<{
+    artifact_id: string; task_id: string; cluster: string;
+    signal: "IMPROVED" | "FLAT" | "DECLINED" | "INCONCLUSIVE";
+    observed_at: string; evidence_ref: string | null;
+  }>;
+  history: Array<{
+    task_id: string; title: string; published_ref: string; published_at: string;
+    verified_at: string; verified_by: string | null;
+  }>;
+  proposals: Array<{
+    proposal_id: string; title: string; due_at: string | null; priority: TaskPriority;
+    status: "PENDING" | "VALIDATION_FAILED"; validation_failures: string[];
+  }>;
+  evidence_gaps: string[];
+}
+
 export interface AgentBindingWire {
   task_type: string; agent_id: string; agent_label: string | null;
   published_ref: string | null; updated_by: string | null; updated_at: string;

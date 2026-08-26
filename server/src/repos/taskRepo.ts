@@ -64,6 +64,31 @@ export interface WorkbenchTaskRow {
   createdAt: string;
 }
 
+/** The merchant ledger deliberately projects only operational columns.  It
+ * must not load task specs, evidence blobs, or Agent-run metadata just to
+ * render a dated control-room row. */
+export interface CycleLedgerTaskRow {
+  id: string;
+  proposalId: string | null;
+  title: string;
+  taskType: string;
+  ownerId: string | null;
+  dueAt: string | null;
+  status: string;
+  executionMode: string;
+  dependsOnTaskIds: string[];
+  createdAt: string;
+}
+
+export interface PostHistoryTaskRow {
+  id: string;
+  title: string;
+  publishedRef: string;
+  publishedAt: string;
+  verifiedAt: string;
+  verifiedBy: string | null;
+}
+
 interface WorkbenchTaskDbRow {
   id: string;
   merchant_id: string;
@@ -246,6 +271,70 @@ export async function listTasksByMerchant(db: Db, merchantId: string): Promise<T
     [merchantId],
   );
   return rows.map(toTask);
+}
+
+/** Accepted work only: proposal rows remain in proposalRepo until a human
+ * adopts them.  Keeping this slim query separate protects the merchant view
+ * from accidentally receiving execution specs or evidence payloads. */
+export async function listCycleLedgerTasks(
+  db: Db,
+  merchantId: string,
+): Promise<CycleLedgerTaskRow[]> {
+  const rows = await db.query<{
+    id: string; proposal_id: string | null; title: string; task_type: string;
+    owner_id: string | null; due_at: string | null; status: string;
+    execution_mode: string; depends_on_task_ids: string; created_at: string;
+  }>(
+    `SELECT id, proposal_id, title, task_type, owner_id, due_at, status,
+            execution_mode, depends_on_task_ids, created_at
+       FROM seo_tasks
+      WHERE merchant_id = $1
+      ORDER BY due_at NULLS LAST, created_at, id`,
+    [merchantId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    proposalId: row.proposal_id,
+    title: row.title,
+    taskType: row.task_type,
+    ownerId: row.owner_id,
+    dueAt: row.due_at,
+    status: row.status,
+    executionMode: row.execution_mode,
+    dependsOnTaskIds: JSON.parse(row.depends_on_task_ids || "[]") as string[],
+    createdAt: row.created_at,
+  }));
+}
+
+/** Publication history is intentionally stricter than dispatch history:
+ * both a provider publication reference and independent verification must be
+ * persisted before it can be represented as program history. */
+export async function listVerifiedGbpPostHistory(
+  db: Db,
+  merchantId: string,
+): Promise<PostHistoryTaskRow[]> {
+  const rows = await db.query<{
+    id: string; title: string; published_ref: string; published_at: string;
+    verified_at: string; verified_by: string | null;
+  }>(
+    `SELECT id, title, published_ref, published_at, verified_at, verified_by
+       FROM seo_tasks
+      WHERE merchant_id = $1
+        AND task_type = 'GBP_POST'
+        AND published_ref IS NOT NULL
+        AND published_at IS NOT NULL
+        AND verified_at IS NOT NULL
+      ORDER BY published_at DESC, id DESC`,
+    [merchantId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    publishedRef: row.published_ref,
+    publishedAt: row.published_at,
+    verifiedAt: row.verified_at,
+    verifiedBy: row.verified_by,
+  }));
 }
 
 /** Scheduler / worker 扫描用：按状态取任务（如 APPROVED 的Ⓐ级待派发）。 */
