@@ -35,6 +35,22 @@ import {
 /** 触发宽限：DISPATCHING 且无 core_run_id 超过此时长，视为触发中断。
  * 只读任务重触发无害；写入类无法排除「请求已到达」→ 结果不明（红线③）。 */
 const TRIGGER_GRACE_MS = 60_000;
+const MAX_TERMINAL_ARTIFACT_BYTES = 8 * 1024 * 1024;
+const TERMINAL_ARTIFACT_HASH_BUDGET_MS = 15_000;
+
+function stableArtifactSourceRef(raw: string): string | null {
+  try {
+    const source = new URL(raw);
+    if (source.protocol !== "http:" && source.protocol !== "https:") return null;
+    source.username = "";
+    source.password = "";
+    source.search = "";
+    source.hash = "";
+    return source.toString();
+  } catch {
+    return null;
+  }
+}
 
 export interface ExecutionWorkerDeps {
   db: Db;
@@ -44,6 +60,8 @@ export interface ExecutionWorkerDeps {
   mockMode?: boolean;
   systemActor?: string;
   intervalMs?: number;
+  /** One shared deadline across all terminal artifact hashes for an attempt. */
+  terminalArtifactHashBudgetMs?: number;
   log?: (message: string, err?: unknown) => void;
   now?: () => Date;
 }
@@ -149,17 +167,30 @@ export class ExecutionWorker {
     const now = new Date().toISOString();
     const persisted = { ...attempt, traceRef: core.trace_id ?? attempt.traceRef, updatedAt: now };
     const deliverables: ExecutionAttemptDeliverable[] = [];
+    const hashBudgetSignal = AbortSignal.timeout(
+      this.deps.terminalArtifactHashBudgetMs ?? TERMINAL_ARTIFACT_HASH_BUDGET_MS,
+    );
     for (const artifact of (core.artifacts ?? []).slice(0, 20)) {
       let sha256: string | null = null;
-      try {
-        sha256 = sha256HashBytes(await this.deps.client!.downloadArtifact(artifact.download_url));
-      } catch (err) {
-        this.deps.log?.(`execution worker: could not hash terminal artifact ${artifact.file_id}`, err);
+      const declaredSizeIsSafe = artifact.size === undefined
+        || artifact.size === null
+        || (Number.isSafeInteger(artifact.size)
+          && artifact.size >= 0
+          && artifact.size <= MAX_TERMINAL_ARTIFACT_BYTES);
+      if (declaredSizeIsSafe && !hashBudgetSignal.aborted) {
+        try {
+          sha256 = sha256HashBytes(await this.deps.client!.downloadArtifact(
+            artifact.download_url,
+            { maxBytes: MAX_TERMINAL_ARTIFACT_BYTES, signal: hashBudgetSignal },
+          ));
+        } catch {
+          this.deps.log?.(`execution worker: could not hash terminal artifact ${artifact.file_id}`);
+        }
       }
       deliverables.push({
         id: crypto.randomUUID(), attemptId: attempt.id, fileId: artifact.file_id,
         fileName: artifact.file_name, contentType: artifact.content_type ?? null,
-        sha256, sourceRef: artifact.download_url, createdAt: now,
+        sha256, sourceRef: stableArtifactSourceRef(artifact.download_url), createdAt: now,
       });
     }
     await this.deps.db.withTransaction(async (tx) => {

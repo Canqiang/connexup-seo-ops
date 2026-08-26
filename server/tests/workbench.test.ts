@@ -138,7 +138,7 @@ describe("workbench projection", () => {
       createdAt: now,
       updatedAt: now,
     });
-    const [attempt] = await listAttemptsByTask(built.db, unknownTask.id);
+    const [attempt] = await listAttemptsByTask(built.db, unknownTask.id, unknownTask.merchant_id);
     await settleAttemptUnknown(built.db, attempt!, "transport timeout", "system:test");
 
     const questionnaire = (

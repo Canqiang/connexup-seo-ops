@@ -451,7 +451,7 @@ export async function settleAttemptFailure(
       });
       const isAutoReadOnly = task.executionMode === "READ_ONLY" && attempt.gate === "AUTO";
       // 同一事务内读回：含刚更新的当前 attempt。
-      const autoFailures = (await listAttemptsByTask(tx, task.id))
+      const autoFailures = (await listAttemptsByTask(tx, task.id, task.merchantId))
         .filter((a) => a.gate === "AUTO" && a.status === "FAILED_CONFIRMED").length;
       const exhausted = isAutoReadOnly && autoFailures >= 1 + READ_ONLY_AUTO_RETRY_LIMIT;
       retryEligible = isAutoReadOnly && !exhausted;
@@ -651,8 +651,12 @@ export async function markVerified(
   );
 }
 
-export async function attemptsView(db: Db, taskId: string): Promise<ExecutionAttempt[]> {
-  return listAttemptsByTask(db, taskId);
+export async function attemptsView(
+  db: Db,
+  taskId: string,
+  merchantId: string,
+): Promise<ExecutionAttempt[]> {
+  return listAttemptsByTask(db, taskId, merchantId);
 }
 
 export interface ResetFailedInput {

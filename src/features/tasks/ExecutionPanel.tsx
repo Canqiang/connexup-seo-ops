@@ -1,4 +1,4 @@
-import { CheckCircle2, ExternalLink, PlayCircle, RefreshCw, RotateCcw, SearchCheck, ShieldAlert, XCircle } from "lucide-react";
+import { CheckCircle2, ExternalLink, PlayCircle, RotateCcw, SearchCheck, ShieldAlert, XCircle } from "lucide-react";
 import { useState } from "react";
 import { ApiError } from "../../api/client";
 import { seoOpsApi } from "../../api/seoOpsApi";
@@ -15,7 +15,13 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
   task: SeoTask; onReadback: (next: SeoTask) => void; compact?: boolean; audit?: boolean; canExecute: boolean;
 }) {
   const mode = task.execution_mode;
-  const attempts = useResource((signal) => seoOpsApi.attempts(task.id, signal), [task.id, task.state_version]);
+  const needsReconciliationAttempt = task.status === "OUTCOME_UNKNOWN";
+  const attempts = useResource(
+    (signal) => needsReconciliationAttempt
+      ? seoOpsApi.attempts(task.id, signal)
+      : Promise.resolve({ items: [] }),
+    [task.id, task.state_version, needsReconciliationAttempt],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [resolving, setResolving] = useState(false);
@@ -126,25 +132,8 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
   return <section className="data-panel execution-panel">
     <div className="panel-heading"><div><span className="eyebrow">EXECUTION / 门 2 之后</span><h2>执行</h2></div><ModeTag mode={mode} /></div>
     {executionBody}
-    <div className="attempt-list">
-      <div className="attempt-head"><span className="eyebrow">ATTEMPTS / 一次派发一行</span>
-        <button aria-label="刷新 attempts" className="icon-button" onClick={attempts.reload} type="button"><RefreshCw size={13} /></button></div>
-      {(attempts.data?.items ?? []).length ? <table><thead><tr><th>#</th><th>门</th><th>状态</th><th>线索号</th><th>裁决</th></tr></thead><tbody>
-        {(attempts.data?.items ?? []).map((a) => <tr key={a.id}>
-          <td>{a.attempt_no}</td><td>{a.gate === "G2" ? "门2" : "自动"}</td>
-          <td><span className={`status-pill ${a.status === "SUCCEEDED" ? "is-stable" : a.status === "DISPATCHING" ? "is-correlational" : a.status === "OUTCOME_UNKNOWN" ? "is-attention" : "is-blocked"}`}>{attemptLabel(a.status)}</span>{a.error ? <small title={a.error}>{a.error.slice(0, 40)}…</small> : null}</td>
-          <td><code>{a.probe_ref}</code></td>
-          <td>{a.resolution ? `${a.resolution === "HAPPENED" ? "发生了" : "没发生"} · ${a.resolved_by ?? ""}` : "—"}</td>
-        </tr>)}
-      </tbody></table> : <p className="quiet-copy">还没有派发记录。</p>}
-    </div>
     {resolving && unknownAttempt && canExecute ? <ReconciliationDialog attempt={unknownAttempt} onClose={() => setResolving(false)} onResolved={() => { setResolving(false); void seoOpsApi.task(task.id).then(onReadback); }} /> : null}
   </section>;
-}
-
-function attemptLabel(status: string): string {
-  return status === "DISPATCHING" ? "在途" : status === "SUCCEEDED" ? "成功"
-    : status === "FAILED_CONFIRMED" ? "确认失败" : "结果待查";
 }
 
 /** 门 2 预览块：六项服务端校验逐条亮灯，全过才放行确认按钮。 */

@@ -125,10 +125,12 @@ export async function getSpecialistArtifactByRun(
 export async function listSpecialistArtifactsByTask(
   db: Db,
   taskId: string,
+  merchantId: string,
 ): Promise<SpecialistArtifact[]> {
   const rows = await db.query<SpecialistArtifactRow>(
-    `SELECT * FROM seo_specialist_artifacts WHERE task_id = $1 ORDER BY created_at DESC, id DESC`,
-    [taskId],
+    `SELECT * FROM seo_specialist_artifacts
+     WHERE task_id = $1 AND merchant_id = $2 ORDER BY created_at DESC, id DESC`,
+    [taskId, merchantId],
   );
   return rows.map(toArtifact);
 }
@@ -136,15 +138,18 @@ export async function listSpecialistArtifactsByTask(
 /** Audit projection only: page compact identifiers rather than loading full
  * specialist payloads or an unbounded task history. */
 export async function listSpecialistArtifactReferencesByTask(
-  db: Db, taskId: string, offset: number, limit: number,
+  db: Db, taskId: string, merchantId: string, offset: number, limit: number,
 ): Promise<{ items: Array<Pick<SpecialistArtifact, "id" | "coreRunId">>; total: number }> {
   const count = await db.one<{ total: string }>(
-    `SELECT COUNT(*) AS total FROM seo_specialist_artifacts WHERE task_id = $1`, [taskId],
+    `SELECT COUNT(*) AS total FROM seo_specialist_artifacts
+     WHERE task_id = $1 AND merchant_id = $2`,
+    [taskId, merchantId],
   );
   const rows = await db.query<Pick<SpecialistArtifactRow, "id" | "core_run_id">>(
     `SELECT id, core_run_id FROM seo_specialist_artifacts
-     WHERE task_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
-    [taskId, limit, offset],
+     WHERE task_id = $1 AND merchant_id = $2
+     ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4`,
+    [taskId, merchantId, limit, offset],
   );
   return {
     items: rows.map((row) => ({ id: row.id, coreRunId: row.core_run_id })),

@@ -6,7 +6,7 @@ import type {
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
   PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
   SchedulerTickResult, SeoOpsPageRequest, SeoTask, SpecialistArtifactType, SpecialistArtifactWire,
-  StageRunView, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
+  StageRunView, TaskAuditReferencesWire, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
 } from "./types";
 
 function query(request: SeoOpsPageRequest = {}): string {
@@ -90,8 +90,11 @@ export const seoOpsApi = {
     requestJson<{ items: AttemptWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/attempts`, { signal }),
   taskArtifacts: (id: string, signal?: AbortSignal) =>
     requestJson<{ items: SpecialistArtifactWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/artifacts`, { signal }),
-  taskAuditReferences: (id: string, signal?: AbortSignal) =>
-    requestJson<import("./types").TaskAuditReferencesWire>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/audit-references`, { signal }),
+  taskAuditReferences: (id: string, request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
+    requestJson<TaskAuditReferencesWire>(
+      `/api/seo-ops/tasks/${encodeURIComponent(id)}/audit-references${query(request)}`,
+      { signal },
+    ),
   merchantArtifacts: (merchantId: string, artifactType?: SpecialistArtifactType, signal?: AbortSignal) =>
     requestJson<{ items: SpecialistArtifactWire[] }>(
       `/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/artifacts${artifactType ? `?artifact_type=${encodeURIComponent(artifactType)}` : ""}`,

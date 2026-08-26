@@ -335,7 +335,7 @@ export interface TaskAuditReferencesWire {
   offset?: number; limit?: number; total?: number;
   agent_runs: Array<{ id: string; core_run_id?: string; trace_ref?: string; deliverables: Array<{ id: string; file_id?: string; sha256?: string; source_ref?: string }> }>;
   artifacts: Array<{ id: string; core_run_id: string }>;
-  execution_attempts?: Array<{ id: string; core_run_id?: string; trace_ref?: string; deliverables: Array<{ id: string; file_id: string; sha256?: string; source_ref?: string }> }>;
+  execution_attempts?: Array<{ id: string; agent_run_id?: string; core_run_id?: string; trace_ref?: string; probe_ref: string; deliverables: Array<{ id: string; file_id: string; sha256?: string; source_ref?: string }> }>;
 }
 
 export interface InboxSummaryWire {

@@ -36,12 +36,17 @@ export interface CoreRunArtifact {
   description?: string | null;
 }
 
+export interface ArtifactDownloadOptions {
+  maxBytes: number;
+  signal?: AbortSignal;
+}
+
 export interface CoreAiClient {
   trigger(agentId: string, input: string): Promise<{ run_id: string; status: string }>;
   getRun(runId: string): Promise<CoreAgentRunDetail>;
   cancel(runId: string): Promise<void>;
   /** Download an artifact's bytes; the token goes only in the Authorization header. */
-  downloadArtifact(url: string): Promise<Uint8Array>;
+  downloadArtifact(url: string, options?: ArtifactDownloadOptions): Promise<Uint8Array>;
 }
 
 export class CoreAiError extends Error {
@@ -132,7 +137,7 @@ export function createCoreAiClient(opts: {
     async cancel(runId) {
       await request("POST", `/api/runs/${encodeURIComponent(runId)}/cancel`);
     },
-    async downloadArtifact(url) {
+    async downloadArtifact(url, options) {
       let target: URL;
       let configuredBase: URL;
       try {
@@ -144,13 +149,17 @@ export function createCoreAiClient(opts: {
       if (target.protocol !== "http:" && target.protocol !== "https:") {
         throw new CoreAiError(0, "artifact download URL must use http(s)");
       }
+      if (target.origin !== configuredBase.origin) {
+        throw new CoreAiError(0, "artifact download origin is not allowed");
+      }
       let response: Response;
       try {
+        const requestSignal = options?.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs);
         response = await doFetch(target, {
-          ...(target.origin === configuredBase.origin
-            ? { headers: { Authorization: `Bearer ${token}` } }
-            : {}),
-          signal: AbortSignal.timeout(timeoutMs),
+          headers: { Authorization: `Bearer ${token}` },
+          signal: requestSignal,
         });
       } catch {
         throw new CoreAiError(0, "artifact download failed");
@@ -158,7 +167,45 @@ export function createCoreAiClient(opts: {
       if (!response.ok) {
         throw new CoreAiError(response.status, `artifact download returned ${response.status}`);
       }
-      return new Uint8Array(await response.arrayBuffer());
+      const declaredLength = response.headers.get("content-length");
+      const maxBytes = options?.maxBytes ?? Number.MAX_SAFE_INTEGER;
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+        throw new CoreAiError(0, "artifact download byte limit is invalid");
+      }
+      if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
+        const declaredBytes = Number(declaredLength);
+        if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
+          throw new CoreAiError(0, "artifact download exceeds byte limit");
+        }
+      }
+      if (!response.body) return new Uint8Array();
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > maxBytes) {
+            await reader.cancel().catch(() => undefined);
+            throw new CoreAiError(0, "artifact download exceeds byte limit");
+          }
+          chunks.push(value);
+        }
+      } catch (err) {
+        if (err instanceof CoreAiError) throw err;
+        throw new CoreAiError(0, "artifact download failed");
+      } finally {
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes;
     },
   };
 }

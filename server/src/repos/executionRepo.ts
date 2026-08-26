@@ -145,21 +145,32 @@ export async function getAttemptByRunId(db: Db, agentRunId: string): Promise<Exe
   return row ? toAttempt(row) : null;
 }
 
-export async function listAttemptsByTask(db: Db, taskId: string): Promise<ExecutionAttempt[]> {
+export async function listAttemptsByTask(
+  db: Db,
+  taskId: string,
+  merchantId: string,
+): Promise<ExecutionAttempt[]> {
   const rows = await db.query<AttemptRow>(
-    `SELECT * FROM seo_execution_attempts WHERE task_id = $1 ORDER BY attempt_no DESC`, [taskId]);
+    `SELECT * FROM seo_execution_attempts
+     WHERE task_id = $1 AND merchant_id = $2 ORDER BY attempt_no DESC`,
+    [taskId, merchantId],
+  );
   return rows.map(toAttempt);
 }
 
 export async function listAttemptsByTaskPage(
-  db: Db, taskId: string, offset: number, limit: number,
+  db: Db, taskId: string, merchantId: string, offset: number, limit: number,
 ): Promise<{ items: ExecutionAttempt[]; total: number }> {
   const count = await db.one<{ total: string }>(
-    `SELECT COUNT(*) AS total FROM seo_execution_attempts WHERE task_id = $1`, [taskId],
+    `SELECT COUNT(*) AS total FROM seo_execution_attempts
+     WHERE task_id = $1 AND merchant_id = $2`,
+    [taskId, merchantId],
   );
   const rows = await db.query<AttemptRow>(
-    `SELECT * FROM seo_execution_attempts WHERE task_id = $1
-     ORDER BY attempt_no DESC LIMIT $2 OFFSET $3`, [taskId, limit, offset],
+    `SELECT * FROM seo_execution_attempts
+     WHERE task_id = $1 AND merchant_id = $2
+     ORDER BY attempt_no DESC LIMIT $3 OFFSET $4`,
+    [taskId, merchantId, limit, offset],
   );
   return { items: rows.map(toAttempt), total: Number(count?.total ?? 0) };
 }

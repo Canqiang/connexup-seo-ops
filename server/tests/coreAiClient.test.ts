@@ -9,7 +9,7 @@ function response(bytes: number[] = [1, 2, 3]): Response {
 }
 
 describe("Core AI artifact downloads", () => {
-  it("sends the bearer token only to same-origin artifact URLs", async () => {
+  it("sends the bearer token to same-origin artifact URLs", async () => {
     const calls: Array<{ url: string; authorization: string | null }> = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({
@@ -22,17 +22,69 @@ describe("Core AI artifact downloads", () => {
 
     await client.downloadArtifact("/artifacts/relative");
     await client.downloadArtifact("https://core.internal.example/artifacts/absolute");
-    await client.downloadArtifact("https://storage.example/download?signature=presigned");
-    await client.downloadArtifact("http://downloads.example/artifact");
-    await client.downloadArtifact("//cdn.example/artifact");
 
     expect(calls).toEqual([
       { url: "https://core.internal.example/artifacts/relative", authorization: `Bearer ${TEST_TOKEN}` },
       { url: "https://core.internal.example/artifacts/absolute", authorization: `Bearer ${TEST_TOKEN}` },
-      { url: "https://storage.example/download?signature=presigned", authorization: null },
-      { url: "http://downloads.example/artifact", authorization: null },
-      { url: "https://cdn.example/artifact", authorization: null },
     ]);
+  });
+
+  it("rejects artifact origins outside the configured Core boundary without fetching", async () => {
+    const fetchImpl = vi.fn(async () => response()) as unknown as typeof fetch;
+    const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
+
+    await expect(client.downloadArtifact("https://storage.example/download?signature=presigned"))
+      .rejects.toMatchObject({ status: 0, message: "artifact download origin is not allowed" });
+    await expect(client.downloadArtifact("http://core.internal.example/artifact"))
+      .rejects.toMatchObject({ status: 0, message: "artifact download origin is not allowed" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized Content-Length before reading artifact bytes", async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4]), {
+      headers: { "Content-Length": "4" },
+    })) as unknown as typeof fetch;
+    const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
+
+    await expect(client.downloadArtifact("/artifacts/declared-oversize", { maxBytes: 3 }))
+      .rejects.toMatchObject({ status: 0, message: "artifact download exceeds byte limit" });
+  });
+
+  it("cancels and rejects an unknown-length artifact stream when counted bytes exceed the limit", async () => {
+    let pull = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pull += 1;
+        if (pull === 1) controller.enqueue(new Uint8Array([1, 2]));
+        else if (pull === 2) controller.enqueue(new Uint8Array([3, 4]));
+      },
+      cancel() { cancelled = true; },
+    });
+    const fetchImpl = vi.fn(async () => new Response(body)) as unknown as typeof fetch;
+    const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
+
+    await expect(client.downloadArtifact("/artifacts/streamed-oversize", { maxBytes: 3 }))
+      .rejects.toMatchObject({ status: 0, message: "artifact download exceeds byte limit" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("honors an already-aborted aggregate signal without starting an artifact response", async () => {
+    let observedAborted = false;
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observedAborted = init?.signal?.aborted ?? false;
+      if (observedAborted) throw new DOMException("aborted", "AbortError");
+      return response();
+    }) as unknown as typeof fetch;
+    const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(client.downloadArtifact("/artifacts/aggregate-budget", {
+      maxBytes: 3,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ status: 0, message: "artifact download failed" });
+    expect(observedAborted).toBe(true);
   });
 
   it("rejects non-http artifact URLs without fetching or exposing credentials", async () => {

@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { createAuthenticatedTestApp, type AuthenticatedTestApp } from "./helpers/authTest.js";
 import { settleAttemptUnknown } from "../src/services/executionService.js";
-import { listAttemptsByTask } from "../src/repos/executionRepo.js";
+import {
+  insertAttempt,
+  listAttemptsByTask,
+  upsertAttemptDeliverable,
+  type ExecutionAttempt,
+} from "../src/repos/executionRepo.js";
 import { getProposal } from "../src/repos/proposalRepo.js";
 import { insertAgentRun, upsertDeliverable } from "../src/repos/agentRunRepo.js";
 import type { AgentRun, RunDeliverable } from "../src/repos/agentRunTypes.js";
@@ -11,6 +16,10 @@ import { addDraft } from "../src/services/contentService.js";
 import { ExecutionWorker } from "../src/services/executionWorker.js";
 import type { CoreAiClient } from "../src/services/coreAiClient.js";
 import { sha256HashBytes } from "../src/domain/hashing.js";
+import {
+  insertSpecialistArtifact,
+  type SpecialistArtifact,
+} from "../src/repos/specialistArtifactRepo.js";
 
 /** 执行域端到端：双门 → mock 派发 → 结算 → 核验；建议层判定；Ⓐ级周期调度；
  * OUTCOME_UNKNOWN 冻结与查证。mock 执行模式（无外部副作用）。 */
@@ -394,6 +403,49 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(JSON.stringify(response.json())).not.toContain("foreign-core-run");
   });
 
+  it("task audit and child reads exclude corrupt cross-merchant attempts, deliverables, and artifacts", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-child-scope");
+    const now = "2026-08-26T08:00:00.000Z";
+    const foreignAttempt: ExecutionAttempt = {
+      id: "foreign-task-attempt", taskId: task.id, merchantId: "foreign-merchant", attemptNo: 99,
+      status: "SUCCEEDED", gate: "G2", agentRunId: "foreign-attempt-run",
+      coreRunId: "foreign-attempt-core", traceRef: "foreign-attempt-trace",
+      probeRef: "foreign-attempt-probe", error: null, startedAt: now, triggerStartedAt: null,
+      resolvedAt: now, resolvedBy: "foreign-operator", resolution: null, resolutionNote: null,
+      createdAt: now, updatedAt: now,
+    };
+    const foreignArtifact: SpecialistArtifact = {
+      id: "foreign-task-artifact", taskId: task.id, merchantId: "foreign-merchant",
+      artifactType: "AUDIT_REPORT", schemaVersion: "v1", title: "foreign title",
+      summary: "foreign summary", payload: { private: true }, coreRunId: "foreign-artifact-core",
+      createdBy: "foreign-operator", createdAt: now,
+    };
+    await insertAttempt(built.db, foreignAttempt);
+    await upsertAttemptDeliverable(built.db, {
+      id: "foreign-attempt-deliverable", attemptId: foreignAttempt.id, fileId: "foreign-file",
+      fileName: "foreign.json", contentType: "application/json", sha256: "sha256:foreign",
+      sourceRef: "https://foreign.example/private?token=secret", createdAt: now,
+    });
+    await insertSpecialistArtifact(built.db, foreignArtifact);
+
+    const audit = await app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${task.id}/audit-references?limit=50`,
+    });
+    const attempts = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/attempts` });
+    const artifacts = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/artifacts` });
+
+    expect(audit.statusCode).toBe(200);
+    expect(attempts.statusCode).toBe(200);
+    expect(artifacts.statusCode).toBe(200);
+    expect(JSON.stringify(audit.json())).not.toContain("foreign-");
+    expect(attempts.json().items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: foreignAttempt.id }),
+    ]));
+    expect(artifacts.json().items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: foreignArtifact.id }),
+    ]));
+  });
+
   it("audit references page task runs and attach deliverables through the bounded batch projection", async () => {
     const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-page");
     const base: Omit<AgentRun, "id" | "coreRunId" | "createdAt" | "updatedAt"> = {
@@ -424,6 +476,17 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     })]);
   });
 
+  it("audit reference pagination rejects negative, fractional, non-finite, and over-bound offsets", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-invalid-page");
+    for (const offset of ["-1", "1.5", "NaN", "Infinity", "10001"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/seo-ops/tasks/${task.id}/audit-references?offset=${encodeURIComponent(offset)}&limit=20`,
+      });
+      expect(response.statusCode, `offset=${offset}`).toBe(400);
+    }
+  });
+
   it("terminal execution persists its Core trace and deliverable refs for the bounded task audit", async () => {
     const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-audit");
     const confirmed = await app.inject({
@@ -439,7 +502,8 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
           id: "core-execution-audit", agent_id: "agent-gbp-exec", status: "COMPLETED",
           trace_id: "trace-execution-audit-full", artifacts: [{
             file_id: "file-execution-audit-full", file_name: "receipt.json",
-            content_type: "application/json", download_url: "https://example.test/files/receipt.json",
+            content_type: "application/json", size: bytes.byteLength,
+            download_url: "https://example.test/files/receipt.json?X-Amz-Signature=terminal-secret#download",
           }],
         };
       },
@@ -454,8 +518,97 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(audit.statusCode).toBe(200);
     expect(audit.json().execution_attempts).toEqual([expect.objectContaining({
       id: expect.any(String), core_run_id: "core-execution-audit", trace_ref: "trace-execution-audit-full",
+      probe_ref: expect.stringContaining(`exec-${task.id.slice(0, 8)}-rev`),
       deliverables: [expect.objectContaining({ file_id: "file-execution-audit-full", sha256: sha256HashBytes(bytes), source_ref: "https://example.test/files/receipt.json" })],
     })]);
+    expect(JSON.stringify(audit.json())).not.toContain("terminal-secret");
+  });
+
+  it("terminal reference hashing skips artifacts whose declared size exceeds the worker byte cap", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-declared-oversize");
+    const confirmed = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
+      payload: { expected_state_version: task.state_version, idempotency_key: "execution-declared-oversize" },
+    });
+    expect(confirmed.statusCode).toBe(201);
+    let downloadCount = 0;
+    const core: CoreAiClient = {
+      async trigger() { return { run_id: "core-declared-oversize", status: "RUNNING" }; },
+      async getRun() {
+        return {
+          id: "core-declared-oversize", agent_id: "agent-gbp-exec", status: "COMPLETED",
+          artifacts: [{
+            file_id: "file-declared-oversize", file_name: "huge.bin",
+            content_type: "application/octet-stream", size: 100_000_000,
+            download_url: "https://core.example/files/huge.bin",
+          }],
+        };
+      },
+      async cancel() { /* no-op */ },
+      async downloadArtifact() { downloadCount += 1; return new Uint8Array([1]); },
+    };
+    const worker = new ExecutionWorker({ db: built.db, client: core, mockMode: false });
+    await worker.pollOnce();
+    await worker.pollOnce();
+
+    const audit = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/audit-references` });
+    expect(downloadCount).toBe(0);
+    expect(audit.json().execution_attempts[0].deliverables).toEqual([
+      expect.objectContaining({ file_id: "file-declared-oversize" }),
+    ]);
+    expect(audit.json().execution_attempts[0].deliverables[0]).not.toHaveProperty("sha256");
+  });
+
+  it("terminal hashing shares one aggregate deadline and never logs artifact URLs or credentials", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-hash-budget");
+    const confirmed = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
+      payload: { expected_state_version: task.state_version, idempotency_key: "execution-hash-budget" },
+    });
+    expect(confirmed.statusCode).toBe(201);
+    const started: string[] = [];
+    const logs: string[] = [];
+    const core: CoreAiClient = {
+      async trigger() { return { run_id: "core-hash-budget", status: "RUNNING" }; },
+      async getRun() {
+        return {
+          id: "core-hash-budget", agent_id: "agent-gbp-exec", status: "COMPLETED",
+          artifacts: [1, 2, 3].map((item) => ({
+            file_id: `budget-file-${item}`, file_name: `budget-${item}.bin`, size: 1,
+            download_url: `https://core.example/files/${item}?token=terminal-budget-secret`,
+          })),
+        };
+      },
+      async cancel() { /* no-op */ },
+      async downloadArtifact(url, options) {
+        started.push(url);
+        return new Promise<Uint8Array>((resolve, reject) => {
+          const timer = setTimeout(() => resolve(new Uint8Array([1])), 40);
+          const rejectForAbort = () => {
+            clearTimeout(timer);
+            reject(new Error("download failed for ?token=terminal-budget-secret"));
+          };
+          if (options?.signal?.aborted) rejectForAbort();
+          else options?.signal?.addEventListener("abort", rejectForAbort, { once: true });
+        });
+      },
+    };
+    const worker = new ExecutionWorker({
+      db: built.db,
+      client: core,
+      mockMode: false,
+      terminalArtifactHashBudgetMs: 10,
+      log: (message, err) => logs.push(`${message} ${String(err ?? "")}`),
+    });
+    await worker.pollOnce();
+    await worker.pollOnce();
+
+    const audit = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/audit-references` });
+    const deliverables = audit.json().execution_attempts[0].deliverables;
+    expect(started).toHaveLength(1);
+    expect(deliverables).toHaveLength(3);
+    for (const deliverable of deliverables) expect(deliverable).not.toHaveProperty("sha256");
+    expect(logs.join("\n")).not.toContain("terminal-budget-secret");
   });
 
   it("approved content edit atomically creates a new revision and requires fresh approval", async () => {
@@ -541,7 +694,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
       payload: { expected_state_version: task.state_version, idempotency_key: "exec-3" },
     });
     // 人为制造结果不明（模拟超时/网络裂缝）
-    const [attempt] = await listAttemptsByTask(built.db, task.id);
+    const [attempt] = await listAttemptsByTask(built.db, task.id, task.merchant_id);
     await settleAttemptUnknown(built.db, attempt!, "simulated timeout", "system:test");
 
     const frozen = (

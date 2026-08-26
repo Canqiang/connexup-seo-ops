@@ -2,7 +2,7 @@ import { Bot, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
-import type { SeoTask } from "../../api/types";
+import type { SeoTask, TaskAuditReferencesWire } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { hasPermission } from "../../auth/permissions";
 import { BackButton } from "../../app/BackButton";
@@ -23,6 +23,45 @@ import { TechnicalDetails } from "./TechnicalDetails";
 import { TaskAuditReferences } from "./TaskAuditReferences";
 import { ManualCompletionPanel } from "./ManualCompletionPanel";
 
+const AUDIT_REFERENCE_PAGE_LIMIT = 20;
+
+function mergeById<T extends { id: string }>(current: T[], next: T[]): T[] {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  for (const item of next) merged.set(item.id, item);
+  return [...merged.values()];
+}
+
+function mergeRowsWithDeliverables<
+  D extends { id: string },
+  T extends { id: string; deliverables: D[] },
+>(current: T[], next: T[]): T[] {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  for (const item of next) {
+    const prior = merged.get(item.id);
+    merged.set(item.id, prior
+      ? { ...prior, ...item, deliverables: mergeById(prior.deliverables, item.deliverables) }
+      : item);
+  }
+  return [...merged.values()];
+}
+
+function mergeAuditReferencePages(
+  current: TaskAuditReferencesWire,
+  next: TaskAuditReferencesWire,
+): TaskAuditReferencesWire {
+  return {
+    offset: next.offset ?? current.offset ?? 0,
+    limit: next.limit ?? current.limit ?? AUDIT_REFERENCE_PAGE_LIMIT,
+    total: Math.max(current.total ?? 0, next.total ?? 0),
+    agent_runs: mergeRowsWithDeliverables(current.agent_runs, next.agent_runs),
+    artifacts: mergeById(current.artifacts, next.artifacts),
+    execution_attempts: mergeRowsWithDeliverables(
+      current.execution_attempts ?? [],
+      next.execution_attempts ?? [],
+    ),
+  };
+}
+
 export function TaskPage() {
   const { taskId = "" } = useParams();
   const { mode = "operator" } = useOutletContext<{ mode?: ViewMode }>();
@@ -31,19 +70,56 @@ export function TaskPage() {
   const eventResource = useResource((signal) => seoOpsApi.events(taskId, { limit: 100 }, signal), [taskId]);
   const artifactResource = useResource((signal) => seoOpsApi.taskArtifacts(taskId, signal), [taskId]);
   const draftResource = useResource((signal) => seoOpsApi.drafts(taskId, signal), [taskId]);
-  const attemptResource = useResource((signal) => seoOpsApi.attempts(taskId, signal), [taskId]);
   const [task, setTask] = useState<SeoTask>();
   const [showEvidence, setShowEvidence] = useState(false);
   const [showRevision, setShowRevision] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
-  const auditReferenceResource = useResource(
-    (signal) => auditOpen ? seoOpsApi.taskAuditReferences(taskId, signal) : Promise.resolve(undefined),
+  const [auditReferences, setAuditReferences] = useState<TaskAuditReferencesWire>();
+  const [auditPageLoading, setAuditPageLoading] = useState(false);
+  const [auditPageError, setAuditPageError] = useState(false);
+  const auditReferenceResource = useResource<TaskAuditReferencesWire | undefined>(
+    (signal) => auditOpen
+      ? seoOpsApi.taskAuditReferences(
+          taskId,
+          { offset: 0, limit: AUDIT_REFERENCE_PAGE_LIMIT },
+          signal,
+        )
+      : Promise.resolve(undefined),
     [taskId, auditOpen],
   );
   useEffect(() => { if (taskResource.data) setTask(taskResource.data); }, [taskResource.data]);
+  useEffect(() => {
+    setAuditReferences(undefined);
+    setAuditPageError(false);
+  }, [taskId]);
+  useEffect(() => {
+    if (auditReferenceResource.data) {
+      setAuditReferences(auditReferenceResource.data);
+      setAuditPageError(false);
+    }
+  }, [auditReferenceResource.data]);
   usePageTitle(task ? task.title : "任务");
-  const readback = (next: SeoTask) => { setTask(next); taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); attemptResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
-  const reload = () => { taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); attemptResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
+  const readback = (next: SeoTask) => { setTask(next); taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
+  const reload = () => { taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
+  const nextAuditOffset = (auditReferences?.offset ?? 0)
+    + (auditReferences?.limit ?? AUDIT_REFERENCE_PAGE_LIMIT);
+  const hasMoreAuditReferences = nextAuditOffset < (auditReferences?.total ?? 0);
+  const loadMoreAuditReferences = async () => {
+    if (!auditReferences || auditPageLoading || !hasMoreAuditReferences) return;
+    setAuditPageLoading(true);
+    setAuditPageError(false);
+    try {
+      const next = await seoOpsApi.taskAuditReferences(taskId, {
+        offset: nextAuditOffset,
+        limit: auditReferences.limit ?? AUDIT_REFERENCE_PAGE_LIMIT,
+      });
+      setAuditReferences((current) => current ? mergeAuditReferencePages(current, next) : next);
+    } catch {
+      setAuditPageError(true);
+    } finally {
+      setAuditPageLoading(false);
+    }
+  };
   if (taskResource.loading && !task) return <div className="page-state" role="status">正在读取任务聚合…</div>;
   if (taskResource.error || !task) return <div className="page-state is-error" role="alert">任务不存在、不可见或读取失败。<BackButton fallback="/inbox" label="返回任务列表" /></div>;
 
@@ -69,7 +145,13 @@ export function TaskPage() {
     {showEvidence ? <section className="data-panel inline-form"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE COMMAND</span><h2>附加当前版本证据</h2></div></div><EvidenceForm task={task} onReadback={readback} /></section> : null}
     <TechnicalDetails onToggle={setAuditOpen} open={auditOpen} task={task}>
       <section className="task-state-ribbon is-six"><div><span>任务版本</span><strong>rev {task.task_revision}</strong></div><div><span>状态版本</span><strong>{task.state_version}</strong></div><div><span>执行状态</span><strong>{taskStatusLabel(task.status)}</strong></div><div><span>证据状态</span><strong>{evidenceStateLabel(task.evidence_state)}</strong></div><div><span>执行模式</span><strong>{executionModeLabel(task.execution_mode)}</strong></div><div><span>影响</span><strong>{task.impact}</strong></div></section>
-      {auditOpen ? <TaskAuditReferences artifacts={artifactResource.data?.items ?? []} attempts={attemptResource.data?.items ?? []} runReferences={auditReferenceResource.data} task={task} /> : null}
+      {auditOpen ? <TaskAuditReferences
+        loadingMore={auditPageLoading}
+        onLoadMore={hasMoreAuditReferences ? () => { void loadMoreAuditReferences(); } : undefined}
+        pageError={auditPageError || Boolean(auditReferenceResource.error)}
+        runReferences={auditReferences}
+        task={task}
+      /> : null}
       <div className="task-layout"><div className="task-primary">
         {artifactResource.loading && !artifactResource.data ? <div className="page-state" role="status">读取 Agent 产物…</div> : null}
         {artifactResource.error ? <div className="page-state is-error" role="alert">Agent 产物读取失败。</div> : null}

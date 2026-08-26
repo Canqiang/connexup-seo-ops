@@ -158,6 +158,11 @@ const finalizeDraftSchema = z.object({
   idempotency_key: z.string(),
 });
 
+const auditReferencePageSchema = z.object({
+  offset: z.coerce.number().int().min(0).max(10_000).default(0),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 const upsertCapabilitySchema = z.object({
   asset: z.string().min(1).max(100),
   external_ref: z.string().max(500).optional().nullable(),
@@ -299,37 +304,38 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
   app.get("/api/seo-ops/tasks/:taskId/attempts", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     const { taskId } = request.params as { taskId: string };
-    await requireTaskAccess(ctx.db, actor, taskId);
-    return { items: (await attemptsView(ctx.db, taskId)).map(attemptView) };
+    const task = await requireTaskAccess(ctx.db, actor, taskId);
+    return { items: (await attemptsView(ctx.db, task.id, task.merchantId)).map(attemptView) };
   });
 
   app.get("/api/seo-ops/tasks/:taskId/artifacts", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     const { taskId } = request.params as { taskId: string };
-    await requireTaskAccess(ctx.db, actor, taskId);
+    const task = await requireTaskAccess(ctx.db, actor, taskId);
     return {
-      items: (await listSpecialistArtifactsByTask(ctx.db, taskId)).map(specialistArtifactView),
+      items: (await listSpecialistArtifactsByTask(ctx.db, task.id, task.merchantId))
+        .map(specialistArtifactView),
     };
   });
 
   app.get("/api/seo-ops/tasks/:taskId/audit-references", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     const { taskId } = request.params as { taskId: string };
-    await requireTaskAccess(ctx.db, actor, taskId);
-    const task = await getTask(ctx.db, taskId);
-    if (!task) throw new ApiError(404, "resource not found");
-    const query = request.query as { offset?: string; limit?: string };
-    const offset = Math.max(0, Number.parseInt(query.offset ?? "0", 10) || 0);
-    const limit = Math.min(50, Math.max(1, Number.parseInt(query.limit ?? "20", 10) || 20));
+    const task = await requireTaskAccess(ctx.db, actor, taskId);
+    const { offset, limit } = auditReferencePageSchema.parse(request.query);
     const runs = await listAgentRunsForTaskAudit(
       ctx.db, task.id, task.merchantId, task.agentRunLinks.map((link) => link.agentRunId), offset, limit,
     );
     const deliverablesByRun = await listDeliverablesByRunIds(ctx.db, runs.items.map((run) => run.id));
-    const attempts = await listAttemptsByTaskPage(ctx.db, task.id, offset, limit);
+    const attempts = await listAttemptsByTaskPage(
+      ctx.db, task.id, task.merchantId, offset, limit,
+    );
     const deliverablesByAttempt = await listAttemptDeliverablesByAttemptIds(
       ctx.db, attempts.items.map((attempt) => attempt.id),
     );
-    const artifacts = await listSpecialistArtifactReferencesByTask(ctx.db, taskId, offset, limit);
+    const artifacts = await listSpecialistArtifactReferencesByTask(
+      ctx.db, task.id, task.merchantId, offset, limit,
+    );
     return {
       offset, limit, total: Math.max(runs.total, attempts.total, artifacts.total),
       agent_runs: runs.items.map((run) => ({
@@ -345,8 +351,10 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
         id: artifact.id, core_run_id: artifact.coreRunId,
       })),
       execution_attempts: attempts.items.map((attempt) => ({
-        id: attempt.id, ...(attempt.coreRunId ? { core_run_id: attempt.coreRunId } : {}),
+        id: attempt.id, ...(attempt.agentRunId ? { agent_run_id: attempt.agentRunId } : {}),
+        ...(attempt.coreRunId ? { core_run_id: attempt.coreRunId } : {}),
         ...(attempt.traceRef ? { trace_ref: attempt.traceRef } : {}),
+        probe_ref: attempt.probeRef,
         deliverables: (deliverablesByAttempt.get(attempt.id) ?? []).map((deliverable) => ({
           id: deliverable.id, file_id: deliverable.fileId,
           ...(deliverable.sha256 ? { sha256: deliverable.sha256 } : {}),

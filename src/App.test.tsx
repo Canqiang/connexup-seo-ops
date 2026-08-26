@@ -105,6 +105,7 @@ let draftData: DraftWire[] = [];
 let artifactData: SpecialistArtifactWire[] = [];
 let attemptData: AttemptWire[] = [];
 let auditReferenceData: TaskAuditReferencesWire = { agent_runs: [], artifacts: [] };
+let auditReferencePages = new Map<number, TaskAuditReferencesWire>();
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
@@ -121,6 +122,7 @@ beforeEach(() => {
   artifactData = [];
   attemptData = [];
   auditReferenceData = { agent_runs: [], artifacts: [] };
+  auditReferencePages = new Map();
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -147,7 +149,10 @@ beforeEach(() => {
     if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/proposal-batches")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/tasks/task-1/attempts")) return json({ items: attemptData });
-    if (path.startsWith("/api/seo-ops/tasks/task-1/audit-references")) return json(auditReferenceData);
+    if (path.startsWith("/api/seo-ops/tasks/task-1/audit-references")) {
+      const offset = Number(new URL(path, "https://seo-ops.test").searchParams.get("offset") ?? "0");
+      return json(auditReferencePages.get(offset) ?? auditReferenceData);
+    }
     if (path.startsWith("/api/seo-ops/tasks/task-1/execution-preview")) return json({ confirmable: true, attempt_count: 0, gate_ready_status: true, checks: [
       { key: "version", label: "当前版本一致", detail: "审批版本与任务一致", passed: true },
       { key: "authorization", label: "外部授权有效", detail: "商户授权仍有效", passed: true },
@@ -482,7 +487,20 @@ test("closed technical audit exposes full identifiers, hashes and safe external 
     evidence_refs: [{ id: "evidence-full-1", task_revision: 2, type: "CONTENT_DRAFT", artifact_id: "artifact-evidence-full", sha256: "sha256:abcdef0123456789full", captured_at: "2026-08-26T08:00:00Z", verification_status: "VERIFIED", requirement_key: "CONTENT_DRAFT", created_by: "user-1", created_at: "2026-08-26T08:00:00Z" }, { id: "evidence-full-2", task_revision: 2, type: "SOURCE", source_ref: "https://example.test/source/full", captured_at: "2026-08-26T08:00:00Z", verification_status: "VERIFIED", requirement_key: "SOURCE", created_by: "user-1", created_at: "2026-08-26T08:00:00Z" }],
     agent_run_links: [{ agent_run_id: "agent-run-full-012345", relationship: "EXECUTION", linked_by: "user-1", linked_at: "2026-08-26T08:00:00Z" }],
   };
-  attemptData = [{ id: "attempt-full-1", task_id: "task-1", merchant_id: "only-bear", attempt_no: 1, status: "SUCCEEDED", gate: "G2", agent_run_id: "agent-run-attempt-full", core_run_id: "core-run-attempt-full", probe_ref: "https://example.test/probes/full", error: null, started_at: "2026-08-26T08:00:00Z", resolved_at: null, resolved_by: null, resolution: null, resolution_note: null }];
+  auditReferenceData = {
+    offset: 0,
+    limit: 20,
+    total: 1,
+    agent_runs: [],
+    artifacts: [],
+    execution_attempts: [{
+      id: "attempt-full-1",
+      agent_run_id: "agent-run-attempt-full",
+      core_run_id: "core-run-attempt-full",
+      probe_ref: "https://example.test/probes/full",
+      deliverables: [],
+    }],
+  };
   renderApp("/tasks/task-1");
 
   const audit = await screen.findByText("技术详情（审计）");
@@ -499,7 +517,7 @@ test("technical audit renders persisted task-run traces and deliverable identifi
   auditReferenceData = {
     agent_runs: [{ id: "task-agent-run-full", core_run_id: "task-core-run-full", trace_ref: "https://example.test/traces/full", deliverables: [{ id: "deliverable-full", file_id: "core-file-full", sha256: "sha256:deliverable-full", source_ref: "https://example.test/files/full" }] }],
     artifacts: [{ id: "specialist-artifact-full", core_run_id: "specialist-core-full" }],
-    execution_attempts: [{ id: "execution-attempt-full", core_run_id: "execution-core-run-full", trace_ref: "execution-trace-full", deliverables: [{ id: "execution-deliverable-full", file_id: "execution-file-full", sha256: "sha256:execution-deliverable-full", source_ref: "https://example.test/execution/files/full" }] }],
+    execution_attempts: [{ id: "execution-attempt-full", core_run_id: "execution-core-run-full", trace_ref: "execution-trace-full", probe_ref: "execution-probe-full", deliverables: [{ id: "execution-deliverable-full", file_id: "execution-file-full", sha256: "sha256:execution-deliverable-full", source_ref: "https://example.test/execution/files/full" }] }],
   };
   renderApp("/tasks/task-1");
   await userEvent.setup().click(await screen.findByText("技术详情（审计）"));
@@ -518,9 +536,55 @@ test("task audit references are fetched only after the closed technical audit op
   renderApp("/tasks/task-1");
   await screen.findByText("技术详情（审计）");
   expect(calls.some(({ path }) => path.includes("/audit-references"))).toBe(false);
+  expect(calls.some(({ path }) => path.endsWith("/attempts"))).toBe(false);
 
   await userEvent.setup().click(screen.getByText("技术详情（审计）"));
-  await vi.waitFor(() => expect(calls.some(({ path }) => path.includes("/audit-references"))).toBe(true));
+  await vi.waitFor(() => expect(calls.some(({ path }) => path.includes("/audit-references?offset=0&limit=20"))).toBe(true));
+  expect(calls.some(({ path }) => path.endsWith("/attempts"))).toBe(false);
+});
+
+test("technical audit loads overlapping reference pages on demand and merges every collection without duplicates", async () => {
+  auditReferencePages.set(0, {
+    offset: 0,
+    limit: 20,
+    total: 21,
+    agent_runs: [{ id: "paged-run-1", core_run_id: "paged-core-run-1", deliverables: [] }],
+    artifacts: [{ id: "paged-artifact-1", core_run_id: "paged-core-artifact-1" }],
+    execution_attempts: [{ id: "paged-attempt-1", core_run_id: "paged-core-attempt-1", probe_ref: "paged-probe-1", deliverables: [] }],
+  });
+  auditReferencePages.set(20, {
+    offset: 20,
+    limit: 20,
+    total: 21,
+    agent_runs: [
+      { id: "paged-run-1", core_run_id: "paged-core-run-1", deliverables: [] },
+      { id: "paged-run-2", core_run_id: "paged-core-run-2", deliverables: [] },
+    ],
+    artifacts: [
+      { id: "paged-artifact-1", core_run_id: "paged-core-artifact-1" },
+      { id: "paged-artifact-2", core_run_id: "paged-core-artifact-2" },
+    ],
+    execution_attempts: [
+      { id: "paged-attempt-1", core_run_id: "paged-core-attempt-1", probe_ref: "paged-probe-1", deliverables: [] },
+      { id: "paged-attempt-2", core_run_id: "paged-core-attempt-2", probe_ref: "paged-probe-2", deliverables: [] },
+    ],
+  });
+  renderApp("/tasks/task-1");
+  await userEvent.setup().click(await screen.findByText("技术详情（审计）"));
+
+  expect(await screen.findByText("paged-run-1")).toBeVisible();
+  expect(screen.getByLabelText("审计引用总数")).toHaveTextContent("21");
+  const loadMore = screen.getByRole("button", { name: "加载更多审计引用" });
+  await userEvent.setup().click(loadMore);
+
+  expect(await screen.findByText("paged-run-2")).toBeVisible();
+  expect(screen.getByText("paged-artifact-2")).toBeVisible();
+  expect(screen.getByText("paged-attempt-2")).toBeVisible();
+  expect(calls.some(({ path }) => path.includes("/audit-references?offset=20&limit=20"))).toBe(true);
+  expect(screen.getAllByText("paged-run-1")).toHaveLength(1);
+  expect(screen.getAllByText("paged-artifact-1")).toHaveLength(1);
+  expect(screen.getAllByText("paged-attempt-1")).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "加载更多审计引用" })).not.toBeInTheDocument();
 });
 
 function renderApp(route: string) {
