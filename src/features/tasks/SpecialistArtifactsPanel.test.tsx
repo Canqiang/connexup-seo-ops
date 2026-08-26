@@ -28,6 +28,10 @@ const artifacts: SpecialistArtifactWire[] = [
     core_run_id: "core-merchant-report",
     created_by: "system:specialist-agent",
     created_at: "2026-08-27T12:00:00.000Z",
+    acceptance_status: "ACCEPTED",
+    acceptance_decided_by: "op-1",
+    acceptance_decided_at: "2026-08-27T12:30:00.000Z",
+    acceptance_note: "Approved for merchant reporting.",
   },
   {
     id: "artifact-effect-review",
@@ -48,6 +52,7 @@ const artifacts: SpecialistArtifactWire[] = [
     core_run_id: "core-effect-review",
     created_by: "system:specialist-agent",
     created_at: "2026-08-27T11:00:00.000Z",
+    acceptance_status: "PENDING",
   },
   {
     id: "artifact-weekly-signal",
@@ -113,6 +118,10 @@ const artifacts: SpecialistArtifactWire[] = [
     core_run_id: "core-audit",
     created_by: "system:specialist-agent",
     created_at: "2026-08-26T09:00:00.000Z",
+    acceptance_status: "REJECTED",
+    acceptance_decided_by: "op-1",
+    acceptance_decided_at: "2026-08-26T09:15:00.000Z",
+    acceptance_note: "Missing evidence.",
   },
   {
     id: "artifact-keywords",
@@ -175,5 +184,9 @@ describe("SpecialistArtifactsPanel", () => {
     expect(screen.getByText("Audit findings")).toBeInTheDocument();
     expect(screen.getByText("未知 Agent 产物")).toBeInTheDocument();
     expect(screen.getByText("未知结构 · 安全回退")).toBeInTheDocument();
+    expect(screen.getByText("已验收")).toBeInTheDocument();
+    expect(screen.getByText("待验收")).toBeInTheDocument();
+    expect(screen.getByText("已拒绝")).toBeInTheDocument();
+    expect(screen.getAllByText("验收状态未知").length).toBeGreaterThan(0);
   });
 });

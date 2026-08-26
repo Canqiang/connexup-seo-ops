@@ -371,5 +371,9 @@ export function specialistArtifactView(a: SpecialistArtifact): Record<string, un
     core_run_id: a.coreRunId,
     created_by: a.createdBy,
     created_at: a.createdAt,
+    acceptance_status: a.acceptanceStatus,
+    acceptance_decided_by: a.acceptanceDecidedBy,
+    acceptance_decided_at: a.acceptanceDecidedAt,
+    acceptance_note: a.acceptanceNote,
   };
 }

@@ -30,6 +30,10 @@ export interface AgentRun {
   completedAt: string | null;
   creationIdempotencyKey: string | null;
   requestFingerprint: string | null;
+  /** GBP content only: stable business input lineage, distinct from a retry generation id. */
+  businessInputFingerprint?: string | null;
+  retryOfAgentRunId?: string | null;
+  retryReason?: string | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;

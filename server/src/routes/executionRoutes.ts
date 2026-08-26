@@ -59,6 +59,7 @@ import {
   listSpecialistArtifactsByMerchant,
   listSpecialistArtifactReferencesByTask,
   listSpecialistArtifactsByTask,
+  getSpecialistArtifact,
   type SpecialistArtifactType,
 } from "../repos/specialistArtifactRepo.js";
 import {
@@ -76,6 +77,7 @@ import {
 import { TASK_TYPES } from "../domain/enums.js";
 import { stageRunView } from "../services/agentRunService.js";
 import { triggerGbpPostContentRun } from "../services/gbpPostContentService.js";
+import { decideArtifactAcceptance } from "../services/artifactAcceptanceService.js";
 
 /** agent 绑定键 = 任务类型 + 执行专用键（GBP 写入由 GBP_EXECUTION agent 执行）。 */
 const BINDING_KEYS = [...TASK_TYPES, "GBP_EXECUTION"] as const;
@@ -139,6 +141,11 @@ const verifySchema = z.object({
   idempotency_key: z.string(),
 });
 
+const artifactAcceptanceSchema = z.object({
+  decision: z.enum(["ACCEPTED", "REJECTED"]),
+  note: z.string().trim().min(1).max(2000).optional(),
+}).strict();
+
 const resetFailedSchema = z.object({
   note: z.string().max(2000).optional(),
   expected_state_version: z.number().int().nonnegative(),
@@ -161,6 +168,10 @@ const addDraftRevisionSchema = addDraftSchema.extend({
 
 const triggerContentRunSchema = z.object({
   idempotency_key: z.string().min(1).max(200),
+  retry: z.object({
+    prior_run_id: z.string().trim().min(1).max(200),
+    reason: z.string().trim().min(10).max(2000),
+  }).strict().optional(),
 }).strict();
 
 const finalizeDraftSchema = z.object({
@@ -392,6 +403,22 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     };
   });
 
+  app.post("/api/seo-ops/artifacts/:artifactId/acceptance", async (request) => {
+    const actor = requirePermission(request, "seoops.approve");
+    const { artifactId } = request.params as { artifactId: string };
+    const artifact = await getSpecialistArtifact(ctx.db, artifactId);
+    if (!artifact) throw new ApiError(404, "resource not found");
+    await requireMerchantAccess(ctx.db, actor, artifact.merchantId);
+    const body = artifactAcceptanceSchema.parse(request.body);
+    return specialistArtifactView(await decideArtifactAcceptance(
+      ctx.db,
+      artifact.id,
+      body.decision,
+      actor.userId,
+      body.note ?? null,
+    ));
+  });
+
   // 查证：OUTCOME_UNKNOWN 的二选一裁决（动作发生没有），解除商户冻结。
   app.post("/api/seo-ops/attempts/:attemptId/outcome", async (request, reply) => {
     const actor = requirePermission(request, "seoops.execute");
@@ -460,6 +487,9 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       taskId,
       body.idempotency_key,
       actor.userId,
+      body.retry
+        ? { priorRunId: body.retry.prior_run_id, reason: body.retry.reason }
+        : undefined,
     );
     reply.status(replayed ? 200 : 202);
     return stageRunView(run, await listDeliverablesByRun(ctx.db, run.id));

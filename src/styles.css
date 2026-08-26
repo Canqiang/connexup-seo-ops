@@ -621,6 +621,10 @@ input, select { height: 38px; }
 .artifact-card > header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; }
 .artifact-card > header > div:nth-child(2) { min-width: 0; }
 .artifact-card > header strong { display: block; margin-top: 2px; color: var(--text); font-size: 12px; }
+.artifact-acceptance { display: inline-flex; margin-top: 5px; padding: 2px 6px; border: 1px solid #c8d4dc; background: #fff; color: var(--quiet); font: 8px "SFMono-Regular", monospace; letter-spacing: .08em; }
+.artifact-acceptance.is-accepted { border-color: #8fc8ba; background: #edf8f4; color: #176d5d; }
+.artifact-acceptance.is-rejected { border-color: #e4b1ad; background: #fff2f1; color: #a63b34; }
+.artifact-acceptance.is-pending { border-color: #e2c58f; background: #fff8e8; color: #8f5c12; }
 .artifact-card > header time { color: var(--quiet); font: 9px "SFMono-Regular", monospace; }
 .artifact-type-icon { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #bfd0da; background: #fff; color: var(--cyan); }
 .artifact-card h3 { margin: 17px 0 5px; color: var(--text); font-size: 16px; line-height: 1.3; }

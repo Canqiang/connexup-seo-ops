@@ -120,6 +120,9 @@ export const SCHEMA_STATEMENTS: string[] = [
     completed_at TEXT,
     creation_idempotency_key TEXT,
     request_fingerprint TEXT,
+    business_input_fingerprint TEXT,
+    retry_of_agent_run_id TEXT,
+    retry_reason TEXT,
     created_by TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -192,6 +195,12 @@ export const SCHEMA_STATEMENTS: string[] = [
     core_run_id TEXT NOT NULL,
     created_by TEXT,
     created_at TEXT NOT NULL,
+    acceptance_status TEXT NOT NULL DEFAULT 'PENDING',
+    acceptance_decided_by TEXT,
+    acceptance_decided_at TEXT,
+    acceptance_note TEXT,
+    CONSTRAINT seo_specialist_artifacts_acceptance_status_check
+      CHECK (acceptance_status IN ('PENDING', 'ACCEPTED', 'REJECTED')),
     UNIQUE(core_run_id, artifact_type)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_specialist_artifacts_task ON seo_specialist_artifacts(task_id, created_at DESC)`,

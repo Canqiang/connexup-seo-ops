@@ -21,7 +21,19 @@ export interface SpecialistArtifact {
   coreRunId: string;
   createdBy: string | null;
   createdAt: string;
+  acceptanceStatus: "PENDING" | "ACCEPTED" | "REJECTED";
+  acceptanceDecidedBy: string | null;
+  acceptanceDecidedAt: string | null;
+  acceptanceNote: string | null;
 }
+
+type SpecialistArtifactInsert = Omit<
+  SpecialistArtifact,
+  "acceptanceStatus" | "acceptanceDecidedBy" | "acceptanceDecidedAt" | "acceptanceNote"
+> & Partial<Pick<
+  SpecialistArtifact,
+  "acceptanceStatus" | "acceptanceDecidedBy" | "acceptanceDecidedAt" | "acceptanceNote"
+>>;
 
 /** Raw persisted evidence for the Post-program projection.  The service owns
  * semantic validation, while the repository deliberately returns no title,
@@ -61,6 +73,10 @@ interface SpecialistArtifactRow {
   core_run_id: string;
   created_by: string | null;
   created_at: string;
+  acceptance_status: "PENDING" | "ACCEPTED" | "REJECTED";
+  acceptance_decided_by: string | null;
+  acceptance_decided_at: string | null;
+  acceptance_note: string | null;
 }
 
 function toArtifact(row: SpecialistArtifactRow): SpecialistArtifact {
@@ -76,18 +92,23 @@ function toArtifact(row: SpecialistArtifactRow): SpecialistArtifact {
     coreRunId: row.core_run_id,
     createdBy: row.created_by,
     createdAt: row.created_at,
+    acceptanceStatus: row.acceptance_status,
+    acceptanceDecidedBy: row.acceptance_decided_by,
+    acceptanceDecidedAt: row.acceptance_decided_at,
+    acceptanceNote: row.acceptance_note,
   };
 }
 
 export async function insertSpecialistArtifact(
   db: Db,
-  artifact: SpecialistArtifact,
+  artifact: SpecialistArtifactInsert,
 ): Promise<SpecialistArtifact> {
   await db.exec(
     `INSERT INTO seo_specialist_artifacts
       (id, task_id, merchant_id, artifact_type, schema_version, title, summary,
-       payload, core_run_id, created_by, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       payload, core_run_id, created_by, created_at, acceptance_status,
+       acceptance_decided_by, acceptance_decided_at, acceptance_note)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (core_run_id, artifact_type) DO NOTHING`,
     [
       artifact.id,
@@ -101,6 +122,10 @@ export async function insertSpecialistArtifact(
       artifact.coreRunId,
       artifact.createdBy,
       artifact.createdAt,
+      artifact.acceptanceStatus ?? "PENDING",
+      artifact.acceptanceDecidedBy ?? null,
+      artifact.acceptanceDecidedAt ?? null,
+      artifact.acceptanceNote ?? null,
     ],
   );
   const saved = await getSpecialistArtifactByRun(
@@ -110,6 +135,38 @@ export async function insertSpecialistArtifact(
   );
   if (!saved) throw new Error("specialist artifact insert did not produce a readable record");
   return saved;
+}
+
+export async function getSpecialistArtifact(
+  db: Db,
+  artifactId: string,
+): Promise<SpecialistArtifact | null> {
+  const row = await db.one<SpecialistArtifactRow>(
+    `SELECT * FROM seo_specialist_artifacts WHERE id = $1`,
+    [artifactId],
+  );
+  return row ? toArtifact(row) : null;
+}
+
+export async function setPendingSpecialistArtifactAcceptance(
+  db: Db,
+  artifactId: string,
+  decision: "ACCEPTED" | "REJECTED",
+  actor: string,
+  note: string | null,
+  decidedAt: string,
+): Promise<SpecialistArtifact | null> {
+  const row = await db.one<SpecialistArtifactRow>(
+    `UPDATE seo_specialist_artifacts
+        SET acceptance_status = $2,
+            acceptance_decided_by = $3,
+            acceptance_decided_at = $4,
+            acceptance_note = $5
+      WHERE id = $1 AND acceptance_status = 'PENDING'
+      RETURNING *`,
+    [artifactId, decision, actor, decidedAt, note],
+  );
+  return row ? toArtifact(row) : null;
 }
 
 export async function getSpecialistArtifactByRun(

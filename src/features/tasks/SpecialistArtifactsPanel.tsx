@@ -213,17 +213,32 @@ function EvidenceLimits({ values }: { values: string[] }) {
   return <div className="artifact-limits"><strong>证据边界</strong>{values.slice(0, 3).map((value) => <span key={value}>{value}</span>)}</div>;
 }
 
+function AcceptanceBadge({ artifact }: { artifact: SpecialistArtifactWire }) {
+  const status = artifact.acceptance_status;
+  const label = status === "ACCEPTED"
+    ? "已验收"
+    : status === "REJECTED"
+      ? "已拒绝"
+      : status === "PENDING"
+        ? "待验收"
+        : "验收状态未知";
+  return <span
+    className={`artifact-acceptance is-${String(status ?? "UNKNOWN").toLocaleLowerCase()}`}
+    title={artifact.acceptance_note ?? undefined}
+  >{label}</span>;
+}
+
 export function SpecialistArtifactsPanel({ artifacts, compact = false }: {
   artifacts: SpecialistArtifactWire[];
   compact?: boolean;
 }) {
   if (!artifacts.length) return null;
   return <section className={`data-panel specialist-artifacts${compact ? " is-compact" : ""}`}>
-    <div className="panel-heading"><div><span className="eyebrow">ACCEPTED AGENT OUTPUTS</span><h2>Agent 产物</h2><p className="quiet-copy">Core AI 负责生成；SEO Ops 校验结构、落库并推进任务。</p></div><span className="result-count">{artifacts.length} 项</span></div>
+    <div className="panel-heading"><div><span className="eyebrow">AGENT OUTPUT LEDGER</span><h2>Agent 产物</h2><p className="quiet-copy">Core AI 负责生成；SEO Ops 校验结构、落库并独立记录验收决定。</p></div><span className="result-count">{artifacts.length} 项</span></div>
     <div className="specialist-artifact-grid">{artifacts.slice(0, compact ? 3 : 12).map((artifact) => {
       const meta = TYPE_META[artifact.artifact_type] ?? UNKNOWN_META;
       return <article className={`artifact-card is-${String(artifact.artifact_type).toLocaleLowerCase()}`} key={artifact.id}>
-        <header><div className="artifact-type-icon">{meta.icon}</div><div><span className="eyebrow">{meta.eyebrow}</span><strong>{meta.label}</strong></div><time dateTime={artifact.created_at}>{formatDateTime(artifact.created_at)}</time></header>
+        <header><div className="artifact-type-icon">{meta.icon}</div><div><span className="eyebrow">{meta.eyebrow}</span><strong>{meta.label}</strong><AcceptanceBadge artifact={artifact} /></div><time dateTime={artifact.created_at}>{formatDateTime(artifact.created_at)}</time></header>
         <h3>{artifact.title}</h3>
         <p>{artifact.summary}</p>
         <div className="artifact-count">{countLabel(artifact)}</div>

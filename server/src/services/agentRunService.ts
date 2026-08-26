@@ -601,6 +601,10 @@ export interface StageRunWire {
   output_preview?: string | null;
   error?: string;
   error_code?: string;
+  request_fingerprint?: string;
+  business_input_fingerprint?: string;
+  retry_of_agent_run_id?: string;
+  retry_reason?: string;
   token_usage: Record<string, number>;
   deliverables: DeliverableWire[];
   triggered_by: string;
@@ -642,6 +646,12 @@ export function stageRunView(
       : { output_preview: preview }),
     ...(run.error ? { error: run.error } : {}),
     ...(run.errorCode ? { error_code: run.errorCode } : {}),
+    ...(run.requestFingerprint ? { request_fingerprint: run.requestFingerprint } : {}),
+    ...(run.businessInputFingerprint
+      ? { business_input_fingerprint: run.businessInputFingerprint }
+      : {}),
+    ...(run.retryOfAgentRunId ? { retry_of_agent_run_id: run.retryOfAgentRunId } : {}),
+    ...(run.retryReason ? { retry_reason: run.retryReason } : {}),
     token_usage: run.tokenUsage,
     deliverables: deliverables.map(deliverableView),
     triggered_by: run.triggeredBy,

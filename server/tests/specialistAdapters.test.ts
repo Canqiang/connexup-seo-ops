@@ -211,7 +211,12 @@ describe("specialist result adapters", () => {
       title: "30-day effect review",
       summary: "Observed visibility changed after the dated action bundle.",
       baseline: { captured_at: "2026-07-01T00:00:00.000Z" },
-      action_bundle: [{ action: "GBP post", occurred_at: "2026-07-10T00:00:00.000Z" }],
+      action_bundle: [{
+        action_id: "gbp-post-1",
+        action_type: "GBP_POST",
+        executed_at: "2026-07-10T00:00:00.000Z",
+        evidence_ref: "provider:gbp-post-1",
+      }],
       observed_change: { direction: "IMPROVED" },
       confounders: ["Seasonality was not controlled."],
       conclusion_tier: "ASSOCIATIONAL",
@@ -219,6 +224,26 @@ describe("specialist result adapters", () => {
       planning_signals: [{ signal: "continue measurement" }],
       limitations: ["No randomized control."],
     }))).toMatchObject({ conclusion_tier: "ASSOCIATIONAL" });
+    expect(() => parseEffectReviewOutput(JSON.stringify({
+      schema_version: "seo_ops.effect_review.v1",
+      merchant_id: "merchant-1",
+      title: "30-day effect review",
+      summary: "Observed visibility changed after the dated action bundle.",
+      baseline: { captured_at: "2026-07-01T00:00:00.000Z" },
+      action_bundle: [{
+        action_id: "gbp-post-1",
+        action_type: "GBP_POST",
+        executed_at: "2026-07-10T00:00:00.000Z",
+        evidence_ref: "provider:gbp-post-1",
+        invented_field: "must be rejected",
+      }],
+      observed_change: { direction: "IMPROVED" },
+      confounders: ["Seasonality was not controlled."],
+      conclusion_tier: "ASSOCIATIONAL",
+      conclusion: "Association only.",
+      planning_signals: [],
+      limitations: ["No randomized control."],
+    }))).toThrow(/invented_field/);
 
     const report = {
       schema_version: "seo_ops.merchant_report.v1",
@@ -404,6 +429,11 @@ describe("specialist result adapters", () => {
                 action_type: "GBP_POST",
                 executed_at: "2026-07-10T17:00:00.000Z",
                 evidence_ref: "provider:gbp-post-1",
+              }, {
+                action_id: "location-page-2026-07-15",
+                action_type: "WEBSITE_CONTENT",
+                executed_at: "2026-07-15T15:00:00.000Z",
+                evidence_ref: "cms:location-page-1",
               }],
               observed_change: { direction: "IMPROVED" },
               confounders: ["Seasonality was not controlled."],
@@ -488,6 +518,11 @@ describe("specialist result adapters", () => {
         action_type: "GBP_POST",
         executed_at: "2026-07-10T17:00:00.000Z",
         evidence_ref: "provider:gbp-post-1",
+      }, {
+        action_id: "location-page-2026-07-15",
+        action_type: "WEBSITE_CONTENT",
+        executed_at: "2026-07-15T15:00:00.000Z",
+        evidence_ref: "cms:location-page-1",
       }],
       pre_measurements: {
         window_start: "2026-07-01T00:00:00.000Z",
@@ -570,6 +605,11 @@ describe("specialist result adapters", () => {
       createdBy: "test",
       createdAt: "2026-08-26T00:00:00.000Z",
     });
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/artifacts/accepted-audit/acceptance",
+      payload: { decision: "ACCEPTED", note: "Approved frozen audit source." },
+    })).statusCode).toBe(200);
     await insertSpecialistArtifact(db, {
       id: "newer-audit-not-frozen",
       taskId: taskIds[1]!,
@@ -679,12 +719,12 @@ describe("specialist result adapters", () => {
       "core-review-run-forged-action",
       JSON.stringify({
         ...effectArtifact.payload,
-        action_bundle: [{
+        action_bundle: Array.from({ length: 2 }, () => ({
           action_id: "gbp-post-2026-07-10",
           action_type: "GBP_POST",
           executed_at: "2026-07-10T17:00:00.000Z",
-          evidence_ref: "provider:forged",
-        }],
+          evidence_ref: "provider:gbp-post-1",
+        })),
       }),
     )).rejects.toThrow(/action_bundle/);
     await expect(buildSpecialistRunInput(db, {
@@ -711,6 +751,24 @@ describe("specialist result adapters", () => {
       createdAt: "2026-08-26T00:00:00.000Z",
     });
     await insertSpecialistArtifact(db, {
+      id: "rejected-audit",
+      taskId: reportTask!.id,
+      merchantId,
+      artifactType: "AUDIT_REPORT",
+      schemaVersion: "seo_ops.audit_report.v1",
+      title: "Rejected audit",
+      summary: "Must not enter merchant reporting.",
+      payload: { rejected: true },
+      coreRunId: "rejected-audit-run",
+      createdBy: "test",
+      createdAt: "2026-08-26T00:00:00.000Z",
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/artifacts/rejected-audit/acceptance",
+      payload: { decision: "REJECTED", note: "Evidence is incomplete." },
+    })).statusCode).toBe(200);
+    await insertSpecialistArtifact(db, {
       id: "internal-plan",
       taskId: reportTask!.id,
       merchantId,
@@ -723,6 +781,11 @@ describe("specialist result adapters", () => {
       createdBy: "test",
       createdAt: "2026-08-26T00:00:00.000Z",
     });
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/artifacts/internal-plan/acceptance",
+      payload: { decision: "ACCEPTED" },
+    })).statusCode).toBe(200);
     const withSourceIds = (sourceArtifactIds: string[]) => ({
       ...reportTask!,
       executionSpec: JSON.stringify({
@@ -736,6 +799,8 @@ describe("specialist result adapters", () => {
       [["accepted-audit", "accepted-audit"], /duplicate source_artifact_ids/],
       [["foreign-audit"], /same merchant/],
       [["internal-plan"], /not merchant-safe/],
+      [["newer-audit-not-frozen"], /must be ACCEPTED/],
+      [["rejected-audit"], /must be ACCEPTED/],
     ] as const) {
       await expect(buildSpecialistRunInput(
         db,

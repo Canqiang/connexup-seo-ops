@@ -77,6 +77,15 @@ export async function getMerchant(db: Db, id: string): Promise<Merchant | null> 
   return row ? toMerchant(row) : null;
 }
 
+/** Transaction-scoped serialization point for merchant-wide budgets. */
+export async function lockMerchantForUpdate(db: Db, id: string): Promise<boolean> {
+  const row = await db.one<{ id: string }>(
+    `SELECT id FROM seo_merchants WHERE id = $1 FOR UPDATE`,
+    [id],
+  );
+  return row !== null;
+}
+
 export async function findMerchantByIdempotencyKey(
   db: Db,
   key: string,

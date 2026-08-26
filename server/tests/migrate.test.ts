@@ -159,4 +159,54 @@ describe("migrate on postgres", () => {
       await legacy.teardown();
     }
   });
+
+  it("upgrades legacy specialist artifacts with durable constrained acceptance state", async () => {
+    const legacy = await createTestDb();
+    try {
+      await legacy.db.exec(`CREATE TABLE seo_specialist_artifacts (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        merchant_id TEXT NOT NULL,
+        artifact_type TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        core_run_id TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(core_run_id, artifact_type)
+      )`);
+      await legacy.db.exec(`INSERT INTO seo_specialist_artifacts
+        (id, task_id, merchant_id, artifact_type, schema_version, title, summary,
+         payload, core_run_id, created_at)
+        VALUES ('legacy-artifact', 'task-1', 'merchant-1', 'AUDIT_REPORT', 'v1',
+                'Legacy', 'Legacy artifact', '{}', 'legacy-run',
+                '2026-08-27T00:00:00.000Z')`);
+
+      await migrate(legacy.db);
+      await migrate(legacy.db);
+
+      const row = await legacy.db.one<{
+        acceptance_status: string;
+        acceptance_decided_by: string | null;
+        acceptance_decided_at: string | null;
+        acceptance_note: string | null;
+      }>(`SELECT acceptance_status, acceptance_decided_by,
+                 acceptance_decided_at, acceptance_note
+            FROM seo_specialist_artifacts WHERE id = 'legacy-artifact'`);
+      expect(row).toEqual({
+        acceptance_status: "PENDING",
+        acceptance_decided_by: null,
+        acceptance_decided_at: null,
+        acceptance_note: null,
+      });
+      await expect(legacy.db.exec(
+        `UPDATE seo_specialist_artifacts SET acceptance_status = 'PUBLISHED'
+         WHERE id = 'legacy-artifact'`,
+      )).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await legacy.teardown();
+    }
+  });
 });

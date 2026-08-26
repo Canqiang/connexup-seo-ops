@@ -337,6 +337,9 @@ export interface SpecialistArtifactWire {
   id: string; task_id: string; merchant_id: string; artifact_type: SpecialistArtifactType;
   schema_version: string; title: string; summary: string; payload: Record<string, unknown>;
   core_run_id: string; created_by: string | null; created_at: string;
+  acceptance_status?: "PENDING" | "ACCEPTED" | "REJECTED";
+  acceptance_decided_by?: string | null; acceptance_decided_at?: string | null;
+  acceptance_note?: string | null;
 }
 export interface TaskAuditReferencesWire {
   offset?: number; limit?: number; total?: number;

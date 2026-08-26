@@ -18,13 +18,16 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     tempDirs.length = 0;
   });
 
-  function fakeCore() {
+  function fakeCore(options: { failTriggerNumbers?: number[] } = {}) {
     let triggerCount = 0;
     let lastAgentId = "";
     const inputs = new Map<string, Record<string, unknown>>();
     const client: CoreAiClient = {
       async trigger(agentId, message) {
         triggerCount += 1;
+        if (options.failTriggerNumbers?.includes(triggerCount)) {
+          throw new Error(`simulated trigger failure ${triggerCount}`);
+        }
         lastAgentId = agentId;
         const runId = `core-gbp-content-${triggerCount}`;
         inputs.set(runId, JSON.parse(message) as Record<string, unknown>);
@@ -72,6 +75,82 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       triggerCount: () => triggerCount,
       lastAgentId: () => lastAgentId,
     };
+  }
+
+  async function setupContentTask(coreAi: CoreAiClient, suffix: string) {
+    const artifactsDir = mkdtempSync(join(tmpdir(), `seo-ops-gbp-${suffix}-`));
+    tempDirs.push(artifactsDir);
+    const built = await createAuthenticatedTestApp({
+      configOverrides: {
+        coreAiBaseUrl: "https://core-ai.example",
+        coreAiToken: "test-token",
+        agentRunAgentId: null,
+        mockExecution: false,
+      },
+      deps: { coreAi, artifactsDir },
+    });
+    apps.push(built.app);
+    const merchant = (await built.app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: `${suffix}-store`,
+        display_name: `${suffix} Store`,
+        idempotency_key: `${suffix}-store`,
+      },
+    })).json();
+    const location = (await built.app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/locations`,
+      payload: {
+        slug: `${suffix}-mineola`,
+        display_name: "Mineola, NY",
+        timezone: "America/New_York",
+        readiness_status: "READY",
+        external_identities: { google_business: `locations/${suffix}` },
+        missing_requirements: [],
+        idempotency_key: `${suffix}-location`,
+      },
+    })).json();
+    await built.app.inject({
+      method: "PUT",
+      url: "/api/seo-ops/agent-bindings/GBP_POST",
+      payload: { agent_id: "agent-gbp-content", agent_label: "GBP content" },
+    });
+    await built.app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/style-profile`,
+      payload: { voice: { tone: "warm and concise" } },
+    });
+    const task = (await built.app.inject({
+      method: "POST",
+      url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: merchant.id,
+        location_id: location.id,
+        definition: {
+          title: `${suffix} GBP Post`,
+          task_type: "GBP_POST",
+          source: "CYCLE",
+          priority: "HIGH",
+          impact: "HIGH",
+          execution_spec: JSON.stringify({
+            occurrence_at: "2026-08-27T17:00:00.000-04:00",
+            post_type: "STANDARD",
+            primary_keyword_cluster: {
+              cluster_id: `${suffix}-lunch`,
+              search_intent: "local lunch discovery",
+              keywords: ["crispy chicken lunch mineola"],
+            },
+            evidence_references: ["artifact:keyword-set-v2"],
+          }),
+          required_evidence_types: ["CONTENT_DRAFT"],
+          execution_mode: "AUTO_WRITE",
+        },
+        idempotency_key: `${suffix}-task`,
+      },
+    })).json();
+    return { ...built, merchant, location, task };
   }
 
   it("enforces auth and tenant scope before a Core AI trigger", async () => {
@@ -418,18 +497,149 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     const firstTask = await createTask("one", "2026-08-27T17:00:00.000-04:00");
     const secondTask = await createTask("two", "2026-08-28T17:00:00.000-04:00");
 
-    expect((await app.inject({
-      method: "POST",
-      url: `/api/seo-ops/tasks/${firstTask.id}/content-runs`,
-      payload: { idempotency_key: "quota-run-one" },
-    })).statusCode).toBe(202);
-    const rejected = await app.inject({
-      method: "POST",
-      url: `/api/seo-ops/tasks/${secondTask.id}/content-runs`,
-      payload: { idempotency_key: "quota-run-two" },
-    });
+    const attempts = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${firstTask.id}/content-runs`,
+        payload: { idempotency_key: "quota-run-one" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${secondTask.id}/content-runs`,
+        payload: { idempotency_key: "quota-run-two" },
+      }),
+    ]);
+    expect(attempts.map((response) => response.statusCode).sort()).toEqual([202, 429]);
+    const rejected = attempts.find((response) => response.statusCode === 429)!;
     expect(rejected.statusCode).toBe(429);
     expect(rejected.json()).toMatchObject({ error_code: "RUN_LIMIT_REACHED" });
+    const stored = await built.db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE merchant_id = $1`,
+      [merchant.id],
+    );
+    expect(stored?.count).toBe("1");
     expect(core.triggerCount()).toBe(1);
+  });
+
+  it("requires explicit audited retry lineage for failed or cancelled generations", async () => {
+    const core = fakeCore({ failTriggerNumbers: [1] });
+    const built = await setupContentTask(core.client, "retry-taxonomy");
+    const { app, db, task } = built;
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "retry-first-trigger-fails" },
+    });
+    expect(first.statusCode).toBe(502);
+    const triggerFailed = await db.one<{
+      id: string; request_fingerprint: string; business_input_fingerprint: string;
+      status: string; error_code: string; retry_of_agent_run_id: string | null;
+    }>(`SELECT id, request_fingerprint, business_input_fingerprint, status, error_code,
+               retry_of_agent_run_id
+          FROM seo_agent_runs WHERE task_id = $1`, [task.id]);
+    expect(triggerFailed).toMatchObject({
+      status: "FAILED",
+      error_code: "TRIGGER_FAILED",
+      retry_of_agent_run_id: null,
+    });
+    expect(triggerFailed!.business_input_fingerprint).toBe(triggerFailed!.request_fingerprint);
+
+    const implicitRetry = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "retry-without-audit" },
+    });
+    expect(implicitRetry.statusCode).toBe(409);
+    expect(implicitRetry.json().error_code).toBe("CONTENT_RUN_RETRY_REQUIRED");
+
+    const retryPayload = {
+      idempotency_key: "retry-after-trigger-failure",
+      retry: { prior_run_id: triggerFailed!.id, reason: "Core AI transport failed before a run id returned." },
+    };
+    const triggerRetry = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: retryPayload,
+    });
+    expect(triggerRetry.statusCode).toBe(202);
+    expect(triggerRetry.json()).toMatchObject({
+      retry_of_agent_run_id: triggerFailed!.id,
+      retry_reason: retryPayload.retry.reason,
+      business_input_fingerprint: triggerFailed!.business_input_fingerprint,
+    });
+    expect(triggerRetry.json().request_fingerprint).not.toBe(triggerFailed!.request_fingerprint);
+
+    const sameRetryDifferentKey = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { ...retryPayload, idempotency_key: "retry-after-trigger-failure-replay" },
+    });
+    expect(sameRetryDifferentKey.statusCode).toBe(200);
+    expect(sameRetryDifferentKey.json().id).toBe(triggerRetry.json().id);
+
+    await db.exec(
+      `UPDATE seo_agent_runs SET status = 'FAILED', error_code = 'OUTPUT_INVALID',
+              completed_at = '2026-08-27T01:00:00.000Z'
+        WHERE id = $1`,
+      [triggerRetry.json().id],
+    );
+    const outputRetry = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "retry-after-output-invalid",
+        retry: {
+          prior_run_id: triggerRetry.json().id,
+          reason: "Strict output validation rejected the previous response.",
+        },
+      },
+    });
+    expect(outputRetry.statusCode).toBe(202);
+
+    await db.exec(
+      `UPDATE seo_agent_runs SET status = 'CANCELLED', error_code = NULL,
+              completed_at = '2026-08-27T02:00:00.000Z'
+        WHERE id = $1`,
+      [outputRetry.json().id],
+    );
+    const cancelledRetry = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "retry-after-cancelled",
+        retry: {
+          prior_run_id: outputRetry.json().id,
+          reason: "Operator cancelled the previous generation after reviewing context.",
+        },
+      },
+    });
+    expect(cancelledRetry.statusCode).toBe(202);
+
+    await db.exec(
+      `UPDATE seo_agent_runs SET status = 'FAILED', error_code = 'TRIGGER_INTERRUPTED',
+              completed_at = '2026-08-27T03:00:00.000Z'
+        WHERE id = $1`,
+      [cancelledRetry.json().id],
+    );
+    const interrupted = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "retry-after-interrupted",
+        retry: {
+          prior_run_id: cancelledRetry.json().id,
+          reason: "Attempt to bypass manual reconciliation must be blocked.",
+        },
+      },
+    });
+    expect(interrupted.statusCode).toBe(409);
+    expect(interrupted.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+    expect(core.triggerCount()).toBe(4);
+    const stored = await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
+      [task.id],
+    );
+    expect(stored?.count).toBe("4");
   });
 });

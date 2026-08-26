@@ -249,13 +249,20 @@ const planOutputSchema = z.object({
   }
 });
 
+const executedActionSchema = z.object({
+  action_id: z.string().trim().min(1).max(200),
+  action_type: z.string().trim().min(1).max(100),
+  executed_at: z.string().datetime({ offset: true }),
+  evidence_ref: z.string().trim().min(1).max(1000),
+}).strict();
+
 const effectReviewOutputSchema = z.object({
   schema_version: z.literal(EFFECT_REVIEW_OUTPUT_SCHEMA_VERSION),
   merchant_id: z.string().trim().min(1),
   title: z.string().trim().min(1).max(300),
   summary: z.string().trim().min(1).max(4000),
   baseline: z.record(z.unknown()),
-  action_bundle: z.array(z.record(z.unknown())).min(1).max(100),
+  action_bundle: z.array(executedActionSchema).min(1).max(100),
   observed_change: z.record(z.unknown()),
   confounders: z.array(z.string().trim().min(1).max(1000)).max(50),
   conclusion_tier: z.enum(["INSUFFICIENT_EVIDENCE", "DESCRIPTIVE", "ASSOCIATIONAL"]),
@@ -313,13 +320,6 @@ const measurementWindowSchema = z.object({
     }
   }
 });
-
-const executedActionSchema = z.object({
-  action_id: z.string().trim().min(1).max(200),
-  action_type: z.string().trim().min(1).max(100),
-  executed_at: z.string().datetime({ offset: true }),
-  evidence_ref: z.string().trim().min(1).max(1000),
-}).strict();
 
 const effectReviewExecutionSpecSchema = z.object({
   baseline: z.object({
@@ -610,6 +610,9 @@ export async function buildSpecialistRunInput(
       if (artifact.merchantId !== task.merchantId) {
         throw new Error(`report package source artifact ${artifactId} must belong to the same merchant`);
       }
+      if (artifact.acceptanceStatus !== "ACCEPTED") {
+        throw new Error(`report package source artifact ${artifactId} must be ACCEPTED`);
+      }
       if (!MERCHANT_SAFE_REPORT_ARTIFACT_TYPES.has(artifact.artifactType)) {
         throw new Error(
           `report package source artifact ${artifactId} type ${artifact.artifactType} is not merchant-safe`,
@@ -764,10 +767,12 @@ export async function ingestSpecialistRunOutput(
     if (parsed.action_bundle.length !== allowedActions.size) {
       throw new Error("effect review output action_bundle must exactly echo the dispatched actions");
     }
+    const seenActionIds = new Set<string>();
     for (const [index, action] of parsed.action_bundle.entries()) {
       const actionId = action.action_id;
       const accepted = typeof actionId === "string" ? allowedActions.get(actionId) : undefined;
-      if (!accepted
+      if (seenActionIds.has(actionId)
+        || !accepted
         || action.action_type !== accepted.action_type
         || action.executed_at !== accepted.executed_at
         || action.evidence_ref !== accepted.evidence_ref) {
@@ -775,6 +780,7 @@ export async function ingestSpecialistRunOutput(
           `effect review output action_bundle.${index} does not exactly match the dispatched evidence packet`,
         );
       }
+      seenActionIds.add(actionId);
     }
     return persistParsedArtifact(db, task, coreRunId, "EFFECT_REVIEW", parsed, actor);
   }

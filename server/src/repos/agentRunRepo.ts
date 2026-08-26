@@ -25,6 +25,9 @@ interface AgentRunRow {
   completed_at: string | null;
   creation_idempotency_key: string | null;
   request_fingerprint: string | null;
+  business_input_fingerprint: string | null;
+  retry_of_agent_run_id: string | null;
+  retry_reason: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -54,6 +57,9 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
     completedAt: row.completed_at,
     creationIdempotencyKey: row.creation_idempotency_key,
     requestFingerprint: row.request_fingerprint,
+    businessInputFingerprint: row.business_input_fingerprint,
+    retryOfAgentRunId: row.retry_of_agent_run_id,
+    retryReason: row.retry_reason,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -63,9 +69,10 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
 const RUN_COLUMNS = `id, merchant_id, location_id, stage, task_id, run_type, goal, status,
   core_run_id, trace_ref, core_status, input_message, output, error, error_code, token_usage,
   triggered_by, triggered_at, last_polled_at, completed_at,
-  creation_idempotency_key, request_fingerprint, created_by, created_at, updated_at`;
+  creation_idempotency_key, request_fingerprint, business_input_fingerprint,
+  retry_of_agent_run_id, retry_reason, created_by, created_at, updated_at`;
 
-const RUN_COLUMN_COUNT = 25;
+const RUN_COLUMN_COUNT = 28;
 
 function runParams(run: AgentRun): unknown[] {
   return [
@@ -90,6 +97,9 @@ function runParams(run: AgentRun): unknown[] {
     run.completedAt,
     run.creationIdempotencyKey,
     run.requestFingerprint,
+    run.businessInputFingerprint ?? null,
+    run.retryOfAgentRunId ?? null,
+    run.retryReason ?? null,
     run.createdBy,
     run.createdAt,
     run.updatedAt,
@@ -113,9 +123,10 @@ export async function updateAgentRun(db: Db, run: AgentRun): Promise<void> {
        run_type = $5, goal = $6, status = $7, core_run_id = $8, trace_ref = $9, core_status = $10,
        input_message = $11, output = $12, error = $13, error_code = $14, token_usage = $15,
        triggered_by = $16, triggered_at = $17, last_polled_at = $18, completed_at = $19,
-       creation_idempotency_key = $20, request_fingerprint = $21, created_by = $22,
-       created_at = $23, updated_at = $24
-     WHERE id = $25`,
+       creation_idempotency_key = $20, request_fingerprint = $21,
+       business_input_fingerprint = $22, retry_of_agent_run_id = $23, retry_reason = $24,
+       created_by = $25, created_at = $26, updated_at = $27
+     WHERE id = $28`,
     [...runParams(run), run.id],
   );
 }
@@ -144,6 +155,9 @@ const COLUMN_BY_KEY: Record<keyof AgentRun, string> = {
   completedAt: "completed_at",
   creationIdempotencyKey: "creation_idempotency_key",
   requestFingerprint: "request_fingerprint",
+  businessInputFingerprint: "business_input_fingerprint",
+  retryOfAgentRunId: "retry_of_agent_run_id",
+  retryReason: "retry_reason",
   createdBy: "created_by",
   createdAt: "created_at",
   updatedAt: "updated_at",
@@ -209,6 +223,21 @@ export async function findAgentRunByTaskFingerprint(
   const row = await db.one<AgentRunRow>(
     `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
      WHERE task_id = $1 AND stage = 'GBP_POST_CONTENT' AND request_fingerprint = $2
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [taskId, fingerprint],
+  );
+  return row ? toAgentRun(row) : null;
+}
+
+export async function findLatestGbpContentRunByBusinessFingerprint(
+  db: Db,
+  taskId: string,
+  fingerprint: string,
+): Promise<AgentRun | null> {
+  const row = await db.one<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+     WHERE task_id = $1 AND stage = 'GBP_POST_CONTENT'
+       AND COALESCE(business_input_fingerprint, request_fingerprint) = $2
      ORDER BY created_at DESC, id DESC LIMIT 1`,
     [taskId, fingerprint],
   );
