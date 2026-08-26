@@ -22,7 +22,7 @@ import {
   resetFailedTask,
   resolveAttemptOutcome,
 } from "../services/executionService.js";
-import { addDraft, draftsView } from "../services/contentService.js";
+import { addDraft, addDraftRevision, draftsView } from "../services/contentService.js";
 import { appendEvidence } from "../services/taskService.js";
 import { schedulerTick } from "../services/schedulerService.js";
 import {
@@ -131,6 +131,11 @@ const addDraftSchema = z.object({
   media: z.array(z.string().max(1000)).max(10).optional(),
   source: z.enum(["AGENT_GENERATED", "AGENT_REWRITE", "HUMAN_EDIT"]),
   feedback: z.string().max(4000).optional(),
+});
+
+const addDraftRevisionSchema = addDraftSchema.extend({
+  expected_state_version: z.number().int().nonnegative(),
+  idempotency_key: z.string(),
 });
 
 const finalizeDraftSchema = z.object({
@@ -353,6 +358,16 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     const draft = await addDraft(ctx.db, taskId, body, actor.userId);
     reply.status(201);
     return draftView(draft);
+  });
+
+  app.post("/api/seo-ops/tasks/:taskId/draft-revisions", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
+    const { taskId } = request.params as { taskId: string };
+    await requireTaskAccess(ctx.db, actor, taskId);
+    const body = addDraftRevisionSchema.parse(request.body);
+    const { task, replayed } = await addDraftRevision(ctx.db, taskId, body, actor.userId);
+    reply.status(replayed ? 200 : 201);
+    return taskView(task, await taskNames(ctx, task));
   });
 
   // 定稿 = 把指定版本的稿子作为 CONTENT_DRAFT 证据挂到当前修订版。

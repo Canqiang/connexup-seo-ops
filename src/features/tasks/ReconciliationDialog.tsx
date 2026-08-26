@@ -6,8 +6,8 @@ import type { AttemptWire } from "../../api/types";
 import { useResource } from "../../hooks/useResource";
 
 /** 结果不明只能由人给出等权重的发生/未发生结论；这里从不发起自动重试。 */
-export function ReconciliationDialog({ attempt, onClose, onResolved }: {
-  attempt: AttemptWire; onClose: () => void; onResolved: () => void;
+export function ReconciliationDialog({ attempt, onClose, onResolved, canExecute = true }: {
+  attempt: AttemptWire; onClose: () => void; onResolved: () => void; canExecute?: boolean;
 }) {
   const task = useResource((signal) => seoOpsApi.task(attempt.task_id, signal), [attempt.task_id]);
   const [resolution, setResolution] = useState<"HAPPENED" | "NOT_HAPPENED">();
@@ -15,7 +15,7 @@ export function ReconciliationDialog({ attempt, onClose, onResolved }: {
   const [publishedRef, setPublishedRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const canSubmit = Boolean(resolution && note.trim() && !busy);
+  const canSubmit = Boolean(canExecute && resolution && note.trim() && !busy);
 
   const submit = async () => {
     if (!resolution || !note.trim()) return;
@@ -50,7 +50,7 @@ export function ReconciliationDialog({ attempt, onClose, onResolved }: {
         <label>查证依据（必填）<textarea onChange={(event) => setNote(event.target.value)} placeholder="例：GBP 后台未见对应帖子" rows={3} value={note} /></label>
         {error ? <p className="form-error" role="alert">{error}</p> : null}
       </div>
-      <footer className="modal-foot"><span className="quiet-copy">提交后由服务端按当前版本确认结论。</span><div><button className="secondary-button" onClick={onClose} type="button">取消</button><button className="primary-button" disabled={!canSubmit} onClick={() => void submit()} type="button">{busy ? "提交中…" : "提交查证结论"}</button></div></footer>
+      <footer className="modal-foot"><span className="quiet-copy">{canExecute ? "提交后由服务端按当前版本确认结论。" : "当前账号没有执行权限，不能提交结论。"}</span><div><button className="secondary-button" onClick={onClose} type="button">取消</button>{canExecute ? <button className="primary-button" disabled={!canSubmit} onClick={() => void submit()} type="button">{busy ? "提交中…" : "提交查证结论"}</button> : null}</div></footer>
     </div>
   </div>;
 }

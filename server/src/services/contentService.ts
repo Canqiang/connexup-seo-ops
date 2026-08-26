@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import type { Db } from "../db/connection.js";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import { getTask } from "../repos/taskRepo.js";
+import type { EvidenceRefRecord, Task, TaskDefinitionRecord } from "../repos/taskTypes.js";
+import { executionSpecHash, requestFingerprint } from "../domain/hashing.js";
+import { buildEvent, mutateTask, reevaluate } from "./taskService.js";
 import {
   insertDraft,
   latestDraft,
@@ -40,14 +43,17 @@ export interface AddDraftInput {
   feedback?: string;
 }
 
-const DRAFT_SOURCES = new Set(["AGENT_GENERATED", "AGENT_REWRITE", "HUMAN_EDIT"]);
+export interface AddDraftRevisionInput extends AddDraftInput {
+  expected_state_version: number;
+  idempotency_key: string;
+}
 
-export async function addDraft(
-  db: Db,
-  taskId: string,
-  input: AddDraftInput,
-  actorId: string,
-): Promise<ContentDraft> {
+const DRAFT_SOURCES = new Set(["AGENT_GENERATED", "AGENT_REWRITE", "HUMAN_EDIT"]);
+const CONTENT_REVISION_ALLOWED_STATUSES = new Set([
+  "DRAFT", "NEEDS_INPUT", "BLOCKED", "READY_FOR_APPROVAL", "REVISION_REQUIRED", "APPROVAL_REVOKED", "APPROVED",
+]);
+
+function validateDraftInput(input: AddDraftInput): void {
   if (typeof input.body !== "string" || input.body.trim() === "") {
     throw badRequest("body is required and must be a non-empty string");
   }
@@ -57,6 +63,26 @@ export async function addDraft(
   if (input.source === "AGENT_REWRITE" && !input.feedback?.trim()) {
     throw badRequest("feedback is required for AGENT_REWRITE drafts");
   }
+}
+
+function buildDraft(taskId: string, version: number, input: AddDraftInput, actorId: string): ContentDraft {
+  const media = input.media ?? [];
+  return {
+    id: crypto.randomUUID(), taskId, version, body: input.body,
+    ctaType: input.cta_type ?? null, ctaUrl: input.cta_url ?? null, media,
+    source: input.source, feedback: input.feedback ?? null,
+    sha256: draftSha256({ body: input.body, ctaType: input.cta_type ?? null, ctaUrl: input.cta_url ?? null, media }),
+    createdBy: actorId, createdAt: nowIso(),
+  };
+}
+
+export async function addDraft(
+  db: Db,
+  taskId: string,
+  input: AddDraftInput,
+  actorId: string,
+): Promise<ContentDraft> {
+  validateDraftInput(input);
 
   return db.withTransaction(async (tx) => {
     const task = await getTask(tx, taskId);
@@ -64,29 +90,68 @@ export async function addDraft(
 
     const last = await latestDraft(tx, taskId);
     const version = (last?.version ?? 0) + 1;
-    const media = input.media ?? [];
-    const draft: ContentDraft = {
-      id: crypto.randomUUID(),
-      taskId,
-      version,
-      body: input.body,
-      ctaType: input.cta_type ?? null,
-      ctaUrl: input.cta_url ?? null,
-      media,
-      source: input.source,
-      feedback: input.feedback ?? null,
-      sha256: draftSha256({
-        body: input.body,
-        ctaType: input.cta_type ?? null,
-        ctaUrl: input.cta_url ?? null,
-        media,
-      }),
-      createdBy: actorId,
-      createdAt: nowIso(),
-    };
+    const draft = buildDraft(taskId, version, input, actorId);
     await insertDraft(tx, draft);
     return draft;
   });
+}
+
+/** A human edit is a task-definition mutation, not only an attached row.
+ * The new execution spec embeds the immutable draft body/hash and the new
+ * revision receives verified CONTENT_DRAFT evidence, so prior approval is
+ * retained as history but cannot authorize this changed version. */
+export async function addDraftRevision(
+  db: Db,
+  taskId: string,
+  input: AddDraftRevisionInput,
+  actorId: string,
+): Promise<{ task: Task; replayed: boolean }> {
+  validateDraftInput(input);
+  if (input.source !== "HUMAN_EDIT") {
+    throw badRequest("draft revisions require source HUMAN_EDIT");
+  }
+  const fingerprint = requestFingerprint({
+    body: input.body, cta_type: input.cta_type ?? null, cta_url: input.cta_url ?? null,
+    media: input.media ?? [], source: input.source, feedback: input.feedback ?? null,
+  });
+  return mutateTask(db, taskId, input.idempotency_key, fingerprint, input.expected_state_version,
+    async (task, tx) => {
+      if (!CONTENT_REVISION_ALLOWED_STATUSES.has(task.status)) {
+        throw conflict(`cannot edit content in status ${task.status}`, "INVALID_TRANSITION");
+      }
+      const last = await latestDraft(tx, taskId);
+      const draft = buildDraft(taskId, (last?.version ?? 0) + 1, input, actorId);
+      await insertDraft(tx, draft);
+      let original: unknown;
+      try { original = JSON.parse(task.executionSpec); } catch { original = task.executionSpec; }
+      const executionSpec = JSON.stringify(
+        original !== null && typeof original === "object" && !Array.isArray(original)
+          ? { ...(original as Record<string, unknown>), content_draft: specBlockForDraft(draft) }
+          : { execution: original, content_draft: specBlockForDraft(draft) },
+      );
+      const revision: TaskDefinitionRecord = {
+        ...task.revisions.at(-1)!, revision: task.taskRevision + 1,
+        executionSpec, executionSpecHash: executionSpecHash(executionSpec), createdBy: actorId, createdAt: nowIso(),
+      };
+      const evidence: EvidenceRefRecord = {
+        id: crypto.randomUUID(), taskRevision: revision.revision, type: "CONTENT_DRAFT",
+        sourceRef: `draft:${taskId}:v${draft.version}`, sha256: draft.sha256,
+        capturedAt: draft.createdAt, verificationStatus: "VERIFIED", requirementKey: "CONTENT_DRAFT",
+        createdBy: actorId, createdAt: nowIso(),
+      };
+      const updated: Task = {
+        ...task, executionSpec, executionSpecHash: revision.executionSpecHash,
+        taskRevision: revision.revision, revisions: [...task.revisions, revision],
+        evidenceRefs: [...task.evidenceRefs, evidence], stateVersion: task.stateVersion + 1, updatedAt: nowIso(),
+      };
+      const derived = await reevaluate(tx, updated);
+      updated.status = derived.status;
+      updated.evidenceState = derived.evidenceState;
+      updated.events = [...task.events, buildEvent("CONTENT_DRAFT_REVISED", updated.taskRevision, updated.stateVersion, actorId, {
+        fromStatus: task.status, toStatus: updated.status, referenceId: draft.id,
+      })];
+      return updated;
+    });
 }
 
 export async function draftsView(db: Db, taskId: string): Promise<ContentDraft[]> {

@@ -245,6 +245,43 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(res.json().error_code).toBe("GATE2_CHECK_FAILED");
   });
 
+  it("approved content edit atomically creates a new revision and requires fresh approval", async () => {
+    const approved = await approvedWriteTask(app, merchant.id, location.id, "wt-content-edit");
+
+    const edited = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${approved.id}/draft-revisions`,
+      payload: {
+        body: "本周新菜改版，欢迎到店。",
+        source: "HUMAN_EDIT",
+        expected_state_version: approved.state_version,
+        idempotency_key: "wt-content-edit-revision",
+      },
+    });
+    expect(edited.statusCode).toBe(201);
+    expect(edited.json()).toMatchObject({
+      task_revision: approved.task_revision + 1,
+      state_version: approved.state_version + 1,
+      status: "READY_FOR_APPROVAL",
+    });
+    expect(edited.json().execution_spec_hash).not.toBe(approved.execution_spec_hash);
+    expect(edited.json().execution_spec).toContain("本周新菜改版，欢迎到店。");
+    expect(edited.json().evidence_refs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ task_revision: approved.task_revision + 1, requirement_key: "CONTENT_DRAFT" }),
+    ]));
+
+    const readback = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${approved.id}` });
+    expect(readback.statusCode).toBe(200);
+    expect(readback.json()).toMatchObject({
+      task_revision: approved.task_revision + 1,
+      state_version: approved.state_version + 1,
+      status: "READY_FOR_APPROVAL",
+    });
+    const drafts = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${approved.id}/drafts` });
+    expect(drafts.json().items).toHaveLength(2);
+    expect(readback.json().approval_decisions).toHaveLength(1);
+  });
+
   it("OUTCOME_UNKNOWN 冻结商户执行链；查证「没发生」后任务回 APPROVED 并解冻", async () => {
     const task = await approvedWriteTask(app, merchant.id, location.id, "wt-3");
     await app.inject({

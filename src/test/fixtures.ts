@@ -2,7 +2,7 @@ import type { AuthenticatedUser, PortfolioResponse, SeoTask, StageRunView } from
 
 export const userFixture: AuthenticatedUser = {
   user_id: "user-1", name: "Xander", role: "operator",
-  permissions: ["seoops.manage", "seoops.approve", "chat.use"]
+  permissions: ["seoops.manage", "seoops.approve", "seoops.execute", "chat.use"]
 };
 
 export const portfolioFixture: PortfolioResponse = {

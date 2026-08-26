@@ -53,7 +53,7 @@ export interface TaskDecisionDescriptor {
   actionKind: "APPROVE" | "CONFIRM" | "VERIFY" | "RECONCILE" | "CONTACT" | "VIEW" | null;
 }
 
-type TaskDecisionPermissions = { canManage: boolean; canApprove: boolean };
+type TaskDecisionPermissions = { canManage: boolean; canApprove: boolean; canExecute: boolean };
 
 const TASK_DECISIONS: Record<string, TaskDecisionDescriptor> = {
   DRAFT: { heading: "先补齐任务定义", consequence: "补齐后会生成新的当前版本，旧版本不会被修改。", actionLabel: "补齐并新建修订", actionKind: "CONTACT" },
@@ -74,6 +74,14 @@ const TASK_DECISIONS: Record<string, TaskDecisionDescriptor> = {
 
 /** 把内部状态映射为一个面向操作员的下一步；权限不足时保留解释，但不伪造可执行动作。 */
 export function taskDecisionDescriptor(task: SeoTask, permissions: TaskDecisionPermissions): TaskDecisionDescriptor {
+  if (task.status === "APPROVED" && task.execution_mode === "MANUAL") {
+    return {
+      heading: "请补充人工完成证据",
+      consequence: "人工完成后附加证据；系统不会派发或立即发布。",
+      actionLabel: "查看人工完成指引",
+      actionKind: "VIEW",
+    };
+  }
   const decision = TASK_DECISIONS[task.status] ?? {
     heading: "请查看任务状态",
     consequence: "状态记录已保留在技术详情中。",
@@ -81,8 +89,9 @@ export function taskDecisionDescriptor(task: SeoTask, permissions: TaskDecisionP
     actionKind: "VIEW" as const,
   };
   const needsApproval = decision.actionKind === "APPROVE";
-  const needsManage = decision.actionKind === "CONFIRM" || decision.actionKind === "VERIFY" || decision.actionKind === "RECONCILE" || decision.actionKind === "CONTACT";
-  if ((needsApproval && !permissions.canApprove) || (needsManage && !permissions.canManage)) {
+  const needsManage = decision.actionKind === "CONTACT";
+  const needsExecute = decision.actionKind === "CONFIRM" || decision.actionKind === "VERIFY" || decision.actionKind === "RECONCILE";
+  if ((needsApproval && !permissions.canApprove) || (needsManage && !permissions.canManage) || (needsExecute && !permissions.canExecute)) {
     return { ...decision, actionLabel: null };
   }
   if (task.status === "APPROVED" && task.execution_mode === "READ_ONLY") {

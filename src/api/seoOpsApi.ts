@@ -122,6 +122,10 @@ export const seoOpsApi = {
     body: string; cta_type?: string; cta_url?: string; media?: string[];
     source: "AGENT_GENERATED" | "AGENT_REWRITE" | "HUMAN_EDIT"; feedback?: string;
   }) => post<DraftWire>(`/api/seo-ops/tasks/${encodeURIComponent(taskId)}/drafts`, request),
+  addDraftRevision: (taskId: string, request: {
+    body: string; cta_type?: string; cta_url?: string; media?: string[];
+    source: "HUMAN_EDIT"; expected_state_version: number; idempotency_key: string;
+  }) => post<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(taskId)}/draft-revisions`, request),
   finalizeDraft: (taskId: string, version: number, request: { expected_state_version: number; idempotency_key: string }) =>
     post<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(taskId)}/drafts/${version}/finalize`, request),
 

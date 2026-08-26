@@ -24,14 +24,17 @@ export function DraftsPanel({ task, onReadback }: {
       .filter((e) => e.requirement_key === "CONTENT_DRAFT" && e.task_revision === task.task_revision && e.source_ref)
       .map((e) => Number(/:v(\d+)$/.exec(e.source_ref ?? "")?.[1] ?? 0)),
   );
-  const canEdit = ["DRAFT", "NEEDS_INPUT", "BLOCKED", "READY_FOR_APPROVAL"].includes(task.status);
+  const canEdit = ["DRAFT", "NEEDS_INPUT", "BLOCKED", "READY_FOR_APPROVAL", "APPROVED"].includes(task.status);
 
   const addHumanDraft = async () => {
     if (!body.trim()) return;
     setBusy(true); setError(undefined);
     try {
-      await seoOpsApi.addDraft(task.id, { body: body.trim(), source: "HUMAN_EDIT" });
-      setBody(""); setAdding(false); drafts.reload();
+      const next = await seoOpsApi.addDraftRevision(task.id, {
+        body: body.trim(), source: "HUMAN_EDIT", expected_state_version: task.state_version,
+        idempotency_key: crypto.randomUUID(),
+      });
+      setBody(""); setAdding(false); onReadback(next);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "新增稿件失败");
     } finally {

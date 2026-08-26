@@ -11,8 +11,8 @@ import { ModeTag } from "../runs/RunsPage";
 
 /** 执行面板（门 2 → attempt → 查证/核验）。门 1 批的是「能不能做」，这里管
  * 「做没做、做成没成」。所有校验都在服务端复核，这里只是预览与入口。 */
-export function ExecutionPanel({ task, onReadback, compact = false, audit = false }: {
-  task: SeoTask; onReadback: (next: SeoTask) => void; compact?: boolean; audit?: boolean;
+export function ExecutionPanel({ task, onReadback, compact = false, audit = false, canExecute }: {
+  task: SeoTask; onReadback: (next: SeoTask) => void; compact?: boolean; audit?: boolean; canExecute: boolean;
 }) {
   const mode = task.execution_mode;
   const attempts = useResource((signal) => seoOpsApi.attempts(task.id, signal), [task.id, task.state_version]);
@@ -22,7 +22,7 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
   const [verifyNote, setVerifyNote] = useState("");
   const unknownAttempt = (attempts.data?.items ?? []).find((item) => item.status === "OUTCOME_UNKNOWN");
 
-  if (mode === "MANUAL" && !compact) {
+  if (mode === "MANUAL") {
     return <section className="data-panel execution-panel"><div className="panel-heading"><div><span className="eyebrow">EXECUTION</span><h2>执行</h2></div><ModeTag mode={mode} /></div>
       <div className="execution-body"><p className="quiet-copy">人工任务：完成后附加证据并走审批归档，无系统派发。</p></div></section>;
   }
@@ -92,34 +92,36 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
   const executionBody = <div className="execution-body">
       {mode === "READ_ONLY" ? <p className="quiet-copy">Ⓐ级只读：周期配置即预授权，scheduler 自动派发；失败自动重试至多 3 次后升级人工。</p> : null}
 
-      {task.status === "APPROVED" && mode !== "READ_ONLY" ? <Gate2Block audit={audit} busy={busy} onConfirm={() => void confirm()} task={task} /> : null}
+      {task.status === "APPROVED" && mode !== "READ_ONLY" ? canExecute
+        ? <Gate2Block audit={audit} busy={busy} onConfirm={() => void confirm()} task={task} />
+        : <p className="quiet-copy">当前账号可查看门 2 状态，但没有执行权限。</p> : null}
 
       {task.status === "DISPATCHING" ? <p className="exec-state"><PlayCircle size={14} /> attempt #{task.attempt_count} 派发在途，等待 core-ai 终态；worker 会自动结算。</p> : null}
 
       {task.status === "OUTCOME_UNKNOWN" ? <div className="exec-unknown">
         <p className="exec-state danger-text"><ShieldAlert size={14} /> 结果待查：动作发生没有无法确认。该商户执行链已冻结，查证是唯一出口。</p>
-        <button className="danger-button" disabled={!unknownAttempt} onClick={() => setResolving(true)} type="button">开始查证</button>
+        {canExecute ? <button className="danger-button" disabled={!unknownAttempt} onClick={() => setResolving(true)} type="button">开始查证</button> : <p className="quiet-copy">当前账号没有执行权限，不能提交查证结论。</p>}
       </div> : null}
 
       {task.status === "PENDING_VERIFY" ? <div className="exec-verify">
         <p className="exec-state"><SearchCheck size={14} /> 已发布，待核验（{task.verify_due_at ? `${formatDateOnly(task.verify_due_at)} 到期` : "7 天窗口"}）。</p>
         {task.published_ref ? <p className="published-ref">发布引用：{publishedHref ? <a href={publishedHref} rel="noreferrer" target="_blank">{task.published_ref} <ExternalLink size={11} /></a> : <code>{task.published_ref}</code>}</p> : null}
-        <label>核验说明（前台看到什么）
+        {canExecute ? <><label>核验说明（前台看到什么）
           <input onChange={(e) => setVerifyNote(e.target.value)} placeholder="例：GBP 前台可见 8/26 帖" value={verifyNote} /></label>
-        <button className="primary-button" disabled={busy} onClick={() => void verify()} type="button"><CheckCircle2 size={14} /> 核验通过 → 归档</button>
+        <button className="primary-button" disabled={busy} onClick={() => void verify()} type="button"><CheckCircle2 size={14} /> 核验通过 → 归档</button></> : <p className="quiet-copy">当前账号没有执行权限，不能提交核验。</p>}
       </div> : null}
 
       {task.status === "DONE" ? <p className="exec-state"><CheckCircle2 size={14} /> 已完成{task.verified_at ? ` · ${formatDateOnly(task.verified_at)} 核验` : ""}{task.published_ref ? ` · ${task.published_ref}` : ""}</p> : null}
       {task.status === "FAILED" ? <div className="exec-unknown">
         <p className="exec-state danger-text"><XCircle size={14} /> 自动重试次数用尽，已升级人工处理。请先检查 agent 绑定与外部依赖，排障后可重置回「已批准」重新派发。</p>
-        <button className="secondary-button" disabled={busy} onClick={() => void resetFailed()} type="button"><RotateCcw size={13} /> {busy ? "重置中…" : "排障完成，重置回已批准"}</button>
+        {canExecute ? <button className="secondary-button" disabled={busy} onClick={() => void resetFailed()} type="button"><RotateCcw size={13} /> {busy ? "重置中…" : "排障完成，重置回已批准"}</button> : <p className="quiet-copy">当前账号没有执行权限，不能重置失败任务。</p>}
       </div> : null}
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}
 
     </div>;
 
-  if (compact) return <div className="execution-panel is-compact">{executionBody}{resolving && unknownAttempt ? <ReconciliationDialog attempt={unknownAttempt} onClose={() => setResolving(false)} onResolved={() => { setResolving(false); void seoOpsApi.task(task.id).then(onReadback); }} /> : null}</div>;
+  if (compact) return <div className="execution-panel is-compact">{executionBody}{resolving && unknownAttempt && canExecute ? <ReconciliationDialog attempt={unknownAttempt} onClose={() => setResolving(false)} onResolved={() => { setResolving(false); void seoOpsApi.task(task.id).then(onReadback); }} /> : null}</div>;
 
   return <section className="data-panel execution-panel">
     <div className="panel-heading"><div><span className="eyebrow">EXECUTION / 门 2 之后</span><h2>执行</h2></div><ModeTag mode={mode} /></div>
@@ -136,7 +138,7 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
         </tr>)}
       </tbody></table> : <p className="quiet-copy">还没有派发记录。</p>}
     </div>
-    {resolving && unknownAttempt ? <ReconciliationDialog attempt={unknownAttempt} onClose={() => setResolving(false)} onResolved={() => { setResolving(false); void seoOpsApi.task(task.id).then(onReadback); }} /> : null}
+    {resolving && unknownAttempt && canExecute ? <ReconciliationDialog attempt={unknownAttempt} onClose={() => setResolving(false)} onResolved={() => { setResolving(false); void seoOpsApi.task(task.id).then(onReadback); }} /> : null}
   </section>;
 }
 
