@@ -16,12 +16,18 @@ export function AgentBindingsPanel({ canManage }: { canManage: boolean }) {
   const save = async (key: string) => {
     const edit = edits[key];
     if (!canManage || !edit?.agent_id.trim()) return;
+    const bound = bindings.get(key);
+    const nextAgentId = edit.agent_id.trim();
     setSaving(key);
     setSaveError(undefined);
     try {
       await seoOpsApi.upsertAgentBinding(key, {
-        agent_id: edit.agent_id.trim(),
+        agent_id: nextAgentId,
         agent_label: edit.agent_label.trim() || null,
+        // A label-only edit keeps the exact published revision. A different
+        // Agent must be published independently; carrying the old ref across
+        // would falsely attribute the old Agent version to the new identity.
+        published_ref: bound?.agent_id === nextAgentId ? bound.published_ref : null,
       });
       setEdits((current) => {
         const next = { ...current };
@@ -48,9 +54,11 @@ export function AgentBindingsPanel({ canManage }: { canManage: boolean }) {
         const bound = bindings.get(key);
         const edit = edits[key] ?? { agent_id: bound?.agent_id ?? "", agent_label: bound?.agent_label ?? "" };
         const dirty = edit.agent_id !== (bound?.agent_id ?? "") || edit.agent_label !== (bound?.agent_label ?? "");
+        const agentChanged = Boolean(bound && edit.agent_id.trim() !== bound.agent_id);
         return <tr key={key}>
           <td><code>{key}</code>{bound ? null : <small className="danger-text">未绑定</small>}</td>
-          <td><input aria-label={`${key} Agent ID`} className="inline-input" disabled={!canManage} onChange={(event) => setEdits((current) => ({ ...current, [key]: { ...edit, agent_id: event.target.value } }))} placeholder="agent uuid" value={edit.agent_id} /></td>
+          <td><input aria-label={`${key} Agent ID`} className="inline-input" disabled={!canManage} onChange={(event) => setEdits((current) => ({ ...current, [key]: { ...edit, agent_id: event.target.value } }))} placeholder="agent uuid" value={edit.agent_id} />
+            <small className={agentChanged ? "settings-binding-ref is-clearing" : "settings-binding-ref"}>{agentChanged ? "更换 Agent 将清除旧发布版本来源；需为新 Agent 重新绑定版本。" : bound?.published_ref ? `已发布版本：${bound.published_ref}` : "后端未提供已发布版本来源。"}</small></td>
           <td><input aria-label={`${key} Agent 备注`} className="inline-input" disabled={!canManage} onChange={(event) => setEdits((current) => ({ ...current, [key]: { ...edit, agent_label: event.target.value } }))} placeholder="标签" value={edit.agent_label} /></td>
           <td>{bound ? formatDateOnly(bound.updated_at) : "—"}</td>
           <td><button className="secondary-button" disabled={!canManage || !dirty || saving === key} onClick={() => void save(key)} type="button">{saving === key ? "…" : "保存"}</button></td>

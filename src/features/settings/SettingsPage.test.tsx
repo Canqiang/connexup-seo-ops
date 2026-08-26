@@ -48,6 +48,14 @@ beforeEach(() => {
         updated_at: "2026-08-26T08:00:00Z",
       }],
     });
+    if (path === "/api/seo-ops/agent-bindings/AUDIT" && init?.method === "PUT") return json({
+      task_type: "AUDIT",
+      agent_id: "agent-audit-uat",
+      agent_label: "Local SEO Audit",
+      published_ref: "uat-revision-4",
+      updated_by: "user-1",
+      updated_at: "2026-08-26T08:00:00Z",
+    });
     if (path === "/api/seo-ops/merchants/only-bear/capabilities") return json({ items: [] });
     if (path === "/api/seo-ops/merchants/only-bear/cycle-config") return json(null);
     if (path.startsWith("/api/seo-ops/reviews")) return json({
@@ -176,6 +184,45 @@ test("authorized runtime controls preserve the existing scheduler and worker mut
     expect.objectContaining({ path: "/api/seo-ops/admin/scheduler-tick", init: expect.objectContaining({ method: "POST" }) }),
     expect.objectContaining({ path: "/api/seo-ops/admin/execution-tick", init: expect.objectContaining({ method: "POST" }) }),
   ]));
+});
+
+test("editing an Agent label preserves the existing published revision provenance", async () => {
+  authenticatedUser = { ...authenticatedUser, permissions: [...authenticatedUser.permissions, "seoops.schedule.manage"] };
+  const user = userEvent.setup();
+  renderApp("/settings");
+
+  const label = await screen.findByLabelText("AUDIT Agent 备注");
+  await user.clear(label);
+  await user.type(label, "Audit production binding");
+  await user.click(screen.getByRole("button", { name: "保存" }));
+
+  const request = calls.find(({ path, init }) => path === "/api/seo-ops/agent-bindings/AUDIT" && init?.method === "PUT");
+  expect(request).toBeDefined();
+  expect(JSON.parse(String(request?.init?.body))).toEqual({
+    agent_id: "agent-audit-uat",
+    agent_label: "Audit production binding",
+    published_ref: "uat-revision-4",
+  });
+});
+
+test("changing an Agent ID explicitly clears the old Agent revision provenance", async () => {
+  authenticatedUser = { ...authenticatedUser, permissions: [...authenticatedUser.permissions, "seoops.schedule.manage"] };
+  const user = userEvent.setup();
+  renderApp("/settings");
+
+  const agentId = await screen.findByLabelText("AUDIT Agent ID");
+  await user.clear(agentId);
+  await user.type(agentId, "agent-audit-v2");
+  expect(screen.getByText("更换 Agent 将清除旧发布版本来源；需为新 Agent 重新绑定版本。")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "保存" }));
+
+  const request = calls.find(({ path, init }) => path === "/api/seo-ops/agent-bindings/AUDIT" && init?.method === "PUT");
+  expect(request).toBeDefined();
+  expect(JSON.parse(String(request?.init?.body))).toEqual({
+    agent_id: "agent-audit-v2",
+    agent_label: "Local SEO Audit",
+    published_ref: null,
+  });
 });
 
 test("the full Runs ledger is audit-only while its explicit audit URL remains route-addressable", async () => {
