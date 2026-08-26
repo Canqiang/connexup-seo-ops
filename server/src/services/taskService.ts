@@ -23,6 +23,7 @@ import {
   type TaskPriority,
 } from "../domain/enums.js";
 import { getMerchant } from "../repos/merchantRepo.js";
+import { findActiveGbpContentRunByTask } from "../repos/agentRunRepo.js";
 import { ensureActiveMerchantCycle, getMerchantCycle } from "../repos/merchantCycleRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import {
@@ -492,11 +493,12 @@ export interface AppendEvidenceInput {
   idempotency_key: string;
 }
 
-export function appendEvidence(
+function appendEvidenceWithPolicy(
   db: Db,
   taskId: string,
   input: AppendEvidenceInput,
   actorId: string,
+  rejectActiveGbpRun: boolean,
 ): Promise<{ task: Task; replayed: boolean }> {
   requireNonEmpty(input.type, "type");
   requireNonEmpty(input.requirement_key, "requirement_key");
@@ -537,6 +539,12 @@ export function appendEvidence(
     fingerprint,
     input.expected_state_version,
     async (task, tx) => {
+      if (rejectActiveGbpRun && await findActiveGbpContentRunByTask(tx, taskId)) {
+        throw conflict(
+          "cannot finalize a GBP Post draft while content generation is active",
+          "CONTENT_RUN_ACTIVE",
+        );
+      }
       if (!canAppendEvidence(task.status)) {
         throw conflict(
           `cannot append evidence to a task in status ${task.status}`,
@@ -577,6 +585,26 @@ export function appendEvidence(
       return updated;
     },
   );
+}
+
+export function appendEvidence(
+  db: Db,
+  taskId: string,
+  input: AppendEvidenceInput,
+  actorId: string,
+): Promise<{ task: Task; replayed: boolean }> {
+  return appendEvidenceWithPolicy(db, taskId, input, actorId, false);
+}
+
+/** Finalizing a content draft advances Gate 1, so it shares the Task row lock
+ * with GBP allocation and refuses to race an already-durable active Run. */
+export function finalizeDraftEvidence(
+  db: Db,
+  taskId: string,
+  input: AppendEvidenceInput,
+  actorId: string,
+): Promise<{ task: Task; replayed: boolean }> {
+  return appendEvidenceWithPolicy(db, taskId, input, actorId, true);
 }
 
 export interface LinkConversationInput {
@@ -716,7 +744,7 @@ export function approvalDecision(
     input.idempotency_key,
     fingerprint,
     input.expected_state_version,
-    (task) => {
+    async (task, tx) => {
       if (task.taskRevision !== input.task_revision) {
         throw conflict(
           `task_revision ${input.task_revision} is stale (current ${task.taskRevision})`,
@@ -727,6 +755,12 @@ export function approvalDecision(
         throw conflict(
           `execution_spec_hash does not match the current revision's spec`,
           "STALE_STATE",
+        );
+      }
+      if (action === "APPROVE" && await findActiveGbpContentRunByTask(tx, taskId)) {
+        throw conflict(
+          "cannot approve a GBP Post task while content generation is active",
+          "CONTENT_RUN_ACTIVE",
         );
       }
       const next = decideApproval(task.status, action);

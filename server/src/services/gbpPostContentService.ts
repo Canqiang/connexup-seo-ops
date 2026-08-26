@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import type { Db } from "../db/connection.js";
 import { canonicalize, requestFingerprint } from "../domain/hashing.js";
+import { gbpContentHttpRequestFingerprint } from "../domain/gbpContentRunIdentity.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import {
   findActiveGbpContentRunByTask,
@@ -14,13 +15,13 @@ import type { AgentRun } from "../repos/agentRunTypes.js";
 import { getLocation } from "../repos/locationRepo.js";
 import { getMerchant } from "../repos/merchantRepo.js";
 import { getAgentBinding, latestStyleProfile } from "../repos/settingsRepo.js";
-import { getTask } from "../repos/taskRepo.js";
+import { getTask, getTaskForUpdate } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import { addAgentGeneratedDraftFromRun } from "./contentService.js";
 import { getDraftByAgentRunId } from "../repos/draftRepo.js";
 import type { CoreAiClient } from "./coreAiClient.js";
 import { requireIdempotencyKey } from "./merchantService.js";
-import { allocateAgentRun } from "./agentRunAllocator.js";
+import { allocateAgentRun, resolveAgentRunRequestReplay } from "./agentRunAllocator.js";
 
 export const GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION = "seo_ops.gbp_post_request.v1";
 export const GBP_POST_CONTENT_OUTPUT_SCHEMA_VERSION = "seo_ops.gbp_post_draft.v1";
@@ -135,16 +136,10 @@ async function buildRun(
   retry?: GbpPostContentRetry,
   retryGeneration = 0,
 ) {
-  if (task.taskType !== "GBP_POST" || task.executionMode !== "AUTO_WRITE") {
-    throw badRequest("content Agent runs require an AUTO_WRITE GBP_POST task");
-  }
-  if (!PRE_GATE_CONTENT_STATUSES.has(task.status)) {
-    throw conflict(`content Agent run is not allowed in status ${task.status}`, "INVALID_TRANSITION");
-  }
-  if (!task.locationId) throw badRequest("GBP_POST content requires one exact location_id");
+  assertPreGateContentTask(task);
   const [merchant, location, binding, styleProfile] = await Promise.all([
     getMerchant(deps.db, task.merchantId),
-    getLocation(deps.db, task.locationId),
+    getLocation(deps.db, task.locationId!),
     getAgentBinding(deps.db, "GBP_POST"),
     latestStyleProfile(deps.db, task.merchantId),
   ]);
@@ -169,13 +164,7 @@ async function buildRun(
     retry_of_agent_run_id: retry?.priorRunId ?? null,
     retry_generation: retryGeneration,
   });
-  const httpRequestFingerprint = requestFingerprint({
-    task_id: task.id,
-    business_input_fingerprint: businessFingerprint,
-    retry_of_agent_run_id: retry?.priorRunId ?? null,
-    retry_reason: retry?.reason ?? null,
-    retry_generation: retryGeneration,
-  });
+  const httpRequestFingerprint = gbpContentHttpRequestFingerprint(task.id, retry);
   const message = JSON.stringify({
     schema_version: GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION,
     seo_ops_task_id: task.id,
@@ -256,6 +245,16 @@ async function buildRun(
   };
 }
 
+function assertPreGateContentTask(task: Task): void {
+  if (task.taskType !== "GBP_POST" || task.executionMode !== "AUTO_WRITE") {
+    throw badRequest("content Agent runs require an AUTO_WRITE GBP_POST task");
+  }
+  if (!PRE_GATE_CONTENT_STATUSES.has(task.status)) {
+    throw conflict(`content Agent run is not allowed in status ${task.status}`, "INVALID_TRANSITION");
+  }
+  if (!task.locationId) throw badRequest("GBP_POST content requires one exact location_id");
+}
+
 async function replayOrRequireExplicitRetry(
   db: Db,
   run: AgentRun,
@@ -312,6 +311,15 @@ async function triggerOnce(
   actorId: string,
   retry?: GbpPostContentRetry,
 ): Promise<{ run: AgentRun; replayed: boolean }> {
+  const httpRequestFingerprint = gbpContentHttpRequestFingerprint(taskId, retry);
+  const requestReplay = await resolveAgentRunRequestReplay(
+    deps.db,
+    key,
+    httpRequestFingerprint,
+    { taskId },
+  );
+  if (requestReplay) return { run: requestReplay, replayed: true };
+
   const task = await getTask(deps.db, taskId);
   if (!task) throw notFound(`task ${taskId} not found`);
   const base = await buildRun(deps, task, key, actorId, undefined, 0);
@@ -326,6 +334,15 @@ async function triggerOnce(
     run: built.run,
     httpRequestFingerprint: built.httpRequestFingerprint,
     dailyRunLimit: deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT,
+    validateBeforeInsert: async (tx) => {
+      const current = await getTaskForUpdate(tx, taskId);
+      if (!current) throw notFound(`task ${taskId} not found`);
+      if (current.taskRevision !== task.taskRevision
+        || current.executionSpecHash !== task.executionSpecHash) {
+        throw conflict("task revision changed while allocating GBP Post content", "STALE_STATE");
+      }
+      assertPreGateContentTask(current);
+    },
     findBusinessReplay: async (tx) => {
       const latest = await findLatestGbpContentRunByBusinessFingerprint(
         tx,

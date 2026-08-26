@@ -23,15 +23,15 @@ function persistedHttpSemantics(run: AgentRun): string | null {
   return run.httpRequestFingerprint ?? run.requestFingerprint;
 }
 
-async function resolveRequestReplay(
+export async function resolveAgentRunRequestReplay(
   db: Db,
   idempotencyKey: string,
-  merchantId: string,
   httpRequestFingerprint: string,
+  expected: { merchantId?: string; taskId?: string } = {},
 ): Promise<AgentRun | null> {
   const request = await findAgentRunRequestByIdempotencyKey(db, idempotencyKey);
   if (!request) return null;
-  if (request.merchantId !== merchantId
+  if ((expected.merchantId !== undefined && request.merchantId !== expected.merchantId)
     || request.httpRequestFingerprint !== httpRequestFingerprint) {
     throw conflict(
       "idempotency key already used with different Agent Run request semantics",
@@ -40,6 +40,12 @@ async function resolveRequestReplay(
   }
   const run = await getAgentRun(db, request.runId);
   if (!run) throw new Error(`Agent Run request ${idempotencyKey} references missing Run ${request.runId}`);
+  if (expected.taskId !== undefined && run.taskId !== expected.taskId) {
+    throw conflict(
+      "idempotency key already used for a different Agent Run route",
+      "IDEMPOTENCY_CONFLICT",
+    );
+  }
   return run;
 }
 
@@ -67,6 +73,9 @@ export interface AgentRunAllocationInput {
    * business-equivalent request onto an existing generation before quota is
    * evaluated. */
   findBusinessReplay?: (tx: Db) => Promise<AgentRun | null>;
+  /** Revalidate mutable aggregate state only for a genuinely new allocation.
+   * Exact HTTP replays have already returned before this callback runs. */
+  validateBeforeInsert?: (tx: Db) => Promise<void>;
 }
 
 /** The only allocation boundary for SEO Agent Runs.  It serializes every
@@ -82,11 +91,11 @@ export async function allocateAgentRun(
         throw notFound(`merchant ${input.run.merchantId} not found`);
       }
 
-      const requestReplay = await resolveRequestReplay(
+      const requestReplay = await resolveAgentRunRequestReplay(
         tx,
         key,
-        input.run.merchantId,
         input.httpRequestFingerprint,
+        { merchantId: input.run.merchantId },
       );
       if (requestReplay) return { run: requestReplay, inserted: false };
 
@@ -103,6 +112,8 @@ export async function allocateAgentRun(
         await persistRequestAlias(tx, idempotent, key, input.httpRequestFingerprint);
         return { run: idempotent, inserted: false };
       }
+
+      await input.validateBeforeInsert?.(tx);
 
       const replay = await input.findBusinessReplay?.(tx);
       if (replay) {
@@ -129,11 +140,11 @@ export async function allocateAgentRun(
     });
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;
-    const replay = await resolveRequestReplay(
+    const replay = await resolveAgentRunRequestReplay(
       input.db,
       key,
-      input.run.merchantId,
       input.httpRequestFingerprint,
+      { merchantId: input.run.merchantId },
     );
     if (!replay) throw error;
     return { run: replay, inserted: false };

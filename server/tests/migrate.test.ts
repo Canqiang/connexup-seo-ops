@@ -1,9 +1,48 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { migrate } from "../src/db/migrate.js";
+import { insertAgentRun } from "../src/repos/agentRunRepo.js";
+import type { AgentRun } from "../src/repos/agentRunTypes.js";
 import { createTestDb } from "./helpers/pgTest.js";
 
 const ctx = await createTestDb();
 afterAll(() => ctx.teardown());
+
+function legacyGbpRun(overrides: Partial<AgentRun> & Pick<AgentRun, "id">): AgentRun {
+  const now = "2026-08-26T00:00:00.000Z";
+  return {
+    id: overrides.id,
+    merchantId: "legacy-gbp-merchant",
+    locationId: "legacy-gbp-location",
+    stage: "GBP_POST_CONTENT",
+    taskId: "legacy-gbp-task",
+    runType: "GBP_POST_CONTENT",
+    goal: null,
+    status: "FAILED",
+    coreRunId: null,
+    traceRef: null,
+    coreStatus: null,
+    inputMessage: "{}",
+    output: null,
+    error: "legacy failure",
+    errorCode: "TRIGGER_FAILED",
+    tokenUsage: {},
+    triggeredBy: "legacy-operator",
+    triggeredAt: now,
+    lastPolledAt: null,
+    completedAt: now,
+    creationIdempotencyKey: `${overrides.id}-key`,
+    requestFingerprint: `sha256:generation-${overrides.id}`,
+    httpRequestFingerprint: `sha256:legacy-http-${overrides.id}`,
+    businessInputFingerprint: "sha256:legacy-business",
+    retryOfAgentRunId: null,
+    retryGeneration: 0,
+    retryReason: null,
+    createdBy: "legacy-operator",
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
 
 describe("migrate on postgres", () => {
   it("creates all tables and is idempotent", async () => {
@@ -82,6 +121,144 @@ describe("migrate on postgres", () => {
         merchant_id: "merchant-1",
         http_request_fingerprint: "sha256:legacy-http-request",
       });
+    } finally {
+      await legacy.teardown();
+    }
+  });
+
+  it("rebuilds legacy GBP route fingerprints and recursively derives retry generations", async () => {
+    const legacy = await createTestDb();
+    try {
+      // Real pre-generation/http-identity table shape: retry parent/reason was
+      // persisted, but the round-4/5 columns do not exist yet.
+      await legacy.db.exec(`CREATE TABLE seo_agent_runs (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        location_id TEXT,
+        stage TEXT NOT NULL,
+        task_id TEXT,
+        run_type TEXT NOT NULL,
+        goal TEXT,
+        status TEXT NOT NULL,
+        core_run_id TEXT,
+        trace_ref TEXT,
+        core_status TEXT,
+        input_message TEXT NOT NULL,
+        output TEXT,
+        error TEXT,
+        error_code TEXT,
+        token_usage TEXT NOT NULL DEFAULT '{}',
+        triggered_by TEXT NOT NULL,
+        triggered_at TEXT NOT NULL,
+        last_polled_at TEXT,
+        completed_at TEXT,
+        creation_idempotency_key TEXT,
+        request_fingerprint TEXT,
+        business_input_fingerprint TEXT,
+        retry_of_agent_run_id TEXT,
+        retry_reason TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      const insertLegacy = async (
+        id: string,
+        parent: string | null,
+        reason: string | null,
+      ) => legacy.db.exec(
+        `INSERT INTO seo_agent_runs
+          (id, merchant_id, location_id, stage, task_id, run_type, status,
+           input_message, token_usage, triggered_by, triggered_at,
+           creation_idempotency_key, request_fingerprint,
+           business_input_fingerprint, retry_of_agent_run_id, retry_reason,
+           created_by, created_at, updated_at)
+         VALUES ($1, 'legacy-gbp-merchant', 'legacy-gbp-location',
+                 'GBP_POST_CONTENT', 'legacy-gbp-task', 'GBP_POST_CONTENT', 'FAILED',
+                 '{}', '{}', 'legacy-operator', '2026-08-26T00:00:00.000Z',
+                 $2, $3, 'sha256:legacy-business', $4, $5,
+                 'legacy-operator', '2026-08-26T00:00:00.000Z',
+                 '2026-08-26T00:00:00.000Z')`,
+        [id, `${id}-key`, `sha256:generation-${id}`, parent, reason],
+      );
+      await insertLegacy("legacy-gbp-0", null, null);
+      await insertLegacy("legacy-gbp-1", "legacy-gbp-0", "  First explicit retry.  ");
+      await insertLegacy("legacy-gbp-2", "legacy-gbp-1", "Second explicit retry.");
+
+      await migrate(legacy.db);
+      await migrate(legacy.db);
+
+      expect(await legacy.db.query(
+        `SELECT id, retry_generation, http_request_fingerprint
+           FROM seo_agent_runs
+          WHERE id LIKE 'legacy-gbp-%'
+          ORDER BY id`,
+      )).toEqual([
+        {
+          id: "legacy-gbp-0",
+          retry_generation: 0,
+          http_request_fingerprint: "sha256:f8b2bc3baeb5dc61901d2bda05fadf3a4500f5a85a4636a5a8a5111244358e7c",
+        },
+        {
+          id: "legacy-gbp-1",
+          retry_generation: 1,
+          http_request_fingerprint: "sha256:1fcc9ccfab78a19cc9e044233a1d299d01458ce398f94d505953d012f30108d7",
+        },
+        {
+          id: "legacy-gbp-2",
+          retry_generation: 2,
+          http_request_fingerprint: "sha256:4f54a2de32d100de6ee73eb603618366d091dd4df679ef824395a3be6a946676",
+        },
+      ]);
+      expect(await legacy.db.query(
+        `SELECT idempotency_key, http_request_fingerprint
+           FROM seo_agent_run_requests
+          WHERE run_id LIKE 'legacy-gbp-%'
+          ORDER BY run_id`,
+      )).toEqual([
+        { idempotency_key: "legacy-gbp-0-key", http_request_fingerprint: "sha256:f8b2bc3baeb5dc61901d2bda05fadf3a4500f5a85a4636a5a8a5111244358e7c" },
+        { idempotency_key: "legacy-gbp-1-key", http_request_fingerprint: "sha256:1fcc9ccfab78a19cc9e044233a1d299d01458ce398f94d505953d012f30108d7" },
+        { idempotency_key: "legacy-gbp-2-key", http_request_fingerprint: "sha256:4f54a2de32d100de6ee73eb603618366d091dd4df679ef824395a3be6a946676" },
+      ]);
+    } finally {
+      await legacy.teardown();
+    }
+  });
+
+  it("fails migration closed when a legacy GBP retry parent is missing", async () => {
+    const legacy = await createTestDb();
+    try {
+      await migrate(legacy.db);
+      await insertAgentRun(legacy.db, legacyGbpRun({
+        id: "legacy-gbp-missing-parent",
+        retryOfAgentRunId: "absent-parent",
+        retryReason: "Missing parent must require reconciliation.",
+      }));
+
+      await expect(migrate(legacy.db)).rejects.toThrow(/legacy-gbp-missing-parent.*absent-parent/i);
+      expect((await legacy.db.one<{ retry_generation: number }>(
+        `SELECT retry_generation FROM seo_agent_runs WHERE id = 'legacy-gbp-missing-parent'`,
+      ))?.retry_generation).toBe(0);
+    } finally {
+      await legacy.teardown();
+    }
+  });
+
+  it("fails migration closed when legacy GBP retry lineage contains a cycle", async () => {
+    const legacy = await createTestDb();
+    try {
+      await migrate(legacy.db);
+      await insertAgentRun(legacy.db, legacyGbpRun({
+        id: "legacy-gbp-cycle-a",
+        retryOfAgentRunId: "legacy-gbp-cycle-b",
+        retryReason: "Cycle edge A.",
+      }));
+      await insertAgentRun(legacy.db, legacyGbpRun({
+        id: "legacy-gbp-cycle-b",
+        retryOfAgentRunId: "legacy-gbp-cycle-a",
+        retryReason: "Cycle edge B.",
+      }));
+
+      await expect(migrate(legacy.db)).rejects.toThrow(/cycle.*legacy-gbp-cycle/i);
     } finally {
       await legacy.teardown();
     }

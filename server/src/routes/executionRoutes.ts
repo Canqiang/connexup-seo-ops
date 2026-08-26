@@ -24,7 +24,7 @@ import {
   resolveAttemptOutcome,
 } from "../services/executionService.js";
 import { addDraft, addDraftRevision, draftsView } from "../services/contentService.js";
-import { appendEvidence } from "../services/taskService.js";
+import { finalizeDraftEvidence } from "../services/taskService.js";
 import { schedulerTick } from "../services/schedulerService.js";
 import {
   deriveCapabilityStatus,
@@ -536,7 +536,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       const drafts = await draftsView(ctx.db, taskId);
       const draft = drafts.find((d) => d.version === versionNo);
       if (!draft) throw new ApiError(404, `draft v${versionNo} not found`);
-      const { task, replayed } = await appendEvidence(
+      const { task, replayed } = await finalizeDraftEvidence(
         ctx.db,
         taskId,
         {

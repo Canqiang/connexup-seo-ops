@@ -6,6 +6,8 @@ import type { CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiCli
 import { AgentRunPoller } from "../src/services/agentRunPoller.js";
 import { parseGbpPostDraftOutput } from "../src/services/gbpPostContentService.js";
 import { addAgentGeneratedDraftFromRun } from "../src/services/contentService.js";
+import { migrate } from "../src/db/migrate.js";
+import { gbpContentHttpRequestFingerprint } from "../src/domain/gbpContentRunIdentity.js";
 import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 describe("GBP Post Content Agent pre-Gate draft path", () => {
@@ -19,7 +21,11 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     tempDirs.length = 0;
   });
 
-  function fakeCore(options: { failTriggerNumbers?: number[] } = {}) {
+  function fakeCore(options: {
+    failTriggerNumbers?: number[];
+    onTriggerStarted?: () => void;
+    waitBeforeTriggerReturn?: () => Promise<void>;
+  } = {}) {
     let triggerCount = 0;
     let lastAgentId = "";
     const inputs = new Map<string, Record<string, unknown>>();
@@ -37,6 +43,8 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
           // Generic Stage Runs use a bounded text prompt; only GBP content
           // polling needs a structured request echo in this fake.
         }
+        options.onTriggerStarted?.();
+        await options.waitBeforeTriggerReturn?.();
         await new Promise((resolve) => setTimeout(resolve, 10));
         return { run_id: runId, status: "RUNNING" };
       },
@@ -161,7 +169,42 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
         idempotency_key: `${suffix}-task`,
       },
     })).json();
-    return { ...built, merchant, location, task };
+    return { ...built, artifactsDir, merchant, location, task };
+  }
+
+  async function holdMerchantLock(
+    db: Awaited<ReturnType<typeof setupContentTask>>["db"],
+    merchantId: string,
+  ) {
+    let release!: () => void;
+    let locked!: (pid: number) => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<number>((resolve) => { locked = resolve; });
+    const transaction = db.withTransaction(async (tx) => {
+      const backend = await tx.one<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      await tx.one("SELECT id FROM seo_merchants WHERE id = $1 FOR UPDATE", [merchantId]);
+      locked(backend!.pid);
+      await released;
+    });
+    return { blockerPid: await ready, release, transaction };
+  }
+
+  async function waitForBlockedBy(
+    db: Awaited<ReturnType<typeof setupContentTask>>["db"],
+    blockerPid: number,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const blocked = await db.one<{ blocked: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_stat_activity
+            WHERE $1 = ANY(pg_blocking_pids(pid))
+         ) AS blocked`,
+        [blockerPid],
+      );
+      if (blocked?.blocked) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Agent Run allocation did not reach the held merchant lock");
   }
 
   it("enforces auth and tenant scope before a Core AI trigger", async () => {
@@ -610,6 +653,358 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     });
     expect(changedReplayRequest.statusCode).toBe(409);
     expect(changedReplayRequest.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("replays the same HTTP key and body after Gate 1 advances, but conflicts on a changed body", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "stable-http-after-gate");
+    const { app, db, task } = built;
+    const key = "stable-http-after-gate-run";
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(first.statusCode).toBe(202);
+    await new AgentRunPoller({ db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const draft = (await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items[0];
+    const beforeFinalize = (await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${task.id}`,
+    })).json();
+    const finalized = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/drafts/${draft.version}/finalize`,
+      payload: {
+        expected_state_version: beforeFinalize.state_version,
+        idempotency_key: "stable-http-after-gate-finalize",
+      },
+    });
+    expect(finalized.statusCode).toBe(201);
+    expect(finalized.json().status).toBe("READY_FOR_APPROVAL");
+    const approved = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/approval-decisions`,
+      payload: {
+        decision: "APPROVE",
+        task_revision: finalized.json().task_revision,
+        execution_spec_hash: finalized.json().execution_spec_hash,
+        expected_state_version: finalized.json().state_version,
+        idempotency_key: "stable-http-after-gate-approve",
+      },
+    });
+    expect(approved.statusCode).toBe(201);
+    expect(approved.json().status).toBe("APPROVED");
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().id).toBe(first.json().id);
+    expect(core.triggerCount()).toBe(1);
+
+    const changedBody = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: key,
+        retry: {
+          prior_run_id: first.json().id,
+          reason: "The HTTP request body changed after the original completed generation.",
+        },
+      },
+    });
+    expect(changedBody.statusCode).toBe(409);
+    expect(changedBody.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("replays the same HTTP key after style and Task revision changes", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "stable-http-after-mutable-input");
+    const { app, task, merchant } = built;
+    const key = "stable-http-after-mutable-input-run";
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(first.statusCode).toBe(202);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/style-profile`,
+      payload: { voice: { tone: "direct, seasonal, and concise" } },
+    })).statusCode).toBe(201);
+    const revised = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/draft-revisions`,
+      payload: {
+        body: "A human revision changes the Task definition while the original request remains stable.",
+        source: "HUMAN_EDIT",
+        expected_state_version: task.state_version,
+        idempotency_key: "stable-http-task-revision",
+      },
+    });
+    expect(revised.statusCode).toBe(201);
+    expect(revised.json().task_revision).toBe(task.task_revision + 1);
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().id).toBe(first.json().id);
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("rebuilds a legacy GBP request alias that the real route can replay", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "legacy-route-replay");
+    const { app, db, task } = built;
+    const key = "legacy-route-replay-run";
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(first.statusCode).toBe(202);
+
+    await db.exec(
+      `UPDATE seo_agent_runs
+          SET http_request_fingerprint = 'sha256:legacy-mutable-request'
+        WHERE id = $1`,
+      [first.json().id],
+    );
+    await db.exec(
+      `UPDATE seo_agent_run_requests
+          SET http_request_fingerprint = 'sha256:legacy-mutable-request'
+        WHERE idempotency_key = $1`,
+      [key],
+    );
+    await migrate(db);
+
+    const expected = gbpContentHttpRequestFingerprint(task.id);
+    expect(await db.one(
+      `SELECT r.http_request_fingerprint, q.http_request_fingerprint AS alias_fingerprint
+         FROM seo_agent_runs r
+         JOIN seo_agent_run_requests q ON q.run_id = r.id
+        WHERE r.id = $1 AND q.idempotency_key = $2`,
+      [first.json().id, key],
+    )).toEqual({
+      http_request_fingerprint: expected,
+      alias_fingerprint: expected,
+    });
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().id).toBe(first.json().id);
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("rejects draft finalization while allocation owns an active GBP Run, then accepts valid output", async () => {
+    let triggerStarted!: () => void;
+    let releaseTrigger!: () => void;
+    const triggerReady = new Promise<void>((resolve) => { triggerStarted = resolve; });
+    const triggerReleased = new Promise<void>((resolve) => { releaseTrigger = resolve; });
+    const core = fakeCore({
+      onTriggerStarted: triggerStarted,
+      waitBeforeTriggerReturn: () => triggerReleased,
+    });
+    const built = await setupContentTask(core.client, "allocation-wins-finalize");
+    const { app, db, task } = built;
+    const manualDraft = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/drafts`,
+      payload: { body: "Manual draft waiting for finalization.", source: "HUMAN_EDIT" },
+    })).json();
+
+    const allocation = app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "allocation-wins-finalize-run" },
+    });
+    await triggerReady;
+    const finalize = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/drafts/${manualDraft.version}/finalize`,
+      payload: {
+        expected_state_version: task.state_version,
+        idempotency_key: "allocation-wins-finalize-evidence",
+      },
+    });
+    expect(finalize.statusCode).toBe(409);
+    expect(finalize.json().error_code).toBe("CONTENT_RUN_ACTIVE");
+
+    releaseTrigger();
+    const allocated = await allocation;
+    expect(allocated.statusCode).toBe(202);
+    await new AgentRunPoller({ db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const completed = (await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/agent-runs/${allocated.json().id}`,
+    })).json();
+    expect(completed.status).toBe("COMPLETED");
+    expect(completed.error_code).not.toBe("OUTPUT_INVALID");
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items).toHaveLength(2);
+  });
+
+  it("rejects stale allocation after draft finalization wins the Task lock", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "finalize-wins-allocation");
+    const { app, db, task, merchant } = built;
+    const manualDraft = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/drafts`,
+      payload: { body: "Finalize before allocation can lock the Task.", source: "HUMAN_EDIT" },
+    })).json();
+    const held = await holdMerchantLock(db, merchant.id);
+    const allocation = app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "finalize-wins-allocation-run" },
+    });
+    await waitForBlockedBy(db, held.blockerPid);
+    const finalized = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/drafts/${manualDraft.version}/finalize`,
+      payload: {
+        expected_state_version: task.state_version,
+        idempotency_key: "finalize-wins-allocation-evidence",
+      },
+    });
+    expect(finalized.statusCode).toBe(201);
+    expect(finalized.json().status).toBe("READY_FOR_APPROVAL");
+    held.release();
+    await held.transaction;
+
+    const rejected = await allocation;
+    expect(rejected.statusCode).toBe(409);
+    expect(core.triggerCount()).toBe(0);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
+      [task.id],
+    )).toEqual({ count: "0" });
+  });
+
+  it("rejects Gate 1 approval while allocation owns an active GBP Run without invalidating valid output", async () => {
+    let triggerStarted!: () => void;
+    let releaseTrigger!: () => void;
+    const triggerReady = new Promise<void>((resolve) => { triggerStarted = resolve; });
+    const triggerReleased = new Promise<void>((resolve) => { releaseTrigger = resolve; });
+    const core = fakeCore({
+      onTriggerStarted: triggerStarted,
+      waitBeforeTriggerReturn: () => triggerReleased,
+    });
+    const built = await setupContentTask(core.client, "allocation-wins-approval");
+    const { app, db, task } = built;
+    const allocation = app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "allocation-wins-approval-run" },
+    });
+    await triggerReady;
+    const evidence = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/evidence`,
+      payload: {
+        type: "CONTENT_DRAFT",
+        source_ref: "draft:operator-proof",
+        captured_at: "2026-08-27T12:00:00.000Z",
+        verification_status: "VERIFIED",
+        requirement_key: "CONTENT_DRAFT",
+        expected_state_version: task.state_version,
+        idempotency_key: "allocation-wins-approval-evidence",
+      },
+    });
+    expect(evidence.statusCode).toBe(201);
+    expect(evidence.json().status).toBe("READY_FOR_APPROVAL");
+    const approval = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/approval-decisions`,
+      payload: {
+        decision: "APPROVE",
+        task_revision: evidence.json().task_revision,
+        execution_spec_hash: evidence.json().execution_spec_hash,
+        expected_state_version: evidence.json().state_version,
+        idempotency_key: "allocation-wins-approval-decision",
+      },
+    });
+    expect(approval.statusCode).toBe(409);
+    expect(approval.json().error_code).toBe("CONTENT_RUN_ACTIVE");
+
+    releaseTrigger();
+    const allocated = await allocation;
+    expect(allocated.statusCode).toBe(202);
+    await new AgentRunPoller({ db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const completed = (await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/agent-runs/${allocated.json().id}`,
+    })).json();
+    expect(completed.status).toBe("COMPLETED");
+    expect(completed.error_code).not.toBe("OUTPUT_INVALID");
+  });
+
+  it("rejects stale allocation after Gate 1 approval wins the Task lock", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "approval-wins-allocation");
+    const { app, db, task, merchant } = built;
+    const held = await holdMerchantLock(db, merchant.id);
+    const allocation = app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "approval-wins-allocation-run" },
+    });
+    await waitForBlockedBy(db, held.blockerPid);
+    const evidence = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/evidence`,
+      payload: {
+        type: "CONTENT_DRAFT",
+        source_ref: "draft:approval-wins-proof",
+        captured_at: "2026-08-27T12:00:00.000Z",
+        verification_status: "VERIFIED",
+        requirement_key: "CONTENT_DRAFT",
+        expected_state_version: task.state_version,
+        idempotency_key: "approval-wins-allocation-evidence",
+      },
+    });
+    expect(evidence.json().status).toBe("READY_FOR_APPROVAL");
+    const approved = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/approval-decisions`,
+      payload: {
+        decision: "APPROVE",
+        task_revision: evidence.json().task_revision,
+        execution_spec_hash: evidence.json().execution_spec_hash,
+        expected_state_version: evidence.json().state_version,
+        idempotency_key: "approval-wins-allocation-decision",
+      },
+    });
+    expect(approved.statusCode).toBe(201);
+    expect(approved.json().status).toBe("APPROVED");
+    held.release();
+    await held.transaction;
+
+    const rejected = await allocation;
+    expect(rejected.statusCode).toBe(409);
+    expect(core.triggerCount()).toBe(0);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
+      [task.id],
+    )).toEqual({ count: "0" });
   });
 
   it("requires explicit audited retry lineage for failed or cancelled generations", async () => {

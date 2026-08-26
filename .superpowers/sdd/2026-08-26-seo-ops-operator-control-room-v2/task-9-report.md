@@ -451,3 +451,108 @@ Result: backend 30 files / 284 tests passed; frontend 24 files / 147 tests passe
 - `seo_agent_run_requests` intentionally follows the repository's existing no-foreign-key legacy posture; the allocator detects a request alias whose referenced Run is missing and fails closed. Retry branching remains intentionally unsupported.
 - Workbench composition still follows the existing in-memory aggregate-then-page design. Pending artifact rows are tenant-scoped in SQL before payload material is read, but a future high-volume revision may move the combined multi-source ordering/pagination into a database projection.
 - Nothing in this round proves UAT Agent publication/binding, Run output quality, report delivery, external merchant mutation, or four-merchant reconciliation.
+
+## Fix round 5 — stable HTTP replay, legacy lineage repair, and one Task aggregate gate
+
+### Scope and boundary
+
+- This final fix round addresses only the recorded round-4 re-review findings: GBP HTTP idempotency, legacy GBP retry identity migration, and the concurrency invariant between pre-Gate content generation and Gate 1 advancement.
+- All code and tests remain inside this SEO Ops worktree. No Core AI UAT request or mutation occurred, and no file in `core-ai`, `fbr-project`, or `fbr-agent` was modified.
+
+### Exact RED evidence
+
+Stable route/body idempotency regressions were added first in `server/tests/gbpPostContentAgent.test.ts` and run with:
+
+```bash
+npm --prefix server test -- --run tests/gbpPostContentAgent.test.ts \
+  -t "replays the same HTTP key"
+```
+
+Observed before implementation: both same-key/same-body replays returned `409` instead of `200` after Gate 1 advancement and after style/Task revision changes. The stored HTTP fingerprint still included mutable business, style, revision, and generation state.
+
+Legacy lineage migrations were added first in `server/tests/migrate.test.ts` and run with:
+
+```bash
+npm --prefix server test -- --run tests/migrate.test.ts \
+  -t "legacy GBP|missing GBP retry|cyclic GBP retry"
+```
+
+Observed before implementation: three failures. Legacy mutable fingerprints remained unchanged, all historical retries remained generation zero, and missing/cyclic parent chains migrated silently instead of failing for reconciliation.
+
+Four deterministic transaction-barrier regressions were added first and run with:
+
+```bash
+npm --prefix server test -- --run tests/gbpPostContentAgent.test.ts \
+  -t "allocation|finalization|approval wins"
+```
+
+Observed before implementation: all four required interleavings failed. Finalize and approve returned `201` while an active content Run existed, and stale allocations returned `202` after finalize/approve had already advanced the Task.
+
+### Implemented fixes
+
+- Added one shared pure `gbpContentHttpRequestFingerprint` helper. Its input is only authenticated route/body identity: `task_id`, optional explicit retry parent, and trimmed retry reason. Mutable Task revision/status, style, binding, business input, and generation remain in the separate business/generation fingerprints.
+- GBP content requests now resolve a durable request alias immediately after route authorization/body validation and before reading or validating mutable Task/style/build state. Same key plus same body therefore replays the same Run even after the Task reaches `READY_FOR_APPROVAL`/`APPROVED` or its style/revision changes; the same key with a changed body remains `IDEMPOTENCY_CONFLICT`.
+- Migration uses the same pure runtime helper to rebuild every legacy GBP Run and request-ledger alias. It recursively derives generations across two or more parent levels, trims retry reasons, and is idempotent on rerun. A missing Task, missing parent, parent from another Task, reason/parent mismatch, or lineage cycle throws an explicit reconciliation-required migration error and rolls the transaction back rather than assigning generation zero.
+- The shared allocator now invokes a GBP-specific revalidation hook only for a genuinely new allocation, after the merchant lock and exact replay checks. That hook locks and re-reads the Task, rejects a changed revision/spec, and rechecks the pre-Gate Task contract before the Run insert. External Core AI triggering remains after the allocation transaction commits.
+- Draft finalization and Gate 1 approval use their existing Task row transaction as the other side of the invariant and reject while a durable `TRIGGERING`/`RUNNING` GBP content Run exists. Agent draft ingestion permits `READY_FOR_APPROVAL`, so a structurally valid output that completes after a rejected competing approval is persisted rather than mislabeled `OUTPUT_INVALID` solely because of the race.
+- The barrier tests cover allocation-before-finalize, finalize-before-allocation, allocation-before-approval, and approval-before-allocation. They assert response status, durable Run row count, Core AI trigger count, and valid terminal output behavior.
+- Added a real HTTP-route replay regression that corrupts a persisted legacy GBP Run/alias fingerprint, reruns migration, independently reads back the repaired identity, and then replays the original request without a second Core AI trigger.
+
+### GREEN and complete verification evidence
+
+New migration and GBP focused tests:
+
+```bash
+npm --prefix server test -- --run \
+  tests/gbpPostContentAgent.test.ts \
+  tests/migrate.test.ts
+```
+
+Result: 2 files / 24 tests passed.
+
+All prior Task 9 backend regressions:
+
+```bash
+npm --prefix server test -- --run \
+  tests/gbpPostContentAgent.test.ts \
+  tests/migrate.test.ts \
+  tests/specialistArtifactAcceptance.test.ts \
+  tests/workbench.test.ts \
+  tests/agentRuns.test.ts \
+  tests/coreAiAgentManifests.test.ts \
+  tests/plannerAgent.test.ts \
+  tests/specialistAdapters.test.ts
+```
+
+Result: 8 files / 67 tests passed.
+
+Task 9 frontend regressions:
+
+```bash
+npm run test:run -- \
+  src/features/tasks/SpecialistArtifactsPanel.test.tsx \
+  src/features/workbench/WorkbenchPage.test.tsx \
+  src/App.test.tsx
+```
+
+Result: 3 files / 44 tests passed.
+
+Full sequential verification:
+
+```bash
+npm --prefix server test
+npm run test:run
+npm --prefix server run typecheck
+npm --prefix server run build
+npm run build
+git diff --check
+```
+
+Result: backend 30 files / 294 tests passed; frontend 24 files / 147 tests passed; server typecheck/build, root production build, migration fresh/legacy/rerun tests, and diff check passed. Frontend emitted only the already-recorded jsdom local-storage and unimplemented `scrollTo` warnings.
+
+### Files, unresolved findings, and residual boundaries
+
+- Runtime/migration: `server/src/domain/gbpContentRunIdentity.ts`, `server/src/db/migrate.ts`, `server/src/services/agentRunAllocator.ts`, `server/src/services/gbpPostContentService.ts`, `server/src/services/taskService.ts`, `server/src/services/contentService.ts`, and `server/src/routes/executionRoutes.ts`.
+- Tests: `server/tests/gbpPostContentAgent.test.ts` and `server/tests/migrate.test.ts`.
+- Unresolved round-5 review findings: none found after the required focused and full verification.
+- Deliberate external boundaries remain unchanged: no UAT publication/binding proof, no four-merchant reconciliation, no external merchant write, and no administrative repair tool for pathological legacy retry rows. Such rows now stop startup migration with an explicit reconciliation error rather than being silently rewritten.
