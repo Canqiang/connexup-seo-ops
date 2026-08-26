@@ -24,6 +24,9 @@ const COLUMN_MIGRATIONS: string[] = [
   // 触发标记（0827 review）：写入类 attempt 触发前先落标记，崩溃后禁止再触发
   `ALTER TABLE seo_execution_attempts ADD COLUMN IF NOT EXISTS trigger_started_at TEXT`,
   `ALTER TABLE seo_execution_attempts ADD COLUMN IF NOT EXISTS trace_ref TEXT`,
+  `ALTER TABLE seo_content_drafts ADD COLUMN IF NOT EXISTS agent_run_id TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_drafts_agent_run
+     ON seo_content_drafts(agent_run_id) WHERE agent_run_id IS NOT NULL`,
 ];
 
 const IDENTITY_TYPE_CHECK = "seo_users_identity_type_check";

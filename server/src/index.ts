@@ -106,13 +106,12 @@ export async function buildApp(
   }
 
   let poller: AgentRunPoller | null = null;
-  if (ctx.coreAi && config.agentRunAgentId && deps.poller !== null) {
+  if (ctx.coreAi && deps.poller !== null) {
     poller =
       deps.poller ??
       new AgentRunPoller({
         db,
         client: ctx.coreAi,
-        agentId: config.agentRunAgentId,
         artifactsDir,
         intervalMs: config.agentRunPollIntervalMs,
         log: app.log,

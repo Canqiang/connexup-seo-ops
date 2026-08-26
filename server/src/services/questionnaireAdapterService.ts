@@ -19,7 +19,7 @@ const questionnaireOutputSchema = z.object({
   schema_version: z.literal(QUESTIONNAIRE_OUTPUT_SCHEMA_VERSION),
   merchant_id: z.string().trim().min(1),
   base_info: z.record(z.string().max(2000)),
-  questions: z.array(questionnaireItemSchema).min(1).max(50),
+  questions: z.array(questionnaireItemSchema).min(8).max(16),
 }).strict().superRefine((value, ctx) => {
   const seen = new Set<string>();
   for (const [index, item] of value.questions.entries()) {

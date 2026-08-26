@@ -45,7 +45,11 @@ import {
   listAttemptsByTaskPage,
   listOpenUnknownAttempts,
 } from "../repos/executionRepo.js";
-import { listAgentRunsForTaskAudit, listDeliverablesByRunIds } from "../repos/agentRunRepo.js";
+import {
+  listAgentRunsForTaskAudit,
+  listDeliverablesByRun,
+  listDeliverablesByRunIds,
+} from "../repos/agentRunRepo.js";
 import { countPendingProposals, getProposal } from "../repos/proposalRepo.js";
 import { getTask, listTasksByStatus } from "../repos/taskRepo.js";
 import { getMerchant, listMerchantsForOperator } from "../repos/merchantRepo.js";
@@ -70,6 +74,8 @@ import {
   taskView,
 } from "../views/mappers.js";
 import { TASK_TYPES } from "../domain/enums.js";
+import { stageRunView } from "../services/agentRunService.js";
+import { triggerGbpPostContentRun } from "../services/gbpPostContentService.js";
 
 /** agent 绑定键 = 任务类型 + 执行专用键（GBP 写入由 GBP_EXECUTION agent 执行）。 */
 const BINDING_KEYS = [...TASK_TYPES, "GBP_EXECUTION"] as const;
@@ -152,6 +158,10 @@ const addDraftRevisionSchema = addDraftSchema.extend({
   expected_state_version: z.number().int().nonnegative(),
   idempotency_key: z.string(),
 });
+
+const triggerContentRunSchema = z.object({
+  idempotency_key: z.string().min(1).max(200),
+}).strict();
 
 const finalizeDraftSchema = z.object({
   expected_state_version: z.number().int().nonnegative(),
@@ -430,6 +440,24 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     const { taskId } = request.params as { taskId: string };
     await requireTaskAccess(ctx.db, actor, taskId);
     return { items: (await draftsView(ctx.db, taskId)).map(draftView) };
+  });
+
+  app.post("/api/seo-ops/tasks/:taskId/content-runs", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
+    const { taskId } = request.params as { taskId: string };
+    await requireTaskAccess(ctx.db, actor, taskId);
+    if (!ctx.coreAi) {
+      throw new ApiError(503, "Core AI is not configured", "CORE_AI_DISABLED");
+    }
+    const body = triggerContentRunSchema.parse(request.body);
+    const { run, replayed } = await triggerGbpPostContentRun(
+      { db: ctx.db, client: ctx.coreAi, log: app.log },
+      taskId,
+      body.idempotency_key,
+      actor.userId,
+    );
+    reply.status(replayed ? 200 : 202);
+    return stageRunView(run, await listDeliverablesByRun(ctx.db, run.id));
   });
 
   app.post("/api/seo-ops/tasks/:taskId/drafts", async (request, reply) => {

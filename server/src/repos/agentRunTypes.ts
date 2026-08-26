@@ -1,8 +1,8 @@
 import type {
-  AgentRunStage,
   AgentRunStatus,
   AgentRunType,
   DeliverableKind,
+  StoredAgentRunStage,
 } from "../domain/enums.js";
 
 /** 阶段运行：归属于（商户，地点，阶段）。task_id 仅溯源用（Plan 转任务后
@@ -11,7 +11,7 @@ export interface AgentRun {
   id: string;
   merchantId: string;
   locationId: string | null;
-  stage: AgentRunStage;
+  stage: StoredAgentRunStage;
   taskId: string | null;
   runType: AgentRunType;
   goal: string | null;

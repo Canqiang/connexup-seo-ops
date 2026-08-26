@@ -90,6 +90,9 @@ export const AGENT_RUN_STAGES = [
   "REVIEW",
 ] as const;
 export type AgentRunStage = (typeof AGENT_RUN_STAGES)[number];
+/** Task-linked GBP draft generation is persisted as a Run without becoming
+ * a generic merchant lifecycle stage. */
+export type StoredAgentRunStage = AgentRunStage | "GBP_POST_CONTENT";
 
 export const AGENT_RUN_TYPES = [
   "AUDIT",
@@ -97,6 +100,7 @@ export const AGENT_RUN_TYPES = [
   "PLAN",
   "REPORT",
   "REVIEW",
+  "GBP_POST_CONTENT",
 ] as const;
 export type AgentRunType = (typeof AGENT_RUN_TYPES)[number];
 
@@ -194,6 +198,7 @@ export const TASK_TYPES = [
   "KEYWORD_WEEKLY",
   "AUDIT",
   "REPORT",
+  "REPORT_PACKAGE",
   "PLAN",
   "GBP_POST",
   "GBP_UPDATE",
@@ -202,6 +207,24 @@ export const TASK_TYPES = [
   "MANUAL_FOLLOWUP",
 ] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
+
+/** Task types an Agent may propose. PLANNER is an internal deterministic
+ * trigger envelope and must never recurse through Agent output. */
+export const PLANNER_PROPOSABLE_TASK_TYPES = [
+  "QUESTIONNAIRE",
+  "KEYWORD_RESEARCH",
+  "KEYWORD_WEEKLY",
+  "AUDIT",
+  "REPORT",
+  "REPORT_PACKAGE",
+  "PLAN",
+  "GBP_POST",
+  "GBP_UPDATE",
+  "WEBSITE_CONTENT",
+  "REVIEW",
+  "MANUAL_FOLLOWUP",
+] as const satisfies readonly TaskType[];
+export type PlannerProposableTaskType = (typeof PLANNER_PROPOSABLE_TASK_TYPES)[number];
 
 /** taskType × executionMode 兼容表（红线①的机器防线）：
  * 写入型任务类型不允许标成 READ_ONLY —— 否则一条 LLM 建议只要把
@@ -214,6 +237,7 @@ export const ALLOWED_EXECUTION_MODES: Record<TaskType, readonly string[]> = {
   KEYWORD_WEEKLY: ["READ_ONLY", "MANUAL"],
   AUDIT: ["READ_ONLY", "MANUAL"],
   REPORT: ["READ_ONLY", "MANUAL"],
+  REPORT_PACKAGE: ["READ_ONLY", "MANUAL"],
   PLAN: ["READ_ONLY", "MANUAL"],
   GBP_POST: ["AUTO_WRITE", "MANUAL"],
   GBP_UPDATE: ["AUTO_WRITE", "MANUAL"],

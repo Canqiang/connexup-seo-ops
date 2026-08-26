@@ -5,7 +5,9 @@ export type SpecialistArtifactType =
   | "KEYWORD_WEEKLY"
   | "AUDIT_REPORT"
   | "RANKING_SNAPSHOT"
-  | "EXECUTION_PLAN";
+  | "EXECUTION_PLAN"
+  | "EFFECT_REVIEW"
+  | "MERCHANT_REPORT";
 
 export interface SpecialistArtifact {
   id: string;

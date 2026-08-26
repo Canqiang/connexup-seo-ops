@@ -17,6 +17,32 @@ type JsonSchema = {
   pattern?: string;
 };
 
+const coreAiSchemaKeys = new Set([
+  "title", "type", "description", "enum", "properties", "required", "items",
+  "format", "additionalProperties", "default", "const", "minimum", "maximum",
+  "minLength", "maxLength", "pattern", "minItems", "maxItems", "oneOf", "anyOf", "allOf",
+]);
+
+function assertCoreAiCompatibleSchema(schema: unknown, path = "$response_schema"): void {
+  expect(schema, `${path} must be an object`).toEqual(expect.any(Object));
+  expect(Array.isArray(schema), `${path} must not be an array`).toBe(false);
+  const record = schema as Record<string, unknown>;
+  expect(Object.keys(record).filter((key) => !coreAiSchemaKeys.has(key)), path).toEqual([]);
+  if (record.type !== undefined) expect(typeof record.type, `${path}.type`).toBe("string");
+  if (record.additionalProperties !== undefined) {
+    expect(typeof record.additionalProperties, `${path}.additionalProperties`).toBe("boolean");
+  }
+  for (const [name, child] of Object.entries(record.properties as Record<string, unknown> | undefined ?? {})) {
+    assertCoreAiCompatibleSchema(child, `${path}.properties.${name}`);
+  }
+  if (record.items !== undefined) assertCoreAiCompatibleSchema(record.items, `${path}.items`);
+  for (const combinator of ["oneOf", "anyOf", "allOf"] as const) {
+    for (const [index, child] of ((record[combinator] as unknown[] | undefined) ?? []).entries()) {
+      assertCoreAiCompatibleSchema(child, `${path}.${combinator}[${index}]`);
+    }
+  }
+}
+
 type AgentManifest = Record<string, unknown> & {
   name: string;
   system_prompt: string;
@@ -157,6 +183,23 @@ describe("Core AI SEO Ops Agent manifests", () => {
     }
   });
 
+  it("uses only the JsonSchema subset accepted by the read-only Core AI converter", () => {
+    for (const file of Object.keys(expectedRoster) as Array<keyof typeof expectedRoster>) {
+      assertCoreAiCompatibleSchema(JSON.parse(loadManifest(file).response_schema), file);
+    }
+  });
+
+  it("locks manifest fields that must stay disabled and questionnaire cardinality", () => {
+    const localSchema = JSON.parse(readFileSync(schemaPath, "utf8"));
+    expect(localSchema.properties.thinking_effort).toEqual({ const: null });
+    expect(localSchema.properties.subagent_ids.maxItems).toBe(0);
+    expect(localSchema.properties.dataset_config.maxItems).toBe(0);
+
+    const questionnaire = JSON.parse(loadManifest("seo-ops-questionnaire-draft-v1.json").response_schema);
+    expect(questionnaire.properties.questions).toMatchObject({ minItems: 8, maxItems: 16 });
+    expect(questionnaire.properties.base_info.additionalProperties).toBe(true);
+  });
+
   it("keeps every Agent bounded and without memory, subagents, datasets, or sandbox", () => {
     for (const file of Object.keys(expectedRoster) as Array<keyof typeof expectedRoster>) {
       const manifest = loadManifest(file);
@@ -208,6 +251,10 @@ describe("Core AI SEO Ops Agent manifests", () => {
     expect(planner.tools).toEqual([]);
     expect(planner.system_prompt).toContain("Return proposals only");
     expect(planner.system_prompt).toContain("does not persist Task");
+    const plannerTypes = JSON.parse(planner.response_schema)
+      .properties.items.items.properties.task_type.enum;
+    expect(plannerTypes).not.toContain("PLANNER");
+    expect(plannerTypes).toContain("REPORT_PACKAGE");
 
     const keyword = loadManifest("seo-ops-keyword-set-v2.json");
     expect(keyword.system_prompt).toContain("country_code=US");
@@ -218,6 +265,15 @@ describe("Core AI SEO Ops Agent manifests", () => {
     expect(keyword.system_prompt).toContain("UNSCORED");
     expect(keyword.system_prompt).toMatch(/never infer China or Wuhan/i);
     expect(keyword.system_prompt).toContain("Never write to FBR");
+  });
+
+  it("requires the complete Plan input chain and deterministic report freeze echo", () => {
+    const plan = loadManifest("seo-ops-execution-plan-v1.json");
+    expect(plan.system_prompt).toContain("RANKING_SNAPSHOT");
+
+    const report = loadManifest("seo-ops-report-packager-v1.json");
+    expect(report.system_prompt).toContain("execution_spec.report_version exactly as report_version");
+    expect(report.system_prompt).toContain("execution_spec.frozen_at exactly as frozen_at");
   });
 
   it("makes GBP content an exact US-English draft and never a publication claim", () => {
@@ -240,6 +296,7 @@ describe("Core AI SEO Ops Agent manifests", () => {
   it("caps Effect Review at association and keeps Report Packager merchant-safe", () => {
     const review = loadManifest("seo-ops-effect-review-v1.json");
     expect(review.tools).toEqual([]);
+    expect(review.skill_ids).toEqual([]);
     expect(review.system_prompt).toContain("baseline");
     expect(review.system_prompt).toContain("action bundle");
     expect(review.system_prompt).toContain("observed change");
@@ -253,6 +310,7 @@ describe("Core AI SEO Ops Agent manifests", () => {
 
     const report = loadManifest("seo-ops-report-packager-v1.json");
     expect(report.tools).toEqual([]);
+    expect(report.skill_ids).toEqual([]);
     expect(report.system_prompt).toContain("one frozen combined merchant-facing report");
     expect(report.system_prompt).toContain("Never include internal-only artifacts");
     expect(report.system_prompt).toContain("Never invent facts");

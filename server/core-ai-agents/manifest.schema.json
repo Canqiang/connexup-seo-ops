@@ -49,7 +49,7 @@
       "maximum": 2
     },
     "thinking_effort": {
-      "type": ["string", "null"]
+      "const": null
     },
     "max_turns": {
       "type": "integer",
@@ -96,10 +96,12 @@
       }
     },
     "subagent_ids": {
-      "type": "array"
+      "type": "array",
+      "maxItems": 0
     },
     "dataset_config": {
-      "type": "array"
+      "type": "array",
+      "maxItems": 0
     },
     "sandbox_config": {
       "type": "null"

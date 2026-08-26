@@ -347,6 +347,7 @@ export const SCHEMA_STATEMENTS: string[] = [
   `CREATE TABLE IF NOT EXISTS seo_content_drafts (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
+    agent_run_id TEXT,
     version INTEGER NOT NULL,
     body TEXT NOT NULL,
     cta_type TEXT,
@@ -360,6 +361,8 @@ export const SCHEMA_STATEMENTS: string[] = [
     UNIQUE(task_id, version)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_drafts_task ON seo_content_drafts(task_id, version DESC)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_drafts_agent_run
+     ON seo_content_drafts(agent_run_id) WHERE agent_run_id IS NOT NULL`,
 
   /** 商户风格档案：品牌档案 voice + 人工校订，按版本引用（更新不追溯已批准稿）。 */
   `CREATE TABLE IF NOT EXISTS seo_style_profiles (

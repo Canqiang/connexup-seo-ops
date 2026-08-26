@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import type { Db } from "../db/connection.js";
-import { EXECUTION_MODES, TASK_PRIORITIES, TASK_TYPES } from "../domain/enums.js";
+import {
+  EXECUTION_MODES,
+  PLANNER_PROPOSABLE_TASK_TYPES,
+  TASK_PRIORITIES,
+} from "../domain/enums.js";
 import { listLocationsByMerchant } from "../repos/locationRepo.js";
 import { getMerchant } from "../repos/merchantRepo.js";
 import { latestQuestionnaireByMerchant } from "../repos/questionnaireRepo.js";
@@ -23,6 +27,10 @@ export const RANKING_REQUEST_SCHEMA_VERSION = "seo_ops.ranking_request.v1";
 export const RANKING_OUTPUT_SCHEMA_VERSION = "seo_ops.ranking_report.v1";
 export const PLAN_REQUEST_SCHEMA_VERSION = "seo_ops.plan_request.v1";
 export const PLAN_OUTPUT_SCHEMA_VERSION = "seo_ops.execution_plan.v1";
+export const EFFECT_REVIEW_OUTPUT_SCHEMA_VERSION = "seo_ops.effect_review.v1";
+export const REPORT_PACKAGE_OUTPUT_SCHEMA_VERSION = "seo_ops.merchant_report.v1";
+export const EFFECT_REVIEW_REQUEST_SCHEMA_VERSION = "seo_ops.effect_review_request.v1";
+export const REPORT_PACKAGE_REQUEST_SCHEMA_VERSION = "seo_ops.merchant_report_request.v1";
 
 const safeIdSchema = z.string().trim().min(1).max(100).regex(/^[a-z0-9][a-z0-9_-]*$/);
 
@@ -194,7 +202,7 @@ const rankingOutputSchema = z.object({
 const planWorkItemSchema = z.object({
   id: safeIdSchema,
   title: z.string().trim().min(1).max(300),
-  task_type: z.enum(TASK_TYPES),
+  task_type: z.enum(PLANNER_PROPOSABLE_TASK_TYPES),
   execution_mode: z.enum(EXECUTION_MODES),
   priority: z.enum(TASK_PRIORITIES),
   depends_on: z.array(safeIdSchema).max(20),
@@ -239,6 +247,38 @@ const planOutputSchema = z.object({
     }
   }
 });
+
+const effectReviewOutputSchema = z.object({
+  schema_version: z.literal(EFFECT_REVIEW_OUTPUT_SCHEMA_VERSION),
+  merchant_id: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(300),
+  summary: z.string().trim().min(1).max(4000),
+  baseline: z.record(z.unknown()),
+  action_bundle: z.array(z.record(z.unknown())).min(1).max(100),
+  observed_change: z.record(z.unknown()),
+  confounders: z.array(z.string().trim().min(1).max(1000)).max(50),
+  conclusion_tier: z.enum(["INSUFFICIENT_EVIDENCE", "DESCRIPTIVE", "ASSOCIATIONAL"]),
+  conclusion: z.string().trim().min(1).max(4000),
+  planning_signals: z.array(z.record(z.unknown())).max(50),
+  limitations: z.array(z.string().trim().min(1).max(1000)).max(50),
+}).strict();
+
+const reportPackageOutputSchema = z.object({
+  schema_version: z.literal(REPORT_PACKAGE_OUTPUT_SCHEMA_VERSION),
+  merchant_id: z.string().trim().min(1),
+  report_version: z.string().trim().min(1).max(100),
+  frozen_at: z.string().datetime({ offset: true }),
+  title: z.string().trim().min(1).max(300),
+  executive_summary: z.string().trim().min(1).max(5000),
+  sections: z.array(z.object({
+    id: safeIdSchema,
+    title: z.string().trim().min(1).max(300),
+    body: z.string().trim().min(1).max(10_000),
+    source_artifact_ids: z.array(z.string().trim().min(1)).min(1).max(50),
+  }).strict()).min(1).max(30),
+  source_artifact_ids: z.array(z.string().trim().min(1)).min(1).max(100),
+  limitations: z.array(z.string().trim().min(1).max(1000)).max(50),
+}).strict();
 
 function parseJsonObject(value: string, label: string): Record<string, unknown> {
   try {
@@ -308,12 +348,22 @@ export function parsePlanOutput(output: string) {
   return parseStrictOutput(output, "plan", planOutputSchema);
 }
 
+export function parseEffectReviewOutput(output: string) {
+  return parseStrictOutput(output, "effect review", effectReviewOutputSchema);
+}
+
+export function parseReportPackageOutput(output: string) {
+  return parseStrictOutput(output, "report package", reportPackageOutputSchema);
+}
+
 export function isStructuredSpecialistTask(taskType: string): boolean {
   return taskType === "KEYWORD_RESEARCH"
     || taskType === "KEYWORD_WEEKLY"
     || taskType === "AUDIT"
     || taskType === "REPORT"
-    || taskType === "PLAN";
+    || taskType === "PLAN"
+    || taskType === "REVIEW"
+    || taskType === "REPORT_PACKAGE";
 }
 
 function specialistContract(taskType: string): {
@@ -377,6 +427,44 @@ function specialistContract(taskType: string): {
       requiredArtifactTypes: ["KEYWORD_SET", "AUDIT_REPORT"],
       contextArtifactTypes: ["KEYWORD_SET", "AUDIT_REPORT"],
       rules: ["measure_only_supplied_keywords", "use_null_for_unavailable_ranks", "label_every_measurement_source"],
+    };
+  }
+  if (taskType === "REVIEW") {
+    return {
+      requestSchemaVersion: EFFECT_REVIEW_REQUEST_SCHEMA_VERSION,
+      outputSchemaVersion: EFFECT_REVIEW_OUTPUT_SCHEMA_VERSION,
+      requiredArtifactTypes: [],
+      contextArtifactTypes: [
+        "KEYWORD_SET",
+        "AUDIT_REPORT",
+        "RANKING_SNAPSHOT",
+        "EXECUTION_PLAN",
+      ],
+      rules: [
+        "separate_observation_from_interpretation",
+        "cap_conclusion_at_associational",
+        "never_claim_causality",
+      ],
+    };
+  }
+  if (taskType === "REPORT_PACKAGE") {
+    return {
+      requestSchemaVersion: REPORT_PACKAGE_REQUEST_SCHEMA_VERSION,
+      outputSchemaVersion: REPORT_PACKAGE_OUTPUT_SCHEMA_VERSION,
+      requiredArtifactTypes: ["AUDIT_REPORT"],
+      contextArtifactTypes: [
+        "KEYWORD_SET",
+        "AUDIT_REPORT",
+        "RANKING_SNAPSHOT",
+        "EFFECT_REVIEW",
+        "EXECUTION_PLAN",
+      ],
+      rules: [
+        "package_only_accepted_supplied_artifacts",
+        "exclude_internal_only_artifacts",
+        "echo_report_version_and_frozen_at_exactly",
+        "never_claim_delivery_or_publication",
+      ],
     };
   }
   throw new Error(`no structured specialist contract for ${taskType}`);
@@ -459,9 +547,14 @@ async function persistParsedArtifact(
   task: Task,
   coreRunId: string,
   artifactType: SpecialistArtifactType,
-  parsed: { schema_version: string; title: string; summary: string } & Record<string, unknown>,
+  parsed: { schema_version: string; title: string } & Record<string, unknown>,
   actor: string,
+  summaryOverride?: string,
 ): Promise<SpecialistArtifact> {
+  const summary = summaryOverride ?? parsed.summary;
+  if (typeof summary !== "string" || summary.trim() === "") {
+    throw new Error(`${artifactType} output requires a non-empty persisted summary`);
+  }
   return insertSpecialistArtifact(db, {
     id: crypto.randomUUID(),
     taskId: task.id,
@@ -469,7 +562,7 @@ async function persistParsedArtifact(
     artifactType,
     schemaVersion: parsed.schema_version,
     title: parsed.title,
-    summary: parsed.summary,
+    summary,
     payload: parsed,
     coreRunId,
     createdBy: actor,
@@ -519,6 +612,35 @@ export async function ingestSpecialistRunOutput(
       throw new Error("plan output merchant_id does not match the dispatched task");
     }
     return persistParsedArtifact(db, task, coreRunId, "EXECUTION_PLAN", parsed, actor);
+  }
+  if (task.taskType === "REVIEW") {
+    const parsed = parseEffectReviewOutput(output);
+    if (parsed.merchant_id !== task.merchantId) {
+      throw new Error("effect review output merchant_id does not match the dispatched task");
+    }
+    return persistParsedArtifact(db, task, coreRunId, "EFFECT_REVIEW", parsed, actor);
+  }
+  if (task.taskType === "REPORT_PACKAGE") {
+    const parsed = parseReportPackageOutput(output);
+    if (parsed.merchant_id !== task.merchantId) {
+      throw new Error("report package output merchant_id does not match the dispatched task");
+    }
+    const executionSpec = parseJsonObject(task.executionSpec, "report package task execution_spec");
+    if (parsed.report_version !== executionSpec.report_version) {
+      throw new Error("report package output report_version does not match execution_spec");
+    }
+    if (parsed.frozen_at !== executionSpec.frozen_at) {
+      throw new Error("report package output frozen_at does not match execution_spec");
+    }
+    return persistParsedArtifact(
+      db,
+      task,
+      coreRunId,
+      "MERCHANT_REPORT",
+      parsed,
+      actor,
+      parsed.executive_summary,
+    );
   }
   throw new Error(`no structured specialist adapter for ${task.taskType}`);
 }

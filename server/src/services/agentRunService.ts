@@ -53,6 +53,11 @@ export interface AgentRunDeps {
   log?: { warn(message: string): void };
 }
 
+export type AgentRunIoDeps = Pick<
+  AgentRunDeps,
+  "db" | "client" | "artifactsDir" | "log"
+>;
+
 export interface TriggerStageRunInput {
   stage: string;
   location_id?: string | null;
@@ -289,7 +294,7 @@ function deliverableFileName(runId: string, tag: string, fileName: string): stri
  * (run, 来源) 决定性生成，upsert 让崩溃重放天然幂等；单个附件下载失败只记
  * download_error、保留 remote_url，绝不失败整个运行。 */
 export async function recordDeliverables(
-  deps: AgentRunDeps,
+  deps: AgentRunIoDeps,
   run: AgentRun,
   core: CoreAgentRunDetail,
 ): Promise<RunDeliverable[]> {
@@ -378,7 +383,7 @@ function mapCoreStatus(coreStatus: string): AgentRunStatus {
 /** 终态第二步：条件翻转 run 行（单写者守卫）。调用顺序是崩溃安全的关键——
  * recordDeliverables 先行；这里失败或崩溃时行仍 RUNNING，下轮 poll 整体重放。 */
 export async function applyTerminalTransition(
-  deps: AgentRunDeps,
+  deps: AgentRunIoDeps,
   run: AgentRun,
   core: CoreAgentRunDetail,
 ): Promise<AgentRun> {
@@ -583,7 +588,8 @@ export interface StageRunWire {
   id: string;
   merchant_id: string;
   location_id: string | null;
-  stage: AgentRunStage;
+  task_id: string | null;
+  stage: AgentRun["stage"];
   run_type: string;
   goal: string | null;
   status: AgentRunStatus;
@@ -622,6 +628,7 @@ export function stageRunView(
     id: run.id,
     merchant_id: run.merchantId,
     location_id: run.locationId,
+    task_id: run.taskId,
     stage: run.stage,
     run_type: run.runType,
     goal: run.goal,

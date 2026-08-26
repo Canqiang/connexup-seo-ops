@@ -124,9 +124,13 @@ describe("Planner Agent bridge", () => {
 
     // First tick triggers Core AI; second tick reads the terminal result.
     await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
-    expect(JSON.parse(plannerInput).trigger.signals).toEqual([
+    const parsedPlannerInput = JSON.parse(plannerInput);
+    expect(parsedPlannerInput.trigger.signals).toEqual([
       { website: "https://new-store.example" },
     ]);
+    expect(parsedPlannerInput.policy.allowed_task_types).not.toContain("PLANNER");
+    expect(parsedPlannerInput.policy.allowed_task_types).toContain("REPORT_PACKAGE");
+    expect(parsedPlannerInput.policy.allowed_execution_modes_by_task_type).not.toHaveProperty("PLANNER");
     await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
 
     const after = (
@@ -319,5 +323,31 @@ describe("Planner Agent output contract", () => {
         required_evidence_types: [],
       }],
     }))).toThrow(/acceptance_criteria/);
+  });
+
+  it("keeps PLANNER internal while accepting a distinct REPORT_PACKAGE proposal", () => {
+    const item = {
+      title: "Package accepted merchant report",
+      execution_mode: "READ_ONLY",
+      depends_on: [],
+      priority: "HIGH",
+      impact: "HIGH",
+      acceptance_criteria: "One frozen report artifact is persisted for review.",
+      execution_spec: {
+        report_version: "2026-08-v1",
+        frozen_at: "2026-08-27T00:00:00.000Z",
+      },
+      required_evidence_types: [],
+    };
+    expect(() => parsePlannerOutput(JSON.stringify({
+      schema_version: "seo_ops.task_proposals.v1",
+      trigger_key: "report:merchant-1:2026-08",
+      items: [{ ...item, task_type: "PLANNER" }],
+    }))).toThrow(/task_type/);
+    expect(parsePlannerOutput(JSON.stringify({
+      schema_version: "seo_ops.task_proposals.v1",
+      trigger_key: "report:merchant-1:2026-08",
+      items: [{ ...item, task_type: "REPORT_PACKAGE" }],
+    })).items[0]).toMatchObject({ task_type: "REPORT_PACKAGE" });
   });
 });

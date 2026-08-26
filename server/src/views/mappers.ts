@@ -344,6 +344,7 @@ export function draftView(d: ContentDraft): Record<string, unknown> {
   return {
     id: d.id,
     task_id: d.taskId,
+    agent_run_id: d.agentRunId,
     version: d.version,
     body: d.body,
     cta_type: d.ctaType,

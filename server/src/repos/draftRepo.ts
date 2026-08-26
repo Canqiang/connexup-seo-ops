@@ -4,6 +4,7 @@ import type { Db } from "../db/connection.js";
 export interface ContentDraft {
   id: string;
   taskId: string;
+  agentRunId: string | null;
   version: number;
   body: string;
   ctaType: string | null;
@@ -19,7 +20,7 @@ export interface ContentDraft {
 }
 
 interface DraftRow {
-  id: string; task_id: string; version: number; body: string;
+  id: string; task_id: string; agent_run_id: string | null; version: number; body: string;
   cta_type: string | null; cta_url: string | null; media: string;
   source: string; feedback: string | null; sha256: string;
   created_by: string | null; created_at: string;
@@ -27,7 +28,8 @@ interface DraftRow {
 
 function toDraft(row: DraftRow): ContentDraft {
   return {
-    id: row.id, taskId: row.task_id, version: row.version, body: row.body,
+    id: row.id, taskId: row.task_id, agentRunId: row.agent_run_id,
+    version: row.version, body: row.body,
     ctaType: row.cta_type, ctaUrl: row.cta_url,
     media: JSON.parse(row.media || "[]"),
     source: row.source as ContentDraft["source"],
@@ -39,13 +41,21 @@ function toDraft(row: DraftRow): ContentDraft {
 export async function insertDraft(db: Db, d: ContentDraft): Promise<ContentDraft> {
   await db.exec(
     `INSERT INTO seo_content_drafts
-      (id, task_id, version, body, cta_type, cta_url, media, source, feedback,
+      (id, task_id, agent_run_id, version, body, cta_type, cta_url, media, source, feedback,
        sha256, created_by, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-    [d.id, d.taskId, d.version, d.body, d.ctaType, d.ctaUrl,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [d.id, d.taskId, d.agentRunId, d.version, d.body, d.ctaType, d.ctaUrl,
      JSON.stringify(d.media), d.source, d.feedback, d.sha256, d.createdBy, d.createdAt],
   );
   return d;
+}
+
+export async function getDraftByAgentRunId(db: Db, agentRunId: string): Promise<ContentDraft | null> {
+  const row = await db.one<DraftRow>(
+    `SELECT * FROM seo_content_drafts WHERE agent_run_id = $1`,
+    [agentRunId],
+  );
+  return row ? toDraft(row) : null;
 }
 
 export async function listDraftsByTask(db: Db, taskId: string): Promise<ContentDraft[]> {

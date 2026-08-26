@@ -6,7 +6,8 @@ import {
   transitionAgentRun,
 } from "../repos/agentRunRepo.js";
 import type { AgentRun } from "../repos/agentRunTypes.js";
-import { applyTerminalTransition, recordDeliverables, type AgentRunDeps } from "./agentRunService.js";
+import { applyTerminalTransition, recordDeliverables, type AgentRunIoDeps } from "./agentRunService.js";
+import { ingestGbpPostContentRunOutput } from "./gbpPostContentService.js";
 
 /** Injectable clock/scheduler so tests never sleep. */
 export interface PollerScheduler {
@@ -14,7 +15,7 @@ export interface PollerScheduler {
   clearInterval(handle: unknown): void;
 }
 
-export interface AgentRunPollerDeps extends AgentRunDeps {
+export interface AgentRunPollerDeps extends AgentRunIoDeps {
   intervalMs?: number;
   now?: () => Date;
   scheduler?: PollerScheduler;
@@ -119,6 +120,23 @@ export class AgentRunPoller {
       // Deliverables land first (upsert by deterministic id = idempotent); a
       // crash here leaves the row RUNNING and the next poll replays both steps.
       await recordDeliverables(this.deps, fresh, core);
+      if (core.status === "COMPLETED" && fresh.stage === "GBP_POST_CONTENT") {
+        try {
+          await ingestGbpPostContentRunOutput(this.deps.db, fresh, core.output);
+        } catch (error) {
+          await transitionAgentRun(this.deps.db, fresh.id, {
+            status: "FAILED",
+            coreStatus: core.status,
+            traceRef: core.trace_id ?? fresh.traceRef,
+            output: core.output ?? null,
+            error: error instanceof Error ? error.message : "invalid GBP Post content output",
+            errorCode: "OUTPUT_INVALID",
+            completedAt: core.completed_at ?? this.nowIso(),
+            lastPolledAt: this.nowIso(),
+          }, ["RUNNING"]);
+          return;
+        }
+      }
       await applyTerminalTransition(this.deps, fresh, core);
     } else {
       await transitionAgentRun(

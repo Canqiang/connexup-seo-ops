@@ -4,9 +4,9 @@ import { canonicalize, sha256Hash } from "../domain/hashing.js";
 import {
   ALLOWED_EXECUTION_MODES,
   EXECUTION_MODES,
+  PLANNER_PROPOSABLE_TASK_TYPES,
   TASK_IMPACTS,
   TASK_PRIORITIES,
-  TASK_TYPES,
 } from "../domain/enums.js";
 import { getMerchant } from "../repos/merchantRepo.js";
 import { listLocationsByMerchant } from "../repos/locationRepo.js";
@@ -29,7 +29,7 @@ export const PLANNER_TRIGGER_SCHEMA_VERSION = "seo_ops.planner_trigger.v1";
 
 const plannerItemSchema = z.object({
   title: z.string().trim().min(1).max(300),
-  task_type: z.enum(TASK_TYPES),
+  task_type: z.enum(PLANNER_PROPOSABLE_TASK_TYPES),
   execution_mode: z.enum(EXECUTION_MODES),
   executor_agent: z.string().trim().min(1).max(200).optional(),
   location_id: z.string().trim().min(1).optional(),
@@ -198,6 +198,9 @@ export async function buildPlannerRunInput(
     listTasksByMerchant(db, task.merchantId),
   ]);
 
+  const allowedExecutionModes = Object.fromEntries(
+    PLANNER_PROPOSABLE_TASK_TYPES.map((taskType) => [taskType, ALLOWED_EXECUTION_MODES[taskType]]),
+  );
   return JSON.stringify({
     schema_version: "seo_ops.planner_context.v1",
     seo_ops_task_id: task.id,
@@ -241,8 +244,8 @@ export async function buildPlannerRunInput(
       updated_at: existing.updatedAt,
     })),
     policy: {
-      allowed_task_types: TASK_TYPES,
-      allowed_execution_modes_by_task_type: ALLOWED_EXECUTION_MODES,
+      allowed_task_types: PLANNER_PROPOSABLE_TASK_TYPES,
+      allowed_execution_modes_by_task_type: allowedExecutionModes,
       output_schema_version: PLANNER_OUTPUT_SCHEMA_VERSION,
       max_items: 50,
       rules: [

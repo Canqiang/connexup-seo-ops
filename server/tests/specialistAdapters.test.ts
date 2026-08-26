@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiClient.js";
+import { insertSpecialistArtifact } from "../src/repos/specialistArtifactRepo.js";
+import { getTask } from "../src/repos/taskRepo.js";
 import { parseQuestionnaireOutput } from "../src/services/questionnaireAdapterService.js";
-import { parseKeywordOutput } from "../src/services/specialistAdapterService.js";
+import {
+  parseEffectReviewOutput,
+  parseKeywordOutput,
+  parseReportPackageOutput,
+  ingestSpecialistRunOutput,
+} from "../src/services/specialistAdapterService.js";
 import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 describe("specialist result adapters", () => {
@@ -44,6 +51,11 @@ describe("specialist result adapters", () => {
                 hint: "请列出 3–5 项",
                 required: false,
               },
+              ...Array.from({ length: 6 }, (_, index) => ({
+                id: `onboarding-${index + 3}`,
+                question: `Onboarding question ${index + 3}?`,
+                required: false,
+              })),
             ],
           }),
         };
@@ -165,8 +177,68 @@ describe("specialist result adapters", () => {
       questions: [
         { id: "business", question: "What do you sell?", required: true },
         { id: "business", question: "What matters most?", required: false },
+        ...Array.from({ length: 6 }, (_, index) => ({
+          id: `detail-${index + 1}`,
+          question: `Detail ${index + 1}?`,
+          required: false,
+        })),
       ],
     }))).toThrow("duplicate question id: business");
+  });
+
+  it("requires 8 to 16 generated questionnaire questions", () => {
+    const output = (count: number) => JSON.stringify({
+      schema_version: "seo_ops.questionnaire_draft.v1",
+      merchant_id: "merchant-1",
+      base_info: { name: "Store" },
+      questions: Array.from({ length: count }, (_, index) => ({
+        id: `question-${index + 1}`,
+        question: `Question ${index + 1}?`,
+        required: index < 4,
+      })),
+    });
+    expect(() => parseQuestionnaireOutput(output(7))).toThrow(/questions/);
+    expect(parseQuestionnaireOutput(output(8)).questions).toHaveLength(8);
+    expect(() => parseQuestionnaireOutput(output(17))).toThrow(/questions/);
+  });
+
+  it("strictly parses durable Effect Review and frozen Report Package outputs", () => {
+    expect(parseEffectReviewOutput(JSON.stringify({
+      schema_version: "seo_ops.effect_review.v1",
+      merchant_id: "merchant-1",
+      title: "30-day effect review",
+      summary: "Observed visibility changed after the dated action bundle.",
+      baseline: { captured_at: "2026-07-01T00:00:00.000Z" },
+      action_bundle: [{ action: "GBP post", occurred_at: "2026-07-10T00:00:00.000Z" }],
+      observed_change: { direction: "IMPROVED" },
+      confounders: ["Seasonality was not controlled."],
+      conclusion_tier: "ASSOCIATIONAL",
+      conclusion: "The change is associated with, but not proven caused by, the action bundle.",
+      planning_signals: [{ signal: "continue measurement" }],
+      limitations: ["No randomized control."],
+    }))).toMatchObject({ conclusion_tier: "ASSOCIATIONAL" });
+
+    const report = {
+      schema_version: "seo_ops.merchant_report.v1",
+      merchant_id: "merchant-1",
+      report_version: "2026-08-v1",
+      frozen_at: "2026-08-27T00:00:00.000Z",
+      title: "Merchant SEO report",
+      executive_summary: "Accepted evidence summary.",
+      sections: [{
+        id: "audit",
+        title: "Audit",
+        body: "Accepted audit facts.",
+        source_artifact_ids: ["artifact-audit"],
+      }],
+      source_artifact_ids: ["artifact-audit"],
+      limitations: [],
+    };
+    expect(parseReportPackageOutput(JSON.stringify(report))).toMatchObject({
+      report_version: "2026-08-v1",
+    });
+    expect(() => parseReportPackageOutput(JSON.stringify({ ...report, delivery_status: "SENT" })))
+      .toThrow(/delivery_status/);
   });
 
   it("accepts only a US, lineage-labeled keyword v2 artifact", () => {
@@ -300,6 +372,203 @@ describe("specialist result adapters", () => {
       url: `/api/seo-ops/tasks/${downstreamDecision.task_id}`,
     })).json();
     expect(released).toMatchObject({ status: "DISPATCHING", attempt_count: 1 });
+  });
+
+  it("dispatches REVIEW and REPORT_PACKAGE through distinct durable artifact contracts", async () => {
+    let merchantId = "";
+    const dispatchedInputs = new Map<string, string>();
+    const coreAi: CoreAiClient = {
+      async trigger(agentId, input) {
+        dispatchedInputs.set(agentId, input);
+        return {
+          run_id: agentId === "agent-review" ? "core-review-run-1" : "core-package-run-1",
+          status: "RUNNING",
+        };
+      },
+      async getRun(id): Promise<CoreAgentRunDetail> {
+        if (id === "core-review-run-1") {
+          return {
+            id,
+            agent_id: "agent-review",
+            status: "COMPLETED",
+            output: JSON.stringify({
+              schema_version: "seo_ops.effect_review.v1",
+              merchant_id: merchantId,
+              title: "30-day effect review",
+              summary: "Observed visibility changed after the accepted actions.",
+              baseline: { captured_at: "2026-07-01T00:00:00.000Z" },
+              action_bundle: [{ action: "GBP post", occurred_at: "2026-07-10T00:00:00.000Z" }],
+              observed_change: { direction: "IMPROVED" },
+              confounders: ["Seasonality was not controlled."],
+              conclusion_tier: "ASSOCIATIONAL",
+              conclusion: "The observed change is associated with the dated action bundle.",
+              planning_signals: [{ signal: "continue measurement" }],
+              limitations: ["No causal experiment."],
+            }),
+          };
+        }
+        return {
+          id,
+          agent_id: "agent-package",
+          status: "COMPLETED",
+          output: JSON.stringify({
+            schema_version: "seo_ops.merchant_report.v1",
+            merchant_id: merchantId,
+            report_version: "2026-08-v1",
+            frozen_at: "2026-08-27T00:00:00.000Z",
+            title: "August merchant SEO report",
+            executive_summary: "Accepted audit and review evidence only.",
+            sections: [{
+              id: "audit",
+              title: "Audit",
+              body: "Accepted audit facts.",
+              source_artifact_ids: ["accepted-audit"],
+            }],
+            source_artifact_ids: ["accepted-audit"],
+            limitations: [],
+          }),
+        };
+      },
+      async cancel() {},
+      async downloadArtifact() { throw new Error("no specialist attachments"); },
+    };
+    const built = await createAuthenticatedTestApp({
+      configOverrides: {
+        coreAiBaseUrl: "https://core-ai.example",
+        coreAiToken: "test-token",
+        agentRunAgentId: null,
+        mockExecution: false,
+      },
+      deps: { coreAi },
+    });
+    apps.push(built.app);
+    const { app, db } = built;
+    const merchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: { slug: "review-store", display_name: "Review Store", idempotency_key: "review-store" },
+    })).json();
+    merchantId = merchant.id;
+    const questionnaire = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/questionnaires`,
+      payload: { idempotency_key: "review-questionnaire" },
+    })).json();
+    await app.inject({ method: "POST", url: `/api/seo-ops/questionnaires/${questionnaire.id}/send` });
+    await app.inject({
+      method: "POST",
+      url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
+      payload: {
+        answers: Object.fromEntries(
+          questionnaire.questions.map((question: { id: string }) => [question.id, "Confirmed"]),
+        ),
+      },
+    });
+    for (const [taskType, agentId] of [["REVIEW", "agent-review"], ["REPORT_PACKAGE", "agent-package"]] as const) {
+      expect((await app.inject({
+        method: "PUT",
+        url: `/api/seo-ops/agent-bindings/${taskType}`,
+        payload: { agent_id: agentId, agent_label: taskType },
+      })).statusCode).toBe(200);
+    }
+    const batch = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/proposal-batches",
+      payload: {
+        merchant_id: merchant.id,
+        origin: "MANUAL",
+        idempotency_key: "review-package-batch",
+        items: [
+          {
+            title: "Review observed effects",
+            task_type: "REVIEW",
+            execution_mode: "READ_ONLY",
+            depends_on: [],
+            priority: "HIGH",
+            impact: "HIGH",
+            acceptance_criteria: "An association-capped review artifact is persisted.",
+            execution_spec: JSON.stringify({ review_window: "2026-07" }),
+            required_evidence_types: [],
+          },
+          {
+            title: "Package accepted report",
+            task_type: "REPORT_PACKAGE",
+            execution_mode: "READ_ONLY",
+            depends_on: [],
+            priority: "HIGH",
+            impact: "HIGH",
+            acceptance_criteria: "A frozen merchant report artifact is persisted.",
+            execution_spec: JSON.stringify({
+              report_version: "2026-08-v1",
+              frozen_at: "2026-08-27T00:00:00.000Z",
+            }),
+            required_evidence_types: [],
+          },
+        ],
+      },
+    })).json();
+    const taskIds: string[] = [];
+    for (const proposal of batch.proposals) {
+      taskIds.push((await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/proposals/${proposal.id}/decision`,
+        payload: { action: "ADOPT" },
+      })).json().task_id);
+    }
+    await insertSpecialistArtifact(db, {
+      id: "accepted-audit",
+      taskId: taskIds[1]!,
+      merchantId,
+      artifactType: "AUDIT_REPORT",
+      schemaVersion: "seo_ops.audit_report.v1",
+      title: "Accepted audit",
+      summary: "Accepted audit facts.",
+      payload: { accepted: true },
+      coreRunId: "accepted-audit-run",
+      createdBy: "test",
+      createdAt: "2026-08-26T00:00:00.000Z",
+    });
+
+    await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
+    expect(JSON.parse(dispatchedInputs.get("agent-review") ?? "null")).toMatchObject({
+      output_schema_version: "seo_ops.effect_review.v1",
+    });
+    expect(JSON.parse(dispatchedInputs.get("agent-package") ?? "null")).toMatchObject({
+      output_schema_version: "seo_ops.merchant_report.v1",
+      execution_spec: {
+        report_version: "2026-08-v1",
+        frozen_at: "2026-08-27T00:00:00.000Z",
+      },
+    });
+    await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
+
+    expect((await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${taskIds[0]}/artifacts` }))
+      .json().items).toEqual([expect.objectContaining({ artifact_type: "EFFECT_REVIEW" })]);
+    const packaged = (await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${taskIds[1]}/artifacts`,
+    })).json().items;
+    expect(packaged).toEqual(expect.arrayContaining([expect.objectContaining({
+      artifact_type: "MERCHANT_REPORT",
+      schema_version: "seo_ops.merchant_report.v1",
+      summary: "Accepted audit and review evidence only.",
+    })]));
+    expect(packaged.find((item: { artifact_type: string }) => item.artifact_type === "MERCHANT_REPORT").payload)
+      .toMatchObject({
+      report_version: "2026-08-v1",
+      frozen_at: "2026-08-27T00:00:00.000Z",
+    });
+    const reportTask = await getTask(db, taskIds[1]!);
+    expect(reportTask).not.toBeNull();
+    await expect(ingestSpecialistRunOutput(
+      db,
+      reportTask!,
+      "core-package-run-wrong-freeze",
+      JSON.stringify({
+        ...packaged.find((item: { artifact_type: string }) => item.artifact_type === "MERCHANT_REPORT").payload,
+        frozen_at: "2026-08-28T00:00:00.000Z",
+      }),
+    )).rejects.toThrow("frozen_at does not match execution_spec");
   });
 
   it("persists Keyword, Audit, Ranking, and Plan artifacts in dependency order with upstream context", async () => {

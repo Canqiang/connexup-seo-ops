@@ -166,7 +166,7 @@ interface LifecycleCompletion {
   deliverableCount: number;
 }
 
-const ARTIFACT_STAGE: Record<SpecialistArtifactType, { stage: AgentRunStage; runType: string }> = {
+const ARTIFACT_STAGE: Partial<Record<SpecialistArtifactType, { stage: AgentRunStage; runType: string }>> = {
   KEYWORD_SET: { stage: "KEYWORDS", runType: "KEYWORD_RESEARCH" },
   KEYWORD_WEEKLY: { stage: "KEYWORDS", runType: "KEYWORD_WEEKLY" },
   AUDIT_REPORT: { stage: "AUDIT", runType: "AUDIT" },
@@ -177,7 +177,7 @@ const ARTIFACT_STAGE: Record<SpecialistArtifactType, { stage: AgentRunStage; run
 function completionFromRun(inputs: LifecycleInputs, run: AgentRun): LifecycleCompletion {
   return {
     id: run.id,
-    stage: run.stage,
+    stage: run.stage as AgentRunStage,
     runType: run.runType,
     completedAt: run.completedAt ?? run.createdAt,
     createdAt: run.createdAt,
@@ -188,6 +188,7 @@ function completionFromRun(inputs: LifecycleInputs, run: AgentRun): LifecycleCom
 
 function completionFromArtifact(artifact: SpecialistArtifact): LifecycleCompletion {
   const mapped = ARTIFACT_STAGE[artifact.artifactType];
+  if (!mapped) throw new Error(`${artifact.artifactType} is not a lifecycle-stage artifact`);
   const capturedAt = artifact.artifactType === "RANKING_SNAPSHOT"
     && typeof artifact.payload.captured_at === "string"
     ? artifact.payload.captured_at
@@ -236,7 +237,7 @@ function deriveFacts(
         r.status === "COMPLETED" &&
         hasUsableDeliverable(inputs, r),
     );
-    const artifact = artifacts.find((item) => ARTIFACT_STAGE[item.artifactType].stage === stage);
+    const artifact = artifacts.find((item) => ARTIFACT_STAGE[item.artifactType]?.stage === stage);
     const candidates = [
       ...(run ? [completionFromRun(inputs, run)] : []),
       ...(artifact ? [completionFromArtifact(artifact)] : []),

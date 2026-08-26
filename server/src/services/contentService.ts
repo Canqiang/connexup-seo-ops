@@ -7,6 +7,7 @@ import { executionSpecHash, requestFingerprint } from "../domain/hashing.js";
 import { buildEvent, mutateTask, reevaluate } from "./taskService.js";
 import {
   insertDraft,
+  getDraftByAgentRunId,
   latestDraft,
   listDraftsByTask,
   type ContentDraft,
@@ -52,6 +53,9 @@ const DRAFT_SOURCES = new Set(["AGENT_GENERATED", "AGENT_REWRITE", "HUMAN_EDIT"]
 const CONTENT_REVISION_ALLOWED_STATUSES = new Set([
   "DRAFT", "NEEDS_INPUT", "BLOCKED", "READY_FOR_APPROVAL", "REVISION_REQUIRED", "APPROVAL_REVOKED", "APPROVED",
 ]);
+const AGENT_DRAFT_ALLOWED_STATUSES = new Set([
+  "DRAFT", "NEEDS_INPUT", "BLOCKED", "REVISION_REQUIRED", "APPROVAL_REVOKED",
+]);
 
 function validateDraftInput(input: AddDraftInput): void {
   if (typeof input.body !== "string" || input.body.trim() === "") {
@@ -65,15 +69,56 @@ function validateDraftInput(input: AddDraftInput): void {
   }
 }
 
-function buildDraft(taskId: string, version: number, input: AddDraftInput, actorId: string): ContentDraft {
+function buildDraft(
+  taskId: string,
+  version: number,
+  input: AddDraftInput,
+  actorId: string,
+  agentRunId: string | null = null,
+): ContentDraft {
   const media = input.media ?? [];
   return {
-    id: crypto.randomUUID(), taskId, version, body: input.body,
+    id: crypto.randomUUID(), taskId, agentRunId, version, body: input.body,
     ctaType: input.cta_type ?? null, ctaUrl: input.cta_url ?? null, media,
     source: input.source, feedback: input.feedback ?? null,
     sha256: draftSha256({ body: input.body, ctaType: input.cta_type ?? null, ctaUrl: input.cta_url ?? null, media }),
     createdBy: actorId, createdAt: nowIso(),
   };
+}
+
+/** Core AI content ingestion boundary. The task row lock serializes competing
+ * pollers; agent_run_id makes replay durable across restarts. This adds a
+ * draft only and intentionally does not mutate Task state or approval data. */
+export async function addAgentGeneratedDraftFromRun(
+  db: Db,
+  taskId: string,
+  agentRunId: string,
+  body: string,
+  actorId: string,
+): Promise<{ draft: ContentDraft; replayed: boolean }> {
+  validateDraftInput({ body, source: "AGENT_GENERATED" });
+  return db.withTransaction(async (tx) => {
+    const task = await getTaskForUpdate(tx, taskId);
+    if (!task) throw notFound(`task ${taskId} not found`);
+    const existing = await getDraftByAgentRunId(tx, agentRunId);
+    if (existing) {
+      if (existing.taskId !== taskId) throw conflict("agent run draft belongs to another task");
+      return { draft: existing, replayed: true };
+    }
+    if (!AGENT_DRAFT_ALLOWED_STATUSES.has(task.status)) {
+      throw conflict(`cannot ingest Agent content in status ${task.status}`, "INVALID_TRANSITION");
+    }
+    const last = await latestDraft(tx, taskId);
+    const draft = buildDraft(
+      taskId,
+      (last?.version ?? 0) + 1,
+      { body, source: "AGENT_GENERATED" },
+      actorId,
+      agentRunId,
+    );
+    await insertDraft(tx, draft);
+    return { draft, replayed: false };
+  });
 }
 
 export async function addDraft(
