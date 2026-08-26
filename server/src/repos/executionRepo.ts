@@ -26,6 +26,14 @@ export interface ExecutionAttempt {
   updatedAt: string;
 }
 
+/** Least-data input for the workbench's outcome-reconciliation action. */
+export interface WorkbenchUnknownAttempt {
+  id: string;
+  taskId: string;
+  merchantId: string;
+  startedAt: string;
+}
+
 interface AttemptRow {
   id: string;
   task_id: string;
@@ -132,6 +140,28 @@ export async function listOpenUnknownAttempts(
         `SELECT * FROM seo_execution_attempts WHERE status = 'OUTCOME_UNKNOWN' ORDER BY started_at`,
       );
   return rows.map(toAttempt);
+}
+
+/** Scope outcome-reconciliation reads to the authorized merchant set and
+ * avoid loading run references, errors, or resolution/audit payloads. */
+export async function listWorkbenchUnknownAttempts(
+  db: Db,
+  merchantIds: readonly string[],
+): Promise<WorkbenchUnknownAttempt[]> {
+  if (merchantIds.length === 0) return [];
+  const rows = await db.query<Pick<AttemptRow, "id" | "task_id" | "merchant_id" | "started_at">>(
+    `SELECT id, task_id, merchant_id, started_at
+     FROM seo_execution_attempts
+     WHERE status = 'OUTCOME_UNKNOWN' AND merchant_id = ANY($1::text[])
+     ORDER BY started_at, id`,
+    [merchantIds],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    taskId: row.task_id,
+    merchantId: row.merchant_id,
+    startedAt: row.started_at,
+  }));
 }
 
 /** 在途（已派发未终态）attempt：门 2 在途/冻结面校验的数据源。 */

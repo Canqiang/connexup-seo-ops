@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { createTestUser, createAuthenticatedTestApp, type AuthenticatedTestApp } from "./helpers/authTest.js";
 import { createMerchant } from "../src/services/merchantService.js";
 import { createProposalBatch } from "../src/services/proposalService.js";
+import { createTask } from "../src/services/taskService.js";
 import { settleAttemptUnknown } from "../src/services/executionService.js";
 import { insertAttempt, listAttemptsByTask } from "../src/repos/executionRepo.js";
 
@@ -10,6 +11,8 @@ describe("workbench projection", () => {
   let built: AuthenticatedTestApp;
   let app: FastifyInstance;
   let merchantA: { id: string };
+  let merchantB: { id: string };
+  let operatorBId: string;
 
   beforeEach(async () => {
     built = await createAuthenticatedTestApp();
@@ -154,15 +157,16 @@ describe("workbench projection", () => {
       email: "operator-b@example.test",
       displayName: "Operator B",
     });
-    const merchantB = await createMerchant(built.db, {
+    operatorBId = operatorB.id;
+    merchantB = (await createMerchant(built.db, {
       slug: "merchant-b",
       displayName: "Merchant B",
       operatorUserIds: [operatorB.id],
       idempotencyKey: "workbench-merchant-b",
       actorUserId: operatorB.id,
-    });
+    })).entity;
     await createProposalBatch(built.db, {
-      merchant_id: merchantB.entity.id,
+      merchant_id: merchantB.id,
       origin: "MANUAL",
       idempotency_key: "workbench-proposal-b",
       items: [{
@@ -201,5 +205,64 @@ describe("workbench projection", () => {
 
     const invalid = await app.inject({ method: "GET", url: "/api/seo-ops/workbench?group=RUNNING" });
     expect(invalid.statusCode).toBe(400);
+  });
+
+  it("does not read unknown attempts outside the authenticated merchant scope", async () => {
+    const hiddenTask = await createTask(built.db, {
+      merchant_id: merchantB.id,
+      idempotency_key: "workbench-hidden-unknown-task",
+      definition: {
+        title: "Hidden outcome",
+        task_type: "GBP_UPDATE",
+        source: "OPERATOR",
+        priority: "URGENT",
+        impact: "HIGH",
+        execution_mode: "MANUAL",
+        execution_spec: "{}",
+        required_evidence_types: [],
+      },
+    }, operatorBId);
+    const now = "2026-08-25T10:00:00.000Z";
+    await insertAttempt(built.db, {
+      id: "workbench-hidden-unknown-attempt",
+      taskId: hiddenTask.task.id,
+      merchantId: merchantB.id,
+      attemptNo: 1,
+      status: "OUTCOME_UNKNOWN",
+      gate: "G2",
+      agentRunId: null,
+      coreRunId: null,
+      probeRef: "workbench-hidden-probe",
+      error: null,
+      startedAt: now,
+      triggerStartedAt: now,
+      resolvedAt: null,
+      resolvedBy: null,
+      resolution: null,
+      resolutionNote: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await built.db.exec("ALTER TABLE seo_execution_attempts RENAME TO seo_execution_attempts_backing");
+    await built.db.exec(`
+      CREATE FUNCTION workbench_forbidden_attempt_read() RETURNS text
+      LANGUAGE plpgsql
+      AS $$ BEGIN RAISE EXCEPTION 'out-of-scope attempt was read'; END; $$
+    `);
+    await built.db.exec(`
+      CREATE VIEW seo_execution_attempts AS
+      SELECT id, task_id, merchant_id, attempt_no, status, gate, agent_run_id, core_run_id,
+             probe_ref,
+             CASE WHEN merchant_id = '${merchantB.id}' THEN workbench_forbidden_attempt_read() ELSE error END AS error,
+             started_at, trigger_started_at, resolved_at, resolved_by, resolution, resolution_note,
+             created_at, updated_at
+      FROM seo_execution_attempts_backing
+    `);
+
+    const response = await app.inject({ method: "GET", url: "/api/seo-ops/workbench" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ total: 4 });
   });
 });

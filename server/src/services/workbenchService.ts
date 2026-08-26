@@ -1,5 +1,5 @@
 import type { Db } from "../db/connection.js";
-import { listOpenUnknownAttempts } from "../repos/executionRepo.js";
+import { listWorkbenchUnknownAttempts } from "../repos/executionRepo.js";
 import { listMerchants, listMerchantsForOperator } from "../repos/merchantRepo.js";
 import { listWorkbenchProposals } from "../repos/proposalRepo.js";
 import { listWorkbenchSentQuestionnaires } from "../repos/questionnaireRepo.js";
@@ -193,10 +193,9 @@ export async function workbench(
     listWorkbenchTasks(db, merchantIds),
     listWorkbenchProposals(db, merchantIds),
     listWorkbenchSentQuestionnaires(db, merchantIds),
-    listOpenUnknownAttempts(db),
+    listWorkbenchUnknownAttempts(db, merchantIds),
   ]);
   const tasksById = new Map(tasks.map((task) => [task.id, task]));
-  const allowedMerchants = new Set(merchantIds);
   const actions: HumanAction[] = [];
 
   for (const proposal of proposals) {
@@ -228,7 +227,6 @@ export async function workbench(
   }
 
   for (const attempt of unknownAttempts) {
-    if (!allowedMerchants.has(attempt.merchantId)) continue;
     const task = tasksById.get(attempt.taskId);
     if (!task) continue;
     actions.push({
