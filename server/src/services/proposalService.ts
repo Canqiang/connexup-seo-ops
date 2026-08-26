@@ -14,6 +14,7 @@ import {
   type TaskPriority,
 } from "../domain/enums.js";
 import { getMerchant } from "../repos/merchantRepo.js";
+import { ensureActiveMerchantCycle } from "../repos/merchantCycleRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import {
   closeBatchIfDecided,
@@ -183,9 +184,11 @@ async function createProposalBatchOnce(
     if (!merchant) throw notFound(`merchant ${input.merchant_id} not found`);
 
     const now = nowIso();
+    const cycle = await ensureActiveMerchantCycle(tx, merchant.id, now);
     const batch: ProposalBatch = {
       id: crypto.randomUUID(),
       merchantId: merchant.id,
+      cycleId: cycle.id,
       origin: input.origin as ProposalOrigin,
       triggerReason: input.trigger_reason ?? null,
       plannerRunId: input.planner_run_id ?? null,
@@ -359,10 +362,17 @@ async function adoptProposal(
     dependencyTaskIds.push(dependency.taskId);
   }
 
+  const batch = await getBatch(db, marked.batchId);
+  if (!batch?.cycleId) {
+    throw conflict(
+      "proposal batch has no persisted cycle; create a new proposal batch instead",
+      "CYCLE_MISSING",
+    );
+  }
   const definition: DefinitionInput = {
     title: marked.title,
     task_type: marked.taskType,
-    source: (await getBatch(db, marked.batchId))?.origin === "PLAN_CONVERT" ? "PLAN" : "PROPOSAL",
+    source: batch.origin === "PLAN_CONVERT" ? "PLAN" : "PROPOSAL",
     priority: input.override_priority ?? marked.priority,
     impact: marked.impact,
     execution_spec: marked.executionSpec,
@@ -380,6 +390,7 @@ async function adoptProposal(
       definition,
       idempotency_key: `proposal:${marked.id}`,
       proposal_id: marked.id,
+      cycle_id: batch.cycleId,
       depends_on_task_ids: dependencyTaskIds,
     },
     actorId,

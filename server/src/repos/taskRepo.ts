@@ -12,6 +12,7 @@ import type {
 interface TaskRow {
   id: string;
   merchant_id: string;
+  cycle_id: string | null;
   location_id: string | null;
   task_type: string;
   source: string;
@@ -107,6 +108,7 @@ export function toTask(row: TaskRow): Task {
   return {
     id: row.id,
     merchantId: row.merchant_id,
+    cycleId: row.cycle_id,
     locationId: row.location_id,
     taskType: row.task_type,
     source: row.source,
@@ -153,7 +155,7 @@ export function toTask(row: TaskRow): Task {
 }
 
 const INSERT_SQL = `INSERT INTO seo_tasks
-  (id, merchant_id, location_id, task_type, source, priority, impact, owner_id, due_at,
+  (id, merchant_id, cycle_id, location_id, task_type, source, priority, impact, owner_id, due_at,
    status, evidence_state, task_revision, state_version, title, execution_spec,
    execution_spec_hash, required_evidence_types, revisions, evidence_refs,
    approval_decisions, events, conversation_links, agent_run_links, mutation_keys,
@@ -161,17 +163,17 @@ const INSERT_SQL = `INSERT INTO seo_tasks
    verify_due_at, verified_at, verified_by,
    creation_idempotency_key, request_fingerprint, created_by, created_at, updated_at)
  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-   $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)`;
+   $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)`;
 
 const UPDATE_SQL = `UPDATE seo_tasks SET
-   location_id = $1, task_type = $2, source = $3, priority = $4, impact = $5, owner_id = $6, due_at = $7,
-   status = $8, evidence_state = $9, task_revision = $10, state_version = $11, title = $12,
-   execution_spec = $13, execution_spec_hash = $14, required_evidence_types = $15, revisions = $16,
-   evidence_refs = $17, approval_decisions = $18, events = $19, conversation_links = $20,
-   agent_run_links = $21, mutation_keys = $22, execution_mode = $23, proposal_id = $24,
-   depends_on_task_ids = $25, attempt_count = $26, published_ref = $27, published_at = $28,
-   verify_due_at = $29, verified_at = $30, verified_by = $31, updated_at = $32
- WHERE id = $33 AND state_version = $34`;
+   cycle_id = $1, location_id = $2, task_type = $3, source = $4, priority = $5, impact = $6, owner_id = $7, due_at = $8,
+   status = $9, evidence_state = $10, task_revision = $11, state_version = $12, title = $13,
+   execution_spec = $14, execution_spec_hash = $15, required_evidence_types = $16, revisions = $17,
+   evidence_refs = $18, approval_decisions = $19, events = $20, conversation_links = $21,
+   agent_run_links = $22, mutation_keys = $23, execution_mode = $24, proposal_id = $25,
+   depends_on_task_ids = $26, attempt_count = $27, published_ref = $28, published_at = $29,
+   verify_due_at = $30, verified_at = $31, verified_by = $32, updated_at = $33
+ WHERE id = $34 AND state_version = $35`;
 
 // Sanity: placeholders must line up with taskParams() + (updated_at, id, prev).
 
@@ -180,6 +182,7 @@ const UPDATE_SQL = `UPDATE seo_tasks SET
  * creation fields are appended by each caller in its own order. */
 function taskParams(task: Task): unknown[] {
   return [
+    task.cycleId,
     task.locationId,
     task.taskType,
     task.source,
@@ -218,7 +221,7 @@ export async function insertTask(db: Db, task: Task): Promise<Task> {
   await db.exec(INSERT_SQL, [
     task.id,
     task.merchantId,
-    ...taskParams(task), // location_id .. mutation_keys
+    ...taskParams(task), // cycle_id .. mutation_keys
     task.creationIdempotencyKey,
     task.requestFingerprint,
     task.createdBy,
@@ -279,6 +282,7 @@ export async function listTasksByMerchant(db: Db, merchantId: string): Promise<T
 export async function listCycleLedgerTasks(
   db: Db,
   merchantId: string,
+  cycleId: string,
 ): Promise<CycleLedgerTaskRow[]> {
   const rows = await db.query<{
     id: string; proposal_id: string | null; title: string; task_type: string;
@@ -288,9 +292,9 @@ export async function listCycleLedgerTasks(
     `SELECT id, proposal_id, title, task_type, owner_id, due_at, status,
             execution_mode, depends_on_task_ids, created_at
        FROM seo_tasks
-      WHERE merchant_id = $1
+      WHERE merchant_id = $1 AND cycle_id = $2
       ORDER BY due_at NULLS LAST, created_at, id`,
-    [merchantId],
+    [merchantId, cycleId],
   );
   return rows.map((row) => ({
     id: row.id,

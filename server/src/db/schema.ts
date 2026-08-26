@@ -189,6 +189,22 @@ export const SCHEMA_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_specialist_artifacts_merchant ON seo_specialist_artifacts(merchant_id, artifact_type, created_at DESC)`,
   // ---------------- 执行域 / 建议层 / 设置面（0827 扩展） ----------------
 
+  /** Cycle is an explicit merchant boundary, not a date heuristic.  Legacy
+   * Tasks/batches intentionally remain unassigned until a human creates new
+   * work; projections never infer or backfill membership. */
+  `CREATE TABLE IF NOT EXISTS seo_merchant_cycles (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_merchant_active_cycle
+     ON seo_merchant_cycles(merchant_id) WHERE status = 'ACTIVE'`,
+  `CREATE INDEX IF NOT EXISTS idx_merchant_cycles_merchant_status
+     ON seo_merchant_cycles(merchant_id, status, starts_at DESC)`,
+
   `CREATE TABLE IF NOT EXISTS seo_proposal_batches (
     id TEXT PRIMARY KEY,
     merchant_id TEXT NOT NULL,

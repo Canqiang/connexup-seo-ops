@@ -4,6 +4,8 @@ import type { ProposalOrigin, ProposalStatus } from "../domain/enums.js";
 export interface ProposalBatch {
   id: string;
   merchantId: string;
+  /** Null only for legacy batches; new batches are always attached to active cycle. */
+  cycleId: string | null;
   origin: ProposalOrigin;
   triggerReason: string | null;
   plannerRunId: string | null;
@@ -46,7 +48,7 @@ export interface Proposal {
 }
 
 interface BatchRow {
-  id: string; merchant_id: string; origin: string; trigger_reason: string | null;
+  id: string; merchant_id: string; cycle_id: string | null; origin: string; trigger_reason: string | null;
   planner_run_id: string | null; snapshot_note: string | null; status: string;
   creation_idempotency_key: string | null; request_fingerprint: string | null;
   created_by: string | null; created_at: string; updated_at: string;
@@ -115,6 +117,7 @@ function toBatch(row: BatchRow): ProposalBatch {
   return {
     id: row.id,
     merchantId: row.merchant_id,
+    cycleId: row.cycle_id,
     origin: row.origin as ProposalOrigin,
     triggerReason: row.trigger_reason,
     plannerRunId: row.planner_run_id,
@@ -160,10 +163,10 @@ function toProposal(row: ProposalRow): Proposal {
 export async function insertBatch(db: Db, b: ProposalBatch): Promise<ProposalBatch> {
   await db.exec(
     `INSERT INTO seo_proposal_batches
-      (id, merchant_id, origin, trigger_reason, planner_run_id, snapshot_note, status,
+      (id, merchant_id, cycle_id, origin, trigger_reason, planner_run_id, snapshot_note, status,
        creation_idempotency_key, request_fingerprint, created_by, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-    [b.id, b.merchantId, b.origin, b.triggerReason, b.plannerRunId, b.snapshotNote,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [b.id, b.merchantId, b.cycleId, b.origin, b.triggerReason, b.plannerRunId, b.snapshotNote,
      b.status, b.creationIdempotencyKey, b.requestFingerprint, b.createdBy,
      b.createdAt, b.updatedAt],
   );
@@ -298,19 +301,21 @@ export async function listPendingProposalsByMerchant(db: Db, merchantId: string)
 export async function listCycleLedgerProposals(
   db: Db,
   merchantId: string,
+  cycleId: string,
 ): Promise<CycleLedgerProposalRow[]> {
   const rows = await db.query<{
     id: string; batch_id: string; seq: number; title: string; task_type: string;
     execution_mode: string; due_at: string | null; priority: string; status: "PENDING" | "VALIDATION_FAILED";
     validation_failures: string; depends_on: string; created_at: string;
   }>(
-    `SELECT id, batch_id, seq, title, task_type, execution_mode, due_at,
-            priority, status, validation_failures, depends_on, created_at
-       FROM seo_proposals
-      WHERE merchant_id = $1
-        AND status IN ('PENDING', 'VALIDATION_FAILED')
-      ORDER BY due_at NULLS LAST, created_at, id`,
-    [merchantId],
+    `SELECT p.id, p.batch_id, p.seq, p.title, p.task_type, p.execution_mode, p.due_at,
+            p.priority, p.status, p.validation_failures, p.depends_on, p.created_at
+       FROM seo_proposals p
+       JOIN seo_proposal_batches b ON b.id = p.batch_id
+      WHERE p.merchant_id = $1 AND b.cycle_id = $2
+        AND p.status IN ('PENDING', 'VALIDATION_FAILED')
+      ORDER BY p.due_at NULLS LAST, p.created_at, p.id`,
+    [merchantId, cycleId],
   );
   return rows.map((row) => ({
     id: row.id,
@@ -351,9 +356,37 @@ export async function listProposalDependencyLabels(
 export async function listPendingGbpPostProposals(
   db: Db,
   merchantId: string,
+  cycleId: string,
 ): Promise<CycleLedgerProposalRow[]> {
-  const rows = await listCycleLedgerProposals(db, merchantId);
-  return rows.filter((row) => row.taskType === "GBP_POST");
+  const rows = await db.query<{
+    id: string; batch_id: string; seq: number; title: string; task_type: string;
+    execution_mode: string; due_at: string | null; priority: string; status: "PENDING" | "VALIDATION_FAILED";
+    validation_failures: string; depends_on: string; created_at: string;
+  }>(
+    `SELECT p.id, p.batch_id, p.seq, p.title, p.task_type, p.execution_mode,
+            p.due_at, p.priority, p.status, p.validation_failures, p.depends_on, p.created_at
+       FROM seo_proposals p
+       JOIN seo_proposal_batches b ON b.id = p.batch_id
+      WHERE p.merchant_id = $1 AND b.cycle_id = $2
+        AND p.task_type = 'GBP_POST'
+        AND p.status IN ('PENDING', 'VALIDATION_FAILED')
+      ORDER BY p.due_at NULLS LAST, p.created_at, p.id`,
+    [merchantId, cycleId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    batchId: row.batch_id,
+    seq: row.seq,
+    title: row.title,
+    taskType: row.task_type,
+    executionMode: row.execution_mode,
+    dueAt: row.due_at,
+    priority: row.priority,
+    status: row.status,
+    validationFailures: JSON.parse(row.validation_failures || "[]") as string[],
+    dependsOn: JSON.parse(row.depends_on || "[]") as number[],
+    createdAt: row.created_at,
+  }));
 }
 
 /** Bounded fields for proposals that still require a human decision.  An

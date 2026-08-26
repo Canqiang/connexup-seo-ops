@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { createMerchant } from "../src/services/merchantService.js";
+import { getTask } from "../src/repos/taskRepo.js";
+import { ingestSpecialistRunOutput } from "../src/services/specialistAdapterService.js";
 import { createAuthenticatedTestApp, type AuthenticatedTestApp } from "./helpers/authTest.js";
 
 const ISO_EARLY = "2026-08-21T09:00:00.000Z";
@@ -50,8 +52,31 @@ describe("merchant control room projections", () => {
         items,
       },
     });
-    expect(response.statusCode).toBe(201);
-    return response.json() as { proposals: Array<{ id: string }> };
+    expect(response.statusCode, response.body).toBe(201);
+    return response.json() as { id: string; proposals: Array<{ id: string }> };
+  }
+
+  async function createDirectTask(title: string) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: merchantId,
+        idempotency_key: `direct-task-${title.replaceAll(" ", "-")}`,
+        definition: {
+          title,
+          task_type: "KEYWORD_WEEKLY",
+          source: "MANUAL",
+          priority: "MEDIUM",
+          impact: "LOW",
+          execution_mode: "READ_ONLY",
+          execution_spec: JSON.stringify({ cycle: "KEYWORD_WEEKLY" }),
+          required_evidence_types: [],
+        },
+      },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    return response.json() as { id: string };
   }
 
   it("keeps accepted tasks and pending proposals distinct in one dated ledger", async () => {
@@ -71,6 +96,18 @@ describe("merchant control room projections", () => {
       payload: { action: "ADOPT" },
     });
     expect(adoption.statusCode).toBe(200);
+    const adoptedCycle = await fixture.db.one<{ batch_cycle_id: string | null; task_cycle_id: string | null }>(
+      `SELECT b.cycle_id AS batch_cycle_id, t.cycle_id AS task_cycle_id
+         FROM seo_proposal_batches b
+         JOIN seo_tasks t ON t.id = $2
+        WHERE b.id = $1`,
+      [batch.id, adoption.json().task_id],
+    );
+    expect(adoptedCycle).toEqual({
+      batch_cycle_id: expect.any(String),
+      task_cycle_id: expect.any(String),
+    });
+    expect(adoptedCycle?.task_cycle_id).toBe(adoptedCycle?.batch_cycle_id);
 
     const response = await app.inject({
       method: "GET",
@@ -118,7 +155,51 @@ describe("merchant control room projections", () => {
     ]));
   });
 
-  it("uses validated persisted evidence for the Post program and ignores malformed legacy artifacts", async () => {
+  it("returns only the active persisted cycle and never infers legacy membership", async () => {
+    const activeBatch = await createPostBatch([proposalItem({ title: "Active cycle proposal" })]);
+    const closedBatch = await createPostBatch([proposalItem({ title: "Closed cycle proposal" })]);
+    const closedTask = await createDirectTask("Closed cycle task");
+    const legacyTask = await createDirectTask("Legacy task without cycle");
+    const activeCycle = await fixture.db.one<{ cycle_id: string }>(
+      `SELECT cycle_id FROM seo_proposal_batches WHERE id = $1`,
+      [activeBatch.id],
+    );
+    expect(activeCycle?.cycle_id).toBeTruthy();
+    await fixture.db.exec(
+      `INSERT INTO seo_merchant_cycles (id, merchant_id, starts_at, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'CLOSED', $3, $3)`,
+      ["closed-cycle", merchantId, ISO_EARLY],
+    );
+    await fixture.db.exec(
+      `UPDATE seo_proposal_batches SET cycle_id = 'closed-cycle' WHERE id = $1`,
+      [closedBatch.id],
+    );
+    await fixture.db.exec(
+      `UPDATE seo_tasks SET cycle_id = CASE id
+        WHEN $1 THEN 'closed-cycle'
+        WHEN $2 THEN NULL
+        ELSE cycle_id
+      END
+      WHERE id IN ($1, $2)`,
+      [closedTask.id, legacyTask.id],
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/merchants/${merchantId}/cycle-ledger`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const ids = response.json().items.map((item: { task_id: string | null; proposal_id: string | null }) =>
+      item.task_id ?? item.proposal_id,
+    );
+    expect(ids).toContain(activeBatch.proposals[0]!.id);
+    expect(ids).not.toContain(closedBatch.proposals[0]!.id);
+    expect(ids).not.toContain(closedTask.id);
+    expect(ids).not.toContain(legacyTask.id);
+  });
+
+  it("uses a standard adapter-persisted weekly signal and ignores malformed legacy artifacts", async () => {
     const batch = await createPostBatch([proposalItem({ title: "Publish verified GBP Post" })]);
     const adopted = await app.inject({
       method: "POST",
@@ -138,22 +219,28 @@ describe("merchant control room projections", () => {
       payload: { voice: { tone: "friendly", banned: ["guaranteed"] } },
     });
     expect(voice.statusCode).toBe(201);
+    const weeklyTask = await createDirectTask("Persist weekly associative cluster signal");
+    const task = await getTask(fixture.db, weeklyTask.id);
+    expect(task).toBeTruthy();
+    await ingestSpecialistRunOutput(
+      fixture.db,
+      task!,
+      "weekly-signal-run",
+      JSON.stringify({
+        schema_version: "seo_ops.keyword_weekly_signal.v1",
+        merchant_id: merchantId,
+        title: "Weekly cluster signal",
+        summary: "Persisted weekly associative reading.",
+        observed_at: ISO_EARLY,
+        cluster_signals: [{ cluster: "weekday lunch", signal: "IMPROVED", evidence_ref: "ranking:week-34" }],
+      }),
+    );
     await fixture.db.exec(
       `INSERT INTO seo_specialist_artifacts
         (id, task_id, merchant_id, artifact_type, schema_version, title, summary, payload, core_run_id, created_at)
-       VALUES
-        ($1,$2,$3,'KEYWORD_WEEKLY','seo_ops.keyword_weekly.v1',$4,$5,$6,$7,$8),
-        ($9,$2,$3,'KEYWORD_WEEKLY','seo_ops.keyword_weekly.v1',$10,$11,$12,$13,$14)`,
+       VALUES ($1,$2,$3,'KEYWORD_WEEKLY','seo_ops.keyword_weekly_signal.v1',$4,$5,$6,$7,$8)`,
       [
-        "valid-weekly-signal", taskId, merchantId, "Weekly cluster signal", "Persisted weekly reading",
-        JSON.stringify({
-          schema_version: "seo_ops.keyword_weekly.v1",
-          merchant_id: merchantId,
-          observed_at: ISO_EARLY,
-          cluster_signals: [{ cluster: "weekday lunch", signal: "IMPROVED", evidence_ref: "ranking:week-34" }],
-        }),
-        "weekly-signal-run", ISO_EARLY,
-        "invalid-weekly-signal", "Malformed weekly signal", "Legacy payload must not become a UI fact",
+        "invalid-weekly-signal", taskId, merchantId, "Malformed weekly signal", "Legacy payload must not become a UI fact",
         JSON.stringify({ cluster_signals: [{ cluster: "invented", signal: "UP" }] }),
         "legacy-weekly-signal-run", ISO_LATE,
       ],
@@ -171,7 +258,7 @@ describe("merchant control room projections", () => {
         voice: { tone: "friendly", banned: ["guaranteed"] },
       },
       cluster_signals: [{
-        artifact_id: "valid-weekly-signal",
+        artifact_id: expect.any(String),
         cluster: "weekday lunch",
         signal: "IMPROVED",
         observed_at: ISO_EARLY,

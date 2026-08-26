@@ -5,6 +5,22 @@ import { SpecialistArtifactsPanel } from "./SpecialistArtifactsPanel";
 
 const artifacts: SpecialistArtifactWire[] = [
   {
+    id: "artifact-weekly-signal",
+    task_id: "task-weekly",
+    merchant_id: "merchant-1",
+    artifact_type: "KEYWORD_WEEKLY",
+    schema_version: "seo_ops.keyword_weekly_signal.v1",
+    title: "Weekly cluster signal",
+    summary: "Associative weekly reading.",
+    payload: {
+      observed_at: "2026-08-26T08:00:00.000Z",
+      cluster_signals: [{ cluster: "weekday lunch", signal: "IMPROVED", evidence_ref: "ranking:week-34" }],
+    },
+    core_run_id: "core-weekly",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-26T10:30:00.000Z",
+  },
+  {
     id: "artifact-plan",
     task_id: "task-plan",
     merchant_id: "merchant-1",
@@ -81,6 +97,8 @@ describe("SpecialistArtifactsPanel", () => {
     render(<SpecialistArtifactsPanel artifacts={artifacts} />);
 
     expect(screen.getByRole("heading", { name: "Agent 产物" })).toBeInTheDocument();
+    expect(screen.getByText("1 个簇 · 关联信号")).toBeInTheDocument();
+    expect(screen.getByText("weekday lunch")).toBeInTheDocument();
     expect(screen.getByText("30 天 · 1 项工作")).toBeInTheDocument();
     expect(screen.getByText("Create Mineola location page")).toBeInTheDocument();
     expect(screen.getByText("1 项发现 · 1 项高风险")).toBeInTheDocument();

@@ -15,6 +15,12 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE seo_tasks ADD COLUMN IF NOT EXISTS verify_due_at TEXT`,
   `ALTER TABLE seo_tasks ADD COLUMN IF NOT EXISTS verified_at TEXT`,
   `ALTER TABLE seo_tasks ADD COLUMN IF NOT EXISTS verified_by TEXT`,
+  `ALTER TABLE seo_tasks ADD COLUMN IF NOT EXISTS cycle_id TEXT`,
+  `ALTER TABLE seo_proposal_batches ADD COLUMN IF NOT EXISTS cycle_id TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_merchant_cycle_due
+     ON seo_tasks(merchant_id, cycle_id, due_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_proposal_batches_merchant_cycle
+     ON seo_proposal_batches(merchant_id, cycle_id, created_at DESC)`,
   // 触发标记（0827 review）：写入类 attempt 触发前先落标记，崩溃后禁止再触发
   `ALTER TABLE seo_execution_attempts ADD COLUMN IF NOT EXISTS trigger_started_at TEXT`,
 ];

@@ -2,6 +2,7 @@ import type { Db } from "../db/connection.js";
 
 export type SpecialistArtifactType =
   | "KEYWORD_SET"
+  | "KEYWORD_WEEKLY"
   | "AUDIT_REPORT"
   | "RANKING_SNAPSHOT"
   | "EXECUTION_PLAN";
@@ -26,7 +27,7 @@ export interface SpecialistArtifact {
 export interface PostProgramArtifactRow {
   id: string;
   taskId: string;
-  artifactType: "KEYWORD_WEEKLY" | "EFFECT_REVIEW";
+  artifactType: "KEYWORD_WEEKLY";
   schemaVersion: string;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -154,17 +155,19 @@ export async function listSpecialistArtifactsByMerchant(
 export async function listPostProgramArtifacts(
   db: Db,
   merchantId: string,
+  cycleId: string,
 ): Promise<PostProgramArtifactRow[]> {
   const rows = await db.query<{
-    id: string; task_id: string; artifact_type: "KEYWORD_WEEKLY" | "EFFECT_REVIEW";
+    id: string; task_id: string; artifact_type: "KEYWORD_WEEKLY";
     schema_version: string; payload: string; created_at: string;
   }>(
-    `SELECT id, task_id, artifact_type, schema_version, payload, created_at
-       FROM seo_specialist_artifacts
-      WHERE merchant_id = $1
-        AND artifact_type IN ('KEYWORD_WEEKLY', 'EFFECT_REVIEW')
-      ORDER BY created_at DESC, id DESC`,
-    [merchantId],
+    `SELECT a.id, a.task_id, a.artifact_type, a.schema_version, a.payload, a.created_at
+       FROM seo_specialist_artifacts a
+       JOIN seo_tasks t ON t.id = a.task_id
+      WHERE a.merchant_id = $1 AND t.cycle_id = $2
+        AND a.artifact_type = 'KEYWORD_WEEKLY'
+      ORDER BY a.created_at DESC, a.id DESC`,
+    [merchantId, cycleId],
   );
   return rows.map((row) => ({
     id: row.id,

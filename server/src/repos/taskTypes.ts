@@ -85,6 +85,8 @@ export interface TaskEventRecord {
 export interface Task {
   id: string;
   merchantId: string;
+  /** Null only for pre-cycle legacy rows.  Creation paths always assign one. */
+  cycleId: string | null;
   locationId: string | null;
   taskType: string;
   source: string;

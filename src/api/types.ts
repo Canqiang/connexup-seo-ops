@@ -318,7 +318,7 @@ export interface DraftWire {
   feedback: string | null; sha256: string; created_by: string | null; created_at: string;
 }
 
-export type SpecialistArtifactType = "KEYWORD_SET" | "AUDIT_REPORT" | "RANKING_SNAPSHOT" | "EXECUTION_PLAN";
+export type SpecialistArtifactType = "KEYWORD_SET" | "KEYWORD_WEEKLY" | "AUDIT_REPORT" | "RANKING_SNAPSHOT" | "EXECUTION_PLAN";
 export interface SpecialistArtifactWire {
   id: string; task_id: string; merchant_id: string; artifact_type: SpecialistArtifactType;
   schema_version: string; title: string; summary: string; payload: Record<string, unknown>;

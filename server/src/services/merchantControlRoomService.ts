@@ -9,6 +9,7 @@ import {
   listPostProgramArtifacts,
   type PostProgramArtifactRow,
 } from "../repos/specialistArtifactRepo.js";
+import { getActiveMerchantCycle } from "../repos/merchantCycleRepo.js";
 import { latestStyleProfile } from "../repos/settingsRepo.js";
 import {
   listCycleLedgerTasks,
@@ -80,15 +81,10 @@ const clusterSignalSchema = z.object({
 }).strict();
 
 const keywordWeeklyArtifactSchema = z.object({
-  schema_version: z.literal("seo_ops.keyword_weekly.v1"),
+  schema_version: z.literal("seo_ops.keyword_weekly_signal.v1"),
   merchant_id: z.string().trim().min(1),
-  observed_at: z.string().datetime({ offset: true }),
-  cluster_signals: z.array(clusterSignalSchema).min(1).max(100),
-}).strict();
-
-const effectReviewArtifactSchema = z.object({
-  schema_version: z.literal("seo_ops.effect_review.v1"),
-  merchant_id: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(300),
+  summary: z.string().trim().min(1).max(4000),
   observed_at: z.string().datetime({ offset: true }),
   cluster_signals: z.array(clusterSignalSchema).min(1).max(100),
 }).strict();
@@ -112,9 +108,11 @@ export async function cycleLedger(
   db: Db,
   merchantId: string,
 ): Promise<CycleLedgerView> {
+  const activeCycle = await getActiveMerchantCycle(db, merchantId);
+  if (!activeCycle) return { items: [] };
   const [tasks, proposals] = await Promise.all([
-    listCycleLedgerTasks(db, merchantId),
-    listCycleLedgerProposals(db, merchantId),
+    listCycleLedgerTasks(db, merchantId, activeCycle.id),
+    listCycleLedgerProposals(db, merchantId, activeCycle.id),
   ]);
   const taskTitles = new Map(tasks.map((task) => [task.id, task.title]));
   const proposalLabels = await listProposalDependencyLabels(
@@ -170,10 +168,7 @@ function signalsFromArtifact(
   artifact: PostProgramArtifactRow,
   merchantId: string,
 ): PostProgramView["cluster_signals"] | null {
-  const schema = artifact.artifactType === "KEYWORD_WEEKLY"
-    ? keywordWeeklyArtifactSchema
-    : effectReviewArtifactSchema;
-  const parsed = schema.safeParse(artifact.payload);
+  const parsed = keywordWeeklyArtifactSchema.safeParse(artifact.payload);
   if (!parsed.success || parsed.data.merchant_id !== merchantId || parsed.data.schema_version !== artifact.schemaVersion) {
     return null;
   }
@@ -195,11 +190,12 @@ export async function postProgram(
   db: Db,
   merchantId: string,
 ): Promise<PostProgramView> {
+  const activeCycle = await getActiveMerchantCycle(db, merchantId);
   const [profile, artifacts, history, proposals] = await Promise.all([
     latestStyleProfile(db, merchantId),
-    listPostProgramArtifacts(db, merchantId),
+    activeCycle ? listPostProgramArtifacts(db, merchantId, activeCycle.id) : [],
     listVerifiedGbpPostHistory(db, merchantId),
-    listPendingGbpPostProposals(db, merchantId),
+    activeCycle ? listPendingGbpPostProposals(db, merchantId, activeCycle.id) : [],
   ]);
   const gaps = new Set<string>();
   const parsedVoice = profile ? voiceSchema.safeParse(profile.voice) : null;

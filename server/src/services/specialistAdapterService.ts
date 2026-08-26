@@ -16,6 +16,7 @@ import type { Task } from "../repos/taskTypes.js";
 
 export const KEYWORD_REQUEST_SCHEMA_VERSION = "seo_ops.keyword_request.v2";
 export const KEYWORD_OUTPUT_SCHEMA_VERSION = "seo_ops.keyword_set.v2";
+export const KEYWORD_WEEKLY_SIGNAL_OUTPUT_SCHEMA_VERSION = "seo_ops.keyword_weekly_signal.v1";
 export const AUDIT_REQUEST_SCHEMA_VERSION = "seo_ops.audit_request.v1";
 export const AUDIT_OUTPUT_SCHEMA_VERSION = "seo_ops.audit_report.v1";
 export const RANKING_REQUEST_SCHEMA_VERSION = "seo_ops.ranking_request.v1";
@@ -81,6 +82,23 @@ const keywordOutputSchema = z.object({
     }
   }
 });
+
+const keywordWeeklySignalItemSchema = z.object({
+  cluster: z.string().trim().min(1).max(300),
+  signal: z.enum(["IMPROVED", "FLAT", "DECLINED", "INCONCLUSIVE"]),
+  evidence_ref: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+
+/** An associative outcome is a separate persisted contract.  It is not
+ * derived from a keyword set, ranking snapshot, or an Agent's prose. */
+const keywordWeeklySignalOutputSchema = z.object({
+  schema_version: z.literal(KEYWORD_WEEKLY_SIGNAL_OUTPUT_SCHEMA_VERSION),
+  merchant_id: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(300),
+  summary: z.string().trim().min(1).max(4000),
+  observed_at: z.string().datetime({ offset: true }),
+  cluster_signals: z.array(keywordWeeklySignalItemSchema).min(1).max(100),
+}).strict();
 
 const auditFindingSchema = z.object({
   id: safeIdSchema,
@@ -249,6 +267,14 @@ export function parseKeywordOutput(output: string) {
   return parsed.data;
 }
 
+export function parseKeywordWeeklySignalOutput(output: string) {
+  return parseStrictOutput(
+    output,
+    "keyword weekly signal",
+    keywordWeeklySignalOutputSchema,
+  );
+}
+
 function parseStrictOutput<T>(
   output: string,
   label: string,
@@ -297,19 +323,31 @@ function specialistContract(taskType: string): {
   contextArtifactTypes: SpecialistArtifactType[];
   rules: string[];
 } {
-  if (taskType === "KEYWORD_RESEARCH" || taskType === "KEYWORD_WEEKLY") {
+  if (taskType === "KEYWORD_RESEARCH") {
     return {
       requestSchemaVersion: KEYWORD_REQUEST_SCHEMA_VERSION,
       outputSchemaVersion: KEYWORD_OUTPUT_SCHEMA_VERSION,
       requiredArtifactTypes: [],
-      contextArtifactTypes: taskType === "KEYWORD_WEEKLY"
-        ? ["KEYWORD_SET", "RANKING_SNAPSHOT"]
-        : [],
+      contextArtifactTypes: [],
       rules: [
         "require_us_market_and_structured_location",
         "preserve_established_seed_and_ranking_method_lineage",
         "use_unscored_when_deterministic_upstream_is_absent",
         "label_missing_live_search_evidence",
+        "never_write_fbr_or_call_saveKeyword",
+      ],
+    };
+  }
+  if (taskType === "KEYWORD_WEEKLY") {
+    return {
+      requestSchemaVersion: "seo_ops.keyword_weekly_signal_request.v1",
+      outputSchemaVersion: KEYWORD_WEEKLY_SIGNAL_OUTPUT_SCHEMA_VERSION,
+      requiredArtifactTypes: [],
+      contextArtifactTypes: ["KEYWORD_SET", "RANKING_SNAPSHOT"],
+      rules: [
+        "return_persisted_associative_cluster_signals_only",
+        "do_not_derive_improved_flat_declined_from_keywords",
+        "label_missing_measurement_evidence",
         "never_write_fbr_or_call_saveKeyword",
       ],
     };
@@ -447,12 +485,19 @@ export async function ingestSpecialistRunOutput(
   actor = "system:specialist-agent",
 ): Promise<SpecialistArtifact> {
   if (!output) throw new Error("specialist run completed without output");
-  if (task.taskType === "KEYWORD_RESEARCH" || task.taskType === "KEYWORD_WEEKLY") {
+  if (task.taskType === "KEYWORD_RESEARCH") {
     const parsed = parseKeywordOutput(output);
     if (parsed.merchant_id !== task.merchantId) {
       throw new Error("keyword output merchant_id does not match the dispatched task");
     }
     return persistParsedArtifact(db, task, coreRunId, "KEYWORD_SET", parsed, actor);
+  }
+  if (task.taskType === "KEYWORD_WEEKLY") {
+    const parsed = parseKeywordWeeklySignalOutput(output);
+    if (parsed.merchant_id !== task.merchantId) {
+      throw new Error("keyword weekly signal merchant_id does not match the dispatched task");
+    }
+    return persistParsedArtifact(db, task, coreRunId, "KEYWORD_WEEKLY", parsed, actor);
   }
   if (task.taskType === "AUDIT") {
     const parsed = parseAuditOutput(output);

@@ -23,6 +23,7 @@ import {
   type TaskPriority,
 } from "../domain/enums.js";
 import { getMerchant } from "../repos/merchantRepo.js";
+import { ensureActiveMerchantCycle, getMerchantCycle } from "../repos/merchantCycleRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import {
   findTaskByIdempotencyKey,
@@ -281,6 +282,10 @@ export interface CreateTaskInput {
   proposal_id?: string;
   /** 已存在的同商户上游 Task；创建后不可改，天然保持无环。 */
   depends_on_task_ids?: string[];
+  /** Internal adoption path copies the originating batch cycle atomically into
+   * the created Task. Direct/scheduled callers omit this and get the current
+   * active merchant cycle inside the same transaction. */
+  cycle_id?: string;
 }
 
 export async function createTask(
@@ -305,6 +310,16 @@ export async function createTask(
 
     const merchant = await getMerchant(tx, input.merchant_id);
     if (!merchant) throw notFound(`merchant ${input.merchant_id} not found`);
+    const createdAt = nowIso();
+    const cycle = input.cycle_id
+      ? await getMerchantCycle(tx, input.cycle_id)
+      : await ensureActiveMerchantCycle(tx, merchant.id, createdAt);
+    if (!cycle || cycle.merchantId !== merchant.id) {
+      throw badRequest("cycle_id is missing or belongs to a different merchant");
+    }
+    if (cycle.status !== "ACTIVE") {
+      throw conflict("cannot create a Task in a closed merchant cycle", "CYCLE_CLOSED");
+    }
     const dependsOnTaskIds = input.depends_on_task_ids ?? [];
     if (new Set(dependsOnTaskIds).size !== dependsOnTaskIds.length) {
       throw badRequest("depends_on_task_ids must not contain duplicates");
@@ -325,7 +340,6 @@ export async function createTask(
       locationId = location.id;
     }
 
-    const createdAt = nowIso();
     const revision = buildRevision(input.definition, 1, createdAt, actorId);
     const conversationLinks: ConversationLinkRecord[] = [];
     if (input.definition.conversation_id) {
@@ -340,6 +354,7 @@ export async function createTask(
     const base: Task = {
       id: crypto.randomUUID(),
       merchantId: merchant.id,
+      cycleId: cycle.id,
       locationId,
       taskType: revision.taskType,
       source: revision.source,

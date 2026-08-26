@@ -168,6 +168,7 @@ interface LifecycleCompletion {
 
 const ARTIFACT_STAGE: Record<SpecialistArtifactType, { stage: AgentRunStage; runType: string }> = {
   KEYWORD_SET: { stage: "KEYWORDS", runType: "KEYWORD_RESEARCH" },
+  KEYWORD_WEEKLY: { stage: "KEYWORDS", runType: "KEYWORD_WEEKLY" },
   AUDIT_REPORT: { stage: "AUDIT", runType: "AUDIT" },
   RANKING_SNAPSHOT: { stage: "RANKING_BASELINE", runType: "REPORT" },
   EXECUTION_PLAN: { stage: "PLAN", runType: "PLAN" },

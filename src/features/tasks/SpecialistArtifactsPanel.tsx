@@ -1,4 +1,4 @@
-import { BarChart3, ClipboardCheck, ListChecks, Search } from "lucide-react";
+import { BarChart3, ClipboardCheck, LineChart, ListChecks, Search } from "lucide-react";
 import type { ReactNode } from "react";
 import type { SpecialistArtifactWire } from "../../api/types";
 import { formatDateTime } from "../../app/format";
@@ -31,12 +31,18 @@ interface RankingItem {
   source?: unknown;
 }
 
+interface ClusterSignalItem {
+  cluster?: unknown;
+  signal?: unknown;
+}
+
 const TYPE_META: Record<SpecialistArtifactWire["artifact_type"], {
   label: string;
   eyebrow: string;
   icon: ReactNode;
 }> = {
   KEYWORD_SET: { label: "关键词集", eyebrow: "KEYWORD EVIDENCE", icon: <Search aria-hidden size={15} /> },
+  KEYWORD_WEEKLY: { label: "周度关键词信号", eyebrow: "ASSOCIATIVE READING", icon: <LineChart aria-hidden size={15} /> },
   AUDIT_REPORT: { label: "Audit", eyebrow: "EVIDENCE-BOUNDED AUDIT", icon: <ClipboardCheck aria-hidden size={15} /> },
   RANKING_SNAPSHOT: { label: "排名基线", eyebrow: "LOCAL + ORGANIC", icon: <BarChart3 aria-hidden size={15} /> },
   EXECUTION_PLAN: { label: "执行 Plan", eyebrow: "ORDERED WORK", icon: <ListChecks aria-hidden size={15} /> },
@@ -60,6 +66,9 @@ function countLabel(artifact: SpecialistArtifactWire): string {
     }
     const primary = keywords.filter((item) => item.priority === "P0" || item.priority === "P1").length;
     return `${keywords.length} 个词 · ${primary} 个 P0/P1`;
+  }
+  if (artifact.artifact_type === "KEYWORD_WEEKLY") {
+    return `${asArray(artifact.payload.cluster_signals).length} 个簇 · 关联信号`;
   }
   if (artifact.artifact_type === "AUDIT_REPORT") {
     const findings = asArray(artifact.payload.findings) as AuditFinding[];
@@ -91,6 +100,14 @@ function ArtifactDetails({ artifact }: { artifact: SpecialistArtifactWire }) {
       </li>)}</ul>
       <EvidenceLimits values={asStrings(artifact.payload.evidence_gaps)} />
     </>;
+  }
+  if (artifact.artifact_type === "KEYWORD_WEEKLY") {
+    const signals = asArray(artifact.payload.cluster_signals) as ClusterSignalItem[];
+    return <ul className="artifact-keywords">{signals.slice(0, 8).map((item, index) => <li key={`${String(item.cluster)}-${index}`}>
+      <strong>{String(item.cluster ?? "未命名关键词簇")}</strong>
+      <span>关联读数</span>
+      <em className={`is-${String(item.signal ?? "INCONCLUSIVE").toLocaleLowerCase()}`}>{String(item.signal ?? "INCONCLUSIVE")}</em>
+    </li>)}</ul>;
   }
   if (artifact.artifact_type === "AUDIT_REPORT") {
     const findings = asArray(artifact.payload.findings) as AuditFinding[];
