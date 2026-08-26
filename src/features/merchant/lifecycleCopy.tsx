@@ -15,6 +15,16 @@ export const STAGE_LABELS: Record<LifecycleStageKey, string> = {
   VERIFY: "核验",
 };
 
+export function lifecycleActionCopy(lifecycle: { stage: LifecycleStageKey; questionnaire: { status: string } | null; plan_converted: boolean }): { title: string; consequence: string; actionLabel: string; actionPath: "audit" | "inbox"; proposal?: boolean } {
+  switch (lifecycle.stage) {
+    case "QUESTIONNAIRE": return lifecycle.questionnaire?.status === "SENT" ? { title: "等待商家回复", consequence: "重发会登记一次新的外发事实；商家回收前，后续周期不会开始。", actionLabel: "重发问卷", actionPath: "audit" } : { title: "完成接入问卷", consequence: "登记发放后，系统才能等待商家回复并推进后续周期。", actionLabel: "登记发放", actionPath: "audit" };
+    case "PLAN": return lifecycle.plan_converted ? { title: "查看本周期任务", consequence: "Plan 已转为任务；下一步由账本中真实任务的状态决定。", actionLabel: "查看任务", actionPath: "inbox" } : { title: "判定优化建议", consequence: "建议不是任务。判定后才会生成可执行工作。", actionLabel: "去判定", actionPath: "inbox", proposal: true };
+    case "EXECUTE": return { title: "推进已授权任务", consequence: "执行后必须回填证据；没有回读与核验，不视为完成。", actionLabel: "查看任务", actionPath: "inbox" };
+    case "VERIFY": return { title: "核验执行证据", consequence: "核验结论会影响下一轮周期，未核验证据不能作为完成依据。", actionLabel: "查看任务", actionPath: "inbox" };
+    default: return { title: `补齐${STAGE_LABELS[lifecycle.stage]}证据`, consequence: "专用诊断仅在管理审计中可用；操作员页面不直接触发专家运行。", actionLabel: "打开管理审计", actionPath: "audit" };
+  }
+}
+
 export interface ExceptionGroupDef {
   key: MerchantExceptionType;
   label: string;
