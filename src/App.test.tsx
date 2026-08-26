@@ -1,6 +1,6 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useNavigate } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthContext";
@@ -109,6 +109,8 @@ let auditReferencePages = new Map<number, TaskAuditReferencesWire>();
 let delayedAuditLoadMore: Promise<Response> | undefined;
 let inboxFails = false;
 let inboxData: unknown = { items: [], offset: 0, limit: 50, total: 0 };
+type InboxResponder = (offset: number, limit: number) => Response | Promise<Response>;
+let inboxResponder: InboxResponder | undefined;
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
@@ -129,6 +131,7 @@ beforeEach(() => {
   delayedAuditLoadMore = undefined;
   inboxFails = false;
   inboxData = { items: [], offset: 0, limit: 50, total: 0 };
+  inboxResponder = undefined;
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -180,6 +183,10 @@ beforeEach(() => {
     if (path.startsWith("/api/seo-ops/tasks/task-2/artifacts")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/inbox")) {
       if (inboxFails) return json({ message: "inbox unavailable" }, 503);
+      if (inboxResponder) {
+        const url = new URL(path, "https://seo-ops.test");
+        return inboxResponder(Number(url.searchParams.get("offset") ?? "0"), Number(url.searchParams.get("limit") ?? "50"));
+      }
       return json(inboxData);
     }
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
@@ -409,6 +416,46 @@ test("inbox task rows expose labels for narrow readable cards", async () => {
   const row = title.closest("tr");
   expect(row?.querySelector("[data-label='状态']")).toHaveTextContent("待核验");
   expect(row?.querySelector("[data-label='到期']")).toBeInTheDocument();
+});
+
+test("inbox normalizes repeated offsets and preserves the active filter", async () => {
+  renderAppWithLocation("/inbox?status=APPROVED&offset=50&offset=0");
+
+  await vi.waitFor(() => expect(calls.some(({ path }) => path === "/api/seo-ops/inbox?offset=0&limit=50&status=APPROVED")).toBe(true));
+  expect(screen.getByTestId("current-location")).toHaveTextContent("/inbox?status=APPROVED&offset=0");
+});
+
+test("inbox recovers after the server total shrinks without flashing a false empty range", async () => {
+  let resolveLastPage!: (response: Response) => void;
+  const lastPage = new Promise<Response>((resolve) => { resolveLastPage = resolve; });
+  inboxResponder = (offset, limit) => {
+    if (offset === 100) return json({ items: [], offset, limit, total: 51 });
+    if (offset === 50) return lastPage;
+    return json({ items: [], offset, limit, total: 51 });
+  };
+  renderApp("/inbox?status=APPROVED&offset=100");
+
+  await vi.waitFor(() => expect(calls.some(({ path }) => path === "/api/seo-ops/inbox?offset=50&limit=50&status=APPROVED")).toBe(true));
+  expect(screen.queryByText("当前筛选没有任务")).not.toBeInTheDocument();
+  expect(screen.queryByText(/101–51 \/ 51/)).not.toBeInTheDocument();
+  expect(screen.getByText("正在校正分页…")).toHaveAttribute("role", "status");
+
+  await act(async () => {
+    resolveLastPage(json({
+      items: [{
+        id: "task-last", merchant_id: "only-bear", merchant_name: "Only Bear Chicken & Boba",
+        location_id: "mineola", location_name: "Mineola", title: "最后一项待核验任务", task_type: "GBP_POST",
+        priority: "HIGH", impact: "HIGH", owner_id: "user-1", due_at: "2026-08-27T08:00:00Z",
+        status: "PENDING_VERIFY", evidence_state: "VERIFIED", task_revision: 3, state_version: 6,
+        updated_at: "2026-08-26T08:00:00Z",
+      }],
+      offset: 50,
+      limit: 50,
+      total: 51,
+    }));
+    await lastPage;
+  });
+  expect(await screen.findByText("显示 51–51 / 51")).toBeInTheDocument();
 });
 
 test("task page presents one decision before technical state", async () => {
@@ -653,6 +700,18 @@ test("an old load-more response cannot repopulate audit references after navigat
 
 function renderApp(route: string) {
   return render(<MemoryRouter initialEntries={[route]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="current-location">{location.pathname}{location.search}</output>;
+}
+
+function renderAppWithLocation(route: string) {
+  return render(<MemoryRouter initialEntries={[route]}>
+    <LocationProbe />
+    <AuthProvider><App /></AuthProvider>
+  </MemoryRouter>);
 }
 
 function TestTaskNavigator() {

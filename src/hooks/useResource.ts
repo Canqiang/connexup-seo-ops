@@ -13,7 +13,9 @@ export function useResource<T>(loader: (signal: AbortSignal) => Promise<T>, deps
     const controller = new AbortController();
     setLoading(true);
     setError(undefined);
-    loaderRef.current(controller.signal).then(setData).catch((reason) => {
+    loaderRef.current(controller.signal).then((value) => {
+      if (!controller.signal.aborted) setData(value);
+    }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason);
     }).finally(() => {
       if (!controller.signal.aborted) setLoading(false);

@@ -61,6 +61,13 @@ test("new merchant onboarding submits one Planner-triggering request instead of 
   }]);
 });
 
+test("new merchant onboarding uses a neutral fictional example", () => {
+  render(<NewMerchantModal onClose={vi.fn()} onDone={vi.fn()} />);
+
+  expect(screen.getByPlaceholderText("例如：Harbor Lantern Cafe")).toBeInTheDocument();
+  expect(screen.queryByPlaceholderText(/Only Bear/)).not.toBeInTheDocument();
+});
+
 test("new merchant onboarding reports a visible configuration wait when Planner is not bound", async () => {
   plannerEnqueued = false;
   const user = userEvent.setup();

@@ -63,7 +63,7 @@ export function NewMerchantModal({ onClose, onDone }: {
           <button className="primary-button" onClick={onClose} style={{ width: "100%", marginTop: 12 }} type="button">完成</button>
         </> : <form onSubmit={submit}>
           <label>店名
-            <input onChange={(e) => setDisplayName(e.target.value)} placeholder="例如：Only Bear Chicken & Boba" required type="text" value={displayName} />
+            <input onChange={(e) => setDisplayName(e.target.value)} placeholder="例如：Harbor Lantern Cafe" required type="text" value={displayName} />
           </label>
           <label>官网（可选，用于生成更准的问卷）
             <input onChange={(e) => setWebsite(e.target.value)} placeholder="https://" type="url" value={website} />

@@ -1,14 +1,15 @@
 import { ArrowRight, Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import type { SeoOpsPageRequest } from "../../api/types";
+import { canonicalOffset, pageRecoveryOffset, visiblePageRange } from "../../app/pagination";
+import { evidenceStateLabel, taskStatusLabel } from "../../app/statusCopy";
 import { hasPermission } from "../../auth/permissions";
 import { useAuth } from "../../auth/AuthContext";
 import { useResource } from "../../hooks/useResource";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
 import { TaskForm } from "../tasks/TaskForm";
-import { evidenceStateLabel, taskStatusLabel } from "../../app/statusCopy";
 import { usePageTitle } from "../../hooks/usePageTitle";
 import { InboxFilters } from "./InboxFilters";
 import { ProposalsTab } from "./ProposalsTab";
@@ -21,6 +22,8 @@ export function InboxPage() {
   const { user } = useAuth();
   const workspace = useWorkspace();
   const tab = params.get("tab") === "proposals" ? "proposals" : "tasks";
+  const parsedOffset = canonicalOffset(params);
+  const paramsKey = params.toString();
   usePageTitle(tab === "proposals" ? "待判定建议" : "任务");
   const switchTab = (next: "tasks" | "proposals") => {
     const nextParams = new URLSearchParams(params);
@@ -29,7 +32,7 @@ export function InboxPage() {
     setParams(nextParams);
   };
   const filters: SeoOpsPageRequest = {
-    offset: Number(params.get("offset") ?? 0), limit: 50, merchant_id: params.get("merchant_id") ?? workspace.merchantId,
+    offset: parsedOffset.value, limit: 50, merchant_id: params.get("merchant_id") ?? workspace.merchantId,
     location_id: params.get("location_id") ?? undefined, status: params.get("status") ?? undefined,
     owner_id: params.get("owner_id") ?? undefined,
     evidence_state: (params.get("evidence_state") ?? undefined) as SeoOpsPageRequest["evidence_state"]
@@ -37,8 +40,24 @@ export function InboxPage() {
   const resource = useResource((signal) => seoOpsApi.inbox(filters, signal), [
     filters.offset, filters.merchant_id, filters.location_id, filters.status, filters.owner_id, filters.evidence_state
   ]);
-  const items = resource.data?.items ?? [];
-  const total = resource.data?.total ?? 0;
+  const page = resource.data;
+  const recoveryOffset = page ? pageRecoveryOffset(page) : null;
+  const correctingPage = recoveryOffset !== null;
+  const items = page?.items ?? [];
+  const total = page?.total ?? 0;
+  const range = page ? visiblePageRange(page) : null;
+  useEffect(() => {
+    if (!parsedOffset.needsNormalization) return;
+    const next = new URLSearchParams(paramsKey);
+    next.set("offset", "0");
+    setParams(next, { replace: true });
+  }, [paramsKey, parsedOffset.needsNormalization, setParams]);
+  useEffect(() => {
+    if (recoveryOffset === null || recoveryOffset === parsedOffset.value) return;
+    const next = new URLSearchParams(paramsKey);
+    next.set("offset", String(recoveryOffset));
+    setParams(next, { replace: true });
+  }, [paramsKey, parsedOffset.value, recoveryOffset, setParams]);
   const openTask = (task: typeof items[number]) => navigate(`/tasks/${task.id}`);
   const change = (patch: Partial<SeoOpsPageRequest>) => {
     const next = new URLSearchParams(params);
@@ -55,9 +74,10 @@ export function InboxPage() {
     </div>
     {tab === "proposals" ? <section className="data-panel"><ProposalsTab merchantId={filters.merchant_id} /></section> : <section className="data-panel">
       <div className="panel-heading"><InboxFilters filters={filters} merchant={workspace.merchant} onChange={change} /><span className="result-count">{total || resource.loading ? (resource.loading ? "—" : total) : 0} 项</span></div>
-      {resource.loading ? <div className="page-state" role="status">正在读取执行队列…</div> : null}
+      {resource.loading && !correctingPage ? <div className="page-state" role="status">正在读取执行队列…</div> : null}
+      {correctingPage ? <div className="page-state" role="status">正在校正分页…</div> : null}
       {resource.error ? <div className="page-state is-error" role="alert">任务读取失败。<button onClick={resource.reload}>重试</button></div> : null}
-      {resource.data && !resource.error ? <div className="table-wrap"><table className="task-table"><thead><tr><th>优先级</th><th>任务 / 商户</th><th>地点</th><th>影响</th><th>状态</th><th>证据</th><th>负责人</th><th>到期</th><th>更新</th><th /></tr></thead>
+      {page && !resource.error && !correctingPage ? <div className="table-wrap"><table className="task-table"><thead><tr><th>优先级</th><th>任务 / 商户</th><th>地点</th><th>影响</th><th>状态</th><th>证据</th><th>负责人</th><th>到期</th><th>更新</th><th /></tr></thead>
         <tbody>{items.map((task) => {
           const statusClass = task.status.toLocaleLowerCase();
           return <tr key={task.id}>
@@ -68,8 +88,9 @@ export function InboxPage() {
           <td data-label="操作"><button aria-label={`打开任务 ${task.title}`} className="row-arrow" onClick={() => openTask(task)} type="button"><ArrowRight size={15} /></button></td>
         </tr>;
         })}</tbody></table>
-        {!items.length ? <div className="empty-state"><h2>当前筛选没有任务</h2><p>调整筛选条件，或创建新的执行任务。</p></div> : null}
-        {total > 0 ? <div className="pagination"><button disabled={filters.offset === 0} onClick={() => change({ offset: Math.max(0, (filters.offset ?? 0) - 50) })}>上一页</button><span>{(filters.offset ?? 0) + 1}–{Math.min((filters.offset ?? 0) + 50, resource.data.total)} / {resource.data.total}</span><button disabled={(filters.offset ?? 0) + 50 >= resource.data.total} onClick={() => change({ offset: (filters.offset ?? 0) + 50 })}>下一页</button></div> : null}
+        {page.total === 0 ? <div className="empty-state"><h2>当前筛选没有任务</h2><p>调整筛选条件，或创建新的执行任务。</p></div> : null}
+        {page.total > 0 && !range ? <div className="page-state" role="status">当前页未返回任务，请重试。</div> : null}
+        {range ? <div className="pagination"><button disabled={page.offset === 0} onClick={() => change({ offset: Math.max(0, page.offset - page.limit) })}>上一页</button><span>显示 {range.start}–{range.end} / {page.total}</span><button disabled={page.offset + page.limit >= page.total} onClick={() => change({ offset: page.offset + page.limit })}>下一页</button></div> : null}
       </div> : null}
     </section>}
     {creating ? <TaskForm merchant={workspace.merchant} merchants={workspace.merchants} onClose={() => setCreating(false)} /> : null}

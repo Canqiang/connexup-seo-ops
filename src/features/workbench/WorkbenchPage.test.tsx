@@ -96,6 +96,25 @@ test("decision rows expose merchant and waiting labels when dense rows reflow", 
   expect(row.querySelector("time[data-label='等待']")).toBeInTheDocument();
 });
 
+test("decision copy wraps below 900px while the primary action stays visible", async () => {
+  renderApp("/");
+
+  const row = await screen.findByRole("article", { name: /Choice Brooklyn UWS.*结果不确定/ });
+  const title = within(row).getByText("核对执行结果");
+  const reason = within(row).getByText("结果不确定，需要人工查证后才能继续。");
+  const merchant = within(row).getByText("Choice Brooklyn UWS");
+  const location = within(row).getByText("Upper West Side");
+
+  expect([title, reason, merchant, location].every((value) => value.textContent?.trim())).toBe(true);
+  expect(within(row).getByRole("button", { name: "去查证" })).toBeVisible();
+  const responsiveRule = Array.from(document.styleSheets)
+    .flatMap((sheet) => Array.from(sheet.cssRules))
+    .find((rule) => rule.cssText.includes("@media (max-width: 900px)"))?.cssText ?? "";
+  expect(responsiveRule).toContain(".action-copy strong, .action-copy p, .merchant-context strong, .merchant-context small");
+  expect(responsiveRule).toContain("overflow-wrap: anywhere");
+  expect(responsiveRule).toContain("white-space: normal");
+});
+
 function renderApp(route: string) {
   return render(<MemoryRouter initialEntries={[route]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
 }
