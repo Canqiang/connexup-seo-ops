@@ -38,20 +38,6 @@ const TRIGGER_GRACE_MS = 60_000;
 const MAX_TERMINAL_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const TERMINAL_ARTIFACT_HASH_BUDGET_MS = 15_000;
 
-function stableArtifactSourceRef(raw: string): string | null {
-  try {
-    const source = new URL(raw);
-    if (source.protocol !== "http:" && source.protocol !== "https:") return null;
-    source.username = "";
-    source.password = "";
-    source.search = "";
-    source.hash = "";
-    return source.toString();
-  } catch {
-    return null;
-  }
-}
-
 export interface ExecutionWorkerDeps {
   db: Db;
   /** mockMode=true 时可为 null（不打 core-ai）。 */
@@ -190,7 +176,7 @@ export class ExecutionWorker {
       deliverables.push({
         id: crypto.randomUUID(), attemptId: attempt.id, fileId: artifact.file_id,
         fileName: artifact.file_name, contentType: artifact.content_type ?? null,
-        sha256, sourceRef: stableArtifactSourceRef(artifact.download_url), createdAt: now,
+        sha256, sourceRef: null, createdAt: now,
       });
     }
     await this.deps.db.withTransaction(async (tx) => {

@@ -159,6 +159,7 @@ export function createCoreAiClient(opts: {
           : AbortSignal.timeout(timeoutMs);
         response = await doFetch(target, {
           headers: { Authorization: `Bearer ${token}` },
+          redirect: "error",
           signal: requestSignal,
         });
       } catch {
@@ -175,6 +176,7 @@ export function createCoreAiClient(opts: {
       if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
         const declaredBytes = Number(declaredLength);
         if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
+          await response.body?.cancel().catch(() => undefined);
           throw new CoreAiError(0, "artifact download exceeds byte limit");
         }
       }

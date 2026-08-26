@@ -40,14 +40,31 @@ describe("Core AI artifact downloads", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("rejects an oversized Content-Length before reading artifact bytes", async () => {
-    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4]), {
+  it("rejects a same-origin artifact response that attempts an off-origin redirect", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.redirect === "error") throw new TypeError("redirect mode blocked redirect");
+      return response([9]);
+    }) as unknown as typeof fetch;
+    const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
+
+    await expect(client.downloadArtifact("/artifacts/redirect-to-storage"))
+      .rejects.toMatchObject({ status: 0, message: "artifact download failed" });
+  });
+
+  it("cancels an oversized Content-Length response before rejecting", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1, 2, 3, 4])); },
+      cancel() { cancelled = true; },
+    });
+    const fetchImpl = vi.fn(async () => new Response(body, {
       headers: { "Content-Length": "4" },
     })) as unknown as typeof fetch;
     const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
 
     await expect(client.downloadArtifact("/artifacts/declared-oversize", { maxBytes: 3 }))
       .rejects.toMatchObject({ status: 0, message: "artifact download exceeds byte limit" });
+    expect(cancelled).toBe(true);
   });
 
   it("cancels and rejects an unknown-length artifact stream when counted bytes exceed the limit", async () => {

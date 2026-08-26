@@ -158,9 +158,14 @@ const finalizeDraftSchema = z.object({
   idempotency_key: z.string(),
 });
 
+const strictDecimalIntegerSchema = z.string()
+  .regex(/^(0|[1-9]\d*)$/)
+  .refine((raw) => Number.isSafeInteger(Number(raw)))
+  .transform(Number);
+
 const auditReferencePageSchema = z.object({
-  offset: z.coerce.number().int().min(0).max(10_000).default(0),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
+  offset: strictDecimalIntegerSchema.default("0"),
+  limit: strictDecimalIntegerSchema.pipe(z.number().min(1).max(50)).default("20"),
 });
 
 const upsertCapabilitySchema = z.object({

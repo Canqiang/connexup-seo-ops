@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthContext";
@@ -106,6 +106,7 @@ let artifactData: SpecialistArtifactWire[] = [];
 let attemptData: AttemptWire[] = [];
 let auditReferenceData: TaskAuditReferencesWire = { agent_runs: [], artifacts: [] };
 let auditReferencePages = new Map<number, TaskAuditReferencesWire>();
+let delayedAuditLoadMore: Promise<Response> | undefined;
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
@@ -123,6 +124,7 @@ beforeEach(() => {
   attemptData = [];
   auditReferenceData = { agent_runs: [], artifacts: [] };
   auditReferencePages = new Map();
+  delayedAuditLoadMore = undefined;
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -134,6 +136,7 @@ beforeEach(() => {
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
     if (path === "/api/seo-ops/tasks/task-1") return json(taskData);
+    if (path === "/api/seo-ops/tasks/task-2") return json({ ...taskFixture, id: "task-2", title: "第二个任务" });
     if (path === "/api/seo-ops/merchants/only-bear/lifecycle") return json(lifecycleData);
     if (path === "/api/seo-ops/merchants/only-bear/ranking") return json(rankingData);
     if (path === "/api/seo-ops/merchants/only-bear/cycle-ledger") return json(cycleLedgerData);
@@ -146,19 +149,31 @@ beforeEach(() => {
     if (path.startsWith("/api/seo-ops/merchants/only-bear/stage-runs")) return json({ items: [], offset: 0, limit: 1, total: 0 });
     if (path.startsWith("/api/seo-ops/agent-runs/")) return json(stageRunRunningFixture);
     if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
+    if (path.startsWith("/api/seo-ops/tasks/task-2/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
     if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/proposal-batches")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/tasks/task-1/attempts")) return json({ items: attemptData });
     if (path.startsWith("/api/seo-ops/tasks/task-1/audit-references")) {
       const offset = Number(new URL(path, "https://seo-ops.test").searchParams.get("offset") ?? "0");
+      if (offset === 20 && delayedAuditLoadMore) return delayedAuditLoadMore;
       return json(auditReferencePages.get(offset) ?? auditReferenceData);
     }
+    if (path.startsWith("/api/seo-ops/tasks/task-2/audit-references")) return json({
+      offset: 0,
+      limit: 20,
+      total: 1,
+      agent_runs: [{ id: "task-2-run", core_run_id: "task-2-core-run", deliverables: [] }],
+      artifacts: [],
+      execution_attempts: [],
+    });
     if (path.startsWith("/api/seo-ops/tasks/task-1/execution-preview")) return json({ confirmable: true, attempt_count: 0, gate_ready_status: true, checks: [
       { key: "version", label: "当前版本一致", detail: "审批版本与任务一致", passed: true },
       { key: "authorization", label: "外部授权有效", detail: "商户授权仍有效", passed: true },
     ] });
     if (path.startsWith("/api/seo-ops/tasks/task-1/drafts")) return json({ items: draftData });
     if (path.startsWith("/api/seo-ops/tasks/task-1/artifacts")) return json({ items: artifactData });
+    if (path.startsWith("/api/seo-ops/tasks/task-2/drafts")) return json({ items: [] });
+    if (path.startsWith("/api/seo-ops/tasks/task-2/artifacts")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reports")) return json(reportsData);
@@ -587,8 +602,58 @@ test("technical audit loads overlapping reference pages on demand and merges eve
   expect(screen.queryByRole("button", { name: "加载更多审计引用" })).not.toBeInTheDocument();
 });
 
+test("an old load-more response cannot repopulate audit references after navigating to another task", async () => {
+  auditReferencePages.set(0, {
+    offset: 0,
+    limit: 20,
+    total: 21,
+    agent_runs: [{ id: "task-1-run", core_run_id: "task-1-core-run", deliverables: [] }],
+    artifacts: [],
+    execution_attempts: [],
+  });
+  let resolveOldPage!: (response: Response) => void;
+  const oldPage = new Promise<Response>((resolve) => { resolveOldPage = resolve; });
+  delayedAuditLoadMore = oldPage;
+  renderAppWithNavigation("/tasks/task-1");
+  const user = userEvent.setup();
+
+  await user.click(await screen.findByText("技术详情（审计）"));
+  await user.click(await screen.findByRole("button", { name: "加载更多审计引用" }));
+  await vi.waitFor(() => expect(calls.some(({ path }) => path.includes("/tasks/task-1/audit-references?offset=20"))).toBe(true));
+
+  await user.click(screen.getByRole("button", { name: "前往第二个任务" }));
+  expect(await screen.findByRole("heading", { name: "第二个任务" })).toBeVisible();
+  expect(await screen.findByText("task-2-run")).toBeVisible();
+
+  await act(async () => {
+    resolveOldPage(json({
+      offset: 20,
+      limit: 20,
+      total: 21,
+      agent_runs: [{ id: "stale-task-1-run", core_run_id: "stale-task-1-core-run", deliverables: [] }],
+      artifacts: [],
+      execution_attempts: [],
+    }));
+    await oldPage;
+  });
+  expect(screen.queryByText("stale-task-1-run")).not.toBeInTheDocument();
+  expect(screen.getByText("task-2-run")).toBeVisible();
+});
+
 function renderApp(route: string) {
   return render(<MemoryRouter initialEntries={[route]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
+}
+
+function TestTaskNavigator() {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate("/tasks/task-2")} type="button">前往第二个任务</button>;
+}
+
+function renderAppWithNavigation(route: string) {
+  return render(<MemoryRouter initialEntries={[route]}>
+    <TestTaskNavigator />
+    <AuthProvider><App /></AuthProvider>
+  </MemoryRouter>);
 }
 
 function json(body: unknown, status = 200) {

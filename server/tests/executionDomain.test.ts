@@ -476,9 +476,21 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     })]);
   });
 
-  it("audit reference pagination rejects negative, fractional, non-finite, and over-bound offsets", async () => {
+  it("audit reference pagination accepts decimal offsets beyond the old 10,000 ceiling", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-large-page");
+    for (const offset of [10_001, Number.MAX_SAFE_INTEGER]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/seo-ops/tasks/${task.id}/audit-references?offset=${offset}&limit=20`,
+      });
+      expect(response.statusCode, `offset=${offset}`).toBe(200);
+      expect(response.json()).toMatchObject({ offset, limit: 20 });
+    }
+  });
+
+  it("audit reference pagination rejects negative, fractional, and non-finite offsets", async () => {
     const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-invalid-page");
-    for (const offset of ["-1", "1.5", "NaN", "Infinity", "10001"]) {
+    for (const offset of ["-1", "1.5", "NaN", "Infinity"]) {
       const response = await app.inject({
         method: "GET",
         url: `/api/seo-ops/tasks/${task.id}/audit-references?offset=${encodeURIComponent(offset)}&limit=20`,
@@ -487,7 +499,30 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     }
   });
 
-  it("terminal execution persists its Core trace and deliverable refs for the bounded task audit", async () => {
+  it("audit reference pagination rejects non-decimal strings, unsafe integers, blanks, and arrays", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-lexical-page");
+    const invalidQueries = [
+      "offset=&limit=20",
+      "offset=1e2&limit=20",
+      "offset=0x10&limit=20",
+      "offset=01&limit=20",
+      `offset=${Number.MAX_SAFE_INTEGER + 1}&limit=20`,
+      "offset=1&offset=2&limit=20",
+      "offset=0&limit=2e1",
+      "offset=0&limit=0x10",
+      "offset=0&limit=01",
+      "offset=0&limit=20&limit=21",
+    ];
+    for (const query of invalidQueries) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/seo-ops/tasks/${task.id}/audit-references?${query}`,
+      });
+      expect(response.statusCode, query).toBe(400);
+    }
+  });
+
+  it("terminal execution persists file identity and hash without persisting a presigned download URL", async () => {
     const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-audit");
     const confirmed = await app.inject({
       method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
@@ -519,8 +554,9 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(audit.json().execution_attempts).toEqual([expect.objectContaining({
       id: expect.any(String), core_run_id: "core-execution-audit", trace_ref: "trace-execution-audit-full",
       probe_ref: expect.stringContaining(`exec-${task.id.slice(0, 8)}-rev`),
-      deliverables: [expect.objectContaining({ file_id: "file-execution-audit-full", sha256: sha256HashBytes(bytes), source_ref: "https://example.test/files/receipt.json" })],
+      deliverables: [expect.objectContaining({ file_id: "file-execution-audit-full", sha256: sha256HashBytes(bytes) })],
     })]);
+    expect(audit.json().execution_attempts[0].deliverables[0]).not.toHaveProperty("source_ref");
     expect(JSON.stringify(audit.json())).not.toContain("terminal-secret");
   });
 

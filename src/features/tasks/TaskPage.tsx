@@ -1,5 +1,5 @@
 import { Bot, MessageSquareText, RefreshCw, ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import type { SeoTask, TaskAuditReferencesWire } from "../../api/types";
@@ -64,6 +64,9 @@ function mergeAuditReferencePages(
 
 export function TaskPage() {
   const { taskId = "" } = useParams();
+  const currentTaskId = useRef(taskId);
+  currentTaskId.current = taskId;
+  const auditPageController = useRef<AbortController | undefined>(undefined);
   const { mode = "operator" } = useOutletContext<{ mode?: ViewMode }>();
   const { user } = useAuth();
   const taskResource = useResource((signal) => seoOpsApi.task(taskId, signal), [taskId]);
@@ -89,8 +92,12 @@ export function TaskPage() {
   );
   useEffect(() => { if (taskResource.data) setTask(taskResource.data); }, [taskResource.data]);
   useEffect(() => {
+    auditPageController.current?.abort();
+    auditPageController.current = undefined;
     setAuditReferences(undefined);
+    setAuditPageLoading(false);
     setAuditPageError(false);
+    return () => auditPageController.current?.abort();
   }, [taskId]);
   useEffect(() => {
     if (auditReferenceResource.data) {
@@ -106,18 +113,28 @@ export function TaskPage() {
   const hasMoreAuditReferences = nextAuditOffset < (auditReferences?.total ?? 0);
   const loadMoreAuditReferences = async () => {
     if (!auditReferences || auditPageLoading || !hasMoreAuditReferences) return;
+    const requestedTaskId = taskId;
+    const controller = new AbortController();
+    auditPageController.current?.abort();
+    auditPageController.current = controller;
     setAuditPageLoading(true);
     setAuditPageError(false);
     try {
       const next = await seoOpsApi.taskAuditReferences(taskId, {
         offset: nextAuditOffset,
         limit: auditReferences.limit ?? AUDIT_REFERENCE_PAGE_LIMIT,
-      });
+      }, controller.signal);
+      if (controller.signal.aborted || currentTaskId.current !== requestedTaskId) return;
       setAuditReferences((current) => current ? mergeAuditReferencePages(current, next) : next);
     } catch {
-      setAuditPageError(true);
+      if (!controller.signal.aborted && currentTaskId.current === requestedTaskId) {
+        setAuditPageError(true);
+      }
     } finally {
-      setAuditPageLoading(false);
+      if (auditPageController.current === controller) {
+        auditPageController.current = undefined;
+        if (currentTaskId.current === requestedTaskId) setAuditPageLoading(false);
+      }
     }
   };
   if (taskResource.loading && !task) return <div className="page-state" role="status">正在读取任务聚合…</div>;
