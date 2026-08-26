@@ -498,7 +498,8 @@ test("closed technical audit exposes full identifiers, hashes and safe external 
 test("technical audit renders persisted task-run traces and deliverable identifiers without inventing values", async () => {
   auditReferenceData = {
     agent_runs: [{ id: "task-agent-run-full", core_run_id: "task-core-run-full", trace_ref: "https://example.test/traces/full", deliverables: [{ id: "deliverable-full", file_id: "core-file-full", sha256: "sha256:deliverable-full", source_ref: "https://example.test/files/full" }] }],
-    artifacts: [{ id: "specialist-artifact-full", core_run_id: "specialist-core-full", file_id: "specialist-file-full", sha256: "sha256:specialist-full" }],
+    artifacts: [{ id: "specialist-artifact-full", core_run_id: "specialist-core-full" }],
+    execution_attempts: [{ id: "execution-attempt-full", core_run_id: "execution-core-run-full", trace_ref: "execution-trace-full", deliverables: [{ id: "execution-deliverable-full", file_id: "execution-file-full", sha256: "sha256:execution-deliverable-full", source_ref: "https://example.test/execution/files/full" }] }],
   };
   renderApp("/tasks/task-1");
   await userEvent.setup().click(await screen.findByText("技术详情（审计）"));
@@ -506,8 +507,20 @@ test("technical audit renders persisted task-run traces and deliverable identifi
   expect(screen.getByText("https://example.test/traces/full")).toBeVisible();
   expect(screen.getByText("core-file-full")).toBeVisible();
   expect(screen.getByText("sha256:deliverable-full")).toBeVisible();
-  expect(screen.getByText("specialist-file-full")).toBeVisible();
-  expect(screen.getByText("sha256:specialist-full")).toBeVisible();
+  expect(screen.getByText("specialist-core-full")).toBeVisible();
+  expect(screen.getByText("execution-core-run-full")).toBeVisible();
+  expect(screen.getByText("execution-trace-full")).toBeVisible();
+  expect(screen.getByText("execution-file-full")).toBeVisible();
+  expect(screen.getByText("sha256:execution-deliverable-full")).toBeVisible();
+});
+
+test("task audit references are fetched only after the closed technical audit opens", async () => {
+  renderApp("/tasks/task-1");
+  await screen.findByText("技术详情（审计）");
+  expect(calls.some(({ path }) => path.includes("/audit-references"))).toBe(false);
+
+  await userEvent.setup().click(screen.getByText("技术详情（审计）"));
+  await vi.waitFor(() => expect(calls.some(({ path }) => path.includes("/audit-references"))).toBe(true));
 });
 
 function renderApp(route: string) {

@@ -39,8 +39,13 @@ import {
   upsertCycleConfig,
   insertStyleProfile,
 } from "../repos/settingsRepo.js";
-import { getAttempt, listOpenUnknownAttempts } from "../repos/executionRepo.js";
-import { getAgentRun, listAgentRunsByTask, listDeliverablesByRun } from "../repos/agentRunRepo.js";
+import {
+  getAttempt,
+  listAttemptDeliverablesByAttemptIds,
+  listAttemptsByTaskPage,
+  listOpenUnknownAttempts,
+} from "../repos/executionRepo.js";
+import { listAgentRunsForTaskAudit, listDeliverablesByRunIds } from "../repos/agentRunRepo.js";
 import { countPendingProposals, getProposal } from "../repos/proposalRepo.js";
 import { getTask, listTasksByStatus } from "../repos/taskRepo.js";
 import { getMerchant, listMerchantsForOperator } from "../repos/merchantRepo.js";
@@ -48,6 +53,7 @@ import { getLocation } from "../repos/locationRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import {
   listSpecialistArtifactsByMerchant,
+  listSpecialistArtifactReferencesByTask,
   listSpecialistArtifactsByTask,
   type SpecialistArtifactType,
 } from "../repos/specialistArtifactRepo.js";
@@ -312,23 +318,40 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     await requireTaskAccess(ctx.db, actor, taskId);
     const task = await getTask(ctx.db, taskId);
     if (!task) throw new ApiError(404, "resource not found");
-    const linked = await Promise.all(task.agentRunLinks.map((link) => getAgentRun(ctx.db, link.agentRunId)));
-    const runs = [...await listAgentRunsByTask(ctx.db, taskId), ...linked.filter((run): run is NonNullable<typeof run> => run !== null)]
-      .filter((run, index, all) => all.findIndex((candidate) => candidate.id === run.id) === index);
+    const query = request.query as { offset?: string; limit?: string };
+    const offset = Math.max(0, Number.parseInt(query.offset ?? "0", 10) || 0);
+    const limit = Math.min(50, Math.max(1, Number.parseInt(query.limit ?? "20", 10) || 20));
+    const runs = await listAgentRunsForTaskAudit(
+      ctx.db, task.id, task.merchantId, task.agentRunLinks.map((link) => link.agentRunId), offset, limit,
+    );
+    const deliverablesByRun = await listDeliverablesByRunIds(ctx.db, runs.items.map((run) => run.id));
+    const attempts = await listAttemptsByTaskPage(ctx.db, task.id, offset, limit);
+    const deliverablesByAttempt = await listAttemptDeliverablesByAttemptIds(
+      ctx.db, attempts.items.map((attempt) => attempt.id),
+    );
+    const artifacts = await listSpecialistArtifactReferencesByTask(ctx.db, taskId, offset, limit);
     return {
-      agent_runs: await Promise.all(runs.map(async (run) => ({
+      offset, limit, total: Math.max(runs.total, attempts.total, artifacts.total),
+      agent_runs: runs.items.map((run) => ({
         id: run.id, ...(run.coreRunId ? { core_run_id: run.coreRunId } : {}),
         ...(run.traceRef ? { trace_ref: run.traceRef } : {}),
-        deliverables: (await listDeliverablesByRun(ctx.db, run.id)).map((deliverable) => ({
+        deliverables: (deliverablesByRun.get(run.id) ?? []).map((deliverable) => ({
           id: deliverable.id, ...(deliverable.fileId ? { file_id: deliverable.fileId } : {}),
           ...(deliverable.sha256 ? { sha256: deliverable.sha256 } : {}),
           ...(deliverable.remoteUrl ? { source_ref: deliverable.remoteUrl } : {}),
         })),
-      }))),
-      artifacts: (await listSpecialistArtifactsByTask(ctx.db, taskId)).map((artifact) => ({
+      })),
+      artifacts: artifacts.items.map((artifact) => ({
         id: artifact.id, core_run_id: artifact.coreRunId,
-        ...(typeof artifact.payload.file_id === "string" ? { file_id: artifact.payload.file_id } : {}),
-        ...(typeof artifact.payload.sha256 === "string" ? { sha256: artifact.payload.sha256 } : {}),
+      })),
+      execution_attempts: attempts.items.map((attempt) => ({
+        id: attempt.id, ...(attempt.coreRunId ? { core_run_id: attempt.coreRunId } : {}),
+        ...(attempt.traceRef ? { trace_ref: attempt.traceRef } : {}),
+        deliverables: (deliverablesByAttempt.get(attempt.id) ?? []).map((deliverable) => ({
+          id: deliverable.id, file_id: deliverable.fileId,
+          ...(deliverable.sha256 ? { sha256: deliverable.sha256 } : {}),
+          ...(deliverable.sourceRef ? { source_ref: deliverable.sourceRef } : {}),
+        })),
       })),
     };
   });

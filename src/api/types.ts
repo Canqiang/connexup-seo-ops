@@ -332,8 +332,10 @@ export interface SpecialistArtifactWire {
   core_run_id: string; created_by: string | null; created_at: string;
 }
 export interface TaskAuditReferencesWire {
+  offset?: number; limit?: number; total?: number;
   agent_runs: Array<{ id: string; core_run_id?: string; trace_ref?: string; deliverables: Array<{ id: string; file_id?: string; sha256?: string; source_ref?: string }> }>;
-  artifacts: Array<{ id: string; core_run_id: string; file_id?: string; sha256?: string }>;
+  artifacts: Array<{ id: string; core_run_id: string }>;
+  execution_attempts?: Array<{ id: string; core_run_id?: string; trace_ref?: string; deliverables: Array<{ id: string; file_id: string; sha256?: string; source_ref?: string }> }>;
 }
 
 export interface InboxSummaryWire {

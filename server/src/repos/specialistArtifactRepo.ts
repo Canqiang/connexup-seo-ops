@@ -133,6 +133,25 @@ export async function listSpecialistArtifactsByTask(
   return rows.map(toArtifact);
 }
 
+/** Audit projection only: page compact identifiers rather than loading full
+ * specialist payloads or an unbounded task history. */
+export async function listSpecialistArtifactReferencesByTask(
+  db: Db, taskId: string, offset: number, limit: number,
+): Promise<{ items: Array<Pick<SpecialistArtifact, "id" | "coreRunId">>; total: number }> {
+  const count = await db.one<{ total: string }>(
+    `SELECT COUNT(*) AS total FROM seo_specialist_artifacts WHERE task_id = $1`, [taskId],
+  );
+  const rows = await db.query<Pick<SpecialistArtifactRow, "id" | "core_run_id">>(
+    `SELECT id, core_run_id FROM seo_specialist_artifacts
+     WHERE task_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
+    [taskId, limit, offset],
+  );
+  return {
+    items: rows.map((row) => ({ id: row.id, coreRunId: row.core_run_id })),
+    total: Number(count?.total ?? 0),
+  };
+}
+
 export async function listSpecialistArtifactsByMerchant(
   db: Db,
   merchantId: string,

@@ -32,15 +32,18 @@ export function TaskPage() {
   const artifactResource = useResource((signal) => seoOpsApi.taskArtifacts(taskId, signal), [taskId]);
   const draftResource = useResource((signal) => seoOpsApi.drafts(taskId, signal), [taskId]);
   const attemptResource = useResource((signal) => seoOpsApi.attempts(taskId, signal), [taskId]);
-  const auditReferenceResource = useResource((signal) => seoOpsApi.taskAuditReferences(taskId, signal), [taskId]);
   const [task, setTask] = useState<SeoTask>();
   const [showEvidence, setShowEvidence] = useState(false);
   const [showRevision, setShowRevision] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const auditReferenceResource = useResource(
+    (signal) => auditOpen ? seoOpsApi.taskAuditReferences(taskId, signal) : Promise.resolve(undefined),
+    [taskId, auditOpen],
+  );
   useEffect(() => { if (taskResource.data) setTask(taskResource.data); }, [taskResource.data]);
   usePageTitle(task ? task.title : "任务");
-  const readback = (next: SeoTask) => { setTask(next); taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); attemptResource.reload(); auditReferenceResource.reload(); };
-  const reload = () => { taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); attemptResource.reload(); auditReferenceResource.reload(); };
+  const readback = (next: SeoTask) => { setTask(next); taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); attemptResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
+  const reload = () => { taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); attemptResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
   if (taskResource.loading && !task) return <div className="page-state" role="status">正在读取任务聚合…</div>;
   if (taskResource.error || !task) return <div className="page-state is-error" role="alert">任务不存在、不可见或读取失败。<BackButton fallback="/inbox" label="返回任务列表" /></div>;
 
@@ -66,7 +69,7 @@ export function TaskPage() {
     {showEvidence ? <section className="data-panel inline-form"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE COMMAND</span><h2>附加当前版本证据</h2></div></div><EvidenceForm task={task} onReadback={readback} /></section> : null}
     <TechnicalDetails onToggle={setAuditOpen} open={auditOpen} task={task}>
       <section className="task-state-ribbon is-six"><div><span>任务版本</span><strong>rev {task.task_revision}</strong></div><div><span>状态版本</span><strong>{task.state_version}</strong></div><div><span>执行状态</span><strong>{taskStatusLabel(task.status)}</strong></div><div><span>证据状态</span><strong>{evidenceStateLabel(task.evidence_state)}</strong></div><div><span>执行模式</span><strong>{executionModeLabel(task.execution_mode)}</strong></div><div><span>影响</span><strong>{task.impact}</strong></div></section>
-      <TaskAuditReferences artifacts={artifactResource.data?.items ?? []} attempts={attemptResource.data?.items ?? []} runReferences={auditReferenceResource.data} task={task} />
+      {auditOpen ? <TaskAuditReferences artifacts={artifactResource.data?.items ?? []} attempts={attemptResource.data?.items ?? []} runReferences={auditReferenceResource.data} task={task} /> : null}
       <div className="task-layout"><div className="task-primary">
         {artifactResource.loading && !artifactResource.data ? <div className="page-state" role="status">读取 Agent 产物…</div> : null}
         {artifactResource.error ? <div className="page-state is-error" role="alert">Agent 产物读取失败。</div> : null}

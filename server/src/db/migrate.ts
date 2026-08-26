@@ -23,6 +23,7 @@ const COLUMN_MIGRATIONS: string[] = [
      ON seo_proposal_batches(merchant_id, cycle_id, created_at DESC)`,
   // 触发标记（0827 review）：写入类 attempt 触发前先落标记，崩溃后禁止再触发
   `ALTER TABLE seo_execution_attempts ADD COLUMN IF NOT EXISTS trigger_started_at TEXT`,
+  `ALTER TABLE seo_execution_attempts ADD COLUMN IF NOT EXISTS trace_ref TEXT`,
 ];
 
 const IDENTITY_TYPE_CHECK = "seo_users_identity_type_check";

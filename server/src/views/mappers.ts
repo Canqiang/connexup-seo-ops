@@ -276,6 +276,7 @@ export function attemptView(a: ExecutionAttempt): Record<string, unknown> {
     gate: a.gate,
     agent_run_id: a.agentRunId,
     core_run_id: a.coreRunId,
+    trace_ref: a.traceRef,
     probe_ref: a.probeRef,
     error: a.error,
     started_at: a.startedAt,

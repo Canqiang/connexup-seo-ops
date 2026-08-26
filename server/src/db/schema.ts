@@ -263,6 +263,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     gate TEXT NOT NULL,
     agent_run_id TEXT,
     core_run_id TEXT,
+    trace_ref TEXT,
     probe_ref TEXT NOT NULL,
     error TEXT,
     started_at TEXT NOT NULL,
@@ -277,6 +278,20 @@ export const SCHEMA_STATEMENTS: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_attempts_task ON seo_execution_attempts(task_id, attempt_no DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_attempts_merchant_status ON seo_execution_attempts(merchant_id, status)`,
+  /** Terminal Core run attachments for task execution.  These are bounded
+   * metadata rows; bytes remain with Core and are never copied into audit. */
+  `CREATE TABLE IF NOT EXISTS seo_execution_attempt_deliverables (
+    id TEXT PRIMARY KEY,
+    attempt_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    content_type TEXT,
+    sha256 TEXT,
+    source_ref TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(attempt_id, file_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_attempt_deliverables_attempt ON seo_execution_attempt_deliverables(attempt_id, created_at ASC, id ASC)`,
 
   /** 幂等键唯一索引：并发同 key 双创建靠数据库兜底（23505 → 重试走 replay）。 */
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_idem_key ON seo_tasks(creation_idempotency_key) WHERE creation_idempotency_key IS NOT NULL`,

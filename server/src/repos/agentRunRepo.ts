@@ -227,6 +227,36 @@ export async function listAgentRunsByTask(db: Db, taskId: string): Promise<Agent
   return rows.map(toAgentRun);
 }
 
+/** Audit reads are scoped to the task merchant even when legacy links were
+ * corrupted. Linked ids remain useful provenance, but must never widen the
+ * authorization boundary beyond the task aggregate. */
+export async function listAgentRunsForTaskAudit(
+  db: Db,
+  taskId: string,
+  merchantId: string,
+  linkedRunIds: readonly string[],
+  offset: number,
+  limit: number,
+): Promise<{ items: AgentRun[]; total: number }> {
+  const ids = [...new Set(linkedRunIds)];
+  const clauses = ids.length > 0
+    ? "(task_id = $2 OR id = ANY($3::text[]))"
+    : "task_id = $2";
+  const params = ids.length > 0 ? [merchantId, taskId, ids] : [merchantId, taskId];
+  const count = await db.one<{ total: string }>(
+    `SELECT COUNT(*) AS total FROM seo_agent_runs WHERE merchant_id = $1 AND ${clauses}`,
+    params,
+  );
+  const rows = await db.query<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+     WHERE merchant_id = $1 AND ${clauses}
+     ORDER BY created_at DESC, id DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset],
+  );
+  return { items: rows.map(toAgentRun), total: Number(count?.total ?? 0) };
+}
+
 export async function listAgentRuns(db: Db): Promise<AgentRun[]> {
   const rows = await db.query<AgentRunRow>(
     `SELECT ${RUN_COLUMNS} FROM seo_agent_runs

@@ -1,15 +1,19 @@
 import type { Db } from "../db/connection.js";
+import crypto from "node:crypto";
 import { CORE_RUN_TERMINAL_STATUSES } from "../domain/enums.js";
+import { sha256HashBytes } from "../domain/hashing.js";
 import type { Task } from "../repos/taskTypes.js";
 import { getTask } from "../repos/taskRepo.js";
 import {
   listDispatchingAttempts,
   listOpenUnknownAttempts,
+  upsertAttemptDeliverable,
   updateAttempt,
   type ExecutionAttempt,
+  type ExecutionAttemptDeliverable,
 } from "../repos/executionRepo.js";
 import { getAgentBinding } from "../repos/settingsRepo.js";
-import { CoreAiError, type CoreAiClient } from "./coreAiClient.js";
+import { CoreAiError, type CoreAiClient, type CoreAgentRunDetail } from "./coreAiClient.js";
 import {
   autoDispatch,
   dispatchBindingKey,
@@ -134,6 +138,35 @@ export class ExecutionWorker {
 
   private actor(): string {
     return this.deps.systemActor ?? "system:executor";
+  }
+
+  /** Preserve only bounded terminal references. Artifact bytes are streamed
+   * solely to compute a stable hash and are never retained in SEO Ops. */
+  private async persistTerminalReferences(
+    attempt: ExecutionAttempt,
+    core: CoreAgentRunDetail,
+  ): Promise<ExecutionAttempt> {
+    const now = new Date().toISOString();
+    const persisted = { ...attempt, traceRef: core.trace_id ?? attempt.traceRef, updatedAt: now };
+    const deliverables: ExecutionAttemptDeliverable[] = [];
+    for (const artifact of (core.artifacts ?? []).slice(0, 20)) {
+      let sha256: string | null = null;
+      try {
+        sha256 = sha256HashBytes(await this.deps.client!.downloadArtifact(artifact.download_url));
+      } catch (err) {
+        this.deps.log?.(`execution worker: could not hash terminal artifact ${artifact.file_id}`, err);
+      }
+      deliverables.push({
+        id: crypto.randomUUID(), attemptId: attempt.id, fileId: artifact.file_id,
+        fileName: artifact.file_name, contentType: artifact.content_type ?? null,
+        sha256, sourceRef: artifact.download_url, createdAt: now,
+      });
+    }
+    await this.deps.db.withTransaction(async (tx) => {
+      await updateAttempt(tx, persisted);
+      for (const deliverable of deliverables) await upsertAttemptDeliverable(tx, deliverable);
+    });
+    return persisted;
   }
 
   private async processAttempt(attempt: ExecutionAttempt): Promise<void> {
@@ -273,6 +306,7 @@ export class ExecutionWorker {
     }
 
     if (!(CORE_RUN_TERMINAL_STATUSES as readonly string[]).includes(core.status)) return;
+    const terminalAttempt = await this.persistTerminalReferences(attempt, core);
 
     if (core.status === "COMPLETED") {
       if (task.taskType === "PLANNER") {
@@ -280,7 +314,7 @@ export class ExecutionWorker {
           await ingestPlannerRunOutput(db, task, runId, core.output, this.actor());
         } catch (err) {
           const message = err instanceof Error ? err.message : "planner output ingestion failed";
-          const { retryEligible } = await settleAttemptFailure(db, attempt, message, this.actor());
+          const { retryEligible } = await settleAttemptFailure(db, terminalAttempt, message, this.actor());
           if (retryEligible) await autoDispatch(db, task.id, this.actor());
           return;
         }
@@ -290,7 +324,7 @@ export class ExecutionWorker {
           await ingestQuestionnaireRunOutput(db, task, runId, core.output, this.actor());
         } catch (err) {
           const message = err instanceof Error ? err.message : "questionnaire output ingestion failed";
-          const { retryEligible } = await settleAttemptFailure(db, attempt, message, this.actor());
+          const { retryEligible } = await settleAttemptFailure(db, terminalAttempt, message, this.actor());
           if (retryEligible) await autoDispatch(db, task.id, this.actor());
           return;
         }
@@ -300,29 +334,29 @@ export class ExecutionWorker {
           await ingestSpecialistRunOutput(db, task, runId, core.output, this.actor());
         } catch (err) {
           const message = err instanceof Error ? err.message : "specialist output ingestion failed";
-          const { retryEligible } = await settleAttemptFailure(db, attempt, message, this.actor());
+          const { retryEligible } = await settleAttemptFailure(db, terminalAttempt, message, this.actor());
           if (retryEligible) await autoDispatch(db, task.id, this.actor());
           return;
         }
       }
-      await settleAttemptSuccess(db, attempt, extractPublishedRef(core.output), this.actor());
+      await settleAttemptSuccess(db, terminalAttempt, extractPublishedRef(core.output), this.actor());
       return;
     }
 
     if (core.status === "FAILED") {
       // agent 明确报告失败 = 确认失败（动作没发生由 agent 语义保证）。
       const { retryEligible } = await settleAttemptFailure(
-        db, attempt, core.error ?? "core run FAILED", this.actor());
+        db, terminalAttempt, core.error ?? "core run FAILED", this.actor());
       if (retryEligible) await autoDispatch(db, task.id, this.actor());
       return;
     }
 
     // TIMEOUT / CANCELLED：写入类动作可能已发生 → 结果不明；只读/成品类确认失败。
     if (isWriteMode(task)) {
-      await settleAttemptUnknown(db, attempt, `core run ${core.status}`, this.actor());
+      await settleAttemptUnknown(db, terminalAttempt, `core run ${core.status}`, this.actor());
     } else {
       const { retryEligible } = await settleAttemptFailure(
-        db, attempt, `core run ${core.status}`, this.actor());
+        db, terminalAttempt, `core run ${core.status}`, this.actor());
       if (retryEligible) await autoDispatch(db, task.id, this.actor());
     }
   }

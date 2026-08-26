@@ -47,8 +47,17 @@ export function TaskAuditReferences({ task, attempts, artifacts, runReferences }
       {runReferences?.artifacts.flatMap((artifact) => [
         <Reference key={`${artifact.id}:audit-id`} label="artifact_id" value={artifact.id} />,
         <Reference key={`${artifact.id}:audit-core`} label="core_run_id" value={artifact.core_run_id} />,
-        <Reference key={`${artifact.id}:audit-file`} label="file_id" value={artifact.file_id} />,
-        <Reference key={`${artifact.id}:audit-hash`} label="sha256" value={artifact.sha256} />,
+      ])}
+      {runReferences?.execution_attempts?.flatMap((attempt) => [
+        <Reference key={`${attempt.id}:execution-attempt`} label="execution_attempt_id" value={attempt.id} />,
+        <Reference key={`${attempt.id}:execution-core`} label="core_run_id" value={attempt.core_run_id} />,
+        <Reference key={`${attempt.id}:execution-trace`} label="trace_ref" value={attempt.trace_ref} />,
+        ...attempt.deliverables.flatMap((deliverable) => [
+          <Reference key={`${deliverable.id}:execution-deliverable`} label="deliverable_id" value={deliverable.id} />,
+          <Reference key={`${deliverable.id}:execution-file`} label="file_id" value={deliverable.file_id} />,
+          <Reference key={`${deliverable.id}:execution-hash`} label="sha256" value={deliverable.sha256} />,
+          <Reference key={`${deliverable.id}:execution-source`} label="deliverable_source_ref" value={deliverable.source_ref} />,
+        ]),
       ])}
     </ul>
   </section>;

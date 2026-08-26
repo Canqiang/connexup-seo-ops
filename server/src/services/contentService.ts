@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { Db } from "../db/connection.js";
 import { badRequest, conflict, notFound } from "../errors.js";
-import { getTask } from "../repos/taskRepo.js";
+import { getTask, getTaskForUpdate } from "../repos/taskRepo.js";
 import type { EvidenceRefRecord, Task, TaskDefinitionRecord } from "../repos/taskTypes.js";
 import { executionSpecHash, requestFingerprint } from "../domain/hashing.js";
 import { buildEvent, mutateTask, reevaluate } from "./taskService.js";
@@ -85,7 +85,7 @@ export async function addDraft(
   validateDraftInput(input);
 
   return db.withTransaction(async (tx) => {
-    const task = await getTask(tx, taskId);
+    const task = await getTaskForUpdate(tx, taskId);
     if (!task) throw notFound(`task ${taskId} not found`);
 
     const last = await latestDraft(tx, taskId);

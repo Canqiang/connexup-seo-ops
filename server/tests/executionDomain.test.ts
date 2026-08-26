@@ -4,6 +4,13 @@ import { createAuthenticatedTestApp, type AuthenticatedTestApp } from "./helpers
 import { settleAttemptUnknown } from "../src/services/executionService.js";
 import { listAttemptsByTask } from "../src/repos/executionRepo.js";
 import { getProposal } from "../src/repos/proposalRepo.js";
+import { insertAgentRun, upsertDeliverable } from "../src/repos/agentRunRepo.js";
+import type { AgentRun, RunDeliverable } from "../src/repos/agentRunTypes.js";
+import { getTaskForUpdate } from "../src/repos/taskRepo.js";
+import { addDraft } from "../src/services/contentService.js";
+import { ExecutionWorker } from "../src/services/executionWorker.js";
+import type { CoreAiClient } from "../src/services/coreAiClient.js";
+import { sha256HashBytes } from "../src/domain/hashing.js";
 
 /** 执行域端到端：双门 → mock 派发 → 结算 → 核验；建议层判定；Ⓐ级周期调度；
  * OUTCOME_UNKNOWN 冻结与查证。mock 执行模式（无外部副作用）。 */
@@ -322,6 +329,133 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(drafts.json().items).toHaveLength(2);
     const readback = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${stale.id}` });
     expect(readback.json().evidence_refs.filter((item: { task_revision: number }) => item.task_revision === stale.task_revision + 1)).toHaveLength(1);
+  });
+
+  it("legacy drafts and revision drafts share the task lock without a duplicate-version 500", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-cross-draft-lock");
+    const [legacy, revision] = await Promise.all([
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${task.id}/drafts`, payload: { body: "旧入口改稿", source: "HUMAN_EDIT" } }),
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${task.id}/draft-revisions`, payload: { body: "新入口改稿", source: "HUMAN_EDIT", expected_state_version: task.state_version, idempotency_key: "cross-endpoint-key" } }),
+    ]);
+    expect([legacy.statusCode, revision.statusCode]).not.toContain(500);
+    expect([legacy.statusCode, revision.statusCode]).toContain(201);
+    expect(revision.statusCode === 409 ? revision.json().error_code : revision.json().status).toBeTruthy();
+    const drafts = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/drafts` });
+    const versions = drafts.json().items.map((draft: { version: number }) => draft.version);
+    expect(new Set(versions).size).toBe(versions.length);
+  });
+
+  it("legacy draft allocation waits for the Task aggregate lock", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-legacy-lock-wait");
+    let releaseLock!: () => void;
+    let locked!: () => void;
+    const lockReady = new Promise<void>((resolve) => { locked = resolve; });
+    const lockReleased = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const lockTransaction = built.db.withTransaction(async (tx) => {
+      await getTaskForUpdate(tx, task.id);
+      locked();
+      await lockReleased;
+    });
+    await lockReady;
+
+    let created = false;
+    const pending = addDraft(built.db, task.id, { body: "锁期间的旧入口草稿", source: "HUMAN_EDIT" }, "op-1")
+      .then(() => { created = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(created).toBe(false);
+    } finally {
+      releaseLock();
+      await lockTransaction;
+      await pending;
+    }
+  });
+
+  it("audit references fail closed for a cross-merchant task-linked Agent Run", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-scope");
+    const now = "2026-08-26T08:00:00.000Z";
+    const foreignRun: AgentRun = {
+      id: "foreign-task-linked-run", merchantId: "foreign-merchant", locationId: null,
+      stage: "KEYWORDS", taskId: task.id, runType: "KEYWORD_RESEARCH", goal: null,
+      status: "COMPLETED", coreRunId: "foreign-core-run", traceRef: "https://foreign.example/trace",
+      coreStatus: "COMPLETED", inputMessage: "private", output: "private output", error: null,
+      errorCode: null, tokenUsage: {}, triggeredBy: "foreign", triggeredAt: now,
+      lastPolledAt: now, completedAt: now, creationIdempotencyKey: null,
+      requestFingerprint: null, createdBy: "foreign", createdAt: now, updatedAt: now,
+    };
+    await insertAgentRun(built.db, foreignRun);
+    await built.db.exec("UPDATE seo_tasks SET agent_run_links = $1 WHERE id = $2", [
+      JSON.stringify([{ agentRunId: foreignRun.id, relationship: "EXECUTION", linkedBy: "foreign", linkedAt: now }]), task.id,
+    ]);
+
+    const response = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/audit-references` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().agent_runs).toEqual([]);
+    expect(JSON.stringify(response.json())).not.toContain("foreign-core-run");
+  });
+
+  it("audit references page task runs and attach deliverables through the bounded batch projection", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-page");
+    const base: Omit<AgentRun, "id" | "coreRunId" | "createdAt" | "updatedAt"> = {
+      merchantId: merchant.id, locationId: location.id, stage: "KEYWORDS", taskId: task.id,
+      runType: "KEYWORD_RESEARCH", goal: null, status: "COMPLETED", traceRef: null,
+      coreStatus: "COMPLETED", inputMessage: "bounded", output: null, error: null, errorCode: null,
+      tokenUsage: {}, triggeredBy: "op-1", triggeredAt: "2026-08-26T08:00:00.000Z",
+      lastPolledAt: null, completedAt: "2026-08-26T08:01:00.000Z", creationIdempotencyKey: null,
+      requestFingerprint: null, createdBy: "op-1",
+    };
+    const older: AgentRun = { ...base, id: "audit-run-older", coreRunId: "audit-core-older", createdAt: "2026-08-26T08:00:00.000Z", updatedAt: "2026-08-26T08:00:00.000Z" };
+    const newer: AgentRun = { ...base, id: "audit-run-newer", coreRunId: "audit-core-newer", createdAt: "2026-08-26T09:00:00.000Z", updatedAt: "2026-08-26T09:00:00.000Z" };
+    await insertAgentRun(built.db, older);
+    await insertAgentRun(built.db, newer);
+    const deliverable: RunDeliverable = {
+      id: "audit-deliverable-newer", runId: newer.id, kind: "ATTACHMENT", fileId: "audit-file-newer",
+      fileName: "newer.json", contentType: "application/json", size: 4, title: null, description: null,
+      sha256: "sha256:audit-newer", localPath: null, remoteUrl: "https://example.test/audit/newer",
+      downloadedAt: null, downloadError: null, createdAt: newer.createdAt,
+    };
+    await upsertDeliverable(built.db, deliverable);
+
+    const page = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/audit-references?limit=1&offset=0` });
+    expect(page.statusCode).toBe(200);
+    expect(page.json()).toMatchObject({ offset: 0, limit: 1, total: expect.any(Number) });
+    expect(page.json().agent_runs).toEqual([expect.objectContaining({
+      id: newer.id, deliverables: [expect.objectContaining({ id: deliverable.id, file_id: deliverable.fileId })],
+    })]);
+  });
+
+  it("terminal execution persists its Core trace and deliverable refs for the bounded task audit", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-audit");
+    const confirmed = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
+      payload: { expected_state_version: task.state_version, idempotency_key: "execution-audit-confirm" },
+    });
+    expect(confirmed.statusCode).toBe(201);
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const core: CoreAiClient = {
+      async trigger() { return { run_id: "core-execution-audit", status: "RUNNING" }; },
+      async getRun() {
+        return {
+          id: "core-execution-audit", agent_id: "agent-gbp-exec", status: "COMPLETED",
+          trace_id: "trace-execution-audit-full", artifacts: [{
+            file_id: "file-execution-audit-full", file_name: "receipt.json",
+            content_type: "application/json", download_url: "https://example.test/files/receipt.json",
+          }],
+        };
+      },
+      async cancel() { /* no-op */ },
+      async downloadArtifact() { return bytes; },
+    };
+    const worker = new ExecutionWorker({ db: built.db, client: core, mockMode: false });
+    await worker.pollOnce();
+    await worker.pollOnce();
+
+    const audit = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/audit-references?limit=5` });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json().execution_attempts).toEqual([expect.objectContaining({
+      id: expect.any(String), core_run_id: "core-execution-audit", trace_ref: "trace-execution-audit-full",
+      deliverables: [expect.objectContaining({ file_id: "file-execution-audit-full", sha256: sha256HashBytes(bytes), source_ref: "https://example.test/files/receipt.json" })],
+    })]);
   });
 
   it("approved content edit atomically creates a new revision and requires fresh approval", async () => {

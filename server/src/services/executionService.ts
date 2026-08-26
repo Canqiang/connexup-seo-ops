@@ -216,6 +216,7 @@ async function createAttemptInTx(
     gate,
     agentRunId: null,
     coreRunId: null,
+    traceRef: null,
     probeRef: probeRef(task, task.attemptCount + 1),
     error: null,
     startedAt: now,
