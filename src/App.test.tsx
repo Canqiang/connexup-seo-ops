@@ -1,10 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthContext";
-import type { LifecycleView, RankingOverviewView } from "./api/types";
+import type { CycleLedgerView, LifecycleView, PostProgramView, RankingOverviewView } from "./api/types";
 import { portfolioFixture, stageRunRunningFixture, taskFixture, userFixture } from "./test/fixtures";
 
 const navigateTo = vi.hoisted(() => vi.fn());
@@ -95,6 +95,8 @@ const rankingFixture: RankingOverviewView = {
 let lifecycleData: LifecycleView = lifecycleFixture;
 let rankingData: RankingOverviewView = emptyRankingFixture;
 let reportsData: unknown = { items: [], offset: 0, limit: 50, total: 0 };
+let cycleLedgerData: CycleLedgerView = { items: [] };
+let postProgramData: PostProgramView = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: [] };
 let portfolioData = portfolioFixture;
 let authenticatedUser = userFixture;
 const calls: Array<{ path: string; init?: RequestInit }> = [];
@@ -103,6 +105,8 @@ beforeEach(() => {
   lifecycleData = lifecycleFixture;
   rankingData = emptyRankingFixture;
   reportsData = { items: [], offset: 0, limit: 50, total: 0 };
+  cycleLedgerData = { items: [] };
+  postProgramData = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: [] };
   portfolioData = portfolioFixture;
   authenticatedUser = userFixture;
   calls.length = 0;
@@ -118,6 +122,9 @@ beforeEach(() => {
     if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
     if (path === "/api/seo-ops/merchants/only-bear/lifecycle") return json(lifecycleData);
     if (path === "/api/seo-ops/merchants/only-bear/ranking") return json(rankingData);
+    if (path === "/api/seo-ops/merchants/only-bear/cycle-ledger") return json(cycleLedgerData);
+    if (path === "/api/seo-ops/merchants/only-bear/post-program") return json(postProgramData);
+    if (path === "/api/seo-ops/merchants/only-bear/artifacts") return json({ items: [] });
     if (path === "/api/seo-ops/merchants/only-bear/stage-runs" && init?.method === "POST") return json(stageRunRunningFixture, 202);
     if (path.startsWith("/api/seo-ops/merchants/only-bear/stage-runs")) return json({ items: [], offset: 0, limit: 1, total: 0 });
     if (path.startsWith("/api/seo-ops/agent-runs/")) return json(stageRunRunningFixture);
@@ -201,16 +208,16 @@ test("merchants page keeps the exception list", async () => {
   expect(screen.queryByRole("button", { name: "Only Bear Chicken & Boba" })).not.toBeInTheDocument();
 });
 
-test("merchant lifecycle page walks the stage rail and surfaces the waiting questionnaire", async () => {
+test("merchant lifecycle keeps its rail explanatory and leads with the persisted questionnaire action", async () => {
   renderApp("/merchants/only-bear");
   expect(await screen.findByRole("heading", { name: "Only Bear Chicken & Boba" })).toBeInTheDocument();
-  expect(screen.getByRole("region", { name: "生命周期阶段" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "等待商家回复" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /重发问卷/ })).toBeInTheDocument();
-  expect(screen.getByText(/q\/ab12cd34/)).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "生命周期阶段（说明）" })).toBeInTheDocument();
+  const action = screen.getByRole("region", { name: "当前动作" });
+  expect(within(action).getByRole("heading", { name: "等待商家回复" })).toBeInTheDocument();
+  expect(within(action).getByRole("button", { name: "重发问卷" })).toBeInTheDocument();
 });
 
-test("merchant workspace presents onboarding health in operator-facing Chinese", async () => {
+test("merchant workspace keeps onboarding in one current-action card and an empty persisted ledger", async () => {
   portfolioData = {
     ...portfolioFixture,
     merchants: [{ ...portfolioFixture.merchants[0], health: "STABLE", stage: "QUESTIONNAIRE" }],
@@ -218,71 +225,49 @@ test("merchant workspace presents onboarding health in operator-facing Chinese",
 
   renderApp("/merchants/only-bear");
 
-  expect(await screen.findByText("接入中")).toBeInTheDocument();
-  expect(screen.queryByText("ONBOARDING")).not.toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "当前动作" })).toHaveTextContent("等待商家回复");
+  expect(screen.getByRole("region", { name: "本周期账本" })).toHaveTextContent("活跃周期暂无持久化任务或建议");
 });
 
-test("merchant workspace previews four upcoming demo tasks when its real queue is empty", async () => {
-  // 演示卡片只在「全库还没有任何真实任务」的初装世界出现（与 /inbox 门槛一致）
+test("merchant workspace does not replace an empty backend cycle with demo tasks", async () => {
   portfolioData = { ...portfolioFixture, totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 } };
-  const user = userEvent.setup();
   renderApp("/merchants/only-bear");
 
-  expect(await screen.findByText("FRONTEND DEMO · 最近 4 项")).toBeInTheDocument();
-  expect(screen.getAllByRole("button", { name: /打开任务摘要/ })).toHaveLength(4);
-  expect(screen.getByText("fried chicken lunch Mineola")).toBeInTheDocument();
-
-  await user.click(screen.getByRole("button", { name: /打开任务摘要 .*发布 GBP Post｜午餐选择/ }));
-
-  expect(screen.getByRole("dialog", { name: "演示任务详情" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "本次发布 Brief" })).toBeInTheDocument();
+  expect(await screen.findByText("活跃周期暂无持久化任务或建议。")).toBeInTheDocument();
+  expect(screen.queryByText("FRONTEND DEMO · 最近 4 项")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /打开任务摘要/ })).not.toBeInTheDocument();
 });
 
-test("KEYWORDS stage card triggers a stage run in place, no task created", async () => {
+test("operator keeps specialist runs absent while audit mode exposes diagnostics", async () => {
   lifecycleData = keywordsLifecycleFixture;
-  const user = userEvent.setup();
-  renderApp("/merchants/only-bear");
-  await user.click(await screen.findByRole("button", { name: /一键生成关键词/ }));
+  const operator = renderApp("/merchants/only-bear?view=operator");
+  expect(await screen.findByRole("region", { name: "当前动作" })).toHaveTextContent("补齐关键词证据");
+  expect(screen.queryByRole("button", { name: "运行关键词 Agent" })).not.toBeInTheDocument();
+  operator.unmount();
 
-  const trigger = calls.find(
-    (call) => call.path === "/api/seo-ops/merchants/only-bear/stage-runs" && call.init?.method === "POST",
-  );
-  expect(trigger).toBeDefined();
-  expect(JSON.parse(String(trigger?.init?.body))).toEqual({
-    stage: "KEYWORDS",
-    location_id: "mineola",
-    idempotency_key: "stage-KEYWORDS-22222222-2222-2222-2222-222222222222",
-  });
-  // 就地闭环：留在生命周期页，卡片自身变活（RUNNING + 可取消），不建任务、不跳转
-  expect(await screen.findByRole("button", { name: "取消运行" })).toBeInTheDocument();
-  expect(screen.getByText("RUNNING")).toBeInTheDocument();
-  expect(calls.some((call) => call.path === "/api/seo-ops/tasks" && call.init?.method === "POST")).toBe(false);
-  expect(screen.queryByRole("heading", { name: /Only Bear Chicken/ })).toBeInTheDocument();
+  renderApp("/merchants/only-bear?view=audit");
+  expect(await screen.findByRole("region", { name: "管理审计工具" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "运行关键词 Agent" })).toBeInTheDocument();
 });
 
-test("first-round merchant shows the onboarding round badge and no ranking comparison", async () => {
+test("first-round merchant shows current action and no fabricated ranking comparison", async () => {
   renderApp("/merchants/only-bear");
   expect(await screen.findByRole("heading", { name: "Only Bear Chicken & Boba" })).toBeInTheDocument();
-  expect(screen.getByText("⟳ 首轮接入")).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "当前动作" })).toHaveTextContent("等待商家回复");
+  expect(screen.getByRole("region", { name: "报告与数据" })).toHaveTextContent("暂无持久化报告或数据产物");
   expect(screen.queryByText(/LOCAL 包内均值/)).not.toBeInTheDocument();
 });
 
-test("steady-state merchant shows round badge, ranking comparison numbers, and the snapshot table", async () => {
+test("steady-state merchant uses the dated ledger and persisted panels instead of legacy ranking cards", async () => {
   lifecycleData = steadyLifecycleFixture;
-  rankingData = rankingFixture;
+  cycleLedgerData = { items: [{ record_kind: "TASK", task_id: "task-1", proposal_id: null, title: "菜单页发布证据复核", task_type: "WEBSITE_SEO", priority: "URGENT", owner_id: "user-1", due_at: "2026-08-25T08:00:00Z", created_at: "2026-08-24T08:00:00Z", status: "READY_FOR_APPROVAL", execution_mode: "MANUAL", dependency_labels: ["Audit 已完成"], validation_failures: [] }] };
+  postProgramData = { voice_profile: { version: 3, voice: {}, created_at: "2026-08-20T08:00:00Z" }, cluster_signals: [], history: [], proposals: [], evidence_gaps: [] };
   renderApp("/merchants/only-bear");
-  expect(await screen.findByText("⟳ 第 2 轮 · 8 月")).toBeInTheDocument();
-  // 与上期对比（只放数字）：均值 12 → 7、首页词占比、新挖机会词
-  expect(await screen.findByText(/LOCAL 包内均值/)).toBeInTheDocument();
-  expect(screen.getByText("12 → 7")).toBeInTheDocument();
-  expect(screen.getByText(/上升 5 位/)).toBeInTheDocument();
-  expect(screen.getByText("1 / 2")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: /排名快照/ })).toBeInTheDocument();
-  // 快照表：词 / local / organic / 较上期；新词打标
+  expect(await screen.findByRole("heading", { name: "推进已授权任务" })).toBeInTheDocument();
   const table = screen.getByRole("table");
-  expect(table).toHaveTextContent("ramen near me");
-  expect(table).toHaveTextContent("ramen delivery");
-  expect(screen.getByText("新词")).toBeInTheDocument();
+  expect(table).toHaveTextContent("菜单页发布证据复核");
+  expect(table).toHaveTextContent("Audit 已完成");
+  expect(screen.getByRole("region", { name: "Post 计划" })).toHaveTextContent("语气版本 v3");
 });
 
 test("reports page opens the real Core AI attachment for a partner merchant", async () => {
