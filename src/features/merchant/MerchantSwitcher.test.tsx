@@ -3,25 +3,21 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { MerchantSwitcher } from "./MerchantSwitcher";
 import type { MerchantSummary } from "../../api/types";
+import { portfolioWithMerchants } from "../../test/fixtures";
 
 afterEach(() => localStorage.clear());
 
-test("keeps sixty merchants behind one searchable switcher", async () => {
-  const merchants = Array.from({ length: 60 }, (_, index): MerchantSummary => ({
-    id: `merchant-${index}`, slug: `merchant-${index}`,
-    display_name: index === 42 ? "Only Bear Mineola" : `Merchant ${index}`,
-    operator_user_ids: ["user-1"], operators: [], owner_ids: [], locations: [], location_count: 0,
-    task_count: 0, ready_for_approval_count: 0, blocked_count: 0, overdue_count: 0, health: "STABLE"
-  }));
+test("keeps one hundred merchants behind one searchable switcher", async () => {
+  const merchants = portfolioWithMerchants(100).merchants;
   const onSelect = vi.fn();
   const user = userEvent.setup();
   render(<MerchantSwitcher merchants={merchants} onPortfolio={vi.fn()} onSelect={onSelect} />);
 
   expect(screen.getAllByRole("combobox")).toHaveLength(1);
   await user.click(screen.getByRole("combobox"));
-  await user.type(screen.getByRole("searchbox"), "Mineola");
+  await user.type(screen.getByRole("searchbox"), "Merchant 087");
 
-  expect(screen.getByRole("option", { name: /Only Bear Mineola/ })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: /Merchant 087/ })).toBeInTheDocument();
   expect(screen.getByText("1 个结果")).toBeInTheDocument();
 });
 

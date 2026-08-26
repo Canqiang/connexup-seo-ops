@@ -1,4 +1,12 @@
-import type { AuthenticatedUser, PortfolioResponse, SeoTask, StageRunView } from "../api/types";
+import type {
+  AuthenticatedUser,
+  HumanActionWire,
+  MerchantSummary,
+  PortfolioResponse,
+  SeoTask,
+  StageRunView,
+  WorkbenchView,
+} from "../api/types";
 
 export const userFixture: AuthenticatedUser = {
   user_id: "user-1", name: "Xander", role: "operator",
@@ -14,6 +22,62 @@ export const portfolioFixture: PortfolioResponse = {
     location_count: 1, task_count: 7, ready_for_approval_count: 2, blocked_count: 1, overdue_count: 1, health: "BLOCKED"
   }]
 };
+
+/** Test-only scale fixture. Production merchant identity always comes from the API. */
+export function portfolioWithMerchants(count: number): PortfolioResponse {
+  const merchants = Array.from({ length: count }, (_, index): MerchantSummary => {
+    const ordinal = String(index + 1).padStart(3, "0");
+    return {
+      id: `merchant-${ordinal}`,
+      slug: `merchant-${ordinal}`,
+      display_name: `Merchant ${ordinal}`,
+      operator_user_ids: ["user-1"],
+      operators: [{ id: "user-1", name: "Xander" }],
+      owner_ids: ["user-1"],
+      locations: [{ id: `location-${ordinal}`, display_name: `Location ${ordinal}`, readiness_status: "READY" }],
+      location_count: 1,
+      task_count: 0,
+      ready_for_approval_count: 0,
+      blocked_count: 0,
+      overdue_count: 0,
+      health: "STABLE",
+    };
+  });
+  return { merchants, totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 } };
+}
+
+/** Test-only server page builder. Expected page bounds are literal in scale tests. */
+export function workbenchWithActions(
+  total: number,
+  { offset = 0, pageSize = 50 }: { offset?: number; pageSize?: number } = {},
+): WorkbenchView {
+  const allItems = Array.from({ length: total }, (_, index): HumanActionWire => {
+    const ordinal = String(index + 1).padStart(3, "0");
+    const merchantOrdinal = String((index % 100) + 1).padStart(3, "0");
+    return {
+      id: `action-${ordinal}`,
+      group: "EXCEPTION",
+      type: "OUTCOME_RECONCILIATION",
+      merchant_id: `merchant-${merchantOrdinal}`,
+      merchant_name: `Merchant ${merchantOrdinal}`,
+      location_name: `Location ${merchantOrdinal}`,
+      title: `核对执行结果 ${ordinal}`,
+      reason: `行动 ${ordinal} 的结果需要人工查证。`,
+      primary_action: { label: "去查证", href: `/tasks/task-${ordinal}` },
+      secondary_href: `/merchants/merchant-${merchantOrdinal}`,
+      priority: "HIGH",
+      due_at: null,
+      waiting_since: "2026-08-26T01:00:00.000Z",
+    };
+  });
+  return {
+    summary: { gatekeeping: 0, exception: total, merchant_contact: 0, total },
+    items: allItems.slice(offset, offset + pageSize),
+    offset,
+    limit: pageSize,
+    total,
+  };
+}
 
 export const taskFixture: SeoTask = {
   id: "task-1", merchant_id: "only-bear", merchant_name: "Only Bear Chicken & Boba", location_id: "mineola",

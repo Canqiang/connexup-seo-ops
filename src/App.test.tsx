@@ -107,6 +107,8 @@ let attemptData: AttemptWire[] = [];
 let auditReferenceData: TaskAuditReferencesWire = { agent_runs: [], artifacts: [] };
 let auditReferencePages = new Map<number, TaskAuditReferencesWire>();
 let delayedAuditLoadMore: Promise<Response> | undefined;
+let inboxFails = false;
+let inboxData: unknown = { items: [], offset: 0, limit: 50, total: 0 };
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
@@ -125,6 +127,8 @@ beforeEach(() => {
   auditReferenceData = { agent_runs: [], artifacts: [] };
   auditReferencePages = new Map();
   delayedAuditLoadMore = undefined;
+  inboxFails = false;
+  inboxData = { items: [], offset: 0, limit: 50, total: 0 };
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -174,7 +178,10 @@ beforeEach(() => {
     if (path.startsWith("/api/seo-ops/tasks/task-1/artifacts")) return json({ items: artifactData });
     if (path.startsWith("/api/seo-ops/tasks/task-2/drafts")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/tasks/task-2/artifacts")) return json({ items: [] });
-    if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
+    if (path.startsWith("/api/seo-ops/inbox")) {
+      if (inboxFails) return json({ message: "inbox unavailable" }, 503);
+      return json(inboxData);
+    }
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reports")) return json(reportsData);
     return new Response(null, { status: 404 });
@@ -366,38 +373,42 @@ test("reports page opens the real Core AI attachment for a partner merchant", as
   expect(screen.getByRole("link", { name: "打开 Core AI 附件 only-bear-audit.html" })).toHaveAttribute("href", coreUrl);
 });
 
-test("empty inbox shows front-end demo work and opens details without requesting a fake task", async () => {
+test("empty inbox renders only the API-backed empty state", async () => {
   portfolioData = { ...portfolioFixture, totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 } };
-  const user = userEvent.setup();
   renderApp("/inbox");
 
-  expect(await screen.findByText("7 个演示任务")).toBeInTheDocument();
-  expect(screen.getAllByText(/\d{2}月\d{2}日发布 GBP Post｜/)).toHaveLength(4);
-  expect(screen.getByText("复盘分析｜上周 SEO 动作与指标变化")).toBeInTheDocument();
-  expect(screen.getByText("重新 Audit｜GBP + 官网本地页")).toBeInTheDocument();
-  expect(screen.getByText("重新生成 Plan｜未来 30 天执行方案")).toBeInTheDocument();
-
-  await user.click(screen.getByText("重新生成 Plan｜未来 30 天执行方案"));
-
-  expect(screen.getByRole("dialog", { name: "演示任务详情" })).toBeInTheDocument();
-  expect(screen.getByText("前端演示数据，不会写入后端或触发 Core AI。" )).toBeInTheDocument();
-  expect(screen.getByText("等待重新 Audit 与新排名基线完成")).toBeInTheDocument();
-  expect(calls.some((call) => call.path.includes("/api/seo-ops/tasks/demo-"))).toBe(false);
+  expect(await screen.findByText("当前筛选没有任务")).toBeInTheDocument();
+  expect(screen.getByText("0 项")).toBeInTheDocument();
+  expect(screen.queryByText(/FRONTEND DEMO/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: /演示任务/ })).not.toBeInTheDocument();
 });
 
-test("each GBP publishing date is an independent task with its own keyword brief", async () => {
-  portfolioData = { ...portfolioFixture, totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 } };
-  const user = userEvent.setup();
+test("inbox API failure stays an error and never masquerades as an empty queue", async () => {
+  inboxFails = true;
   renderApp("/inbox");
 
-  await user.click(await screen.findByText(/发布 GBP Post｜午餐选择/));
+  expect(await screen.findByRole("alert")).toHaveTextContent("任务读取失败");
+  expect(screen.queryByText("当前筛选没有任务")).not.toBeInTheDocument();
+  expect(screen.queryByText(/FRONTEND DEMO/)).not.toBeInTheDocument();
+});
 
-  expect(screen.getByRole("heading", { name: "本次发布 Brief" })).toBeInTheDocument();
-  expect(screen.getByText("来源：每周四 GBP 内容日历")).toBeInTheDocument();
-  expect(screen.getByText("fried chicken lunch Mineola")).toBeInTheDocument();
-  expect(screen.getByText("fried chicken near me")).toBeInTheDocument();
-  expect(screen.getByText("待授权")).toBeInTheDocument();
-  expect(screen.getByText("一篇 Post 只使用一个主要搜索意图 / 关键词簇。" )).toBeInTheDocument();
+test("inbox task rows expose labels for narrow readable cards", async () => {
+  inboxData = {
+    items: [{
+      id: "task-mobile", merchant_id: "only-bear", merchant_name: "Only Bear Chicken & Boba",
+      location_id: "mineola", location_name: "Mineola", title: "核验 GBP 发布结果", task_type: "GBP_POST",
+      priority: "HIGH", impact: "HIGH", owner_id: "user-1", due_at: "2026-08-27T08:00:00Z",
+      status: "PENDING_VERIFY", evidence_state: "VERIFIED", task_revision: 3, state_version: 6,
+      updated_at: "2026-08-26T08:00:00Z",
+    }],
+    offset: 0, limit: 50, total: 1,
+  };
+  renderApp("/inbox");
+
+  const title = await screen.findByText("核验 GBP 发布结果");
+  const row = title.closest("tr");
+  expect(row?.querySelector("[data-label='状态']")).toHaveTextContent("待核验");
+  expect(row?.querySelector("[data-label='到期']")).toBeInTheDocument();
 });
 
 test("task page presents one decision before technical state", async () => {

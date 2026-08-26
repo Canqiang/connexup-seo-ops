@@ -32,17 +32,30 @@
 .workbench-empty { display: grid; gap: 5px; justify-items: start; padding: 28px; border: 1px solid var(--rule); border-radius: 2px; background: var(--surface); }
 .workbench-empty h2 { margin: 0; color: var(--ink); font-size: 16px; }
 .workbench-empty p { max-width: 540px; margin: 0; color: var(--ink-muted); font-size: 10px; line-height: 1.65; }
+.workbench-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink-muted); font: 9px/1.4 var(--font-data); }
+.workbench-pagination > div { display: flex; gap: 7px; }
+.workbench-pagination button { min-height: 32px; padding: 0 11px; border: 1px solid #aebfca; border-radius: 2px; background: #f4f8fa; color: #385366; font-size: 10px; cursor: pointer; }
+.workbench-pagination button:disabled { cursor: not-allowed; opacity: .45; }
 
-@media (max-width: 840px) {
+@media (max-width: 900px) {
   .decision-summary { grid-template-columns: 1fr 1fr; }
   .decision-summary button:nth-child(2) { border-right: 0; }
   .decision-summary button:nth-child(-n + 2) { border-bottom: 1px solid var(--rule); }
   .action-group > header { align-items: start; flex-direction: column; gap: 5px; }
   .action-group header p { text-align: left; }
-  .action-row { grid-template-columns: 4px minmax(0, 1fr) auto; gap: 9px; }
-  .merchant-context, .action-row time { display: none; }
-  .action-secondary { grid-column: 2; justify-self: start; }
-  .action-primary { grid-column: 3; grid-row: 1 / span 2; }
+  .action-row { grid-template-columns: 4px minmax(0, 1fr) auto; grid-template-rows: auto auto auto auto; gap: 7px 9px; min-height: 0; padding-block: 9px; }
+  .decision-rail { grid-column: 1; grid-row: 1 / -1; }
+  .action-copy { grid-column: 2; grid-row: 1; }
+  .merchant-context, .action-row time { grid-column: 2; display: grid; grid-template-columns: 56px minmax(0, 1fr); align-items: baseline; gap: 7px; }
+  .merchant-context { grid-row: 2; }
+  .action-row time { grid-row: 3; }
+  .merchant-context::before, .action-row time::before { content: attr(data-label); color: var(--quiet); font: 8px/1.4 var(--font-data); letter-spacing: .05em; text-transform: uppercase; }
+  .merchant-context small { grid-column: 2; }
+  .action-secondary { grid-column: 2; grid-row: 4; justify-self: start; }
+  .action-primary { grid-column: 3; grid-row: 1 / -1; align-self: center; }
+  .workbench-pagination { align-items: stretch; flex-direction: column; }
+  .workbench-pagination > div { width: 100%; }
+  .workbench-pagination button { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

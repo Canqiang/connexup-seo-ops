@@ -13,8 +13,8 @@ export function ActionQueue({ items }: { items: HumanActionWire[] }) {
           {groupItems.map((item) => <article aria-label={`${item.merchant_name} ${item.reason}`} className={`action-row group-${item.group.toLowerCase()}`} key={item.id}>
             <span aria-hidden className="decision-rail" />
             <div className="action-copy"><strong>{item.title}</strong><p>{item.reason}</p></div>
-            <span className="merchant-context"><strong>{item.merchant_name}</strong>{item.location_name ? <small>{item.location_name}</small> : null}</span>
-            <time dateTime={item.waiting_since}>{formatWaiting(item.waiting_since)}</time>
+            <span className="merchant-context" data-label="商户"><strong>{item.merchant_name}</strong>{item.location_name ? <small>{item.location_name}</small> : null}</span>
+            <time data-label="等待" dateTime={item.waiting_since}>{formatWaiting(item.waiting_since)}</time>
             {item.secondary_href ? <Link aria-label={`查看 ${item.merchant_name}`} className="action-secondary" to={item.secondary_href}>查看</Link> : null}
             <button className="action-primary" onClick={() => navigate(item.primary_action.href)} type="button">{item.primary_action.label}</button>
           </article>)}

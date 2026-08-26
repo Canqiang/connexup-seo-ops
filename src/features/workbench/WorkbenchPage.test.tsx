@@ -88,6 +88,14 @@ test("workbench decision rows keep their minimum vertical geometry within 44px",
   expect(Math.max(rowMinimum, controlMinimum + verticalPadding)).toBeLessThanOrEqual(44);
 });
 
+test("decision rows expose merchant and waiting labels when dense rows reflow", async () => {
+  renderApp("/");
+
+  const row = await screen.findByRole("article", { name: /Choice Brooklyn UWS.*结果不确定/ });
+  expect(within(row).getByText("Choice Brooklyn UWS").closest("[data-label='商户']")).toBeInTheDocument();
+  expect(row.querySelector("time[data-label='等待']")).toBeInTheDocument();
+});
+
 function renderApp(route: string) {
   return render(<MemoryRouter initialEntries={[route]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
 }
