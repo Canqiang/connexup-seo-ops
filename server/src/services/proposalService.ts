@@ -20,6 +20,7 @@ import {
   closeBatchIfDecided,
   findBatchByIdempotencyKey,
   getBatch,
+  getBatchForUpdate,
   getProposal,
   getProposalBySeq,
   getProposalForUpdate,
@@ -287,9 +288,19 @@ async function adoptProposal(
   const marked = await db.withTransaction(async (tx) => {
     const proposal = await getProposalForUpdate(tx, proposalId);
     if (!proposal) throw notFound(`proposal ${proposalId} not found`);
+    // Batch cycle is a persisted execution boundary. Validate it before the
+    // proposal state transition so a legacy unassigned batch stays retryable.
+    const batch = await getBatchForUpdate(tx, proposal.batchId);
+    if (!batch?.cycleId) {
+      throw conflict(
+        "proposal batch has no persisted cycle; create a new proposal batch instead",
+        "CYCLE_MISSING",
+      );
+    }
+    const cycleId = batch.cycleId;
     if (proposal.status === "ADOPTED") {
       // 幂等重放 / 崩溃补齐：直接进第二段。
-      return proposal;
+      return { proposal, batch, cycleId };
     }
     if (proposal.status !== "PENDING") {
       throw conflict(
@@ -342,17 +353,17 @@ async function adoptProposal(
     };
     // 行锁在手，CAS 必中；写成条件更新是为守住「不覆盖并发判定」的通用约定。
     await updateProposalDecisionIf(tx, next, ["PENDING"]);
-    return next;
+    return { proposal: next, batch, cycleId };
   });
 
   // ---- 第二段：建任务（幂等）→ Ⓐ级只读采纳即授权 → 回填 task_id ----
-  if (marked.taskId) {
-    return { proposal: marked, taskId: marked.taskId };
+  if (marked.proposal.taskId) {
+    return { proposal: marked.proposal, taskId: marked.proposal.taskId };
   }
 
   const dependencyTaskIds: string[] = [];
-  for (const depSeq of marked.dependsOn) {
-    const dependency = await getProposalBySeq(db, marked.batchId, depSeq);
+  for (const depSeq of marked.proposal.dependsOn) {
+    const dependency = await getProposalBySeq(db, marked.proposal.batchId, depSeq);
     if (!dependency || dependency.status !== "ADOPTED" || !dependency.taskId) {
       throw conflict(
         `dependency #${depSeq} has not finished creating its Task; retry after it is linked`,
@@ -362,35 +373,28 @@ async function adoptProposal(
     dependencyTaskIds.push(dependency.taskId);
   }
 
-  const batch = await getBatch(db, marked.batchId);
-  if (!batch?.cycleId) {
-    throw conflict(
-      "proposal batch has no persisted cycle; create a new proposal batch instead",
-      "CYCLE_MISSING",
-    );
-  }
   const definition: DefinitionInput = {
-    title: marked.title,
-    task_type: marked.taskType,
-    source: batch.origin === "PLAN_CONVERT" ? "PLAN" : "PROPOSAL",
-    priority: input.override_priority ?? marked.priority,
-    impact: marked.impact,
-    execution_spec: marked.executionSpec,
-    required_evidence_types: marked.requiredEvidenceTypes,
-    execution_mode: marked.executionMode,
-    ...(input.override_due_at ?? marked.dueAt
-      ? { due_at: input.override_due_at ?? (marked.dueAt as string) }
+    title: marked.proposal.title,
+    task_type: marked.proposal.taskType,
+    source: marked.batch.origin === "PLAN_CONVERT" ? "PLAN" : "PROPOSAL",
+    priority: input.override_priority ?? marked.proposal.priority,
+    impact: marked.proposal.impact,
+    execution_spec: marked.proposal.executionSpec,
+    required_evidence_types: marked.proposal.requiredEvidenceTypes,
+    execution_mode: marked.proposal.executionMode,
+    ...(input.override_due_at ?? marked.proposal.dueAt
+      ? { due_at: input.override_due_at ?? (marked.proposal.dueAt as string) }
       : {}),
   };
   const { task } = await createTask(
     db,
     {
-      merchant_id: marked.merchantId,
-      ...(marked.locationId ? { location_id: marked.locationId } : {}),
+      merchant_id: marked.proposal.merchantId,
+      ...(marked.proposal.locationId ? { location_id: marked.proposal.locationId } : {}),
       definition,
-      idempotency_key: `proposal:${marked.id}`,
-      proposal_id: marked.id,
-      cycle_id: batch.cycleId,
+      idempotency_key: `proposal:${marked.proposal.id}`,
+      proposal_id: marked.proposal.id,
+      cycle_id: marked.cycleId,
       depends_on_task_ids: dependencyTaskIds,
     },
     actorId,
@@ -408,9 +412,9 @@ async function adoptProposal(
   }
 
   const now = nowIso();
-  await setProposalTaskId(db, marked.id, task.id, now);
-  await closeBatchIfDecided(db, marked.batchId, now);
-  return { proposal: { ...marked, taskId: task.id }, taskId: task.id };
+  await setProposalTaskId(db, marked.proposal.id, task.id, now);
+  await closeBatchIfDecided(db, marked.proposal.batchId, now);
+  return { proposal: { ...marked.proposal, taskId: task.id }, taskId: task.id };
 }
 
 async function returnProposal(

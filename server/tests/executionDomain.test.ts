@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { createAuthenticatedTestApp, type AuthenticatedTestApp } from "./helpers/authTest.js";
 import { settleAttemptUnknown } from "../src/services/executionService.js";
 import { listAttemptsByTask } from "../src/repos/executionRepo.js";
+import { getProposal } from "../src/repos/proposalRepo.js";
 
 /** 执行域端到端：双门 → mock 派发 → 结算 → 核验；建议层判定；Ⓐ级周期调度；
  * OUTCOME_UNKNOWN 冻结与查证。mock 执行模式（无外部副作用）。 */
@@ -409,6 +410,51 @@ describe("建议层：批次校验 → 判定 → 采纳建任务", () => {
       await app.inject({ method: "GET", url: `/api/seo-ops/proposal-batches/${batch.id}` })
     ).json();
     expect(closed.status).toBe("CLOSED");
+  });
+
+  it("缺少 cycle 的遗留批次采纳失败时保持 PENDING，重试也不会留下孤儿 ADOPTED 建议", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/proposal-batches",
+      payload: {
+        merchant_id: merchant.id,
+        origin: "MANUAL",
+        idempotency_key: "legacy-cycle-missing",
+        items: [
+          {
+            title: "遗留建议",
+            task_type: "REPORT",
+            execution_mode: "READ_ONLY",
+            priority: "MEDIUM",
+            impact: "MEDIUM",
+            execution_spec: "{}",
+          },
+        ],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const batch = created.json();
+    const proposal = batch.proposals[0];
+    await built.db.exec("UPDATE seo_proposal_batches SET cycle_id = NULL WHERE id = $1", [batch.id]);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const adopted = await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/proposals/${proposal.id}/decision`,
+        payload: { action: "ADOPT" },
+      });
+      expect(adopted.statusCode).toBe(409);
+      expect(adopted.json().error_code).toBe("CYCLE_MISSING");
+
+      const persisted = await getProposal(built.db, proposal.id);
+      expect(persisted?.status).toBe("PENDING");
+      expect(persisted?.taskId).toBeNull();
+      const taskCount = await built.db.one<{ count: string }>(
+        "SELECT COUNT(*) AS count FROM seo_tasks WHERE proposal_id = $1",
+        [proposal.id],
+      );
+      expect(Number(taskCount?.count ?? 0)).toBe(0);
+    }
   });
 
   it("PLAN_CONVERT 采纳后保留 PLAN 来源并将只读任务视为已确认授权", async () => {

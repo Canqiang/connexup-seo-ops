@@ -253,6 +253,14 @@ export async function getBatch(db: Db, id: string): Promise<ProposalBatch | null
   return row ? toBatch(row) : null;
 }
 
+/** Adoption locks its batch before changing proposal state so a missing cycle
+ * cannot leave a legacy proposal permanently ADOPTED without a Task. */
+export async function getBatchForUpdate(tx: Db, id: string): Promise<ProposalBatch | null> {
+  const row = await tx.one<BatchRow>(
+    `SELECT * FROM seo_proposal_batches WHERE id = $1 FOR UPDATE`, [id]);
+  return row ? toBatch(row) : null;
+}
+
 export async function findBatchByIdempotencyKey(db: Db, key: string): Promise<ProposalBatch | null> {
   const row = await db.one<BatchRow>(
     `SELECT * FROM seo_proposal_batches WHERE creation_idempotency_key = $1`, [key]);
