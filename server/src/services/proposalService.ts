@@ -288,8 +288,13 @@ async function adoptProposal(
   const marked = await db.withTransaction(async (tx) => {
     const proposal = await getProposalForUpdate(tx, proposalId);
     if (!proposal) throw notFound(`proposal ${proposalId} not found`);
+    // A linked adoption is complete and idempotent. Its legacy batch may no
+    // longer have cycle metadata, which must not prevent returning the Task.
+    if (proposal.status === "ADOPTED" && proposal.taskId) {
+      return { kind: "LINKED" as const, proposal };
+    }
     // Batch cycle is a persisted execution boundary. Validate it before the
-    // proposal state transition so a legacy unassigned batch stays retryable.
+    // PENDING → ADOPTED state transition, and also for unlinked crash recovery.
     const batch = await getBatchForUpdate(tx, proposal.batchId);
     if (!batch?.cycleId) {
       throw conflict(
@@ -300,7 +305,7 @@ async function adoptProposal(
     const cycleId = batch.cycleId;
     if (proposal.status === "ADOPTED") {
       // 幂等重放 / 崩溃补齐：直接进第二段。
-      return { proposal, batch, cycleId };
+      return { kind: "CREATE" as const, proposal, batch, cycleId };
     }
     if (proposal.status !== "PENDING") {
       throw conflict(
@@ -353,11 +358,11 @@ async function adoptProposal(
     };
     // 行锁在手，CAS 必中；写成条件更新是为守住「不覆盖并发判定」的通用约定。
     await updateProposalDecisionIf(tx, next, ["PENDING"]);
-    return { proposal: next, batch, cycleId };
+    return { kind: "CREATE" as const, proposal: next, batch, cycleId };
   });
 
   // ---- 第二段：建任务（幂等）→ Ⓐ级只读采纳即授权 → 回填 task_id ----
-  if (marked.proposal.taskId) {
+  if (marked.kind === "LINKED") {
     return { proposal: marked.proposal, taskId: marked.proposal.taskId };
   }
 

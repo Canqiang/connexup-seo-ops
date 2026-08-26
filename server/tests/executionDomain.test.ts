@@ -457,6 +457,55 @@ describe("建议层：批次校验 → 判定 → 采纳建任务", () => {
     }
   });
 
+  it("已关联任务的 ADOPTED 遗留批次回放仍返回原任务，不因缺 cycle 重新采纳", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/proposal-batches",
+      payload: {
+        merchant_id: merchant.id,
+        origin: "MANUAL",
+        idempotency_key: "legacy-cycle-linked-replay",
+        items: [
+          {
+            title: "已采纳遗留建议",
+            task_type: "REPORT",
+            execution_mode: "READ_ONLY",
+            priority: "MEDIUM",
+            impact: "MEDIUM",
+            execution_spec: "{}",
+          },
+        ],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const batch = created.json();
+    const proposal = batch.proposals[0];
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/proposals/${proposal.id}/decision`,
+      payload: { action: "ADOPT" },
+    });
+    expect(first.statusCode).toBe(200);
+    const taskId = first.json().task_id;
+    await built.db.exec("UPDATE seo_proposal_batches SET cycle_id = NULL WHERE id = $1", [batch.id]);
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/proposals/${proposal.id}/decision`,
+      payload: { action: "ADOPT" },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().task_id).toBe(taskId);
+    const persisted = await getProposal(built.db, proposal.id);
+    expect(persisted?.status).toBe("ADOPTED");
+    expect(persisted?.taskId).toBe(taskId);
+    const taskCount = await built.db.one<{ count: string }>(
+      "SELECT COUNT(*) AS count FROM seo_tasks WHERE proposal_id = $1",
+      [proposal.id],
+    );
+    expect(Number(taskCount?.count ?? 0)).toBe(1);
+  });
+
   it("PLAN_CONVERT 采纳后保留 PLAN 来源并将只读任务视为已确认授权", async () => {
     const created = await app.inject({
       method: "POST",
