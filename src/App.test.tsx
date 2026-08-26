@@ -456,6 +456,7 @@ test("inbox recovers after the server total shrinks without flashing a false emp
     await lastPage;
   });
   expect(await screen.findByText("显示 51–51 / 51")).toBeInTheDocument();
+  expect(screen.getByText("51 项")).toBeInTheDocument();
 });
 
 test("inbox shows only the actionable error when the recovery page request fails", async () => {
@@ -469,6 +470,8 @@ test("inbox shows only the actionable error when the recovery page request fails
   expect(within(alert).getByRole("button", { name: "重试" })).toBeInTheDocument();
   expect(screen.queryByText("正在校正分页…")).not.toBeInTheDocument();
   expect(screen.queryByText("当前筛选没有任务")).not.toBeInTheDocument();
+  expect(screen.queryByText("51 项")).not.toBeInTheDocument();
+  expect(screen.getByText("— 项")).toBeInTheDocument();
 });
 
 test("task page presents one decision before technical state", async () => {

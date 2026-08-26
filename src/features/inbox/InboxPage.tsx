@@ -73,7 +73,7 @@ export function InboxPage() {
       <button aria-selected={tab === "proposals"} className={`tab-button${tab === "proposals" ? " is-active" : ""}`} onClick={() => switchTab("proposals")} role="tab" type="button">待判定 · 建议</button>
     </div>
     {tab === "proposals" ? <section className="data-panel"><ProposalsTab merchantId={filters.merchant_id} /></section> : <section className="data-panel">
-      <div className="panel-heading"><InboxFilters filters={filters} merchant={workspace.merchant} onChange={change} /><span className="result-count">{total || resource.loading ? (resource.loading ? "—" : total) : 0} 项</span></div>
+      <div className="panel-heading"><InboxFilters filters={filters} merchant={workspace.merchant} onChange={change} /><span className="result-count">{resource.loading || correctingPage || resource.error ? "—" : total} 项</span></div>
       {resource.loading && !correctingPage ? <div className="page-state" role="status">正在读取执行队列…</div> : null}
       {correctingPage ? <div className="page-state" role="status">正在校正分页…</div> : null}
       {resource.error ? <div className="page-state is-error" role="alert">任务读取失败。<button onClick={resource.reload}>重试</button></div> : null}
