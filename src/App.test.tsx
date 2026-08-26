@@ -173,6 +173,17 @@ test("audit view reveals the six-ledger navigation", async () => {
   expect(screen.getByRole("link", { name: "运行" })).toBeInTheDocument();
 });
 
+test("shareable audit view remains selected when merchant scope changes", async () => {
+  const user = userEvent.setup();
+  renderApp("/?view=audit");
+
+  await user.click(await screen.findByRole("combobox", { name: "选择商户工作范围" }));
+  await user.click(screen.getByRole("option", { name: /Only Bear Chicken & Boba/ }));
+
+  expect(await screen.findByRole("heading", { name: "Only Bear Chicken & Boba" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "运行" })).toBeInTheDocument();
+});
+
 test("homepage is the operations overview; merchants keep the searchable switcher at /merchants", async () => {
   const user = userEvent.setup();
   renderApp("/");

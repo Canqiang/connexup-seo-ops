@@ -53,7 +53,10 @@ export function AppShell() {
   const navigation = mode === "operator" ? operatorNavigation : auditNavigation;
 
   useEffect(() => {
-    setMode(resolveViewMode(location.search, window.localStorage.getItem("seo-ops:view-mode")));
+    const nextMode = resolveViewMode(location.search, window.localStorage.getItem("seo-ops:view-mode"));
+    const queryMode = new URLSearchParams(location.search).get("view");
+    if (queryMode === "operator" || queryMode === "audit") writeViewMode(queryMode, window.localStorage);
+    setMode(nextMode);
   }, [location.search]);
 
   useEffect(() => {
