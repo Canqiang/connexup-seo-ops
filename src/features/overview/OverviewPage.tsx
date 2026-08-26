@@ -38,7 +38,7 @@ export function OverviewPage() {
   ];
 
   return <>
-    <header className="page-heading"><div><span className="eyebrow">OPERATIONS LEDGER / 账本视角</span><h1>总览</h1><p>{merchants.length} 个商户在管 · Ⓐ级只读任务由周期自动运行，人只处理判定、双门与查证。</p></div>
+    <header className="page-heading"><div><span className="eyebrow">PORTFOLIO LEDGER / 管理审计</span><h1>总览</h1><p>{merchants.length} 个商户在管 · 这里保留组合账本与审计视角。</p></div>
       <div className="heading-actions">{summary.data ? null : <span className="quiet-copy">正在读取队列徽标…</span>}</div>
     </header>
 

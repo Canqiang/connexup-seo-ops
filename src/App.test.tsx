@@ -113,6 +113,7 @@ beforeEach(() => {
     if (path === "/api/auth/me") return json(authenticatedUser);
     if (path === "/api/auth/logout") return new Response(null, { status: 204 });
     if (path === "/api/seo-ops/portfolio") return json(portfolioData);
+    if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
     if (path === "/api/seo-ops/tasks/task-1") return json(taskFixture);
     if (path === "/api/seo-ops/merchants/only-bear/lifecycle") return json(lifecycleData);
@@ -132,7 +133,7 @@ beforeEach(() => {
   }));
 });
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); navigateTo.mockReset(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.localStorage.clear(); navigateTo.mockReset(); });
 
 test("logout posts the cookie-session endpoint before returning to internal login", async () => {
   const user = userEvent.setup();
@@ -148,9 +149,9 @@ test("logout posts the cookie-session endpoint before returning to internal logi
 });
 
 test("application shell does not expose a separate Copilot entry", async () => {
-  renderApp("/");
+  renderApp("/?view=operator");
 
-  expect(await screen.findByRole("heading", { name: "总览" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "今天需要我处理" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "打开 SEO Ops Copilot" })).not.toBeInTheDocument();
   expect(screen.queryByText("Copilot 未配置")).not.toBeInTheDocument();
 });
@@ -184,13 +185,11 @@ test("shareable audit view remains selected when merchant scope changes", async 
   expect(screen.getByRole("link", { name: "运行" })).toBeInTheDocument();
 });
 
-test("homepage is the operations overview; merchants keep the searchable switcher at /merchants", async () => {
+test("homepage is the operator workbench; merchants keep the searchable switcher at /merchants", async () => {
   const user = userEvent.setup();
   renderApp("/");
-  // 新 IA：/ = 总览（账本视角四队列），商户清单在 /merchants
-  expect(await screen.findByRole("heading", { name: "总览" })).toBeInTheDocument();
-  expect(screen.getByText("待判定建议")).toBeInTheDocument();
-  expect(screen.getByText("待审批（门 1）")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "今天需要我处理" })).toBeInTheDocument();
+  expect(await screen.findByText("今天没有需要人工处理的事项")).toBeInTheDocument();
   await user.click(screen.getByRole("combobox", { name: "选择商户工作范围" }));
   expect(screen.getByRole("option", { name: /Only Bear Chicken & Boba/ })).toBeInTheDocument();
 });

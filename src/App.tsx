@@ -1,7 +1,8 @@
 import { useEffect } from "react";
-import { Route, Routes, useLocation } from "react-router-dom";
+import { Route, Routes, useLocation, useOutletContext } from "react-router-dom";
 import { AppShell } from "./app/AppShell";
 import { RouteErrorPage } from "./app/RouteErrorPage";
+import type { ViewMode } from "./app/viewMode";
 import { InboxPage } from "./features/inbox/InboxPage";
 import { MerchantWorkspacePage } from "./features/merchant/MerchantWorkspacePage";
 import { MerchantsPage } from "./features/merchants/MerchantsPage";
@@ -11,6 +12,7 @@ import { ReviewsPage } from "./features/reviews/ReviewsPage";
 import { RunsPage } from "./features/runs/RunsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { TaskPage } from "./features/tasks/TaskPage";
+import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
 import { WorkspaceProvider } from "./workspace/WorkspaceContext";
 
 /** 路由切换回到页顶：详情页往返不带走上一页的滚动位置。 */
@@ -20,9 +22,14 @@ function ScrollToTop() {
   return null;
 }
 
+function HomePage() {
+  const { mode } = useOutletContext<{ mode: ViewMode }>();
+  return mode === "audit" ? <OverviewPage /> : <WorkbenchPage />;
+}
+
 export default function App() {
   return <WorkspaceProvider><ScrollToTop /><Routes><Route element={<AppShell />}>
-    <Route index element={<OverviewPage />} />
+    <Route index element={<HomePage />} />
     <Route path="merchants" element={<MerchantsPage />} />
     <Route path="inbox" element={<InboxPage />} />
     <Route path="merchants/:merchantId" element={<MerchantWorkspacePage />} />
