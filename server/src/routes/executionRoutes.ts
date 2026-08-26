@@ -367,6 +367,12 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       agent_runs: runs.items.map((run) => ({
         id: run.id, ...(run.coreRunId ? { core_run_id: run.coreRunId } : {}),
         ...(run.traceRef ? { trace_ref: run.traceRef } : {}),
+        ...(run.requestFingerprint ? { request_fingerprint: run.requestFingerprint } : {}),
+        ...(run.httpRequestFingerprint ? { http_request_fingerprint: run.httpRequestFingerprint } : {}),
+        ...(run.businessInputFingerprint ? { business_input_fingerprint: run.businessInputFingerprint } : {}),
+        ...(run.retryOfAgentRunId ? { retry_of_agent_run_id: run.retryOfAgentRunId } : {}),
+        ...(run.retryGeneration !== undefined ? { retry_generation: run.retryGeneration } : {}),
+        ...(run.retryReason ? { retry_reason: run.retryReason } : {}),
         deliverables: (deliverablesByRun.get(run.id) ?? []).map((deliverable) => ({
           id: deliverable.id, ...(deliverable.fileId ? { file_id: deliverable.fileId } : {}),
           ...(deliverable.sha256 ? { sha256: deliverable.sha256 } : {}),

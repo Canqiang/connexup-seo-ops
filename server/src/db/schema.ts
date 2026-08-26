@@ -120,8 +120,10 @@ export const SCHEMA_STATEMENTS: string[] = [
     completed_at TEXT,
     creation_idempotency_key TEXT,
     request_fingerprint TEXT,
+    http_request_fingerprint TEXT,
     business_input_fingerprint TEXT,
     retry_of_agent_run_id TEXT,
+    retry_generation INTEGER NOT NULL DEFAULT 0,
     retry_reason TEXT,
     created_by TEXT,
     created_at TEXT NOT NULL,
@@ -137,6 +139,18 @@ export const SCHEMA_STATEMENTS: string[] = [
      ON seo_agent_runs(task_id)
      WHERE stage = 'GBP_POST_CONTENT' AND task_id IS NOT NULL
        AND status IN ('TRIGGERING', 'RUNNING')`,
+
+  /** Every accepted HTTP idempotency key is durable, including keys which
+   * converge onto a business-equivalent Run created by another request. */
+  `CREATE TABLE IF NOT EXISTS seo_agent_run_requests (
+    idempotency_key TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    http_request_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_run_requests_run
+     ON seo_agent_run_requests(run_id, created_at)`,
 
   /** 交付物：一文件一行。SUMMARY = 运行正文落盘；ATTACHMENT = agent 返回的附件；
    * MANUAL = 运营手工上传兜底。按 id 服务下载（数组下标会因补下载而错位）。
@@ -201,6 +215,17 @@ export const SCHEMA_STATEMENTS: string[] = [
     acceptance_note TEXT,
     CONSTRAINT seo_specialist_artifacts_acceptance_status_check
       CHECK (acceptance_status IN ('PENDING', 'ACCEPTED', 'REJECTED')),
+    CONSTRAINT seo_specialist_artifacts_acceptance_decision_check
+      CHECK (
+        (acceptance_status = 'PENDING'
+          AND acceptance_decided_by IS NULL
+          AND acceptance_decided_at IS NULL
+          AND acceptance_note IS NULL)
+        OR
+        (acceptance_status IN ('ACCEPTED', 'REJECTED')
+          AND acceptance_decided_by IS NOT NULL
+          AND acceptance_decided_at IS NOT NULL)
+      ),
     UNIQUE(core_run_id, artifact_type)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_specialist_artifacts_task ON seo_specialist_artifacts(task_id, created_at DESC)`,

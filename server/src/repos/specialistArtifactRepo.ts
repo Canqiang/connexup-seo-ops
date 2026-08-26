@@ -27,13 +27,10 @@ export interface SpecialistArtifact {
   acceptanceNote: string | null;
 }
 
-type SpecialistArtifactInsert = Omit<
+export type SpecialistArtifactInsert = Omit<
   SpecialistArtifact,
   "acceptanceStatus" | "acceptanceDecidedBy" | "acceptanceDecidedAt" | "acceptanceNote"
-> & Partial<Pick<
-  SpecialistArtifact,
-  "acceptanceStatus" | "acceptanceDecidedBy" | "acceptanceDecidedAt" | "acceptanceNote"
->>;
+>;
 
 /** Raw persisted evidence for the Post-program projection.  The service owns
  * semantic validation, while the repository deliberately returns no title,
@@ -44,6 +41,19 @@ export interface PostProgramArtifactRow {
   artifactType: "KEYWORD_WEEKLY";
   schemaVersion: string;
   payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PendingArtifactWorkbenchRow {
+  id: string;
+  taskId: string;
+  merchantId: string;
+  merchantName: string;
+  locationName: string | null;
+  title: string;
+  artifactType: SpecialistArtifactType;
+  priority: "URGENT" | "HIGH" | "MEDIUM" | "LOW";
+  dueAt: string | null;
   createdAt: string;
 }
 
@@ -122,10 +132,10 @@ export async function insertSpecialistArtifact(
       artifact.coreRunId,
       artifact.createdBy,
       artifact.createdAt,
-      artifact.acceptanceStatus ?? "PENDING",
-      artifact.acceptanceDecidedBy ?? null,
-      artifact.acceptanceDecidedAt ?? null,
-      artifact.acceptanceNote ?? null,
+      "PENDING",
+      null,
+      null,
+      null,
     ],
   );
   const saved = await getSpecialistArtifactByRun(
@@ -192,6 +202,45 @@ export async function listSpecialistArtifactsByTask(
     [taskId, merchantId],
   );
   return rows.map(toArtifact);
+}
+
+/** Bounded by the actor's merchant scope before any artifact row is read. */
+export async function listPendingSpecialistArtifactsForWorkbench(
+  db: Db,
+  merchantIds: readonly string[],
+): Promise<PendingArtifactWorkbenchRow[]> {
+  if (merchantIds.length === 0) return [];
+  const rows = await db.query<{
+    id: string; task_id: string; merchant_id: string; merchant_name: string;
+    location_name: string | null; title: string; artifact_type: SpecialistArtifactType;
+    priority: "URGENT" | "HIGH" | "MEDIUM" | "LOW"; due_at: string | null;
+    created_at: string;
+  }>(
+    `SELECT a.id, a.task_id, a.merchant_id,
+            COALESCE(m.display_name, m.slug) AS merchant_name,
+            COALESCE(l.display_name, l.slug) AS location_name,
+            a.title, a.artifact_type, t.priority, t.due_at, a.created_at
+       FROM seo_specialist_artifacts a
+       JOIN seo_tasks t ON t.id = a.task_id AND t.merchant_id = a.merchant_id
+       JOIN seo_merchants m ON m.id = a.merchant_id
+       LEFT JOIN seo_locations l ON l.id = t.location_id AND l.merchant_id = a.merchant_id
+      WHERE a.merchant_id = ANY($1::text[])
+        AND a.acceptance_status = 'PENDING'
+      ORDER BY a.created_at ASC, a.id ASC`,
+    [[...merchantIds]],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    taskId: row.task_id,
+    merchantId: row.merchant_id,
+    merchantName: row.merchant_name,
+    locationName: row.location_name,
+    title: row.title,
+    artifactType: row.artifact_type,
+    priority: row.priority,
+    dueAt: row.due_at,
+    createdAt: row.created_at,
+  }));
 }
 
 /** Audit projection only: page compact identifiers rather than loading full

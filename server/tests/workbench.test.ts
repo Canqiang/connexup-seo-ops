@@ -6,6 +6,7 @@ import { createProposalBatch } from "../src/services/proposalService.js";
 import { createTask } from "../src/services/taskService.js";
 import { settleAttemptUnknown } from "../src/services/executionService.js";
 import { insertAttempt, listAttemptsByTask } from "../src/repos/executionRepo.js";
+import { insertSpecialistArtifact } from "../src/repos/specialistArtifactRepo.js";
 
 describe("workbench projection", () => {
   let built: AuthenticatedTestApp;
@@ -13,6 +14,7 @@ describe("workbench projection", () => {
   let merchantA: { id: string };
   let merchantB: { id: string };
   let operatorBId: string;
+  let approvalReady: { id: string; state_version: number };
 
   beforeEach(async () => {
     built = await createAuthenticatedTestApp();
@@ -61,7 +63,7 @@ describe("workbench projection", () => {
       },
     });
 
-    const approvalReady = (
+    approvalReady = (
       await app.inject({
         method: "POST",
         url: "/api/seo-ops/tasks",
@@ -94,6 +96,19 @@ describe("workbench projection", () => {
         expected_state_version: approvalReady.state_version,
         idempotency_key: "workbench-approval-evidence",
       },
+    });
+    await insertSpecialistArtifact(built.db, {
+      id: "workbench-pending-artifact",
+      taskId: approvalReady.id,
+      merchantId: merchantA.id,
+      artifactType: "AUDIT_REPORT",
+      schemaVersion: "seo_ops.audit_report.v1",
+      title: "Audit output awaiting acceptance",
+      summary: "Generated evidence must be accepted by an operator.",
+      payload: { finding_count: 1 },
+      coreRunId: "workbench-pending-artifact-run",
+      createdBy: "system:specialist-agent",
+      createdAt: "2026-08-25T08:30:00.000Z",
     });
 
     const unknownTask = (
@@ -189,18 +204,27 @@ describe("workbench projection", () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.summary).toEqual({ gatekeeping: 2, exception: 1, merchant_contact: 1, total: 4 });
+    expect(body.summary).toEqual({ gatekeeping: 3, exception: 1, merchant_contact: 1, total: 5 });
     expect(body.items.map((item: { group: string }) => item.group)).toEqual([
-      "EXCEPTION", "GATEKEEPING", "GATEKEEPING", "MERCHANT_CONTACT",
+      "EXCEPTION", "GATEKEEPING", "GATEKEEPING", "GATEKEEPING", "MERCHANT_CONTACT",
     ]);
     expect(body.items.every((item: { merchant_id: string }) => item.merchant_id === merchantA.id)).toBe(true);
+    expect(body.items).toContainEqual(expect.objectContaining({
+      id: "artifact:workbench-pending-artifact",
+      group: "GATEKEEPING",
+      type: "ARTIFACT_ACCEPTANCE",
+      primary_action: {
+        label: "验收 Agent 产物",
+        href: `/tasks/${approvalReady.id}`,
+      },
+    }));
   });
 
   it("paginates before returning rows and rejects an invalid group", async () => {
     const page = await app.inject({ method: "GET", url: "/api/seo-ops/workbench?offset=1&limit=2" });
 
     expect(page.statusCode).toBe(200);
-    expect(page.json()).toMatchObject({ offset: 1, limit: 2, total: 4 });
+    expect(page.json()).toMatchObject({ offset: 1, limit: 2, total: 5 });
     expect(page.json().items).toHaveLength(2);
 
     const invalid = await app.inject({ method: "GET", url: "/api/seo-ops/workbench?group=RUNNING" });
@@ -263,6 +287,6 @@ describe("workbench projection", () => {
     const response = await app.inject({ method: "GET", url: "/api/seo-ops/workbench" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ total: 4 });
+    expect(response.json()).toMatchObject({ total: 5 });
   });
 });

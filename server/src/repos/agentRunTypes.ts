@@ -30,13 +30,24 @@ export interface AgentRun {
   completedAt: string | null;
   creationIdempotencyKey: string | null;
   requestFingerprint: string | null;
+  /** HTTP idempotency semantics, including retry prior/reason and current inputs. */
+  httpRequestFingerprint?: string | null;
   /** GBP content only: stable business input lineage, distinct from a retry generation id. */
   businessInputFingerprint?: string | null;
   retryOfAgentRunId?: string | null;
+  retryGeneration?: number;
   retryReason?: string | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentRunRequest {
+  idempotencyKey: string;
+  runId: string;
+  merchantId: string;
+  httpRequestFingerprint: string;
+  createdAt: string;
 }
 
 /** 交付物：一文件一行。SUMMARY = 运行正文落盘；ATTACHMENT = agent 返回的附件；

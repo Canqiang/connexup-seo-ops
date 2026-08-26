@@ -87,10 +87,13 @@ export interface DeliverableWire {
 /** 阶段运行：归属于（商户，地点，阶段），不挂在 task 上。 */
 export interface StageRunView {
   id: string; merchant_id: string; location_id: string | null;
-  stage: AgentRunStage; run_type: string; goal: string | null; status: AgentRunStatus;
+  task_id?: string | null; stage: AgentRunStage | "GBP_POST_CONTENT"; run_type: string; goal: string | null; status: AgentRunStatus;
   core_run_id?: string; core_status?: string; input_message: string;
   output?: string | null; output_preview?: string | null;
   error?: string; error_code?: string; token_usage: Record<string, number>;
+  request_fingerprint?: string; http_request_fingerprint?: string;
+  business_input_fingerprint?: string; retry_of_agent_run_id?: string;
+  retry_generation?: number; retry_reason?: string;
   deliverables: DeliverableWire[];
   triggered_by: string; triggered_at: string; last_polled_at?: string; completed_at?: string;
   created_at: string; updated_at: string;
@@ -129,7 +132,8 @@ export interface SeoOpsPageRequest {
 export type HumanActionGroup = "GATEKEEPING" | "EXCEPTION" | "MERCHANT_CONTACT";
 export type HumanActionType = "PROPOSAL_DECISION" | "GATE_1_APPROVAL" | "GATE_2_CONFIRM"
   | "OUTCOME_RECONCILIATION" | "VERIFICATION_OVERDUE" | "CONFIRMED_FAILURE"
-  | "QUESTIONNAIRE_FOLLOWUP" | "AUTHORIZATION_FOLLOWUP" | "CONTENT_CONFIRMATION" | "REPORT_DELIVERY";
+  | "QUESTIONNAIRE_FOLLOWUP" | "AUTHORIZATION_FOLLOWUP" | "CONTENT_CONFIRMATION"
+  | "REPORT_DELIVERY" | "ARTIFACT_ACCEPTANCE";
 export interface WorkbenchRequest {
   group?: HumanActionGroup; merchant_id?: string; q?: string; offset?: number; limit?: number;
 }
@@ -343,7 +347,13 @@ export interface SpecialistArtifactWire {
 }
 export interface TaskAuditReferencesWire {
   offset?: number; limit?: number; total?: number;
-  agent_runs: Array<{ id: string; core_run_id?: string; trace_ref?: string; deliverables: Array<{ id: string; file_id?: string; sha256?: string; source_ref?: string }> }>;
+  agent_runs: Array<{
+    id: string; core_run_id?: string; trace_ref?: string;
+    request_fingerprint?: string; http_request_fingerprint?: string;
+    business_input_fingerprint?: string; retry_of_agent_run_id?: string;
+    retry_generation?: number; retry_reason?: string;
+    deliverables: Array<{ id: string; file_id?: string; sha256?: string; source_ref?: string }>;
+  }>;
   artifacts: Array<{ id: string; core_run_id: string }>;
   execution_attempts?: Array<{ id: string; agent_run_id?: string; core_run_id?: string; trace_ref?: string; probe_ref: string; deliverables: Array<{ id: string; file_id: string; sha256?: string; source_ref?: string }> }>;
 }

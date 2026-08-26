@@ -1,7 +1,16 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpecialistArtifactWire } from "../../api/types";
 import { SpecialistArtifactsPanel } from "./SpecialistArtifactsPanel";
+
+const { decideArtifactAcceptance } = vi.hoisted(() => ({
+  decideArtifactAcceptance: vi.fn(),
+}));
+
+vi.mock("../../api/seoOpsApi", () => ({
+  seoOpsApi: { decideArtifactAcceptance },
+}));
 
 const artifacts: SpecialistArtifactWire[] = [
   {
@@ -160,6 +169,8 @@ const artifacts: SpecialistArtifactWire[] = [
 ];
 
 describe("SpecialistArtifactsPanel", () => {
+  beforeEach(() => decideArtifactAcceptance.mockReset());
+
   it("turns specialist JSON into an operations-readable result view", () => {
     render(<SpecialistArtifactsPanel artifacts={artifacts} />);
 
@@ -188,5 +199,65 @@ describe("SpecialistArtifactsPanel", () => {
     expect(screen.getByText("待验收")).toBeInTheDocument();
     expect(screen.getByText("已拒绝")).toBeInTheDocument();
     expect(screen.getAllByText("验收状态未知").length).toBeGreaterThan(0);
+  });
+
+  it("lets an approver accept a pending artifact, shows readback, and refreshes the task ledger", async () => {
+    const pending = artifacts[1]!;
+    const accepted: SpecialistArtifactWire = {
+      ...pending,
+      acceptance_status: "ACCEPTED",
+      acceptance_decided_by: "op-1",
+      acceptance_decided_at: "2026-08-27T13:00:00.000Z",
+      acceptance_note: "Accepted from task detail.",
+    };
+    decideArtifactAcceptance.mockResolvedValue(accepted);
+    const onRefresh = vi.fn().mockResolvedValue(undefined);
+    render(<SpecialistArtifactsPanel artifacts={[pending]} canApprove onRefresh={onRefresh} />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "接受复盘分析" }));
+
+    expect(decideArtifactAcceptance).toHaveBeenCalledWith(pending.id, {
+      decision: "ACCEPTED",
+    });
+    expect(await screen.findByText("已验收")).toBeInTheDocument();
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: /接受|拒绝/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a failed decision pending and exposes an actionable error", async () => {
+    decideArtifactAcceptance.mockResolvedValue(undefined);
+    render(<SpecialistArtifactsPanel artifacts={[artifacts[1]!]} canApprove />);
+
+    fireEvent.click(screen.getByRole("button", { name: "拒绝复盘分析" }));
+    expect(decideArtifactAcceptance).toHaveBeenCalledTimes(1);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("验收决定保存失败");
+    expect(screen.getByText("待验收")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "接受复盘分析" })).toBeEnabled();
+  });
+
+  it("keeps the acceptance readback visible when the surrounding task refresh fails", async () => {
+    const pending = artifacts[1]!;
+    decideArtifactAcceptance.mockResolvedValue({
+      ...pending,
+      acceptance_status: "ACCEPTED",
+      acceptance_decided_by: "op-1",
+      acceptance_decided_at: "2026-08-27T13:00:00.000Z",
+    });
+    const onRefresh = vi.fn().mockRejectedValue(new Error("refresh unavailable"));
+    render(<SpecialistArtifactsPanel artifacts={[pending]} canApprove onRefresh={onRefresh} />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "接受复盘分析" }));
+
+    expect(await screen.findByText("已验收")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("验收决定已保存，但任务数据刷新失败");
+    expect(screen.queryByText("验收决定保存失败，请重试。" )).not.toBeInTheDocument();
+  });
+
+  it("does not expose acceptance mutations without approve permission", () => {
+    render(<SpecialistArtifactsPanel artifacts={[artifacts[1]!]} canApprove={false} />);
+
+    expect(screen.queryByRole("button", { name: /接受|拒绝/ })).not.toBeInTheDocument();
+    expect(screen.getByText("当前账号只能查看产物验收状态。")).toBeInTheDocument();
   });
 });

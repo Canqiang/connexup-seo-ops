@@ -19,6 +19,7 @@ describe("migrate on postgres", () => {
       "seo_locations",
       "seo_tasks",
       "seo_agent_runs",
+      "seo_agent_run_requests",
       "seo_run_deliverables",
       "seo_merchant_questionnaires",
       "seo_users",
@@ -44,6 +45,46 @@ describe("migrate on postgres", () => {
     expect(checks.some(({ definition }) =>
       definition.includes("identity_type") && definition.includes("HUMAN") && definition.includes("SERVICE"),
     )).toBe(true);
+  });
+
+  it("backfills durable HTTP idempotency aliases for legacy Agent Runs", async () => {
+    const legacy = await createTestDb();
+    try {
+      await legacy.db.exec(`CREATE TABLE seo_agent_runs (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        task_id TEXT,
+        status TEXT NOT NULL,
+        creation_idempotency_key TEXT,
+        request_fingerprint TEXT,
+        created_at TEXT NOT NULL
+      )`);
+      await legacy.db.exec(
+        `INSERT INTO seo_agent_runs
+          (id, merchant_id, stage, status, creation_idempotency_key,
+           request_fingerprint, created_at)
+         VALUES ('legacy-run', 'merchant-1', 'KEYWORDS', 'COMPLETED',
+                 'legacy-request-key', 'sha256:legacy-http-request',
+                 '2026-08-26T00:00:00.000Z')`,
+      );
+
+      await migrate(legacy.db);
+      await migrate(legacy.db);
+
+      expect(await legacy.db.one(
+        `SELECT idempotency_key, run_id, merchant_id, http_request_fingerprint
+           FROM seo_agent_run_requests
+          WHERE idempotency_key = 'legacy-request-key'`,
+      )).toEqual({
+        idempotency_key: "legacy-request-key",
+        run_id: "legacy-run",
+        merchant_id: "merchant-1",
+        http_request_fingerprint: "sha256:legacy-http-request",
+      });
+    } finally {
+      await legacy.teardown();
+    }
   });
 
   it("upgrades an existing seo_users table with an idempotent identity-type check", async () => {
@@ -205,6 +246,94 @@ describe("migrate on postgres", () => {
         `UPDATE seo_specialist_artifacts SET acceptance_status = 'PUBLISHED'
          WHERE id = 'legacy-artifact'`,
       )).rejects.toMatchObject({ code: "23514" });
+      await expect(legacy.db.exec(
+        `UPDATE seo_specialist_artifacts
+            SET acceptance_decided_by = 'forged-actor',
+                acceptance_decided_at = '2026-08-27T01:00:00.000Z'
+          WHERE id = 'legacy-artifact'`,
+      )).rejects.toMatchObject({ code: "23514" });
+      await expect(legacy.db.exec(
+        `UPDATE seo_specialist_artifacts
+            SET acceptance_status = 'ACCEPTED'
+          WHERE id = 'legacy-artifact'`,
+      )).rejects.toMatchObject({ code: "23514" });
+
+      await legacy.db.exec(
+        `UPDATE seo_specialist_artifacts
+            SET acceptance_status = 'ACCEPTED',
+                acceptance_decided_by = 'operator-1',
+                acceptance_decided_at = '2026-08-27T01:00:00.000Z'
+          WHERE id = 'legacy-artifact'`,
+      );
+      const accepted = await legacy.db.one<{ acceptance_status: string; acceptance_note: string | null }>(
+        `SELECT acceptance_status, acceptance_note
+           FROM seo_specialist_artifacts WHERE id = 'legacy-artifact'`,
+      );
+      expect(accepted).toEqual({ acceptance_status: "ACCEPTED", acceptance_note: null });
+    } finally {
+      await legacy.teardown();
+    }
+  });
+
+  it("normalizes inconsistent legacy acceptance metadata before adding the decision check", async () => {
+    const legacy = await createTestDb();
+    try {
+      await legacy.db.exec(`CREATE TABLE seo_specialist_artifacts (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        merchant_id TEXT NOT NULL,
+        artifact_type TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        core_run_id TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        acceptance_status TEXT NOT NULL DEFAULT 'PENDING',
+        acceptance_decided_by TEXT,
+        acceptance_decided_at TEXT,
+        acceptance_note TEXT,
+        UNIQUE(core_run_id, artifact_type)
+      )`);
+      await legacy.db.exec(`INSERT INTO seo_specialist_artifacts
+        (id, task_id, merchant_id, artifact_type, schema_version, title, summary,
+         payload, core_run_id, created_at, acceptance_status, acceptance_decided_by)
+        VALUES ('legacy-inconsistent', 'task-1', 'merchant-1', 'AUDIT_REPORT', 'v1',
+                'Legacy', 'Legacy artifact', '{}', 'legacy-inconsistent-run',
+                '2026-08-27T00:00:00.000Z', 'ACCEPTED', 'legacy-actor')`);
+      await legacy.db.exec(`INSERT INTO seo_specialist_artifacts
+        (id, task_id, merchant_id, artifact_type, schema_version, title, summary,
+         payload, core_run_id, created_at, acceptance_status, acceptance_decided_by,
+         acceptance_decided_at, acceptance_note)
+        VALUES ('legacy-invalid-status', 'task-1', 'merchant-1', 'AUDIT_REPORT', 'v1',
+                'Legacy invalid', 'Legacy invalid status', '{}', 'legacy-invalid-run',
+                '2026-08-27T00:00:00.000Z', 'PUBLISHED', 'legacy-actor',
+                '2026-08-27T01:00:00.000Z', 'legacy unsupported state')`);
+
+      await migrate(legacy.db);
+      await migrate(legacy.db);
+
+      expect(await legacy.db.one(
+        `SELECT acceptance_status, acceptance_decided_by,
+                acceptance_decided_at, acceptance_note
+           FROM seo_specialist_artifacts WHERE id = 'legacy-inconsistent'`,
+      )).toEqual({
+        acceptance_status: "PENDING",
+        acceptance_decided_by: null,
+        acceptance_decided_at: null,
+        acceptance_note: null,
+      });
+      expect(await legacy.db.one(
+        `SELECT acceptance_status, acceptance_decided_by,
+                acceptance_decided_at, acceptance_note
+           FROM seo_specialist_artifacts WHERE id = 'legacy-invalid-status'`,
+      )).toEqual({
+        acceptance_status: "PENDING",
+        acceptance_decided_by: null,
+        acceptance_decided_at: null,
+        acceptance_note: null,
+      });
     } finally {
       await legacy.teardown();
     }

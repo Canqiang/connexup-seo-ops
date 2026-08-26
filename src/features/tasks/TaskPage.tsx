@@ -172,7 +172,11 @@ export function TaskPage() {
       <div className="task-layout"><div className="task-primary">
         {artifactResource.loading && !artifactResource.data ? <div className="page-state" role="status">读取 Agent 产物…</div> : null}
         {artifactResource.error ? <div className="page-state is-error" role="alert">Agent 产物读取失败。</div> : null}
-        <SpecialistArtifactsPanel artifacts={artifactResource.data?.items ?? []} />
+        <SpecialistArtifactsPanel
+          artifacts={artifactResource.data?.items ?? []}
+          canApprove={canApprove}
+          onRefresh={artifactResource.reload}
+        />
         <DraftsPanel onReadback={readback} task={task} />
         <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>事件时间线</h2></div><span className="result-count">{eventResource.data?.total ?? "—"}</span></div>{eventResource.loading ? <div className="page-state" role="status">读取事件…</div> : <TaskTimeline events={eventResource.data?.items ?? []} />}</section>
       </div><aside className="task-context">

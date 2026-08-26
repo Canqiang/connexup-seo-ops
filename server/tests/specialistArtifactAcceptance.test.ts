@@ -133,4 +133,44 @@ describe("specialist artifact acceptance", () => {
     });
     expect(readback.json().items[0]).toEqual(accepted.json());
   });
+
+  it("ordinary artifact insertion cannot forge a human acceptance decision", async () => {
+    const built = await createAuthenticatedTestApp();
+    apps.push(built.app);
+    const merchant = (await built.app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: "artifact-forgery-store",
+        display_name: "Artifact Forgery Store",
+        idempotency_key: "artifact-forgery-store",
+      },
+    })).json();
+
+    const forgedRepositoryInput = {
+      id: "artifact-forged-acceptance",
+      taskId: "task-artifact-forged-acceptance",
+      merchantId: merchant.id,
+      artifactType: "AUDIT_REPORT",
+      schemaVersion: "seo_ops.audit_report.v1",
+      title: "Audit",
+      summary: "Generated output is not a human decision.",
+      payload: { finding_count: 1 },
+      coreRunId: "run-artifact-forged-acceptance",
+      createdBy: built.actor.userId,
+      createdAt: "2026-08-27T00:00:00.000Z",
+      acceptanceStatus: "ACCEPTED",
+      acceptanceDecidedBy: "forged-actor",
+      acceptanceDecidedAt: "2026-08-27T00:00:00.000Z",
+      acceptanceNote: "forged acceptance",
+    } as unknown as Parameters<typeof insertSpecialistArtifact>[1];
+    const inserted = await insertSpecialistArtifact(built.db, forgedRepositoryInput);
+
+    expect(inserted).toMatchObject({
+      acceptanceStatus: "PENDING",
+      acceptanceDecidedBy: null,
+      acceptanceDecidedAt: null,
+      acceptanceNote: null,
+    });
+  });
 });

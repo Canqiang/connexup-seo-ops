@@ -2,7 +2,7 @@
 
 ## Scope and truth boundary
 
-- Changed only local SEO Ops desired-state Agent manifests, their schema, and manifest contract tests in this worktree.
+- The original delivery changed only local SEO Ops desired-state Agent manifests, their schema, and manifest contract tests. Recorded fix-round rulings subsequently expanded Task 9 to the smallest honest SEO Ops runtime, persistence, Workbench, and task-detail UI paths described below.
 - Did not call or mutate Core AI UAT and did not modify `core-ai`, `fbr-project`, or `fbr-agent`.
 - Preserved every already-established tool and Skill ID. The three new specialists intentionally use `skill_ids: []`; no unpublished Skill ID was invented.
 - These files describe desired state only. They do not prove UAT publication, binding, Run success, task persistence, external publication, or merchant-system mutation.
@@ -345,3 +345,109 @@ Result: backend 30 files / 278 tests passed; frontend 24 files / 143 tests passe
 - Acceptance mutation is server-complete and safely projected in the artifact panel; this Task does not add a new operator decision button to the existing task-detail UI.
 - Retry lineage is application-validated and durable but deliberately does not add a database foreign key to legacy Agent Run rows. `TRIGGER_INTERRUPTED` recovery remains a manual reconciliation workflow rather than a generic retry.
 - Nothing here claims report publication, merchant delivery, external GBP mutation, or causal proof.
+
+## Fix round 4 — shared Run allocation, single retry chain, and operator artifact gate
+
+### Scope correction
+
+- This round supersedes the original manifest-only scope statement and the round-3 note that acceptance had no task-detail controls. The recorded review rulings require runtime and UI changes because Agent Run allocation, retry lineage, artifact acceptance, and the Workbench gate are part of the roster's honest reachable behavior.
+- All changes remain inside the SEO Ops worktree. No Core AI UAT request or mutation occurred, and no file in `core-ai`, `fbr-project`, or `fbr-agent` was modified.
+
+### RED evidence
+
+Shared allocation and durable request semantics:
+
+```bash
+npm --prefix server test -- --run \
+  tests/agentRuns.test.ts \
+  tests/gbpPostContentAgent.test.ts
+```
+
+Observed before implementation: generic Stage and GBP creation used separate check-then-insert paths; two identical concurrent GBP requests under a daily limit of one returned `202` and `429` instead of converging; and a business-replay idempotency key could later be reused with changed retry semantics and still return `200`.
+
+Retry lineage:
+
+```bash
+npm --prefix server test -- --run tests/gbpPostContentAgent.test.ts
+```
+
+Observed before implementation: retry generation was not persisted, reason text participated in generation identity, stale ancestors could create a branch, the same key did not compare full retry semantics, and the latest completed/interrupted generation rules were incomplete.
+
+Artifact insertion, migration, and Workbench projection:
+
+```bash
+npm --prefix server test -- --run \
+  tests/migrate.test.ts \
+  tests/specialistArtifactAcceptance.test.ts \
+  tests/workbench.test.ts
+```
+
+Observed before implementation: ordinary repository input could forge `ACCEPTED`; decision metadata had no database consistency check; invalid/inconsistent legacy rows were not normalized; and pending artifacts produced no tenant-scoped `GATEKEEPING` action.
+
+Task-detail controls and audit projection:
+
+```bash
+npm run test:run -- \
+  src/features/tasks/SpecialistArtifactsPanel.test.tsx \
+  src/features/workbench/WorkbenchPage.test.tsx \
+  src/App.test.tsx
+```
+
+Observed before implementation: the task panel had no accept/reject controls, permission-aware read-only state, mutation/readback/refresh error handling, or retry lineage fields in technical audit output. A follow-up RED proved that a saved acceptance became visually ambiguous when the surrounding Task refresh failed.
+
+### Implemented fixes
+
+- Added one shared `allocateAgentRun` transaction boundary for Stage and GBP content Runs. It locks the merchant aggregate, resolves exact HTTP idempotency and business-equivalent replay before quota, counts every merchant Run for the UTC day, inserts the durable Run, commits, and only then permits the caller to trigger Core AI. The old outer quota checks are removed.
+- Added `seo_agent_run_requests`, a durable request-key ledger pointing every accepted HTTP idempotency key to its converged Run. This preserves semantic conflicts even when a second key did not create the Run row. Migration backfills legacy creation keys and is idempotent.
+- Made GBP retry lineage a single ordered chain per business fingerprint. Generation identity is parent Run plus numeric generation; reason remains audit metadata. Only the latest generation may be referenced. Failed/output-invalid/cancelled latest generations permit explicit retry; completed-with-draft replays; interrupted triggers remain reconciliation-only. A separate HTTP fingerprint covers prior Run, reason, generation, and current business inputs.
+- Made ordinary specialist-artifact insertion unconditionally persist `PENDING` with null decision metadata. Only the permissioned acceptance service mutates a decision. Database checks enforce legal status plus decision actor/time consistency, while legacy invalid or incomplete rows are normalized to safe pending state before constraints are added.
+- Projected pending artifacts into the authenticated operator's Workbench as `GATEKEEPING / ARTIFACT_ACCEPTANCE`, included them in filters, counts, and pagination, and exposed exactly one primary action back to the owning Task.
+- Added task-detail acceptance controls for `seoops.approve` users, truthful read-only copy for users without permission, disabled pending mutation state, direct response readback, Task-resource refresh, and distinct mutation-versus-refresh failure messages. Existing accepted-source Report Package tests continue to prove that only an accepted artifact unlocks the packaging gate.
+- Added retry parent, generation, reason, business fingerprint, and HTTP fingerprint to frontend Run/audit wire types and technical audit rendering.
+
+### GREEN and verification evidence
+
+Focused backend:
+
+```bash
+npm --prefix server test -- --run \
+  tests/gbpPostContentAgent.test.ts \
+  tests/migrate.test.ts \
+  tests/specialistArtifactAcceptance.test.ts \
+  tests/workbench.test.ts \
+  tests/agentRuns.test.ts
+```
+
+Result: 5 files / 32 tests passed. The concurrency regressions assert HTTP outcomes, durable Run/request row counts, and Core AI trigger counts.
+
+Focused frontend:
+
+```bash
+npm run test:run -- \
+  src/features/tasks/SpecialistArtifactsPanel.test.tsx \
+  src/features/workbench/WorkbenchPage.test.tsx \
+  src/App.test.tsx
+```
+
+Result: 3 files / 44 tests passed.
+
+Full verification:
+
+```bash
+npm --prefix server test
+npm --prefix server run typecheck
+npm --prefix server run build
+npm run test:run
+npm run build
+git diff --check
+```
+
+Result: backend 30 files / 284 tests passed; frontend 24 files / 147 tests passed; server typecheck/build, root production build, and diff check passed. An initial simultaneous backend/frontend run caused two existing 5-second backend tests to time out under contention; both targeted reruns and the standalone full backend suite passed. Frontend emitted only the existing jsdom local-storage and unimplemented `scrollTo` warnings.
+
+### Files and residual risks
+
+- Run allocation/lineage: `server/src/services/agentRunAllocator.ts`, Stage/GBP services, Agent Run schema/types/repository/routes, and their migration/concurrency/retry tests.
+- Artifact gate: specialist artifact schema/migration/repository, Workbench projection/tests, frontend API/types, task panel, audit projection, styles, and UI tests.
+- `seo_agent_run_requests` intentionally follows the repository's existing no-foreign-key legacy posture; the allocator detects a request alias whose referenced Run is missing and fails closed. Retry branching remains intentionally unsupported.
+- Workbench composition still follows the existing in-memory aggregate-then-page design. Pending artifact rows are tenant-scoped in SQL before payload material is read, but a future high-volume revision may move the combined multi-source ordering/pagination into a database projection.
+- Nothing in this round proves UAT Agent publication/binding, Run output quality, report delivery, external merchant mutation, or four-merchant reconciliation.

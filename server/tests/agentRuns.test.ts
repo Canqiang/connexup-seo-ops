@@ -211,6 +211,40 @@ describe("stage-run routes", () => {
     expect(second.json().error_code).toBe("RUN_LIMIT_REACHED");
   });
 
+  it("serializes concurrent Stage Run allocations against one shared merchant quota", async () => {
+    let triggerCount = 0;
+    const core = fakeCoreAi({
+      trigger: async () => {
+        triggerCount += 1;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return { run_id: `core-stage-concurrent-${triggerCount}`, status: "RUNNING" };
+      },
+    });
+    const { app, db } = await makeApp(core, { agentRunDailyLimit: 1 });
+    const { merchant } = await seedMerchant(app);
+    const url = `/api/seo-ops/merchants/${merchant.id}/stage-runs`;
+
+    const responses = await Promise.all([
+      app.inject({
+        method: "POST",
+        url,
+        payload: { stage: "KEYWORDS", idempotency_key: "stage-concurrent-keywords" },
+      }),
+      app.inject({
+        method: "POST",
+        url,
+        payload: { stage: "AUDIT", idempotency_key: "stage-concurrent-audit" },
+      }),
+    ]);
+
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([202, 429]);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE merchant_id = $1`,
+      [merchant.id],
+    )).toEqual({ count: "1" });
+    expect(triggerCount).toBe(1);
+  });
+
   it("lists stage runs with previews + deliverables, filters by stage", async () => {
     const { app, db } = await makeApp();
     const { merchant } = await seedMerchant(app);

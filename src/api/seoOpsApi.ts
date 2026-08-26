@@ -90,6 +90,12 @@ export const seoOpsApi = {
     requestJson<{ items: AttemptWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/attempts`, { signal }),
   taskArtifacts: (id: string, signal?: AbortSignal) =>
     requestJson<{ items: SpecialistArtifactWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/artifacts`, { signal }),
+  decideArtifactAcceptance: (artifactId: string, request: {
+    decision: "ACCEPTED" | "REJECTED"; note?: string;
+  }) => post<SpecialistArtifactWire>(
+    `/api/seo-ops/artifacts/${encodeURIComponent(artifactId)}/acceptance`,
+    request,
+  ),
   taskAuditReferences: (id: string, request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<TaskAuditReferencesWire>(
       `/api/seo-ops/tasks/${encodeURIComponent(id)}/audit-references${query(request)}`,

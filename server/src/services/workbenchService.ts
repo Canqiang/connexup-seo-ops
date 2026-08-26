@@ -4,6 +4,7 @@ import { listMerchants, listMerchantsForOperator } from "../repos/merchantRepo.j
 import { listWorkbenchProposals } from "../repos/proposalRepo.js";
 import { listWorkbenchSentQuestionnaires } from "../repos/questionnaireRepo.js";
 import { listWorkbenchTasks, type WorkbenchTaskRow } from "../repos/taskRepo.js";
+import { listPendingSpecialistArtifactsForWorkbench } from "../repos/specialistArtifactRepo.js";
 
 export type HumanActionGroup = "GATEKEEPING" | "EXCEPTION" | "MERCHANT_CONTACT";
 
@@ -17,7 +18,8 @@ export type HumanActionType =
   | "QUESTIONNAIRE_FOLLOWUP"
   | "AUTHORIZATION_FOLLOWUP"
   | "CONTENT_CONFIRMATION"
-  | "REPORT_DELIVERY";
+  | "REPORT_DELIVERY"
+  | "ARTIFACT_ACCEPTANCE";
 
 export interface HumanAction {
   id: string;
@@ -189,11 +191,12 @@ export async function workbench(
 ): Promise<WorkbenchView> {
   const merchants = scopeAll ? await listMerchants(db) : await listMerchantsForOperator(db, actorUserId);
   const merchantIds = merchants.map((merchant) => merchant.id);
-  const [tasks, proposals, questionnaires, unknownAttempts] = await Promise.all([
+  const [tasks, proposals, questionnaires, unknownAttempts, pendingArtifacts] = await Promise.all([
     listWorkbenchTasks(db, merchantIds),
     listWorkbenchProposals(db, merchantIds),
     listWorkbenchSentQuestionnaires(db, merchantIds),
     listWorkbenchUnknownAttempts(db, merchantIds),
+    listPendingSpecialistArtifactsForWorkbench(db, merchantIds),
   ]);
   const tasksById = new Map(tasks.map((task) => [task.id, task]));
   const actions: HumanAction[] = [];
@@ -224,6 +227,27 @@ export async function workbench(
   for (const task of tasks) {
     const action = taskAction(task, now);
     if (action) actions.push(action);
+  }
+
+  for (const artifact of pendingArtifacts) {
+    actions.push({
+      id: `artifact:${artifact.id}`,
+      group: "GATEKEEPING",
+      type: "ARTIFACT_ACCEPTANCE",
+      merchantId: artifact.merchantId,
+      merchantName: artifact.merchantName,
+      locationName: artifact.locationName,
+      title: artifact.title,
+      reason: `Agent 产物已落库（${artifact.artifactType}），等待人工接受或拒绝。`,
+      primaryAction: {
+        label: "验收 Agent 产物",
+        href: `/tasks/${artifact.taskId}`,
+      },
+      secondaryHref: null,
+      priority: artifact.priority,
+      dueAt: artifact.dueAt,
+      waitingSince: artifact.createdAt,
+    });
   }
 
   for (const attempt of unknownAttempts) {

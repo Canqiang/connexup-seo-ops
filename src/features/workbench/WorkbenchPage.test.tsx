@@ -8,7 +8,7 @@ import { portfolioFixture, userFixture } from "../../test/fixtures";
 import "../../styles/ledger.css";
 
 const defaultWorkbenchData: WorkbenchView = {
-  summary: { gatekeeping: 1, exception: 1, merchant_contact: 1, total: 3 },
+  summary: { gatekeeping: 2, exception: 1, merchant_contact: 1, total: 4 },
   items: [
     {
       id: "outcome:attempt-1", group: "EXCEPTION", type: "OUTCOME_RECONCILIATION",
@@ -23,6 +23,13 @@ const defaultWorkbenchData: WorkbenchView = {
       title: "决定是否采纳建议", reason: "新的优化建议等待你的判断。",
       primary_action: { label: "去判定", href: "/inbox?tab=proposals" }, secondary_href: null,
       priority: "HIGH", due_at: null, waiting_since: "2026-08-26T02:00:00.000Z",
+    },
+    {
+      id: "artifact:artifact-1", group: "GATEKEEPING", type: "ARTIFACT_ACCEPTANCE",
+      merchant_id: "choice-brooklyn", merchant_name: "Choice Brooklyn UWS", location_name: "Upper West Side",
+      title: "Audit output awaiting acceptance", reason: "Agent 产物已落库，等待人工接受或拒绝。",
+      primary_action: { label: "验收 Agent 产物", href: "/tasks/task-audit" }, secondary_href: null,
+      priority: "HIGH", due_at: null, waiting_since: "2026-08-26T02:30:00.000Z",
     },
     {
       id: "questionnaire:q-1", group: "MERCHANT_CONTACT", type: "QUESTIONNAIRE_FOLLOWUP",
@@ -63,6 +70,9 @@ test("workbench groups human actions and gives each row one primary action", asy
   const row = screen.getByRole("article", { name: /Choice Brooklyn UWS.*结果不确定/ });
   expect(within(row).getAllByRole("button")).toHaveLength(1);
   expect(within(row).getByRole("button", { name: "去查证" })).toBeInTheDocument();
+  const artifactRow = screen.getByRole("article", { name: /Choice Brooklyn UWS.*Agent 产物已落库/ });
+  expect(within(artifactRow).getAllByRole("button")).toHaveLength(1);
+  expect(within(artifactRow).getByRole("button", { name: "验收 Agent 产物" })).toBeInTheDocument();
 });
 
 test("empty workbench explains the next automated windows without demo tasks", async () => {

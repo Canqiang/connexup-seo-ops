@@ -604,7 +604,17 @@ test("closed technical audit exposes full identifiers, hashes and safe external 
 
 test("technical audit renders persisted task-run traces and deliverable identifiers without inventing values", async () => {
   auditReferenceData = {
-    agent_runs: [{ id: "task-agent-run-full", core_run_id: "task-core-run-full", trace_ref: "https://example.test/traces/full", deliverables: [{ id: "deliverable-full", file_id: "core-file-full", sha256: "sha256:deliverable-full", source_ref: "https://example.test/files/full" }] }],
+    agent_runs: [{
+      id: "task-agent-run-full",
+      core_run_id: "task-core-run-full",
+      trace_ref: "https://example.test/traces/full",
+      business_input_fingerprint: "business-fingerprint-full",
+      http_request_fingerprint: "http-request-fingerprint-full",
+      retry_of_agent_run_id: "prior-agent-run-full",
+      retry_generation: 2,
+      retry_reason: "Strict output validation rejected the prior generation.",
+      deliverables: [{ id: "deliverable-full", file_id: "core-file-full", sha256: "sha256:deliverable-full", source_ref: "https://example.test/files/full" }],
+    }],
     artifacts: [{ id: "specialist-artifact-full", core_run_id: "specialist-core-full" }],
     execution_attempts: [{ id: "execution-attempt-full", core_run_id: "execution-core-run-full", trace_ref: "execution-trace-full", probe_ref: "execution-probe-full", deliverables: [{ id: "execution-deliverable-full", file_id: "execution-file-full", sha256: "sha256:execution-deliverable-full", source_ref: "https://example.test/execution/files/full" }] }],
   };
@@ -619,6 +629,11 @@ test("technical audit renders persisted task-run traces and deliverable identifi
   expect(screen.getByText("execution-trace-full")).toBeVisible();
   expect(screen.getByText("execution-file-full")).toBeVisible();
   expect(screen.getByText("sha256:execution-deliverable-full")).toBeVisible();
+  expect(screen.getByText("business-fingerprint-full")).toBeVisible();
+  expect(screen.getByText("http-request-fingerprint-full")).toBeVisible();
+  expect(screen.getByText("prior-agent-run-full")).toBeVisible();
+  expect(screen.getByText("2")).toBeVisible();
+  expect(screen.getByText("Strict output validation rejected the prior generation.")).toBeVisible();
 });
 
 test("task audit references are fetched only after the closed technical audit opens", async () => {

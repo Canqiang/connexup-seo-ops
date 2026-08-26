@@ -1,6 +1,6 @@
 import type { Db } from "../db/connection.js";
 import type { AgentRunStatus } from "../domain/enums.js";
-import type { AgentRun, RunDeliverable } from "./agentRunTypes.js";
+import type { AgentRun, AgentRunRequest, RunDeliverable } from "./agentRunTypes.js";
 
 interface AgentRunRow {
   id: string;
@@ -25,8 +25,10 @@ interface AgentRunRow {
   completed_at: string | null;
   creation_idempotency_key: string | null;
   request_fingerprint: string | null;
+  http_request_fingerprint: string | null;
   business_input_fingerprint: string | null;
   retry_of_agent_run_id: string | null;
+  retry_generation: number;
   retry_reason: string | null;
   created_by: string | null;
   created_at: string;
@@ -57,8 +59,10 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
     completedAt: row.completed_at,
     creationIdempotencyKey: row.creation_idempotency_key,
     requestFingerprint: row.request_fingerprint,
+    httpRequestFingerprint: row.http_request_fingerprint,
     businessInputFingerprint: row.business_input_fingerprint,
     retryOfAgentRunId: row.retry_of_agent_run_id,
+    retryGeneration: row.retry_generation,
     retryReason: row.retry_reason,
     createdBy: row.created_by,
     createdAt: row.created_at,
@@ -69,10 +73,11 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
 const RUN_COLUMNS = `id, merchant_id, location_id, stage, task_id, run_type, goal, status,
   core_run_id, trace_ref, core_status, input_message, output, error, error_code, token_usage,
   triggered_by, triggered_at, last_polled_at, completed_at,
-  creation_idempotency_key, request_fingerprint, business_input_fingerprint,
-  retry_of_agent_run_id, retry_reason, created_by, created_at, updated_at`;
+  creation_idempotency_key, request_fingerprint, http_request_fingerprint,
+  business_input_fingerprint, retry_of_agent_run_id, retry_generation,
+  retry_reason, created_by, created_at, updated_at`;
 
-const RUN_COLUMN_COUNT = 28;
+const RUN_COLUMN_COUNT = 30;
 
 function runParams(run: AgentRun): unknown[] {
   return [
@@ -97,8 +102,10 @@ function runParams(run: AgentRun): unknown[] {
     run.completedAt,
     run.creationIdempotencyKey,
     run.requestFingerprint,
+    run.httpRequestFingerprint ?? run.requestFingerprint,
     run.businessInputFingerprint ?? null,
     run.retryOfAgentRunId ?? null,
+    run.retryGeneration ?? 0,
     run.retryReason ?? null,
     run.createdBy,
     run.createdAt,
@@ -124,9 +131,10 @@ export async function updateAgentRun(db: Db, run: AgentRun): Promise<void> {
        input_message = $11, output = $12, error = $13, error_code = $14, token_usage = $15,
        triggered_by = $16, triggered_at = $17, last_polled_at = $18, completed_at = $19,
        creation_idempotency_key = $20, request_fingerprint = $21,
-       business_input_fingerprint = $22, retry_of_agent_run_id = $23, retry_reason = $24,
-       created_by = $25, created_at = $26, updated_at = $27
-     WHERE id = $28`,
+       http_request_fingerprint = $22, business_input_fingerprint = $23,
+       retry_of_agent_run_id = $24, retry_generation = $25, retry_reason = $26,
+       created_by = $27, created_at = $28, updated_at = $29
+     WHERE id = $30`,
     [...runParams(run), run.id],
   );
 }
@@ -155,8 +163,10 @@ const COLUMN_BY_KEY: Record<keyof AgentRun, string> = {
   completedAt: "completed_at",
   creationIdempotencyKey: "creation_idempotency_key",
   requestFingerprint: "request_fingerprint",
+  httpRequestFingerprint: "http_request_fingerprint",
   businessInputFingerprint: "business_input_fingerprint",
   retryOfAgentRunId: "retry_of_agent_run_id",
+  retryGeneration: "retry_generation",
   retryReason: "retry_reason",
   createdBy: "created_by",
   createdAt: "created_at",
@@ -213,6 +223,43 @@ export async function findAgentRunByIdempotencyKey(
     [key],
   );
   return row ? toAgentRun(row) : null;
+}
+
+export async function findAgentRunRequestByIdempotencyKey(
+  db: Db,
+  key: string,
+): Promise<AgentRunRequest | null> {
+  const row = await db.one<{
+    idempotency_key: string;
+    run_id: string;
+    merchant_id: string;
+    http_request_fingerprint: string;
+    created_at: string;
+  }>(
+    `SELECT idempotency_key, run_id, merchant_id, http_request_fingerprint, created_at
+       FROM seo_agent_run_requests WHERE idempotency_key = $1`,
+    [key],
+  );
+  return row ? {
+    idempotencyKey: row.idempotency_key,
+    runId: row.run_id,
+    merchantId: row.merchant_id,
+    httpRequestFingerprint: row.http_request_fingerprint,
+    createdAt: row.created_at,
+  } : null;
+}
+
+export async function insertAgentRunRequest(
+  db: Db,
+  request: AgentRunRequest,
+): Promise<void> {
+  await db.exec(
+    `INSERT INTO seo_agent_run_requests
+      (idempotency_key, run_id, merchant_id, http_request_fingerprint, created_at)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [request.idempotencyKey, request.runId, request.merchantId,
+      request.httpRequestFingerprint, request.createdAt],
+  );
 }
 
 export async function findAgentRunByTaskFingerprint(

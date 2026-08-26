@@ -9,7 +9,9 @@ import {
   Search,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import type { SpecialistArtifactWire } from "../../api/types";
+import { seoOpsApi } from "../../api/seoOpsApi";
 import { formatDateTime } from "../../app/format";
 
 interface KeywordItem {
@@ -228,14 +230,48 @@ function AcceptanceBadge({ artifact }: { artifact: SpecialistArtifactWire }) {
   >{label}</span>;
 }
 
-export function SpecialistArtifactsPanel({ artifacts, compact = false }: {
+export function SpecialistArtifactsPanel({
+  artifacts,
+  compact = false,
+  canApprove = false,
+  onRefresh,
+}: {
   artifacts: SpecialistArtifactWire[];
   compact?: boolean;
+  canApprove?: boolean;
+  onRefresh?: () => void | Promise<void>;
 }) {
-  if (!artifacts.length) return null;
+  const [visibleArtifacts, setVisibleArtifacts] = useState(artifacts);
+  const [busyId, setBusyId] = useState<string>();
+  const [decisionError, setDecisionError] = useState<{ id: string; message: string }>();
+  useEffect(() => setVisibleArtifacts(artifacts), [artifacts]);
+  if (!visibleArtifacts.length) return null;
+  const decide = async (artifact: SpecialistArtifactWire, decision: "ACCEPTED" | "REJECTED") => {
+    setBusyId(artifact.id);
+    setDecisionError(undefined);
+    try {
+      const readback = await seoOpsApi.decideArtifactAcceptance(artifact.id, { decision });
+      if (!readback || readback.id !== artifact.id) {
+        throw new Error("artifact acceptance readback does not match the requested artifact");
+      }
+      setVisibleArtifacts((current) => current.map((item) => item.id === readback.id ? readback : item));
+      try {
+        await onRefresh?.();
+      } catch {
+        setDecisionError({
+          id: artifact.id,
+          message: "验收决定已保存，但任务数据刷新失败，请手动刷新。",
+        });
+      }
+    } catch {
+      setDecisionError({ id: artifact.id, message: "验收决定保存失败，请重试。" });
+    } finally {
+      setBusyId(undefined);
+    }
+  };
   return <section className={`data-panel specialist-artifacts${compact ? " is-compact" : ""}`}>
-    <div className="panel-heading"><div><span className="eyebrow">AGENT OUTPUT LEDGER</span><h2>Agent 产物</h2><p className="quiet-copy">Core AI 负责生成；SEO Ops 校验结构、落库并独立记录验收决定。</p></div><span className="result-count">{artifacts.length} 项</span></div>
-    <div className="specialist-artifact-grid">{artifacts.slice(0, compact ? 3 : 12).map((artifact) => {
+    <div className="panel-heading"><div><span className="eyebrow">AGENT OUTPUT LEDGER</span><h2>Agent 产物</h2><p className="quiet-copy">Core AI 负责生成；SEO Ops 校验结构、落库并独立记录验收决定。</p></div><span className="result-count">{visibleArtifacts.length} 项</span></div>
+    <div className="specialist-artifact-grid">{visibleArtifacts.slice(0, compact ? 3 : 12).map((artifact) => {
       const meta = TYPE_META[artifact.artifact_type] ?? UNKNOWN_META;
       return <article className={`artifact-card is-${String(artifact.artifact_type).toLocaleLowerCase()}`} key={artifact.id}>
         <header><div className="artifact-type-icon">{meta.icon}</div><div><span className="eyebrow">{meta.eyebrow}</span><strong>{meta.label}</strong><AcceptanceBadge artifact={artifact} /></div><time dateTime={artifact.created_at}>{formatDateTime(artifact.created_at)}</time></header>
@@ -243,6 +279,15 @@ export function SpecialistArtifactsPanel({ artifacts, compact = false }: {
         <p>{artifact.summary}</p>
         <div className="artifact-count">{countLabel(artifact)}</div>
         <ArtifactDetails artifact={artifact} />
+        {artifact.acceptance_status === "PENDING" ? <div className="artifact-decision">
+          {canApprove ? <>
+            <button disabled={busyId === artifact.id} onClick={() => void decide(artifact, "ACCEPTED")} type="button">接受{meta.label}</button>
+            <button disabled={busyId === artifact.id} onClick={() => void decide(artifact, "REJECTED")} type="button">拒绝{meta.label}</button>
+          </> : <p>当前账号只能查看产物验收状态。</p>}
+        </div> : null}
+        {decisionError?.id === artifact.id
+          ? <p className="page-state is-error" role="alert">{decisionError.message}</p>
+          : null}
         <footer><code>{artifact.schema_version}</code><span>Run {artifact.core_run_id.slice(0, 8)}…</span></footer>
       </article>;
     })}</div>

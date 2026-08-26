@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiClient.js";
 import { AgentRunPoller } from "../src/services/agentRunPoller.js";
 import { parseGbpPostDraftOutput } from "../src/services/gbpPostContentService.js";
+import { addAgentGeneratedDraftFromRun } from "../src/services/contentService.js";
 import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 describe("GBP Post Content Agent pre-Gate draft path", () => {
@@ -30,7 +31,12 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
         }
         lastAgentId = agentId;
         const runId = `core-gbp-content-${triggerCount}`;
-        inputs.set(runId, JSON.parse(message) as Record<string, unknown>);
+        try {
+          inputs.set(runId, JSON.parse(message) as Record<string, unknown>);
+        } catch {
+          // Generic Stage Runs use a bounded text prompt; only GBP content
+          // polling needs a structured request echo in this fake.
+        }
         await new Promise((resolve) => setTimeout(resolve, 10));
         return { run_id: runId, status: "RUNNING" };
       },
@@ -77,14 +83,19 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     };
   }
 
-  async function setupContentTask(coreAi: CoreAiClient, suffix: string) {
+  async function setupContentTask(
+    coreAi: CoreAiClient,
+    suffix: string,
+    config: { dailyRunLimit?: number; stageAgentId?: string } = {},
+  ) {
     const artifactsDir = mkdtempSync(join(tmpdir(), `seo-ops-gbp-${suffix}-`));
     tempDirs.push(artifactsDir);
     const built = await createAuthenticatedTestApp({
       configOverrides: {
         coreAiBaseUrl: "https://core-ai.example",
         coreAiToken: "test-token",
-        agentRunAgentId: null,
+        agentRunAgentId: config.stageAgentId ?? null,
+        agentRunDailyLimit: config.dailyRunLimit ?? 20,
         mockExecution: false,
       },
       deps: { coreAi, artifactsDir },
@@ -521,6 +532,86 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(core.triggerCount()).toBe(1);
   });
 
+  it("serializes Stage and GBP content allocation through one merchant quota boundary", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "shared-stage-gbp-quota", {
+      dailyRunLimit: 1,
+      stageAgentId: "agent-stage",
+    });
+    const { app, db, merchant, task } = built;
+
+    const responses = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/seo-ops/merchants/${merchant.id}/stage-runs`,
+        payload: { stage: "KEYWORDS", idempotency_key: "shared-quota-stage" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+        payload: { idempotency_key: "shared-quota-content" },
+      }),
+    ]);
+
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([202, 429]);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE merchant_id = $1`,
+      [merchant.id],
+    )).toEqual({ count: "1" });
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("converges identical concurrent GBP allocation before checking a limit of one", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "same-gbp-quota", { dailyRunLimit: 1 });
+    const { app, db, task, merchant } = built;
+
+    const responses = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+        payload: { idempotency_key: "same-gbp-quota-a" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+        payload: { idempotency_key: "same-gbp-quota-b" },
+      }),
+    ]);
+
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 202]);
+    expect(responses[0].json().id).toBe(responses[1].json().id);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE merchant_id = $1`,
+      [merchant.id],
+    )).toEqual({ count: "1" });
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_run_requests WHERE merchant_id = $1`,
+      [merchant.id],
+    )).toEqual({ count: "2" });
+    expect(core.triggerCount()).toBe(1);
+
+    const replayIndex = responses.findIndex((response) => response.statusCode === 200);
+    const replayKey = replayIndex === 0 ? "same-gbp-quota-a" : "same-gbp-quota-b";
+    expect((await db.one<{ creation_idempotency_key: string }>(
+      `SELECT creation_idempotency_key FROM seo_agent_runs WHERE merchant_id = $1`,
+      [merchant.id],
+    ))?.creation_idempotency_key).not.toBe(replayKey);
+    const changedReplayRequest = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: replayKey,
+        retry: {
+          prior_run_id: responses[0].json().id,
+          reason: "A business-replay idempotency key cannot later change its HTTP semantics.",
+        },
+      },
+    });
+    expect(changedReplayRequest.statusCode).toBe(409);
+    expect(changedReplayRequest.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
   it("requires explicit audited retry lineage for failed or cancelled generations", async () => {
     const core = fakeCore({ failTriggerNumbers: [1] });
     const built = await setupContentTask(core.client, "retry-taxonomy");
@@ -534,16 +625,20 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(first.statusCode).toBe(502);
     const triggerFailed = await db.one<{
       id: string; request_fingerprint: string; business_input_fingerprint: string;
+      http_request_fingerprint: string; retry_generation: number;
       status: string; error_code: string; retry_of_agent_run_id: string | null;
-    }>(`SELECT id, request_fingerprint, business_input_fingerprint, status, error_code,
+    }>(`SELECT id, request_fingerprint, http_request_fingerprint,
+               business_input_fingerprint, retry_generation, status, error_code,
                retry_of_agent_run_id
           FROM seo_agent_runs WHERE task_id = $1`, [task.id]);
     expect(triggerFailed).toMatchObject({
       status: "FAILED",
       error_code: "TRIGGER_FAILED",
       retry_of_agent_run_id: null,
+      retry_generation: 0,
     });
-    expect(triggerFailed!.business_input_fingerprint).toBe(triggerFailed!.request_fingerprint);
+    expect(triggerFailed!.business_input_fingerprint).not.toBe(triggerFailed!.request_fingerprint);
+    expect(triggerFailed!.http_request_fingerprint).toEqual(expect.stringMatching(/^sha256:/));
 
     const implicitRetry = await app.inject({
       method: "POST",
@@ -567,6 +662,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       retry_of_agent_run_id: triggerFailed!.id,
       retry_reason: retryPayload.retry.reason,
       business_input_fingerprint: triggerFailed!.business_input_fingerprint,
+      retry_generation: 1,
     });
     expect(triggerRetry.json().request_fingerprint).not.toBe(triggerFailed!.request_fingerprint);
 
@@ -578,12 +674,54 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(sameRetryDifferentKey.statusCode).toBe(200);
     expect(sameRetryDifferentKey.json().id).toBe(triggerRetry.json().id);
 
+    const samePriorDifferentReason = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "retry-after-trigger-failure-new-reason",
+        retry: {
+          prior_run_id: triggerFailed!.id,
+          reason: "A different operator explanation must not branch the same generation.",
+        },
+      },
+    });
+    expect(samePriorDifferentReason.statusCode).toBe(200);
+    expect(samePriorDifferentReason.json().id).toBe(triggerRetry.json().id);
+
+    const sameKeyDifferentRequest = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        ...retryPayload,
+        retry: {
+          ...retryPayload.retry,
+          reason: "The same HTTP idempotency key cannot silently change its retry semantics.",
+        },
+      },
+    });
+    expect(sameKeyDifferentRequest.statusCode).toBe(409);
+    expect(sameKeyDifferentRequest.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
+
     await db.exec(
       `UPDATE seo_agent_runs SET status = 'FAILED', error_code = 'OUTPUT_INVALID',
               completed_at = '2026-08-27T01:00:00.000Z'
         WHERE id = $1`,
       [triggerRetry.json().id],
     );
+    const ancestorBypass = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "retry-ancestor-bypass",
+        retry: {
+          prior_run_id: triggerFailed!.id,
+          reason: "A stale ancestor cannot create a second retry branch.",
+        },
+      },
+    });
+    expect(ancestorBypass.statusCode).toBe(409);
+    expect(ancestorBypass.json().error_code).toBe("CONTENT_RUN_RETRY_LINEAGE_MISMATCH");
+
     const outputRetry = await app.inject({
       method: "POST",
       url: `/api/seo-ops/tasks/${task.id}/content-runs`,
@@ -596,6 +734,10 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       },
     });
     expect(outputRetry.statusCode).toBe(202);
+    expect(outputRetry.json()).toMatchObject({
+      retry_of_agent_run_id: triggerRetry.json().id,
+      retry_generation: 2,
+    });
 
     await db.exec(
       `UPDATE seo_agent_runs SET status = 'CANCELLED', error_code = NULL,
@@ -615,6 +757,38 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       },
     });
     expect(cancelledRetry.statusCode).toBe(202);
+    expect(cancelledRetry.json()).toMatchObject({
+      retry_of_agent_run_id: outputRetry.json().id,
+      retry_generation: 3,
+    });
+
+    await db.exec(
+      `UPDATE seo_agent_runs SET status = 'COMPLETED', error_code = NULL,
+              completed_at = '2026-08-27T02:30:00.000Z'
+        WHERE id = $1`,
+      [cancelledRetry.json().id],
+    );
+    await addAgentGeneratedDraftFromRun(
+      db,
+      task.id,
+      cancelledRetry.json().id,
+      "Completed retry draft.",
+      "system:test",
+    );
+    const completedReplay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "retry-completed-generation-replay",
+        retry: {
+          prior_run_id: cancelledRetry.json().id,
+          reason: "A completed generation with a persisted draft must remain stable.",
+        },
+      },
+    });
+    expect(completedReplay.statusCode).toBe(200);
+    expect(completedReplay.json().id).toBe(cancelledRetry.json().id);
+    expect(core.triggerCount()).toBe(4);
 
     await db.exec(
       `UPDATE seo_agent_runs SET status = 'FAILED', error_code = 'TRIGGER_INTERRUPTED',
@@ -635,6 +809,20 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     });
     expect(interrupted.statusCode).toBe(409);
     expect(interrupted.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+
+    const interruptedAncestorBypass = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "retry-interrupted-ancestor-bypass",
+        retry: {
+          prior_run_id: outputRetry.json().id,
+          reason: "A stale ancestor cannot bypass the latest interrupted generation.",
+        },
+      },
+    });
+    expect(interruptedAncestorBypass.statusCode).toBe(409);
+    expect(interruptedAncestorBypass.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
     expect(core.triggerCount()).toBe(4);
     const stored = await db.one<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,

@@ -1,21 +1,18 @@
 import crypto from "node:crypto";
 import { z } from "zod";
-import { isUniqueViolation, type Db } from "../db/connection.js";
+import type { Db } from "../db/connection.js";
 import { canonicalize, requestFingerprint } from "../domain/hashing.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import {
-  countAgentRunsByMerchantSince,
   findActiveGbpContentRunByTask,
-  findAgentRunByIdempotencyKey,
   findAgentRunByTaskFingerprint,
   findLatestGbpContentRunByBusinessFingerprint,
   getAgentRun,
-  insertAgentRun,
   transitionAgentRun,
 } from "../repos/agentRunRepo.js";
 import type { AgentRun } from "../repos/agentRunTypes.js";
 import { getLocation } from "../repos/locationRepo.js";
-import { getMerchant, lockMerchantForUpdate } from "../repos/merchantRepo.js";
+import { getMerchant } from "../repos/merchantRepo.js";
 import { getAgentBinding, latestStyleProfile } from "../repos/settingsRepo.js";
 import { getTask } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
@@ -23,6 +20,7 @@ import { addAgentGeneratedDraftFromRun } from "./contentService.js";
 import { getDraftByAgentRunId } from "../repos/draftRepo.js";
 import type { CoreAiClient } from "./coreAiClient.js";
 import { requireIdempotencyKey } from "./merchantService.js";
+import { allocateAgentRun } from "./agentRunAllocator.js";
 
 export const GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION = "seo_ops.gbp_post_request.v1";
 export const GBP_POST_CONTENT_OUTPUT_SCHEMA_VERSION = "seo_ops.gbp_post_draft.v1";
@@ -88,27 +86,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function startOfUtcDayIso(): string {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-}
-
 function throwActiveFingerprintConflict(taskId: string): never {
   throw conflict(
     `task ${taskId} already has an active GBP Post content run for a different input fingerprint`,
     "CONTENT_RUN_ACTIVE",
   );
-}
-
-async function enforceDailyRunLimit(deps: GbpPostContentDeps, db: Db, merchantId: string) {
-  const limit = deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT;
-  if ((await countAgentRunsByMerchantSince(db, merchantId, startOfUtcDayIso())) >= limit) {
-    throw new ApiError(
-      429,
-      `merchant ${merchantId} reached the daily run limit (${limit})`,
-      "RUN_LIMIT_REACHED",
-    );
-  }
 }
 
 function parseExecutionSpec(task: Task) {
@@ -151,6 +133,7 @@ async function buildRun(
   key: string,
   actorId: string,
   retry?: GbpPostContentRetry,
+  retryGeneration = 0,
 ) {
   if (task.taskType !== "GBP_POST" || task.executionMode !== "AUTO_WRITE") {
     throw badRequest("content Agent runs require an AUTO_WRITE GBP_POST task");
@@ -181,13 +164,18 @@ async function buildRun(
     style_profile_id: styleProfile.id,
     style_profile_version: styleProfile.version,
   });
-  const fingerprint = retry
-    ? requestFingerprint({
-        business_input_fingerprint: businessFingerprint,
-        retry_of_agent_run_id: retry.priorRunId,
-        retry_reason: retry.reason,
-      })
-    : businessFingerprint;
+  const fingerprint = requestFingerprint({
+    business_input_fingerprint: businessFingerprint,
+    retry_of_agent_run_id: retry?.priorRunId ?? null,
+    retry_generation: retryGeneration,
+  });
+  const httpRequestFingerprint = requestFingerprint({
+    task_id: task.id,
+    business_input_fingerprint: businessFingerprint,
+    retry_of_agent_run_id: retry?.priorRunId ?? null,
+    retry_reason: retry?.reason ?? null,
+    retry_generation: retryGeneration,
+  });
   const message = JSON.stringify({
     schema_version: GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION,
     seo_ops_task_id: task.id,
@@ -250,14 +238,22 @@ async function buildRun(
     completedAt: null,
     creationIdempotencyKey: key,
     requestFingerprint: fingerprint,
+    httpRequestFingerprint,
     businessInputFingerprint: businessFingerprint,
     retryOfAgentRunId: retry?.priorRunId ?? null,
+    retryGeneration,
     retryReason: retry?.reason ?? null,
     createdBy: actorId,
     createdAt: now,
     updatedAt: now,
   };
-  return { run, agentId: binding.agentId, fingerprint, businessFingerprint };
+  return {
+    run,
+    agentId: binding.agentId,
+    fingerprint,
+    httpRequestFingerprint,
+    businessFingerprint,
+  };
 }
 
 async function replayOrRequireExplicitRetry(
@@ -289,12 +285,12 @@ async function replayOrRequireExplicitRetry(
   throw conflict(`GBP Post content run cannot be replayed from ${run.status}`, "INVALID_TRANSITION");
 }
 
-async function validateRetry(
+async function validateRetryPrior(
   db: Db,
   task: Task,
   retry: GbpPostContentRetry,
   businessFingerprint: string,
-): Promise<{ run: AgentRun; replayed: true } | null> {
+): Promise<AgentRun> {
   const prior = await getAgentRun(db, retry.priorRunId);
   if (!prior || prior.taskId !== task.id || prior.stage !== "GBP_POST_CONTENT") {
     throw badRequest("retry prior_run_id must identify a GBP Post content run for this task");
@@ -306,20 +302,7 @@ async function validateRetry(
       "CONTENT_RUN_RETRY_LINEAGE_MISMATCH",
     );
   }
-  if (prior.status === "COMPLETED") return replayOrRequireExplicitRetry(db, prior);
-  if (prior.errorCode === "TRIGGER_INTERRUPTED") {
-    throw conflict(
-      "interrupted GBP Post content trigger requires manual reconciliation",
-      "CONTENT_RUN_RECONCILIATION_REQUIRED",
-    );
-  }
-  if (prior.status !== "FAILED" && prior.status !== "CANCELLED") {
-    throw conflict(
-      `retry prior run must be FAILED or CANCELLED, not ${prior.status}`,
-      "CONTENT_RUN_RETRY_NOT_ALLOWED",
-    );
-  }
-  return null;
+  return prior;
 }
 
 async function triggerOnce(
@@ -329,64 +312,68 @@ async function triggerOnce(
   actorId: string,
   retry?: GbpPostContentRetry,
 ): Promise<{ run: AgentRun; replayed: boolean }> {
-  const existing = await findAgentRunByIdempotencyKey(deps.db, key);
-  if (existing) {
-    if (existing.taskId !== taskId) {
-      throw conflict(
-        "idempotency key already used for a different task",
-        "IDEMPOTENCY_CONFLICT",
-      );
-    }
-    return { run: existing, replayed: true };
-  }
   const task = await getTask(deps.db, taskId);
   if (!task) throw notFound(`task ${taskId} not found`);
-  const built = await buildRun(deps, task, key, actorId, retry);
-  if (retry) {
-    const replay = await validateRetry(deps.db, task, retry, built.businessFingerprint);
-    if (replay) return replay;
-  } else {
-    const priorBusinessRun = await findLatestGbpContentRunByBusinessFingerprint(
-      deps.db,
-      taskId,
-      built.businessFingerprint,
-    );
-    if (priorBusinessRun) return replayOrRequireExplicitRetry(deps.db, priorBusinessRun);
-  }
-  const matchingFingerprint = await findAgentRunByTaskFingerprint(
-    deps.db,
-    taskId,
-    built.fingerprint,
-  );
-  if (matchingFingerprint) return { run: matchingFingerprint, replayed: true };
-  if (await findActiveGbpContentRunByTask(deps.db, taskId)) {
-    throwActiveFingerprintConflict(taskId);
-  }
-  await enforceDailyRunLimit(deps, deps.db, task.merchantId);
-  const raced = await deps.db.withTransaction(async (tx) => {
-    const found = await findAgentRunByIdempotencyKey(tx, key);
-    if (found) {
-      if (found.taskId !== taskId) {
+  const base = await buildRun(deps, task, key, actorId, undefined, 0);
+  const prior = retry
+    ? await validateRetryPrior(deps.db, task, retry, base.businessFingerprint)
+    : null;
+  const retryGeneration = prior ? (prior.retryGeneration ?? 0) + 1 : 0;
+  const built = await buildRun(deps, task, key, actorId, retry, retryGeneration);
+
+  const allocation = await allocateAgentRun({
+    db: deps.db,
+    run: built.run,
+    httpRequestFingerprint: built.httpRequestFingerprint,
+    dailyRunLimit: deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT,
+    findBusinessReplay: async (tx) => {
+      const latest = await findLatestGbpContentRunByBusinessFingerprint(
+        tx,
+        taskId,
+        built.businessFingerprint,
+      );
+      if (!retry) {
+        if (latest) return (await replayOrRequireExplicitRetry(tx, latest)).run;
+      } else if (latest) {
+        if (latest.id === retry.priorRunId) {
+          if (latest.status === "FAILED" || latest.status === "CANCELLED") {
+            if (latest.errorCode === "TRIGGER_INTERRUPTED") {
+              return (await replayOrRequireExplicitRetry(tx, latest)).run;
+            }
+            return null;
+          }
+          return (await replayOrRequireExplicitRetry(tx, latest)).run;
+        }
+        const sameGeneration = latest.requestFingerprint === built.fingerprint
+          && latest.retryOfAgentRunId === retry.priorRunId
+          && (latest.retryGeneration ?? 0) === retryGeneration;
+        if (sameGeneration && (
+          latest.status === "TRIGGERING"
+          || latest.status === "RUNNING"
+          || latest.status === "COMPLETED"
+        )) {
+          return (await replayOrRequireExplicitRetry(tx, latest)).run;
+        }
+        if (latest.errorCode === "TRIGGER_INTERRUPTED") {
+          return (await replayOrRequireExplicitRetry(tx, latest)).run;
+        }
+        if (latest.status === "COMPLETED") {
+          return (await replayOrRequireExplicitRetry(tx, latest)).run;
+        }
         throw conflict(
-          "idempotency key already used for a different task",
-          "IDEMPOTENCY_CONFLICT",
+          "retry prior run is not the latest generation for this business input",
+          "CONTENT_RUN_RETRY_LINEAGE_MISMATCH",
         );
+      } else {
+        throw badRequest("retry prior_run_id does not belong to an existing generation chain");
       }
-      return found;
-    }
-    const fingerprintReplay = await findAgentRunByTaskFingerprint(tx, taskId, built.fingerprint);
-    if (fingerprintReplay) return fingerprintReplay;
-    if (await findActiveGbpContentRunByTask(tx, taskId)) {
-      throwActiveFingerprintConflict(taskId);
-    }
-    if (!await lockMerchantForUpdate(tx, task.merchantId)) {
-      throw notFound(`merchant ${task.merchantId} not found`);
-    }
-    await enforceDailyRunLimit(deps, tx, task.merchantId);
-    await insertAgentRun(tx, built.run);
-    return built.run;
+
+      const active = await findActiveGbpContentRunByTask(tx, taskId);
+      if (active) throwActiveFingerprintConflict(taskId);
+      return null;
+    },
   });
-  if (raced.id !== built.run.id) return { run: raced, replayed: true };
+  if (!allocation.inserted) return { run: allocation.run, replayed: true };
 
   try {
     const triggered = await deps.client.trigger(built.agentId, built.run.inputMessage);
@@ -420,12 +407,7 @@ export async function triggerGbpPostContentRun(
   retry?: GbpPostContentRetry,
 ): Promise<{ run: AgentRun; replayed: boolean }> {
   const key = requireIdempotencyKey(idempotencyKey, "idempotency_key");
-  try {
-    return await triggerOnce(deps, taskId, key, actorId, retry);
-  } catch (error) {
-    if (isUniqueViolation(error)) return triggerOnce(deps, taskId, key, actorId, retry);
-    throw error;
-  }
+  return triggerOnce(deps, taskId, key, actorId, retry);
 }
 
 export async function ingestGbpPostContentRunOutput(

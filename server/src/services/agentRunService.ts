@@ -15,11 +15,8 @@ import { getMerchant } from "../repos/merchantRepo.js";
 import { getLocation, listLocationsByMerchant } from "../repos/locationRepo.js";
 import { latestQuestionnaireByMerchant } from "../repos/questionnaireRepo.js";
 import {
-  countAgentRunsByMerchantSince,
-  findAgentRunByIdempotencyKey,
   getAgentRun,
   getDeliverable,
-  insertAgentRun,
   listAgentRunsByMerchant,
   listDeliverablesByRun,
   transitionAgentRun,
@@ -27,7 +24,8 @@ import {
   upsertDeliverable,
 } from "../repos/agentRunRepo.js";
 import type { AgentRun, RunDeliverable } from "../repos/agentRunTypes.js";
-import { requireIdempotencyKey, resolveIdempotentCreate } from "./merchantService.js";
+import { requireIdempotencyKey } from "./merchantService.js";
+import { allocateAgentRun } from "./agentRunAllocator.js";
 import {
   buildStageRunMessage,
   excerptForPrompt,
@@ -113,13 +111,6 @@ export async function gatherPriorExcerpts(
   return excerpts;
 }
 
-function startOfUtcDayIso(): string {
-  const now = new Date();
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  ).toISOString();
-}
-
 export async function triggerStageRun(
   deps: AgentRunDeps,
   merchantId: string,
@@ -144,12 +135,6 @@ export async function triggerStageRun(
     location_id: input.location_id ?? null,
     goal,
   });
-  const replay = resolveIdempotentCreate(
-    await findAgentRunByIdempotencyKey(deps.db, key),
-    fingerprint,
-  );
-  if (replay) return { run: replay, replayed: true };
-
   const merchant = await getMerchant(deps.db, merchantId);
   if (!merchant) throw notFound(`merchant ${merchantId} not found`);
 
@@ -163,15 +148,6 @@ export async function triggerStageRun(
     // 单地点商户是常态：不传 location 就用第一个（多地点时提示显式选择）。
     const locations = await listLocationsByMerchant(deps.db, merchantId);
     location = locations[0] ?? null;
-  }
-
-  const limit = deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT;
-  if ((await countAgentRunsByMerchantSince(deps.db, merchantId, startOfUtcDayIso())) >= limit) {
-    throw new ApiError(
-      429,
-      `merchant ${merchantId} reached the daily run limit (${limit})`,
-      "RUN_LIMIT_REACHED",
-    );
   }
 
   const questionnaire = await latestQuestionnaireByMerchant(deps.db, merchantId);
@@ -208,22 +184,22 @@ export async function triggerStageRun(
     completedAt: null,
     creationIdempotencyKey: key,
     requestFingerprint: fingerprint,
+    httpRequestFingerprint: fingerprint,
+    businessInputFingerprint: fingerprint,
+    retryGeneration: 0,
     createdBy: actorId,
     createdAt: now,
     updatedAt: now,
   };
 
   // Row lands first so the 202/response always has a durable record.
-  const inserted = await deps.db.withTransaction(async (tx) => {
-    const raced = resolveIdempotentCreate(
-      await findAgentRunByIdempotencyKey(tx, key),
-      fingerprint,
-    );
-    if (raced) return raced;
-    await insertAgentRun(tx, run);
-    return run;
+  const allocation = await allocateAgentRun({
+    db: deps.db,
+    run,
+    httpRequestFingerprint: fingerprint,
+    dailyRunLimit: deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT,
   });
-  if (inserted !== run) return { run: inserted, replayed: true };
+  if (!allocation.inserted) return { run: allocation.run, replayed: true };
 
   // Network I/O must stay OUTSIDE db.withTransaction (a dedicated pool client
   // is held for the transaction's duration; awaiting the HTTP call inside it
@@ -602,8 +578,10 @@ export interface StageRunWire {
   error?: string;
   error_code?: string;
   request_fingerprint?: string;
+  http_request_fingerprint?: string;
   business_input_fingerprint?: string;
   retry_of_agent_run_id?: string;
+  retry_generation?: number;
   retry_reason?: string;
   token_usage: Record<string, number>;
   deliverables: DeliverableWire[];
@@ -647,10 +625,14 @@ export function stageRunView(
     ...(run.error ? { error: run.error } : {}),
     ...(run.errorCode ? { error_code: run.errorCode } : {}),
     ...(run.requestFingerprint ? { request_fingerprint: run.requestFingerprint } : {}),
+    ...(run.httpRequestFingerprint
+      ? { http_request_fingerprint: run.httpRequestFingerprint }
+      : {}),
     ...(run.businessInputFingerprint
       ? { business_input_fingerprint: run.businessInputFingerprint }
       : {}),
     ...(run.retryOfAgentRunId ? { retry_of_agent_run_id: run.retryOfAgentRunId } : {}),
+    ...(run.retryGeneration !== undefined ? { retry_generation: run.retryGeneration } : {}),
     ...(run.retryReason ? { retry_reason: run.retryReason } : {}),
     token_usage: run.tokenUsage,
     deliverables: deliverables.map(deliverableView),
