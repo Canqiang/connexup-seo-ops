@@ -164,6 +164,7 @@ export interface EvidenceRef {
   id: string; task_revision: number; type: string; artifact_id?: string; file_id?: string;
   source_ref?: string; sha256?: string; captured_at: string; verification_status: EvidenceVerification;
   requirement_key: string; created_by: string; created_at: string;
+  reused_from_evidence_id?: string;
 }
 export interface ApprovalDecision {
   id: string; decision: ApprovalAction; reason?: string; task_revision: number; execution_spec_hash: string;
@@ -329,6 +330,10 @@ export interface SpecialistArtifactWire {
   id: string; task_id: string; merchant_id: string; artifact_type: SpecialistArtifactType;
   schema_version: string; title: string; summary: string; payload: Record<string, unknown>;
   core_run_id: string; created_by: string | null; created_at: string;
+}
+export interface TaskAuditReferencesWire {
+  agent_runs: Array<{ id: string; core_run_id?: string; trace_ref?: string; deliverables: Array<{ id: string; file_id?: string; sha256?: string; source_ref?: string }> }>;
+  artifacts: Array<{ id: string; core_run_id: string; file_id?: string; sha256?: string }>;
 }
 
 export interface InboxSummaryWire {

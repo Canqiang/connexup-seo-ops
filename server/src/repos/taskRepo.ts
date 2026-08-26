@@ -255,6 +255,13 @@ export async function getTask(db: Db, id: string): Promise<Task | null> {
   return row ? toTask(row) : null;
 }
 
+/** Transaction-only aggregate lock for mutations that allocate child sequence
+ * numbers (draft versions, attempts) before the task CAS is written. */
+export async function getTaskForUpdate(db: Db, id: string): Promise<Task | null> {
+  const row = await db.one<TaskRow>(`SELECT * FROM seo_tasks WHERE id = $1 FOR UPDATE`, [id]);
+  return row ? toTask(row) : null;
+}
+
 export async function findTaskByIdempotencyKey(db: Db, key: string): Promise<Task | null> {
   const row = await db.one<TaskRow>(
     `SELECT * FROM seo_tasks WHERE creation_idempotency_key = $1`,

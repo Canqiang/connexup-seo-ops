@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthContext";
-import type { AttemptWire, CycleLedgerView, DraftWire, LifecycleView, PostProgramView, RankingOverviewView, SpecialistArtifactWire } from "./api/types";
+import type { AttemptWire, CycleLedgerView, DraftWire, LifecycleView, PostProgramView, RankingOverviewView, SpecialistArtifactWire, TaskAuditReferencesWire } from "./api/types";
 import { portfolioFixture, stageRunRunningFixture, taskFixture, userFixture } from "./test/fixtures";
 
 const navigateTo = vi.hoisted(() => vi.fn());
@@ -104,6 +104,7 @@ let taskData = taskFixture;
 let draftData: DraftWire[] = [];
 let artifactData: SpecialistArtifactWire[] = [];
 let attemptData: AttemptWire[] = [];
+let auditReferenceData: TaskAuditReferencesWire = { agent_runs: [], artifacts: [] };
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 
 beforeEach(() => {
@@ -119,6 +120,7 @@ beforeEach(() => {
   draftData = [];
   artifactData = [];
   attemptData = [];
+  auditReferenceData = { agent_runs: [], artifacts: [] };
   calls.length = 0;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-2222-2222-222222222222");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -145,6 +147,7 @@ beforeEach(() => {
     if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/proposal-batches")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/tasks/task-1/attempts")) return json({ items: attemptData });
+    if (path.startsWith("/api/seo-ops/tasks/task-1/audit-references")) return json(auditReferenceData);
     if (path.startsWith("/api/seo-ops/tasks/task-1/execution-preview")) return json({ confirmable: true, attempt_count: 0, gate_ready_status: true, checks: [
       { key: "version", label: "当前版本一致", detail: "审批版本与任务一致", passed: true },
       { key: "authorization", label: "外部授权有效", detail: "商户授权仍有效", passed: true },
@@ -417,8 +420,9 @@ test("approved MANUAL work stays on evidence guidance and never previews or conf
   taskData = { ...taskFixture, execution_mode: "MANUAL", status: "APPROVED" };
   renderApp("/tasks/task-1");
 
-  expect(await screen.findByRole("heading", { name: "请补充人工完成证据" })).toBeInTheDocument();
-  expect(screen.getByText("人工完成后附加证据；系统不会派发或立即发布。")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "记录人工完成与证据" })).toBeInTheDocument();
+  expect(screen.getByText("保存完成证据后归档；系统不会派发或立即发布。")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "记录人工完成" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "确认现在发布" })).not.toBeInTheDocument();
   expect(calls.some((call) => call.path.includes("execution-preview") || call.path.includes("execution-confirmations"))).toBe(false);
 });
@@ -459,6 +463,18 @@ test("task hero shows an accepted artifact when no current draft exists", async 
   expect(within(screen.getByLabelText("当前内容")).getByText("当前可交付审计摘要")).toBeVisible();
 });
 
+test("task hero chooses the newest-first persisted artifact", async () => {
+  artifactData = [
+    { id: "artifact-new", task_id: "task-1", merchant_id: "only-bear", artifact_type: "AUDIT_REPORT", schema_version: "v1", title: "最新已接受产物", summary: "newest", payload: {}, core_run_id: "core-new", created_by: "user-1", created_at: "2026-08-27T08:00:00Z" },
+    { id: "artifact-old", task_id: "task-1", merchant_id: "only-bear", artifact_type: "AUDIT_REPORT", schema_version: "v1", title: "旧产物", summary: "oldest", payload: {}, core_run_id: "core-old", created_by: "user-1", created_at: "2026-08-26T08:00:00Z" },
+  ];
+  renderApp("/tasks/task-1");
+
+  await screen.findByText("当前产物");
+  expect(within(screen.getByLabelText("当前内容")).getByText("最新已接受产物")).toBeVisible();
+  expect(within(screen.getByLabelText("当前内容")).queryByText("旧产物")).not.toBeInTheDocument();
+});
+
 test("closed technical audit exposes full identifiers, hashes and safe external evidence links", async () => {
   taskData = {
     ...taskFixture,
@@ -477,6 +493,21 @@ test("closed technical audit exposes full identifiers, hashes and safe external 
   expect(screen.getByText("sha256:abcdef0123456789full")).toBeVisible();
   expect(screen.getByRole("link", { name: "打开发布回执" })).toHaveAttribute("href", "https://example.test/receipts/publish-123");
   expect(screen.getByRole("link", { name: "打开证据来源" })).toHaveAttribute("href", "https://example.test/source/full");
+});
+
+test("technical audit renders persisted task-run traces and deliverable identifiers without inventing values", async () => {
+  auditReferenceData = {
+    agent_runs: [{ id: "task-agent-run-full", core_run_id: "task-core-run-full", trace_ref: "https://example.test/traces/full", deliverables: [{ id: "deliverable-full", file_id: "core-file-full", sha256: "sha256:deliverable-full", source_ref: "https://example.test/files/full" }] }],
+    artifacts: [{ id: "specialist-artifact-full", core_run_id: "specialist-core-full", file_id: "specialist-file-full", sha256: "sha256:specialist-full" }],
+  };
+  renderApp("/tasks/task-1");
+  await userEvent.setup().click(await screen.findByText("技术详情（审计）"));
+  expect(await screen.findByText("task-core-run-full")).toBeVisible();
+  expect(screen.getByText("https://example.test/traces/full")).toBeVisible();
+  expect(screen.getByText("core-file-full")).toBeVisible();
+  expect(screen.getByText("sha256:deliverable-full")).toBeVisible();
+  expect(screen.getByText("specialist-file-full")).toBeVisible();
+  expect(screen.getByText("sha256:specialist-full")).toBeVisible();
 });
 
 function renderApp(route: string) {

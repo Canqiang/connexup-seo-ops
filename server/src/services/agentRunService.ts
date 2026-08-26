@@ -190,6 +190,7 @@ export async function triggerStageRun(
     goal,
     status: "TRIGGERING",
     coreRunId: null,
+    traceRef: null,
     coreStatus: null,
     inputMessage: message,
     output: null,
@@ -390,6 +391,7 @@ export async function applyTerminalTransition(
     {
       status: mapCoreStatus(core.status),
       coreStatus: core.status,
+      traceRef: core.trace_id ?? run.traceRef,
       output: core.output ?? null,
       error: core.error ?? null,
       tokenUsage: core.token_usage ?? {},
@@ -586,6 +588,7 @@ export interface StageRunWire {
   goal: string | null;
   status: AgentRunStatus;
   core_run_id?: string;
+  trace_ref?: string;
   core_status?: string;
   input_message: string;
   output?: string | null;
@@ -624,6 +627,7 @@ export function stageRunView(
     goal: run.goal,
     status: run.status,
     ...(run.coreRunId ? { core_run_id: run.coreRunId } : {}),
+    ...(run.traceRef ? { trace_ref: run.traceRef } : {}),
     ...(run.coreStatus ? { core_status: run.coreStatus } : {}),
     input_message: run.inputMessage,
     ...(opts.includeFullOutput

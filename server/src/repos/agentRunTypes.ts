@@ -17,6 +17,7 @@ export interface AgentRun {
   goal: string | null;
   status: AgentRunStatus;
   coreRunId: string | null;
+  traceRef: string | null;
   coreStatus: string | null;
   inputMessage: string;
   output: string | null;

@@ -11,7 +11,8 @@ export function TaskDecisionHero({ task, decision, drafts = [], artifacts = [], 
   children?: ReactNode;
 }) {
   const latestDraft = drafts.at(-1);
-  const latestArtifact = artifacts.at(-1);
+  // Task artifact API is newest-first (created_at DESC), unlike drafts.
+  const latestArtifact = artifacts[0];
   return <section aria-label="当前决策" className="task-decision-hero">
     <div className="task-decision-context"><span className="eyebrow"><span>{task.merchant_name}</span>{task.location_name ? <> · <span>{task.location_name}</span></> : null}</span><h1>{task.title}</h1></div>
     <div className="task-decision-main"><span className="eyebrow">CURRENT HUMAN DECISION</span><h2>{decision.heading}</h2><p>{decision.consequence}</p></div>

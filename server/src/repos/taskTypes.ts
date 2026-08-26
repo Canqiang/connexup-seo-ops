@@ -41,6 +41,8 @@ export interface EvidenceRefRecord {
   requirementKey: string;
   createdBy: string;
   createdAt: string;
+  /** New-revision evidence cloned from a verified prior-revision reference. */
+  reusedFromEvidenceId?: string;
 }
 
 export interface ApprovalDecisionRecord {

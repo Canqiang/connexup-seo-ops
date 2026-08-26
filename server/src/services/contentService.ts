@@ -139,10 +139,16 @@ export async function addDraftRevision(
         capturedAt: draft.createdAt, verificationStatus: "VERIFIED", requirementKey: "CONTENT_DRAFT",
         createdBy: actorId, createdAt: nowIso(),
       };
+      const reusableEvidence: EvidenceRefRecord[] = task.evidenceRefs
+        .filter((item) => item.taskRevision === task.taskRevision && item.type !== "CONTENT_DRAFT" && item.verificationStatus === "VERIFIED")
+        .map((item) => ({
+          ...item, id: crypto.randomUUID(), taskRevision: revision.revision,
+          createdBy: actorId, createdAt: nowIso(), reusedFromEvidenceId: item.id,
+        }));
       const updated: Task = {
         ...task, executionSpec, executionSpecHash: revision.executionSpecHash,
         taskRevision: revision.revision, revisions: [...task.revisions, revision],
-        evidenceRefs: [...task.evidenceRefs, evidence], stateVersion: task.stateVersion + 1, updatedAt: nowIso(),
+        evidenceRefs: [...task.evidenceRefs, evidence, ...reusableEvidence], stateVersion: task.stateVersion + 1, updatedAt: nowIso(),
       };
       const derived = await reevaluate(tx, updated);
       updated.status = derived.status;

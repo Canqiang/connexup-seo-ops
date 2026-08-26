@@ -124,7 +124,7 @@ export class AgentRunPoller {
       await transitionAgentRun(
         this.deps.db,
         run.id,
-        { coreStatus: core.status, lastPolledAt: this.nowIso() },
+        { coreStatus: core.status, traceRef: core.trace_id ?? fresh.traceRef, lastPolledAt: this.nowIso() },
         ["RUNNING"],
       );
     }

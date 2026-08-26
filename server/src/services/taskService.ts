@@ -28,6 +28,7 @@ import { getLocation } from "../repos/locationRepo.js";
 import {
   findTaskByIdempotencyKey,
   getTask,
+  getTaskForUpdate,
   insertTask,
   updateTaskCas,
 } from "../repos/taskRepo.js";
@@ -203,7 +204,7 @@ export async function mutateTask(
 ): Promise<{ task: Task; replayed: boolean }> {
   requireIdempotencyKey(idempotencyKey, "idempotency_key");
   return db.withTransaction(async (tx) => {
-    const task = await getTask(tx, taskId);
+    const task = await getTaskForUpdate(tx, taskId);
     if (!task) throw notFound(`task ${taskId} not found`);
 
     const seen = task.mutationKeys[idempotencyKey];

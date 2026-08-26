@@ -107,6 +107,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     goal TEXT,
     status TEXT NOT NULL,
     core_run_id TEXT,
+    trace_ref TEXT,
     core_status TEXT,
     input_message TEXT NOT NULL,
     output TEXT,
@@ -123,6 +124,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS trace_ref TEXT`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_merchant_stage ON seo_agent_runs(merchant_id, stage, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON seo_agent_runs(status)`,
 

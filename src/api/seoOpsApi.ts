@@ -90,6 +90,8 @@ export const seoOpsApi = {
     requestJson<{ items: AttemptWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/attempts`, { signal }),
   taskArtifacts: (id: string, signal?: AbortSignal) =>
     requestJson<{ items: SpecialistArtifactWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/artifacts`, { signal }),
+  taskAuditReferences: (id: string, signal?: AbortSignal) =>
+    requestJson<import("./types").TaskAuditReferencesWire>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/audit-references`, { signal }),
   merchantArtifacts: (merchantId: string, artifactType?: SpecialistArtifactType, signal?: AbortSignal) =>
     requestJson<{ items: SpecialistArtifactWire[] }>(
       `/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/artifacts${artifactType ? `?artifact_type=${encodeURIComponent(artifactType)}` : ""}`,
@@ -103,6 +105,8 @@ export const seoOpsApi = {
     post<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/verification`, request),
   resetFailedTask: (id: string, request: { note?: string; expected_state_version: number; idempotency_key: string }) =>
     post<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/failed-reset`, request),
+  completeManualTask: (id: string, request: { source_ref: string; note?: string; expected_state_version: number; idempotency_key: string }) =>
+    post<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/manual-completions`, request),
 
   // ---- 建议层 ----
   proposalBatches: (merchantId?: string, signal?: AbortSignal) =>

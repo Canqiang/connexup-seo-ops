@@ -184,6 +184,9 @@ export interface ExecutionPreview {
 export async function executionPreview(db: Db, taskId: string): Promise<ExecutionPreview> {
   const task = await getTask(db, taskId);
   if (!task) throw notFound(`task ${taskId} not found`);
+  if (task.executionMode === "MANUAL") {
+    throw conflict("manual tasks require explicit human completion evidence", "MANUAL_EXECUTION_ONLY");
+  }
   const checks = await gateChecks(db, task);
   const statusOk = canConfirmExecution(task.status);
   return {
@@ -248,6 +251,9 @@ export async function confirmExecution(
     fingerprint,
     input.expected_state_version,
     async (task, tx) => {
+      if (task.executionMode === "MANUAL") {
+        throw conflict("manual tasks require explicit human completion evidence", "MANUAL_EXECUTION_ONLY");
+      }
       if (!canConfirmExecution(task.status)) {
         throw conflict(
           `cannot confirm execution in status ${task.status}`,
@@ -287,6 +293,46 @@ export async function confirmExecution(
       return updated;
     },
   );
+}
+
+export interface CompleteManualInput {
+  source_ref: string;
+  note?: string;
+  expected_state_version: number;
+  idempotency_key: string;
+}
+
+/** Manual work has no system attempt. A human with execute permission records
+ * a concrete external evidence reference and the independently readback task
+ * becomes DONE in the same CAS mutation. */
+export async function completeManualTask(
+  db: Db,
+  taskId: string,
+  input: CompleteManualInput,
+  actorId: string,
+): Promise<{ task: Task; replayed: boolean }> {
+  if (!input.source_ref.trim()) throw badRequest("source_ref is required");
+  const fingerprint = requestFingerprint({ action: "MANUAL_COMPLETE", source_ref: input.source_ref, note: input.note ?? null });
+  return mutateTask(db, taskId, input.idempotency_key, fingerprint, input.expected_state_version,
+    async (task) => {
+      if (task.executionMode !== "MANUAL" || task.status !== "APPROVED") {
+        throw conflict(`cannot complete manual task in ${task.status}/${task.executionMode}`, "INVALID_TRANSITION");
+      }
+      const now = nowIso();
+      const evidence = {
+        id: crypto.randomUUID(), taskRevision: task.taskRevision, type: "MANUAL_COMPLETION",
+        sourceRef: input.source_ref.trim(), capturedAt: now, verificationStatus: "VERIFIED" as const,
+        requirementKey: "MANUAL_COMPLETION", createdBy: actorId, createdAt: now,
+      };
+      const version = task.stateVersion + 1;
+      return {
+        ...task, status: "DONE", evidenceRefs: [...task.evidenceRefs, evidence],
+        stateVersion: version, updatedAt: now,
+        events: [...task.events, buildEvent("MANUAL_COMPLETED", task.taskRevision, version, actorId, {
+          fromStatus: task.status, toStatus: "DONE", referenceId: evidence.id,
+        })],
+      };
+    });
 }
 
 /** Ⓐ 级自动派发（scheduler 用）：规则预授权，跳过门 2 人工确认；仍要求

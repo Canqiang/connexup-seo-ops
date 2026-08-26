@@ -12,6 +12,7 @@ interface AgentRunRow {
   goal: string | null;
   status: string;
   core_run_id: string | null;
+  trace_ref: string | null;
   core_status: string | null;
   input_message: string;
   output: string | null;
@@ -40,6 +41,7 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
     goal: row.goal,
     status: row.status as AgentRunStatus,
     coreRunId: row.core_run_id,
+    traceRef: row.trace_ref,
     coreStatus: row.core_status,
     inputMessage: row.input_message,
     output: row.output,
@@ -59,11 +61,11 @@ export function toAgentRun(row: AgentRunRow): AgentRun {
 }
 
 const RUN_COLUMNS = `id, merchant_id, location_id, stage, task_id, run_type, goal, status,
-  core_run_id, core_status, input_message, output, error, error_code, token_usage,
+  core_run_id, trace_ref, core_status, input_message, output, error, error_code, token_usage,
   triggered_by, triggered_at, last_polled_at, completed_at,
   creation_idempotency_key, request_fingerprint, created_by, created_at, updated_at`;
 
-const RUN_COLUMN_COUNT = 24;
+const RUN_COLUMN_COUNT = 25;
 
 function runParams(run: AgentRun): unknown[] {
   return [
@@ -75,6 +77,7 @@ function runParams(run: AgentRun): unknown[] {
     run.goal,
     run.status,
     run.coreRunId,
+    run.traceRef,
     run.coreStatus,
     run.inputMessage,
     run.output,
@@ -107,12 +110,12 @@ export async function insertAgentRun(db: Db, run: AgentRun): Promise<AgentRun> {
 export async function updateAgentRun(db: Db, run: AgentRun): Promise<void> {
   await db.exec(
     `UPDATE seo_agent_runs SET merchant_id = $1, location_id = $2, stage = $3, task_id = $4,
-       run_type = $5, goal = $6, status = $7, core_run_id = $8, core_status = $9,
-       input_message = $10, output = $11, error = $12, error_code = $13, token_usage = $14,
-       triggered_by = $15, triggered_at = $16, last_polled_at = $17, completed_at = $18,
-       creation_idempotency_key = $19, request_fingerprint = $20, created_by = $21,
-       created_at = $22, updated_at = $23
-     WHERE id = $24`,
+       run_type = $5, goal = $6, status = $7, core_run_id = $8, trace_ref = $9, core_status = $10,
+       input_message = $11, output = $12, error = $13, error_code = $14, token_usage = $15,
+       triggered_by = $16, triggered_at = $17, last_polled_at = $18, completed_at = $19,
+       creation_idempotency_key = $20, request_fingerprint = $21, created_by = $22,
+       created_at = $23, updated_at = $24
+     WHERE id = $25`,
     [...runParams(run), run.id],
   );
 }
@@ -128,6 +131,7 @@ const COLUMN_BY_KEY: Record<keyof AgentRun, string> = {
   goal: "goal",
   status: "status",
   coreRunId: "core_run_id",
+  traceRef: "trace_ref",
   coreStatus: "core_status",
   inputMessage: "input_message",
   output: "output",
@@ -213,6 +217,13 @@ export async function listAgentRunsByMerchant(
          WHERE merchant_id = $1 ORDER BY created_at DESC, id DESC`,
         [merchantId],
       );
+  return rows.map(toAgentRun);
+}
+
+export async function listAgentRunsByTask(db: Db, taskId: string): Promise<AgentRun[]> {
+  const rows = await db.query<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs WHERE task_id = $1 ORDER BY created_at DESC, id DESC`, [taskId],
+  );
   return rows.map(toAgentRun);
 }
 

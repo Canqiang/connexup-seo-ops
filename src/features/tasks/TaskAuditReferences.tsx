@@ -1,4 +1,4 @@
-import type { AttemptWire, SeoTask, SpecialistArtifactWire } from "../../api/types";
+import type { AttemptWire, SeoTask, SpecialistArtifactWire, TaskAuditReferencesWire } from "../../api/types";
 import { safeHref } from "../../app/format";
 
 function Reference({ label, value, linkLabel }: { label: string; value?: string | null; linkLabel?: string }) {
@@ -8,8 +8,8 @@ function Reference({ label, value, linkLabel }: { label: string; value?: string 
 }
 
 /** Closed audit-only ledger: values are deliberately complete and selectable. */
-export function TaskAuditReferences({ task, attempts, artifacts }: {
-  task: SeoTask; attempts: AttemptWire[]; artifacts: SpecialistArtifactWire[];
+export function TaskAuditReferences({ task, attempts, artifacts, runReferences }: {
+  task: SeoTask; attempts: AttemptWire[]; artifacts: SpecialistArtifactWire[]; runReferences?: TaskAuditReferencesWire;
 }) {
   return <section aria-label="审计引用" className="data-panel task-audit-references">
     <div className="panel-heading"><div><span className="eyebrow">AUDIT REFERENCES</span><h2>完整引用与回执</h2></div></div>
@@ -32,6 +32,23 @@ export function TaskAuditReferences({ task, attempts, artifacts }: {
       {artifacts.flatMap((artifact) => [
         <Reference key={`${artifact.id}:id`} label="artifact_id" value={artifact.id} />,
         <Reference key={`${artifact.id}:core`} label="core_run_id" value={artifact.core_run_id} />,
+      ])}
+      {runReferences?.agent_runs.flatMap((run) => [
+        <Reference key={`${run.id}:run`} label="task_agent_run_id" value={run.id} />,
+        <Reference key={`${run.id}:core`} label="core_run_id" value={run.core_run_id} />,
+        <Reference key={`${run.id}:trace`} label="trace_ref" value={run.trace_ref} />,
+        ...run.deliverables.flatMap((deliverable) => [
+          <Reference key={`${deliverable.id}:id`} label="deliverable_id" value={deliverable.id} />,
+          <Reference key={`${deliverable.id}:file`} label="file_id" value={deliverable.file_id} />,
+          <Reference key={`${deliverable.id}:hash`} label="sha256" value={deliverable.sha256} />,
+          <Reference key={`${deliverable.id}:source`} label="deliverable_source_ref" value={deliverable.source_ref} />,
+        ]),
+      ])}
+      {runReferences?.artifacts.flatMap((artifact) => [
+        <Reference key={`${artifact.id}:audit-id`} label="artifact_id" value={artifact.id} />,
+        <Reference key={`${artifact.id}:audit-core`} label="core_run_id" value={artifact.core_run_id} />,
+        <Reference key={`${artifact.id}:audit-file`} label="file_id" value={artifact.file_id} />,
+        <Reference key={`${artifact.id}:audit-hash`} label="sha256" value={artifact.sha256} />,
       ])}
     </ul>
   </section>;

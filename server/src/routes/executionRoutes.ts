@@ -17,6 +17,7 @@ import {
 import {
   attemptsView,
   confirmExecution,
+  completeManualTask,
   executionPreview,
   markVerified,
   resetFailedTask,
@@ -39,8 +40,9 @@ import {
   insertStyleProfile,
 } from "../repos/settingsRepo.js";
 import { getAttempt, listOpenUnknownAttempts } from "../repos/executionRepo.js";
+import { getAgentRun, listAgentRunsByTask, listDeliverablesByRun } from "../repos/agentRunRepo.js";
 import { countPendingProposals, getProposal } from "../repos/proposalRepo.js";
-import { listTasksByStatus } from "../repos/taskRepo.js";
+import { getTask, listTasksByStatus } from "../repos/taskRepo.js";
 import { getMerchant, listMerchantsForOperator } from "../repos/merchantRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import type { Task } from "../repos/taskTypes.js";
@@ -99,6 +101,13 @@ const decideProposalSchema = z.object({
 });
 
 const confirmExecutionSchema = z.object({
+  expected_state_version: z.number().int().nonnegative(),
+  idempotency_key: z.string(),
+});
+
+const completeManualSchema = z.object({
+  source_ref: z.string().min(1).max(1000),
+  note: z.string().max(4000).optional(),
   expected_state_version: z.number().int().nonnegative(),
   idempotency_key: z.string(),
 });
@@ -271,6 +280,16 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     },
   );
 
+  app.post("/api/seo-ops/tasks/:taskId/manual-completions", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.execute");
+    const { taskId } = request.params as { taskId: string };
+    await requireTaskAccess(ctx.db, actor, taskId);
+    const body = completeManualSchema.parse(request.body);
+    const { task, replayed } = await completeManualTask(ctx.db, taskId, body, actor.userId);
+    reply.status(replayed ? 200 : 201);
+    return taskView(task, await taskNames(ctx, task));
+  });
+
   app.get("/api/seo-ops/tasks/:taskId/attempts", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     const { taskId } = request.params as { taskId: string };
@@ -284,6 +303,33 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     await requireTaskAccess(ctx.db, actor, taskId);
     return {
       items: (await listSpecialistArtifactsByTask(ctx.db, taskId)).map(specialistArtifactView),
+    };
+  });
+
+  app.get("/api/seo-ops/tasks/:taskId/audit-references", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const { taskId } = request.params as { taskId: string };
+    await requireTaskAccess(ctx.db, actor, taskId);
+    const task = await getTask(ctx.db, taskId);
+    if (!task) throw new ApiError(404, "resource not found");
+    const linked = await Promise.all(task.agentRunLinks.map((link) => getAgentRun(ctx.db, link.agentRunId)));
+    const runs = [...await listAgentRunsByTask(ctx.db, taskId), ...linked.filter((run): run is NonNullable<typeof run> => run !== null)]
+      .filter((run, index, all) => all.findIndex((candidate) => candidate.id === run.id) === index);
+    return {
+      agent_runs: await Promise.all(runs.map(async (run) => ({
+        id: run.id, ...(run.coreRunId ? { core_run_id: run.coreRunId } : {}),
+        ...(run.traceRef ? { trace_ref: run.traceRef } : {}),
+        deliverables: (await listDeliverablesByRun(ctx.db, run.id)).map((deliverable) => ({
+          id: deliverable.id, ...(deliverable.fileId ? { file_id: deliverable.fileId } : {}),
+          ...(deliverable.sha256 ? { sha256: deliverable.sha256 } : {}),
+          ...(deliverable.remoteUrl ? { source_ref: deliverable.remoteUrl } : {}),
+        })),
+      }))),
+      artifacts: (await listSpecialistArtifactsByTask(ctx.db, taskId)).map((artifact) => ({
+        id: artifact.id, core_run_id: artifact.coreRunId,
+        ...(typeof artifact.payload.file_id === "string" ? { file_id: artifact.payload.file_id } : {}),
+        ...(typeof artifact.payload.sha256 === "string" ? { sha256: artifact.payload.sha256 } : {}),
+      })),
     };
   });
 

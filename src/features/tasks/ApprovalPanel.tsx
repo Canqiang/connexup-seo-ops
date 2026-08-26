@@ -53,7 +53,7 @@ export function ApprovalPanel({ task, canApprove, onReadback, compact = false, p
         <div className="button-row">{task.status === "READY_FOR_APPROVAL" ? <><button className="primary-button" disabled={busy || !preview.reviewable} onClick={() => decide("APPROVE")} type="button">{primaryLabel}</button><button className="secondary-button" disabled={busy} onClick={() => decide("REJECT")} type="button">退回修订</button></> : null}{task.status === "APPROVED" ? <button className="danger-button" disabled={busy} onClick={() => decide("REVOKE")} type="button">撤销批准</button> : null}</div>
       </div> : null}
     </>}<p className="form-message" role="status">{message}</p>
-    {task.status === "APPROVED" ? <p className="boundary-note is-approved">{task.execution_mode === "READ_ONLY" ? "已批准 — Ⓐ级只读任务由调度器自动派发。" : "已批准 — 等待门 2 执行确认（见执行面板）。"}</p> : null}
+    {task.status === "APPROVED" ? <p className="boundary-note is-approved">{task.execution_mode === "READ_ONLY" ? "已批准 — Ⓐ级只读任务由调度器自动派发。" : task.execution_mode === "MANUAL" ? "已批准 — 人工完成后记录完成证据，不进入门 2。" : "已批准 — 等待门 2 执行确认（见执行面板）。"}</p> : null}
   </>;
   if (compact) return <div className="approval-panel is-compact">{controls}</div>;
   return <section className="approval-panel"><header><span><ShieldCheck size={16} /> 审批控制（门 1）</span><small>批准只记录授权，不触发执行</small></header>{controls}</section>;

@@ -179,6 +179,7 @@ export function taskView(
       ...(e.fileId ? { file_id: e.fileId } : {}),
       ...(e.sourceRef ? { source_ref: e.sourceRef } : {}),
       ...(e.sha256 ? { sha256: e.sha256 } : {}),
+      ...(e.reusedFromEvidenceId ? { reused_from_evidence_id: e.reusedFromEvidenceId } : {}),
       captured_at: e.capturedAt,
       verification_status: e.verificationStatus,
       requirement_key: e.requirementKey,

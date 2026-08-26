@@ -50,7 +50,7 @@ export interface TaskDecisionDescriptor {
   heading: string;
   consequence: string;
   actionLabel: string | null;
-  actionKind: "APPROVE" | "CONFIRM" | "VERIFY" | "RECONCILE" | "CONTACT" | "VIEW" | null;
+  actionKind: "APPROVE" | "CONFIRM" | "VERIFY" | "RECONCILE" | "MANUAL_COMPLETE" | "CONTACT" | "VIEW" | null;
 }
 
 type TaskDecisionPermissions = { canManage: boolean; canApprove: boolean; canExecute: boolean };
@@ -76,10 +76,10 @@ const TASK_DECISIONS: Record<string, TaskDecisionDescriptor> = {
 export function taskDecisionDescriptor(task: SeoTask, permissions: TaskDecisionPermissions): TaskDecisionDescriptor {
   if (task.status === "APPROVED" && task.execution_mode === "MANUAL") {
     return {
-      heading: "请补充人工完成证据",
-      consequence: "人工完成后附加证据；系统不会派发或立即发布。",
-      actionLabel: "查看人工完成指引",
-      actionKind: "VIEW",
+      heading: "记录人工完成与证据",
+      consequence: "保存完成证据后归档；系统不会派发或立即发布。",
+      actionLabel: "记录人工完成",
+      actionKind: "MANUAL_COMPLETE",
     };
   }
   const decision = TASK_DECISIONS[task.status] ?? {
@@ -90,7 +90,7 @@ export function taskDecisionDescriptor(task: SeoTask, permissions: TaskDecisionP
   };
   const needsApproval = decision.actionKind === "APPROVE";
   const needsManage = decision.actionKind === "CONTACT";
-  const needsExecute = decision.actionKind === "CONFIRM" || decision.actionKind === "VERIFY" || decision.actionKind === "RECONCILE";
+  const needsExecute = decision.actionKind === "CONFIRM" || decision.actionKind === "VERIFY" || decision.actionKind === "RECONCILE" || decision.actionKind === "MANUAL_COMPLETE";
   if ((needsApproval && !permissions.canApprove) || (needsManage && !permissions.canManage) || (needsExecute && !permissions.canExecute)) {
     return { ...decision, actionLabel: null };
   }

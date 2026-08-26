@@ -73,6 +73,9 @@ async function approvedWriteTask(
   merchantId: string,
   locationId: string,
   key = "wt-1",
+  executionMode: "AUTO_WRITE" | "MANUAL" = "AUTO_WRITE",
+  requiredEvidenceTypes = ["CONTENT_DRAFT"],
+  carryVerifiedEvidence = false,
 ) {
   const created = (
     await app.inject({
@@ -91,14 +94,14 @@ async function approvedWriteTask(
             locationName: "locations/gbp-123",
             post_type: "UPDATE",
           }),
-          required_evidence_types: ["CONTENT_DRAFT"],
-          execution_mode: "AUTO_WRITE",
+          required_evidence_types: requiredEvidenceTypes,
+          execution_mode: executionMode,
         },
         idempotency_key: key,
       },
     })
   ).json();
-  expect(created.execution_mode).toBe("AUTO_WRITE");
+  expect(created.execution_mode).toBe(executionMode);
   expect(created.status).toBe("NEEDS_INPUT");
 
   const draft = (
@@ -120,17 +123,28 @@ async function approvedWriteTask(
       },
     })
   ).json();
-  expect(finalized.status).toBe("READY_FOR_APPROVAL");
+  expect(finalized.status).toBe(carryVerifiedEvidence ? "NEEDS_INPUT" : "READY_FOR_APPROVAL");
 
+  const readyForApproval = carryVerifiedEvidence ? (
+    await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${created.id}/evidence`,
+      payload: {
+        type: "BEFORE_SCREENSHOT", source_ref: "https://example.test/evidence/before",
+        captured_at: "2026-08-26T08:00:00.000Z", verification_status: "VERIFIED",
+        requirement_key: "BEFORE_SCREENSHOT", expected_state_version: finalized.state_version,
+        idempotency_key: `${key}-before`,
+      },
+    })
+  ).json() : finalized;
   const approved = (
     await app.inject({
       method: "POST",
       url: `/api/seo-ops/tasks/${created.id}/approval-decisions`,
       payload: {
         decision: "APPROVE",
-        task_revision: finalized.task_revision,
-        execution_spec_hash: finalized.execution_spec_hash,
-        expected_state_version: finalized.state_version,
+        task_revision: readyForApproval.task_revision,
+        execution_spec_hash: readyForApproval.execution_spec_hash,
+        expected_state_version: readyForApproval.state_version,
         idempotency_key: `${key}-approve`,
       },
     })
@@ -245,6 +259,71 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(res.json().error_code).toBe("GATE2_CHECK_FAILED");
   });
 
+  it("MANUAL is rejected by both execution preview and confirm, while explicit human completion records evidence without attempts", async () => {
+    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-manual", "MANUAL");
+
+    const preview = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/execution-preview` });
+    expect(preview.statusCode).toBe(409);
+    expect(preview.json().error_code).toBe("MANUAL_EXECUTION_ONLY");
+
+    const confirm = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
+      payload: { expected_state_version: task.state_version, idempotency_key: "manual-confirm" },
+    });
+    expect(confirm.statusCode).toBe(409);
+    expect(confirm.json().error_code).toBe("MANUAL_EXECUTION_ONLY");
+    expect((await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/attempts` })).json().items).toEqual([]);
+
+    const completed = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${task.id}/manual-completions`,
+      payload: {
+        source_ref: "https://example.test/manual-proof/receipt-1",
+        note: "运营已在外部资产完成该动作并回读。",
+        expected_state_version: task.state_version,
+        idempotency_key: "manual-complete",
+      },
+    });
+    expect(completed.statusCode).toBe(201);
+    expect(completed.json()).toMatchObject({ status: "DONE", state_version: task.state_version + 1 });
+    expect(completed.json().evidence_refs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "MANUAL_COMPLETION", source_ref: "https://example.test/manual-proof/receipt-1" }),
+    ]));
+    const readback = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}` });
+    expect(readback.json()).toMatchObject({ status: "DONE", state_version: task.state_version + 1 });
+    expect((await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/attempts` })).json().items).toEqual([]);
+  });
+
+  it("draft revisions serialize task state and leave no orphan draft or evidence on losing requests", async () => {
+    const same = await approvedWriteTask(app, merchant.id, location.id, "wt-race-same");
+    const samePayload = { body: "并发改稿内容", source: "HUMAN_EDIT", expected_state_version: same.state_version, idempotency_key: "same-key" };
+    const [sameA, sameB] = await Promise.all([
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${same.id}/draft-revisions`, payload: samePayload }),
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${same.id}/draft-revisions`, payload: samePayload }),
+    ]);
+    expect([sameA.statusCode, sameB.statusCode].sort()).toEqual([200, 201]);
+    expect(sameA.json().task_revision).toBe(sameB.json().task_revision);
+
+    const clash = await approvedWriteTask(app, merchant.id, location.id, "wt-race-clash");
+    const [clashA, clashB] = await Promise.all([
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${clash.id}/draft-revisions`, payload: { body: "版本 A", source: "HUMAN_EDIT", expected_state_version: clash.state_version, idempotency_key: "shared-key" } }),
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${clash.id}/draft-revisions`, payload: { body: "版本 B", source: "HUMAN_EDIT", expected_state_version: clash.state_version, idempotency_key: "shared-key" } }),
+    ]);
+    expect([clashA.statusCode, clashB.statusCode].sort()).toEqual([201, 409]);
+    expect([clashA, clashB].find((result) => result.statusCode === 409)!.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
+
+    const stale = await approvedWriteTask(app, merchant.id, location.id, "wt-race-stale");
+    const [staleA, staleB] = await Promise.all([
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${stale.id}/draft-revisions`, payload: { body: "版本 A", source: "HUMAN_EDIT", expected_state_version: stale.state_version, idempotency_key: "key-a" } }),
+      app.inject({ method: "POST", url: `/api/seo-ops/tasks/${stale.id}/draft-revisions`, payload: { body: "版本 B", source: "HUMAN_EDIT", expected_state_version: stale.state_version, idempotency_key: "key-b" } }),
+    ]);
+    expect([staleA.statusCode, staleB.statusCode].sort()).toEqual([201, 409]);
+    expect([staleA, staleB].find((result) => result.statusCode === 409)!.json().error_code).toBe("STALE_STATE");
+    const drafts = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${stale.id}/drafts` });
+    expect(drafts.json().items).toHaveLength(2);
+    const readback = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${stale.id}` });
+    expect(readback.json().evidence_refs.filter((item: { task_revision: number }) => item.task_revision === stale.task_revision + 1)).toHaveLength(1);
+  });
+
   it("approved content edit atomically creates a new revision and requires fresh approval", async () => {
     const approved = await approvedWriteTask(app, merchant.id, location.id, "wt-content-edit");
 
@@ -280,6 +359,44 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     const drafts = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${approved.id}/drafts` });
     expect(drafts.json().items).toHaveLength(2);
     expect(readback.json().approval_decisions).toHaveLength(1);
+  });
+
+  it("draft revision explicitly carries forward only verified non-content evidence", async () => {
+    const approved = await approvedWriteTask(
+      app, merchant.id, location.id, "wt-content-reuse", "AUTO_WRITE",
+      ["CONTENT_DRAFT", "BEFORE_SCREENSHOT"], true,
+    );
+    const edited = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${approved.id}/draft-revisions`,
+      payload: { body: "改稿后保留截图证据", source: "HUMAN_EDIT", expected_state_version: approved.state_version, idempotency_key: "reuse-edit" },
+    });
+    expect(edited.statusCode).toBe(201);
+    expect(edited.json().status).toBe("READY_FOR_APPROVAL");
+    const carried = edited.json().evidence_refs.filter((item: { task_revision: number }) => item.task_revision === approved.task_revision + 1);
+    expect(carried).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "CONTENT_DRAFT" }),
+      expect.objectContaining({ type: "BEFORE_SCREENSHOT", reused_from_evidence_id: expect.any(String) }),
+    ]));
+
+    const missing = (
+      await app.inject({
+        method: "POST", url: "/api/seo-ops/tasks",
+        payload: {
+          merchant_id: merchant.id, location_id: location.id,
+          definition: {
+            title: "缺少截图的内容任务", task_type: "GBP_POST", source: "CYCLE", priority: "MEDIUM", impact: "MEDIUM",
+            execution_spec: JSON.stringify({ locationName: "locations/gbp-123" }),
+            required_evidence_types: ["CONTENT_DRAFT", "BEFORE_SCREENSHOT"], execution_mode: "AUTO_WRITE",
+          }, idempotency_key: "wt-content-missing",
+        },
+      })
+    ).json();
+    const missingEdited = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${missing.id}/draft-revisions`,
+      payload: { body: "只有内容，没有截图", source: "HUMAN_EDIT", expected_state_version: missing.state_version, idempotency_key: "missing-edit" },
+    });
+    expect(missingEdited.statusCode).toBe(201);
+    expect(missingEdited.json()).toMatchObject({ status: "NEEDS_INPUT", evidence_state: "PARTIAL" });
   });
 
   it("OUTCOME_UNKNOWN 冻结商户执行链；查证「没发生」后任务回 APPROVED 并解冻", async () => {
