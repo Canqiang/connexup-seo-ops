@@ -5,6 +5,7 @@ import App from "../../App";
 import { AuthProvider } from "../../auth/AuthContext";
 import type { WorkbenchView } from "../../api/types";
 import { portfolioFixture, userFixture } from "../../test/fixtures";
+import "../../styles/ledger.css";
 
 const defaultWorkbenchData: WorkbenchView = {
   summary: { gatekeeping: 1, exception: 1, merchant_contact: 1, total: 3 },
@@ -70,6 +71,21 @@ test("empty workbench explains the next automated windows without demo tasks", a
 
   expect(await screen.findByText("今天没有需要人工处理的事项")).toBeInTheDocument();
   expect(screen.queryByText(/FRONTEND DEMO/)).not.toBeInTheDocument();
+});
+
+test("workbench decision rows keep their minimum vertical geometry within 44px", async () => {
+  renderApp("/");
+
+  const row = await screen.findByRole("article", { name: /Choice Brooklyn UWS.*结果不确定/ });
+  const action = within(row).getByRole("button", { name: "去查证" });
+  const rowStyle = window.getComputedStyle(row);
+  const actionStyle = window.getComputedStyle(action);
+  const rowMinimum = Number.parseFloat(rowStyle.minHeight);
+  const controlMinimum = Number.parseFloat(actionStyle.minHeight);
+  const verticalPadding = Number.parseFloat(rowStyle.paddingTop) + Number.parseFloat(rowStyle.paddingBottom);
+
+  expect(controlMinimum).toBeGreaterThanOrEqual(32);
+  expect(Math.max(rowMinimum, controlMinimum + verticalPadding)).toBeLessThanOrEqual(44);
 });
 
 function renderApp(route: string) {
