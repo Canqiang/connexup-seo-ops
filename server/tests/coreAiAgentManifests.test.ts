@@ -302,10 +302,22 @@ describe("Core AI SEO Ops Agent manifests", () => {
     expect(review.system_prompt).toContain("observed change");
     expect(review.system_prompt).toContain("confounders");
     expect(review.system_prompt).toContain("ASSOCIATIONAL");
+    expect(review.system_prompt).toContain("execution_spec.executed_actions");
+    expect(review.system_prompt).toContain("execution_spec.pre_measurements");
+    expect(review.system_prompt).toContain("execution_spec.post_measurements");
+    expect(review.system_prompt).toContain("action_id already present in execution_spec.executed_actions");
     expect(JSON.parse(review.response_schema).properties.conclusion_tier.enum).toEqual([
       "INSUFFICIENT_EVIDENCE",
       "DESCRIPTIVE",
       "ASSOCIATIONAL",
+    ]);
+    const reviewAction = JSON.parse(review.response_schema).properties.action_bundle.items;
+    expect(reviewAction.additionalProperties).toBe(false);
+    expect(reviewAction.required).toEqual([
+      "action_id",
+      "action_type",
+      "executed_at",
+      "evidence_ref",
     ]);
 
     const report = loadManifest("seo-ops-report-packager-v1.json");
@@ -315,6 +327,9 @@ describe("Core AI SEO Ops Agent manifests", () => {
     expect(report.system_prompt).toContain("Never include internal-only artifacts");
     expect(report.system_prompt).toContain("Never invent facts");
     expect(report.system_prompt).toContain("Never send, upload, publish, or write");
+    expect(report.system_prompt).toContain("execution_spec.source_artifact_ids");
+    expect(report.system_prompt).toContain("every section source_artifact_ids");
+    expect(report.system_prompt).toContain("subset of execution_spec.source_artifact_ids");
     expect(JSON.parse(report.response_schema).properties).not.toHaveProperty(
       "excluded_internal_artifact_ids",
     );

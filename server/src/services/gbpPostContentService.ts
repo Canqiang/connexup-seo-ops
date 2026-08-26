@@ -4,7 +4,10 @@ import { isUniqueViolation, type Db } from "../db/connection.js";
 import { canonicalize, requestFingerprint } from "../domain/hashing.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import {
+  countAgentRunsByMerchantSince,
+  findActiveGbpContentRunByTask,
   findAgentRunByIdempotencyKey,
+  findAgentRunByTaskFingerprint,
   getAgentRun,
   insertAgentRun,
   transitionAgentRun,
@@ -17,7 +20,7 @@ import { getTask } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import { addAgentGeneratedDraftFromRun } from "./contentService.js";
 import type { CoreAiClient } from "./coreAiClient.js";
-import { requireIdempotencyKey, resolveIdempotentCreate } from "./merchantService.js";
+import { requireIdempotencyKey } from "./merchantService.js";
 
 export const GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION = "seo_ops.gbp_post_request.v1";
 export const GBP_POST_CONTENT_OUTPUT_SCHEMA_VERSION = "seo_ops.gbp_post_draft.v1";
@@ -68,11 +71,37 @@ const PRE_GATE_CONTENT_STATUSES = new Set([
 export interface GbpPostContentDeps {
   db: Db;
   client: CoreAiClient;
+  dailyRunLimit?: number;
   log?: { warn(message: string): void };
 }
 
+const DEFAULT_DAILY_RUN_LIMIT = 20;
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function startOfUtcDayIso(): string {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+}
+
+function throwActiveFingerprintConflict(taskId: string): never {
+  throw conflict(
+    `task ${taskId} already has an active GBP Post content run for a different input fingerprint`,
+    "CONTENT_RUN_ACTIVE",
+  );
+}
+
+async function enforceDailyRunLimit(deps: GbpPostContentDeps, db: Db, merchantId: string) {
+  const limit = deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT;
+  if ((await countAgentRunsByMerchantSince(db, merchantId, startOfUtcDayIso())) >= limit) {
+    throw new ApiError(
+      429,
+      `merchant ${merchantId} reached the daily run limit (${limit})`,
+      "RUN_LIMIT_REACHED",
+    );
+  }
 }
 
 function parseExecutionSpec(task: Task) {
@@ -220,10 +249,33 @@ async function triggerOnce(
   const task = await getTask(deps.db, taskId);
   if (!task) throw notFound(`task ${taskId} not found`);
   const built = await buildRun(deps, task, key, actorId);
+  const matchingFingerprint = await findAgentRunByTaskFingerprint(
+    deps.db,
+    taskId,
+    built.fingerprint,
+  );
+  if (matchingFingerprint) return { run: matchingFingerprint, replayed: true };
+  if (await findActiveGbpContentRunByTask(deps.db, taskId)) {
+    throwActiveFingerprintConflict(taskId);
+  }
+  await enforceDailyRunLimit(deps, deps.db, task.merchantId);
   const raced = await deps.db.withTransaction(async (tx) => {
     const found = await findAgentRunByIdempotencyKey(tx, key);
-    const replay = resolveIdempotentCreate(found, built.fingerprint);
-    if (replay) return replay;
+    if (found) {
+      if (found.taskId !== taskId) {
+        throw conflict(
+          "idempotency key already used for a different task",
+          "IDEMPOTENCY_CONFLICT",
+        );
+      }
+      return found;
+    }
+    const fingerprintReplay = await findAgentRunByTaskFingerprint(tx, taskId, built.fingerprint);
+    if (fingerprintReplay) return fingerprintReplay;
+    if (await findActiveGbpContentRunByTask(tx, taskId)) {
+      throwActiveFingerprintConflict(taskId);
+    }
+    await enforceDailyRunLimit(deps, tx, task.merchantId);
     await insertAgentRun(tx, built.run);
     return built.run;
   });

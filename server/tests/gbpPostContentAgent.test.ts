@@ -21,17 +21,18 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
   function fakeCore() {
     let triggerCount = 0;
     let lastAgentId = "";
-    let input: Record<string, unknown> | null = null;
+    const inputs = new Map<string, Record<string, unknown>>();
     const client: CoreAiClient = {
       async trigger(agentId, message) {
         triggerCount += 1;
         lastAgentId = agentId;
-        input = JSON.parse(message) as Record<string, unknown>;
+        const runId = `core-gbp-content-${triggerCount}`;
+        inputs.set(runId, JSON.parse(message) as Record<string, unknown>);
         await new Promise((resolve) => setTimeout(resolve, 10));
-        return { run_id: "core-gbp-content-1", status: "RUNNING" };
+        return { run_id: runId, status: "RUNNING" };
       },
       async getRun(id): Promise<CoreAgentRunDetail> {
-        const request = input as {
+        const request = inputs.get(id) as {
           merchant: { id: string };
           location: { id: string };
           occurrence_at: string;
@@ -257,12 +258,12 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       app.inject({
         method: "POST",
         url: `/api/seo-ops/tasks/${task.id}/content-runs`,
-        payload: { idempotency_key: "mineola-content-run" },
+        payload: { idempotency_key: "mineola-content-run-a" },
       }),
       app.inject({
         method: "POST",
         url: `/api/seo-ops/tasks/${task.id}/content-runs`,
-        payload: { idempotency_key: "mineola-content-run" },
+        payload: { idempotency_key: "mineola-content-run-b" },
       }),
     ]);
     expect(calls.map((response) => response.statusCode).sort()).toEqual([200, 202]);
@@ -306,12 +307,129 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     const replay = await app.inject({
       method: "POST",
       url: `/api/seo-ops/tasks/${task.id}/content-runs`,
-      payload: { idempotency_key: "mineola-content-run" },
+      payload: { idempotency_key: "mineola-content-run-after-terminal" },
     });
     expect(replay.statusCode).toBe(200);
     expect(replay.json().id).toBe(run.id);
     expect(core.triggerCount()).toBe(1);
     expect((await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/drafts` }))
       .json().items).toHaveLength(1);
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/style-profile`,
+      payload: { voice: { tone: "warm and concise", banned: ["best ever"] } },
+    })).statusCode).toBe(201);
+    const regenerated = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "mineola-content-run-style-v2" },
+    });
+    expect(regenerated.statusCode).toBe(202);
+    expect(regenerated.json().id).not.toBe(run.id);
+    expect(core.triggerCount()).toBe(2);
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/style-profile`,
+      payload: { voice: { tone: "warm, concise, and seasonal", banned: ["best ever"] } },
+    })).statusCode).toBe(201);
+    const activeConflict = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "mineola-content-run-style-v3" },
+    });
+    expect(activeConflict.statusCode).toBe(409);
+    expect(core.triggerCount()).toBe(2);
+  });
+
+  it("shares the merchant daily Agent Run quota before triggering Core AI", async () => {
+    const core = fakeCore();
+    const artifactsDir = mkdtempSync(join(tmpdir(), "seo-ops-gbp-quota-"));
+    tempDirs.push(artifactsDir);
+    const built = await createAuthenticatedTestApp({
+      configOverrides: {
+        coreAiBaseUrl: "https://core-ai.example",
+        coreAiToken: "test-token",
+        agentRunAgentId: null,
+        agentRunDailyLimit: 1,
+        mockExecution: false,
+      },
+      deps: { coreAi: core.client, artifactsDir },
+    });
+    apps.push(built.app);
+    const { app } = built;
+    const merchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: { slug: "quota-store", display_name: "Quota Store", idempotency_key: "quota-store" },
+    })).json();
+    const location = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/locations`,
+      payload: {
+        slug: "mineola",
+        display_name: "Mineola, NY",
+        timezone: "America/New_York",
+        readiness_status: "READY",
+        external_identities: { google_business: "locations/gbp-quota" },
+        missing_requirements: [],
+        idempotency_key: "quota-location",
+      },
+    })).json();
+    await app.inject({
+      method: "PUT",
+      url: "/api/seo-ops/agent-bindings/GBP_POST",
+      payload: { agent_id: "agent-gbp-content", agent_label: "GBP content" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/style-profile`,
+      payload: { voice: { tone: "warm" } },
+    });
+    const createTask = async (suffix: string, occurrenceAt: string) => (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: merchant.id,
+        location_id: location.id,
+        definition: {
+          title: `GBP Post ${suffix}`,
+          task_type: "GBP_POST",
+          source: "CYCLE",
+          priority: "HIGH",
+          impact: "HIGH",
+          execution_spec: JSON.stringify({
+            occurrence_at: occurrenceAt,
+            post_type: "STANDARD",
+            primary_keyword_cluster: {
+              cluster_id: `mineola-lunch-${suffix}`,
+              search_intent: "local lunch discovery",
+              keywords: ["crispy chicken lunch mineola"],
+            },
+            evidence_references: ["artifact:keyword-set-v2"],
+          }),
+          required_evidence_types: ["CONTENT_DRAFT"],
+          execution_mode: "AUTO_WRITE",
+        },
+        idempotency_key: `quota-task-${suffix}`,
+      },
+    })).json();
+    const firstTask = await createTask("one", "2026-08-27T17:00:00.000-04:00");
+    const secondTask = await createTask("two", "2026-08-28T17:00:00.000-04:00");
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${firstTask.id}/content-runs`,
+      payload: { idempotency_key: "quota-run-one" },
+    })).statusCode).toBe(202);
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${secondTask.id}/content-runs`,
+      payload: { idempotency_key: "quota-run-two" },
+    });
+    expect(rejected.statusCode).toBe(429);
+    expect(rejected.json()).toMatchObject({ error_code: "RUN_LIMIT_REACHED" });
+    expect(core.triggerCount()).toBe(1);
   });
 });

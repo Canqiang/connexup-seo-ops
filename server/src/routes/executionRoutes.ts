@@ -451,7 +451,12 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     }
     const body = triggerContentRunSchema.parse(request.body);
     const { run, replayed } = await triggerGbpPostContentRun(
-      { db: ctx.db, client: ctx.coreAi, log: app.log },
+      {
+        db: ctx.db,
+        client: ctx.coreAi,
+        dailyRunLimit: ctx.config.agentRunDailyLimit,
+        log: app.log,
+      },
       taskId,
       body.idempotency_key,
       actor.userId,

@@ -118,4 +118,45 @@ describe("migrate on postgres", () => {
       await legacy.teardown();
     }
   });
+
+  it("adds agent_run_id before creating the dependent draft uniqueness index", async () => {
+    const legacy = await createTestDb();
+    try {
+      await legacy.db.exec(`CREATE TABLE seo_content_drafts (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(task_id, version)
+      )`);
+
+      await migrate(legacy.db);
+      await migrate(legacy.db);
+
+      const columns = await legacy.db.query<{ column_name: string; is_nullable: string }>(
+        `SELECT column_name, is_nullable
+         FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = 'seo_content_drafts'`,
+        [legacy.schema],
+      );
+      expect(columns).toContainEqual({ column_name: "agent_run_id", is_nullable: "YES" });
+
+      const insert = async (id: string, version: number, agentRunId: string | null) => legacy.db.exec(
+        `INSERT INTO seo_content_drafts
+           (id, task_id, version, source, body, agent_run_id, created_at)
+         VALUES ($1, 'legacy-task', $2, 'AGENT_GENERATED', '{}', $3, '2026-08-27T00:00:00.000Z')`,
+        [id, version, agentRunId],
+      );
+      await insert("legacy-null-1", 1, null);
+      await insert("legacy-null-2", 2, null);
+      await insert("legacy-agent-1", 3, "agent-run-1");
+      await expect(insert("legacy-agent-2", 4, "agent-run-1"))
+        .rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await legacy.teardown();
+    }
+  });
 });

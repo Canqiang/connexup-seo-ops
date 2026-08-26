@@ -178,6 +178,21 @@ export async function listSpecialistArtifactsByMerchant(
   return rows.map(toArtifact);
 }
 
+/** Exact-id lookup for frozen report snapshots. Authorization and merchant-safe
+ * type checks stay in the service, while this repository never substitutes a
+ * newer artifact for a missing requested id. */
+export async function listSpecialistArtifactsByIds(
+  db: Db,
+  artifactIds: readonly string[],
+): Promise<SpecialistArtifact[]> {
+  if (artifactIds.length === 0) return [];
+  const rows = await db.query<SpecialistArtifactRow>(
+    `SELECT * FROM seo_specialist_artifacts WHERE id = ANY($1::text[])`,
+    [[...artifactIds]],
+  );
+  return rows.map(toArtifact);
+}
+
 export async function listPostProgramArtifacts(
   db: Db,
   merchantId: string,

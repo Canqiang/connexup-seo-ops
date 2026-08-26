@@ -1,4 +1,13 @@
-import { BarChart3, ClipboardCheck, LineChart, ListChecks, Search } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  ClipboardCheck,
+  FileQuestion,
+  FileText,
+  LineChart,
+  ListChecks,
+  Search,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import type { SpecialistArtifactWire } from "../../api/types";
 import { formatDateTime } from "../../app/format";
@@ -36,16 +45,26 @@ interface ClusterSignalItem {
   signal?: unknown;
 }
 
-const TYPE_META: Record<SpecialistArtifactWire["artifact_type"], {
+interface ArtifactTypeMeta {
   label: string;
   eyebrow: string;
   icon: ReactNode;
-}> = {
+}
+
+const TYPE_META: Record<string, ArtifactTypeMeta> = {
   KEYWORD_SET: { label: "关键词集", eyebrow: "KEYWORD EVIDENCE", icon: <Search aria-hidden size={15} /> },
   KEYWORD_WEEKLY: { label: "周度关键词信号", eyebrow: "ASSOCIATIVE READING", icon: <LineChart aria-hidden size={15} /> },
   AUDIT_REPORT: { label: "Audit", eyebrow: "EVIDENCE-BOUNDED AUDIT", icon: <ClipboardCheck aria-hidden size={15} /> },
   RANKING_SNAPSHOT: { label: "排名基线", eyebrow: "LOCAL + ORGANIC", icon: <BarChart3 aria-hidden size={15} /> },
   EXECUTION_PLAN: { label: "执行 Plan", eyebrow: "ORDERED WORK", icon: <ListChecks aria-hidden size={15} /> },
+  EFFECT_REVIEW: { label: "复盘分析", eyebrow: "ASSOCIATION-CAPPED REVIEW", icon: <Activity aria-hidden size={15} /> },
+  MERCHANT_REPORT: { label: "商户报告", eyebrow: "FROZEN MERCHANT REPORT", icon: <FileText aria-hidden size={15} /> },
+};
+
+const UNKNOWN_META: ArtifactTypeMeta = {
+  label: "未知 Agent 产物",
+  eyebrow: "UNRECOGNIZED ARTIFACT",
+  icon: <FileQuestion aria-hidden size={15} />,
 };
 
 function asArray(value: unknown): Record<string, unknown>[] {
@@ -80,9 +99,24 @@ function countLabel(artifact: SpecialistArtifactWire): string {
     const measured = keywords.filter((item) => typeof item.local_rank === "number" || typeof item.organic_rank === "number").length;
     return `${keywords.length} 个词 · ${measured} 个已测排名`;
   }
-  const workItems = asArray(artifact.payload.work_items) as PlanWorkItem[];
-  const days = typeof artifact.payload.horizon_days === "number" ? artifact.payload.horizon_days : "—";
-  return `${days} 天 · ${workItems.length} 项工作`;
+  if (artifact.artifact_type === "EXECUTION_PLAN") {
+    const workItems = asArray(artifact.payload.work_items) as PlanWorkItem[];
+    const days = typeof artifact.payload.horizon_days === "number" ? artifact.payload.horizon_days : "—";
+    return `${days} 天 · ${workItems.length} 项工作`;
+  }
+  if (artifact.artifact_type === "EFFECT_REVIEW") {
+    const tier = typeof artifact.payload.conclusion_tier === "string"
+      ? artifact.payload.conclusion_tier
+      : "INSUFFICIENT_EVIDENCE";
+    return `${tier} · ${asArray(artifact.payload.action_bundle).length} 项已执行动作`;
+  }
+  if (artifact.artifact_type === "MERCHANT_REPORT") {
+    const version = typeof artifact.payload.report_version === "string"
+      ? artifact.payload.report_version
+      : "未标版本";
+    return `${version} · ${asArray(artifact.payload.sections).length} 个章节`;
+  }
+  return "未知结构 · 安全回退";
 }
 
 function ArtifactDetails({ artifact }: { artifact: SpecialistArtifactWire }) {
@@ -131,12 +165,47 @@ function ArtifactDetails({ artifact }: { artifact: SpecialistArtifactWire }) {
       <EvidenceLimits values={asStrings(artifact.payload.limitations)} />
     </>;
   }
-  const workItems = asArray(artifact.payload.work_items) as PlanWorkItem[];
-  return <ul className="artifact-plan-items">{workItems.slice(0, 8).map((item, index) => <li key={`${String(item.id)}-${index}`}>
-    <span>{String(index + 1).padStart(2, "0")}</span>
-    <strong>{String(item.title ?? "未命名工作项")}</strong>
-    <em className={`is-${String(item.priority ?? "LOW").toLocaleLowerCase()}`}>{String(item.priority ?? "—")}</em>
-  </li>)}</ul>;
+  if (artifact.artifact_type === "EXECUTION_PLAN") {
+    const workItems = asArray(artifact.payload.work_items) as PlanWorkItem[];
+    return <ul className="artifact-plan-items">{workItems.slice(0, 8).map((item, index) => <li key={`${String(item.id)}-${index}`}>
+      <span>{String(index + 1).padStart(2, "0")}</span>
+      <strong>{String(item.title ?? "未命名工作项")}</strong>
+      <em className={`is-${String(item.priority ?? "LOW").toLocaleLowerCase()}`}>{String(item.priority ?? "—")}</em>
+    </li>)}</ul>;
+  }
+  if (artifact.artifact_type === "EFFECT_REVIEW") {
+    return <>
+      <div className="artifact-method">
+        <span>{String(artifact.payload.conclusion_tier ?? "INSUFFICIENT_EVIDENCE")}</span>
+        <small>仅陈述性 / 关联性结论，不升级为因果</small>
+      </div>
+      <p>{String(artifact.payload.conclusion ?? "尚无可展示的复盘结论。")}</p>
+      <EvidenceLimits values={[
+        ...asStrings(artifact.payload.confounders),
+        ...asStrings(artifact.payload.limitations),
+      ]} />
+    </>;
+  }
+  if (artifact.artifact_type === "MERCHANT_REPORT") {
+    const sections = asArray(artifact.payload.sections);
+    return <>
+      <div className="artifact-method">
+        <span>{String(artifact.payload.report_version ?? "未标版本")}</span>
+        <small>冻结于 {String(artifact.payload.frozen_at ?? "—")}</small>
+      </div>
+      <p>{String(artifact.payload.executive_summary ?? "尚无执行摘要。")}</p>
+      <ul className="artifact-plan-items">{sections.slice(0, 8).map((section, index) => <li key={`${String(section.id)}-${index}`}>
+        <span>{String(index + 1).padStart(2, "0")}</span>
+        <strong>{String(section.title ?? "未命名章节")}</strong>
+        <em>{asStrings(section.source_artifact_ids).length} SOURCE</em>
+      </li>)}</ul>
+      <EvidenceLimits values={asStrings(artifact.payload.limitations)} />
+    </>;
+  }
+  return <div className="artifact-limits">
+    <strong>兼容性回退</strong>
+    <span>当前客户端尚未识别 {String(artifact.artifact_type)}，已保留标题、摘要与版本信息。</span>
+  </div>;
 }
 
 function EvidenceLimits({ values }: { values: string[] }) {
@@ -152,8 +221,8 @@ export function SpecialistArtifactsPanel({ artifacts, compact = false }: {
   return <section className={`data-panel specialist-artifacts${compact ? " is-compact" : ""}`}>
     <div className="panel-heading"><div><span className="eyebrow">ACCEPTED AGENT OUTPUTS</span><h2>Agent 产物</h2><p className="quiet-copy">Core AI 负责生成；SEO Ops 校验结构、落库并推进任务。</p></div><span className="result-count">{artifacts.length} 项</span></div>
     <div className="specialist-artifact-grid">{artifacts.slice(0, compact ? 3 : 12).map((artifact) => {
-      const meta = TYPE_META[artifact.artifact_type];
-      return <article className={`artifact-card is-${artifact.artifact_type.toLocaleLowerCase()}`} key={artifact.id}>
+      const meta = TYPE_META[artifact.artifact_type] ?? UNKNOWN_META;
+      return <article className={`artifact-card is-${String(artifact.artifact_type).toLocaleLowerCase()}`} key={artifact.id}>
         <header><div className="artifact-type-icon">{meta.icon}</div><div><span className="eyebrow">{meta.eyebrow}</span><strong>{meta.label}</strong></div><time dateTime={artifact.created_at}>{formatDateTime(artifact.created_at)}</time></header>
         <h3>{artifact.title}</h3>
         <p>{artifact.summary}</p>

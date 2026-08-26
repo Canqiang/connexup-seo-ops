@@ -201,6 +201,34 @@ export async function findAgentRunByIdempotencyKey(
   return row ? toAgentRun(row) : null;
 }
 
+export async function findAgentRunByTaskFingerprint(
+  db: Db,
+  taskId: string,
+  fingerprint: string,
+): Promise<AgentRun | null> {
+  const row = await db.one<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+     WHERE task_id = $1 AND stage = 'GBP_POST_CONTENT' AND request_fingerprint = $2
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [taskId, fingerprint],
+  );
+  return row ? toAgentRun(row) : null;
+}
+
+export async function findActiveGbpContentRunByTask(
+  db: Db,
+  taskId: string,
+): Promise<AgentRun | null> {
+  const row = await db.one<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+     WHERE task_id = $1 AND stage = 'GBP_POST_CONTENT'
+       AND status IN ('TRIGGERING', 'RUNNING')
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [taskId],
+  );
+  return row ? toAgentRun(row) : null;
+}
+
 export async function listAgentRunsByMerchant(
   db: Db,
   merchantId: string,

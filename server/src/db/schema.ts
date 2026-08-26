@@ -127,6 +127,13 @@ export const SCHEMA_STATEMENTS: string[] = [
   `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS trace_ref TEXT`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_merchant_stage ON seo_agent_runs(merchant_id, stage, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON seo_agent_runs(status)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_gbp_content_task_fingerprint
+     ON seo_agent_runs(task_id, request_fingerprint)
+     WHERE stage = 'GBP_POST_CONTENT' AND task_id IS NOT NULL AND request_fingerprint IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_gbp_content_active_task
+     ON seo_agent_runs(task_id)
+     WHERE stage = 'GBP_POST_CONTENT' AND task_id IS NOT NULL
+       AND status IN ('TRIGGERING', 'RUNNING')`,
 
   /** 交付物：一文件一行。SUMMARY = 运行正文落盘；ATTACHMENT = agent 返回的附件；
    * MANUAL = 运营手工上传兜底。按 id 服务下载（数组下标会因补下载而错位）。
@@ -361,8 +368,6 @@ export const SCHEMA_STATEMENTS: string[] = [
     UNIQUE(task_id, version)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_drafts_task ON seo_content_drafts(task_id, version DESC)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS uq_drafts_agent_run
-     ON seo_content_drafts(agent_run_id) WHERE agent_run_id IS NOT NULL`,
 
   /** 商户风格档案：品牌档案 voice + 人工校订，按版本引用（更新不追溯已批准稿）。 */
   `CREATE TABLE IF NOT EXISTS seo_style_profiles (

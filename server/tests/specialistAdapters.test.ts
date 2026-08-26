@@ -4,11 +4,13 @@ import { insertSpecialistArtifact } from "../src/repos/specialistArtifactRepo.js
 import { getTask } from "../src/repos/taskRepo.js";
 import { parseQuestionnaireOutput } from "../src/services/questionnaireAdapterService.js";
 import {
+  buildSpecialistRunInput,
   parseEffectReviewOutput,
   parseKeywordOutput,
   parseReportPackageOutput,
   ingestSpecialistRunOutput,
 } from "../src/services/specialistAdapterService.js";
+import type { ExecutionAttempt } from "../src/repos/executionRepo.js";
 import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 describe("specialist result adapters", () => {
@@ -397,7 +399,12 @@ describe("specialist result adapters", () => {
               title: "30-day effect review",
               summary: "Observed visibility changed after the accepted actions.",
               baseline: { captured_at: "2026-07-01T00:00:00.000Z" },
-              action_bundle: [{ action: "GBP post", occurred_at: "2026-07-10T00:00:00.000Z" }],
+              action_bundle: [{
+                action_id: "gbp-post-2026-07-10",
+                action_type: "GBP_POST",
+                executed_at: "2026-07-10T17:00:00.000Z",
+                evidence_ref: "provider:gbp-post-1",
+              }],
               observed_change: { direction: "IMPROVED" },
               confounders: ["Seasonality was not controlled."],
               conclusion_tier: "ASSOCIATIONAL",
@@ -471,6 +478,40 @@ describe("specialist result adapters", () => {
         payload: { agent_id: agentId, agent_label: taskType },
       })).statusCode).toBe(200);
     }
+    const effectEvidencePacket = {
+      baseline: {
+        captured_at: "2026-07-01T00:00:00.000Z",
+        summary: "Mineola local visibility baseline before accepted work.",
+      },
+      executed_actions: [{
+        action_id: "gbp-post-2026-07-10",
+        action_type: "GBP_POST",
+        executed_at: "2026-07-10T17:00:00.000Z",
+        evidence_ref: "provider:gbp-post-1",
+      }],
+      pre_measurements: {
+        window_start: "2026-07-01T00:00:00.000Z",
+        window_end: "2026-07-07T23:59:59.000Z",
+        measurements: [{
+          metric: "local_rank",
+          value: 18,
+          observed_at: "2026-07-05T12:00:00.000Z",
+          source_ref: "ranking:pre-1",
+        }],
+      },
+      post_measurements: {
+        window_start: "2026-07-20T00:00:00.000Z",
+        window_end: "2026-07-26T23:59:59.000Z",
+        measurements: [{
+          metric: "local_rank",
+          value: 12,
+          observed_at: "2026-07-24T12:00:00.000Z",
+          source_ref: "ranking:post-1",
+        }],
+      },
+      confounders: ["Seasonality was not controlled."],
+      limitations: ["No randomized control."],
+    };
     const batch = (await app.inject({
       method: "POST",
       url: "/api/seo-ops/proposal-batches",
@@ -487,7 +528,7 @@ describe("specialist result adapters", () => {
             priority: "HIGH",
             impact: "HIGH",
             acceptance_criteria: "An association-capped review artifact is persisted.",
-            execution_spec: JSON.stringify({ review_window: "2026-07" }),
+            execution_spec: JSON.stringify(effectEvidencePacket),
             required_evidence_types: [],
           },
           {
@@ -501,6 +542,7 @@ describe("specialist result adapters", () => {
             execution_spec: JSON.stringify({
               report_version: "2026-08-v1",
               frozen_at: "2026-08-27T00:00:00.000Z",
+              source_artifact_ids: ["accepted-audit"],
             }),
             required_evidence_types: [],
           },
@@ -528,6 +570,19 @@ describe("specialist result adapters", () => {
       createdBy: "test",
       createdAt: "2026-08-26T00:00:00.000Z",
     });
+    await insertSpecialistArtifact(db, {
+      id: "newer-audit-not-frozen",
+      taskId: taskIds[1]!,
+      merchantId,
+      artifactType: "AUDIT_REPORT",
+      schemaVersion: "seo_ops.audit_report.v1",
+      title: "Newer audit",
+      summary: "This later artifact is outside the frozen report snapshot.",
+      payload: { accepted: true, newer: true },
+      coreRunId: "newer-audit-run",
+      createdBy: "test",
+      createdAt: "2026-08-27T01:00:00.000Z",
+    });
 
     await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
     expect(JSON.parse(dispatchedInputs.get("agent-review") ?? "null")).toMatchObject({
@@ -538,7 +593,9 @@ describe("specialist result adapters", () => {
       execution_spec: {
         report_version: "2026-08-v1",
         frozen_at: "2026-08-27T00:00:00.000Z",
+        source_artifact_ids: ["accepted-audit"],
       },
+      upstream_artifacts: [expect.objectContaining({ artifact_id: "accepted-audit" })],
     });
     await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
 
@@ -560,6 +617,29 @@ describe("specialist result adapters", () => {
     });
     const reportTask = await getTask(db, taskIds[1]!);
     expect(reportTask).not.toBeNull();
+    const attempt = {
+      attemptNo: 1,
+      probeRef: `exec-${reportTask!.id}-rev1-attempt1`,
+    } as ExecutionAttempt;
+    const firstFrozenInput = JSON.parse(await buildSpecialistRunInput(db, reportTask!, attempt));
+    await insertSpecialistArtifact(db, {
+      id: "late-ranking-not-frozen",
+      taskId: reportTask!.id,
+      merchantId,
+      artifactType: "RANKING_SNAPSHOT",
+      schemaVersion: "seo_ops.ranking_report.v1",
+      title: "Late ranking snapshot",
+      summary: "Created after the report snapshot was frozen.",
+      payload: { captured_at: "2026-08-27T02:00:00.000Z" },
+      coreRunId: "late-ranking-run",
+      createdBy: "test",
+      createdAt: "2026-08-27T02:00:00.000Z",
+    });
+    const replayedFrozenInput = JSON.parse(await buildSpecialistRunInput(db, reportTask!, attempt));
+    expect(replayedFrozenInput.upstream_artifacts).toEqual(firstFrozenInput.upstream_artifacts);
+    expect(replayedFrozenInput.upstream_artifacts.map((item: { artifact_id: string }) => item.artifact_id))
+      .toEqual(["accepted-audit"]);
+
     await expect(ingestSpecialistRunOutput(
       db,
       reportTask!,
@@ -569,6 +649,100 @@ describe("specialist result adapters", () => {
         frozen_at: "2026-08-28T00:00:00.000Z",
       }),
     )).rejects.toThrow("frozen_at does not match execution_spec");
+
+    const reportPayload = packaged.find(
+      (item: { artifact_type: string }) => item.artifact_type === "MERCHANT_REPORT",
+    ).payload;
+    await expect(ingestSpecialistRunOutput(
+      db,
+      reportTask!,
+      "core-package-run-forged-lineage",
+      JSON.stringify({
+        ...reportPayload,
+        sections: [{
+          ...reportPayload.sections[0],
+          source_artifact_ids: ["forged-artifact"],
+        }],
+        source_artifact_ids: ["accepted-audit", "forged-artifact"],
+      }),
+    )).rejects.toThrow(/source_artifact_ids/);
+
+    const reviewTask = await getTask(db, taskIds[0]!);
+    expect(reviewTask).not.toBeNull();
+    const effectArtifact = (await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${taskIds[0]}/artifacts`,
+    })).json().items.find((item: { artifact_type: string }) => item.artifact_type === "EFFECT_REVIEW");
+    await expect(ingestSpecialistRunOutput(
+      db,
+      reviewTask!,
+      "core-review-run-forged-action",
+      JSON.stringify({
+        ...effectArtifact.payload,
+        action_bundle: [{
+          action_id: "gbp-post-2026-07-10",
+          action_type: "GBP_POST",
+          executed_at: "2026-07-10T17:00:00.000Z",
+          evidence_ref: "provider:forged",
+        }],
+      }),
+    )).rejects.toThrow(/action_bundle/);
+    await expect(buildSpecialistRunInput(db, {
+      ...reviewTask!,
+      executionSpec: JSON.stringify({ review_window: "2026-07" }),
+    }, attempt)).rejects.toThrow(/effect review evidence packet/);
+
+    const foreignMerchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: { slug: "foreign-review-store", idempotency_key: "foreign-review-store" },
+    })).json();
+    await insertSpecialistArtifact(db, {
+      id: "foreign-audit",
+      taskId: reportTask!.id,
+      merchantId: foreignMerchant.id,
+      artifactType: "AUDIT_REPORT",
+      schemaVersion: "seo_ops.audit_report.v1",
+      title: "Foreign audit",
+      summary: "Must never cross tenant boundaries.",
+      payload: { accepted: true },
+      coreRunId: "foreign-audit-run",
+      createdBy: "test",
+      createdAt: "2026-08-26T00:00:00.000Z",
+    });
+    await insertSpecialistArtifact(db, {
+      id: "internal-plan",
+      taskId: reportTask!.id,
+      merchantId,
+      artifactType: "EXECUTION_PLAN",
+      schemaVersion: "seo_ops.execution_plan.v1",
+      title: "Internal execution plan",
+      summary: "Internal work product.",
+      payload: { internal: true },
+      coreRunId: "internal-plan-run",
+      createdBy: "test",
+      createdAt: "2026-08-26T00:00:00.000Z",
+    });
+    const withSourceIds = (sourceArtifactIds: string[]) => ({
+      ...reportTask!,
+      executionSpec: JSON.stringify({
+        report_version: "2026-08-v1",
+        frozen_at: "2026-08-27T00:00:00.000Z",
+        source_artifact_ids: sourceArtifactIds,
+      }),
+    });
+    for (const [sourceIds, expectedError] of [
+      [["missing-artifact"], /missing source artifact/],
+      [["accepted-audit", "accepted-audit"], /duplicate source_artifact_ids/],
+      [["foreign-audit"], /same merchant/],
+      [["internal-plan"], /not merchant-safe/],
+    ] as const) {
+      await expect(buildSpecialistRunInput(
+        db,
+        withSourceIds([...sourceIds]),
+        attempt,
+      )).rejects.toThrow(expectedError);
+    }
   });
 
   it("persists Keyword, Audit, Ranking, and Plan artifacts in dependency order with upstream context", async () => {

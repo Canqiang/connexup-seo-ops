@@ -5,6 +5,51 @@ import { SpecialistArtifactsPanel } from "./SpecialistArtifactsPanel";
 
 const artifacts: SpecialistArtifactWire[] = [
   {
+    id: "artifact-merchant-report",
+    task_id: "task-report-package",
+    merchant_id: "merchant-1",
+    artifact_type: "MERCHANT_REPORT" as SpecialistArtifactWire["artifact_type"],
+    schema_version: "seo_ops.merchant_report.v1",
+    title: "August merchant report",
+    summary: "A frozen merchant-safe report package.",
+    payload: {
+      report_version: "2026-08-v1",
+      frozen_at: "2026-08-27T00:00:00.000Z",
+      executive_summary: "Accepted audit and ranking evidence only.",
+      sections: [{
+        id: "audit",
+        title: "Audit findings",
+        body: "The location page remains the highest-priority accepted gap.",
+        source_artifact_ids: ["artifact-audit"],
+      }],
+      source_artifact_ids: ["artifact-audit"],
+      limitations: ["Report excludes connected Search Console data."],
+    },
+    core_run_id: "core-merchant-report",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-27T12:00:00.000Z",
+  },
+  {
+    id: "artifact-effect-review",
+    task_id: "task-effect-review",
+    merchant_id: "merchant-1",
+    artifact_type: "EFFECT_REVIEW" as SpecialistArtifactWire["artifact_type"],
+    schema_version: "seo_ops.effect_review.v1",
+    title: "30-day effect review",
+    summary: "Observed movement after the accepted action bundle.",
+    payload: {
+      conclusion_tier: "ASSOCIATIONAL",
+      conclusion: "The measured change is associated with, but not proven caused by, the accepted work.",
+      action_bundle: [{ action_id: "gbp-post-1" }],
+      planning_signals: [{ signal: "continue measurement" }],
+      confounders: ["Seasonality was not controlled."],
+      limitations: ["No randomized control."],
+    },
+    core_run_id: "core-effect-review",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-27T11:00:00.000Z",
+  },
+  {
     id: "artifact-weekly-signal",
     task_id: "task-weekly",
     merchant_id: "merchant-1",
@@ -90,6 +135,19 @@ const artifacts: SpecialistArtifactWire[] = [
     created_by: "system:specialist-agent",
     created_at: "2026-08-26T08:00:00.000Z",
   },
+  {
+    id: "artifact-future-output",
+    task_id: "task-future-output",
+    merchant_id: "merchant-1",
+    artifact_type: "FUTURE_OUTPUT" as SpecialistArtifactWire["artifact_type"],
+    schema_version: "seo_ops.future_output.v1",
+    title: "Future specialist output",
+    summary: "A newer server type must not crash this older client.",
+    payload: { future_field: "safe fallback" },
+    core_run_id: "core-future-output",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-26T07:00:00.000Z",
+  },
 ];
 
 describe("SpecialistArtifactsPanel", () => {
@@ -109,5 +167,13 @@ describe("SpecialistArtifactsPanel", () => {
     expect(screen.getByText("确定性链路适配")).toBeInTheDocument();
     expect(screen.getAllByText("family lunch mineola")).toHaveLength(2);
     expect(screen.getByText("Search Console is not connected.")).toBeInTheDocument();
+    expect(screen.getByText("复盘分析")).toBeInTheDocument();
+    expect(screen.getByText("ASSOCIATIONAL · 1 项已执行动作")).toBeInTheDocument();
+    expect(screen.getByText("The measured change is associated with, but not proven caused by, the accepted work.")).toBeInTheDocument();
+    expect(screen.getByText("商户报告")).toBeInTheDocument();
+    expect(screen.getByText("2026-08-v1 · 1 个章节")).toBeInTheDocument();
+    expect(screen.getByText("Audit findings")).toBeInTheDocument();
+    expect(screen.getByText("未知 Agent 产物")).toBeInTheDocument();
+    expect(screen.getByText("未知结构 · 安全回退")).toBeInTheDocument();
   });
 });

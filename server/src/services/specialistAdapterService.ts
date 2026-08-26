@@ -11,6 +11,7 @@ import { getMerchant } from "../repos/merchantRepo.js";
 import { latestQuestionnaireByMerchant } from "../repos/questionnaireRepo.js";
 import {
   insertSpecialistArtifact,
+  listSpecialistArtifactsByIds,
   listSpecialistArtifactsByMerchant,
   type SpecialistArtifact,
   type SpecialistArtifactType,
@@ -280,6 +281,94 @@ const reportPackageOutputSchema = z.object({
   limitations: z.array(z.string().trim().min(1).max(1000)).max(50),
 }).strict();
 
+const evidenceMeasurementSchema = z.object({
+  metric: z.string().trim().min(1).max(200),
+  value: z.union([z.number().finite(), z.string().trim().min(1).max(1000)]),
+  observed_at: z.string().datetime({ offset: true }),
+  source_ref: z.string().trim().min(1).max(1000),
+}).strict();
+
+const measurementWindowSchema = z.object({
+  window_start: z.string().datetime({ offset: true }),
+  window_end: z.string().datetime({ offset: true }),
+  measurements: z.array(evidenceMeasurementSchema).min(1).max(200),
+}).strict().superRefine((window, ctx) => {
+  const start = Date.parse(window.window_start);
+  const end = Date.parse(window.window_end);
+  if (start >= end) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["window_end"],
+      message: "must be later than window_start",
+    });
+  }
+  for (const [index, measurement] of window.measurements.entries()) {
+    const observedAt = Date.parse(measurement.observed_at);
+    if (observedAt < start || observedAt > end) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["measurements", index, "observed_at"],
+        message: "must fall within the supplied measurement window",
+      });
+    }
+  }
+});
+
+const executedActionSchema = z.object({
+  action_id: z.string().trim().min(1).max(200),
+  action_type: z.string().trim().min(1).max(100),
+  executed_at: z.string().datetime({ offset: true }),
+  evidence_ref: z.string().trim().min(1).max(1000),
+}).strict();
+
+const effectReviewExecutionSpecSchema = z.object({
+  baseline: z.object({
+    captured_at: z.string().datetime({ offset: true }),
+    summary: z.string().trim().min(1).max(4000),
+  }).strict(),
+  executed_actions: z.array(executedActionSchema).min(1).max(100),
+  pre_measurements: measurementWindowSchema,
+  post_measurements: measurementWindowSchema,
+  confounders: z.array(z.string().trim().min(1).max(1000)).min(1).max(50),
+  limitations: z.array(z.string().trim().min(1).max(1000)).min(1).max(50),
+}).strict().superRefine((packet, ctx) => {
+  const seen = new Set<string>();
+  for (const [index, action] of packet.executed_actions.entries()) {
+    if (seen.has(action.action_id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["executed_actions", index, "action_id"],
+        message: `duplicate action_id: ${action.action_id}`,
+      });
+    }
+    seen.add(action.action_id);
+  }
+});
+
+const reportPackageExecutionSpecSchema = z.object({
+  report_version: z.string().trim().min(1).max(100),
+  frozen_at: z.string().datetime({ offset: true }),
+  source_artifact_ids: z.array(z.string().trim().min(1)).min(1).max(100),
+}).strict().superRefine((spec, ctx) => {
+  const seen = new Set<string>();
+  for (const [index, artifactId] of spec.source_artifact_ids.entries()) {
+    if (seen.has(artifactId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["source_artifact_ids", index],
+        message: `duplicate source_artifact_ids entry: ${artifactId}`,
+      });
+    }
+    seen.add(artifactId);
+  }
+});
+
+const MERCHANT_SAFE_REPORT_ARTIFACT_TYPES = new Set<SpecialistArtifactType>([
+  "KEYWORD_SET",
+  "AUDIT_REPORT",
+  "RANKING_SNAPSHOT",
+]);
+
 function parseJsonObject(value: string, label: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -288,6 +377,32 @@ function parseJsonObject(value: string, label: string): Record<string, unknown> 
   } catch {
     throw new Error(`${label} must be a JSON object`);
   }
+}
+
+function parseEffectReviewExecutionSpec(value: string) {
+  const parsed = effectReviewExecutionSpecSchema.safeParse(
+    parseJsonObject(value, "effect review task execution_spec"),
+  );
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(
+      `effect review evidence packet mismatch at ${issue?.path.join(".") || "root"}: ${issue?.message ?? "invalid value"}`,
+    );
+  }
+  return parsed.data;
+}
+
+function parseReportPackageExecutionSpec(value: string) {
+  const parsed = reportPackageExecutionSpecSchema.safeParse(
+    parseJsonObject(value, "report package task execution_spec"),
+  );
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(
+      `report package execution_spec mismatch at ${issue?.path.join(".") || "root"}: ${issue?.message ?? "invalid value"}`,
+    );
+  }
+  return parsed.data;
 }
 
 export function parseKeywordOutput(output: string) {
@@ -451,14 +566,8 @@ function specialistContract(taskType: string): {
     return {
       requestSchemaVersion: REPORT_PACKAGE_REQUEST_SCHEMA_VERSION,
       outputSchemaVersion: REPORT_PACKAGE_OUTPUT_SCHEMA_VERSION,
-      requiredArtifactTypes: ["AUDIT_REPORT"],
-      contextArtifactTypes: [
-        "KEYWORD_SET",
-        "AUDIT_REPORT",
-        "RANKING_SNAPSHOT",
-        "EFFECT_REVIEW",
-        "EXECUTION_PLAN",
-      ],
+      requiredArtifactTypes: [],
+      contextArtifactTypes: [],
       rules: [
         "package_only_accepted_supplied_artifacts",
         "exclude_internal_only_artifacts",
@@ -483,15 +592,45 @@ export async function buildSpecialistRunInput(
   }
   const contract = specialistContract(task.taskType);
   const locations = await listLocationsByMerchant(db, task.merchantId);
-  const priorArtifacts = await listSpecialistArtifactsByMerchant(db, task.merchantId);
-  for (const artifactType of contract.requiredArtifactTypes) {
-    if (!priorArtifacts.some((artifact) => artifact.artifactType === artifactType)) {
-      throw new Error(`${task.taskType} work requires a persisted ${artifactType} artifact`);
+  const executionSpec = task.taskType === "REVIEW"
+    ? parseEffectReviewExecutionSpec(task.executionSpec)
+    : task.taskType === "REPORT_PACKAGE"
+      ? parseReportPackageExecutionSpec(task.executionSpec)
+      : parseJsonObject(task.executionSpec, "specialist task execution_spec");
+  let contextualArtifacts: SpecialistArtifact[];
+  if (task.taskType === "REPORT_PACKAGE") {
+    const sourceIds = (
+      executionSpec as z.infer<typeof reportPackageExecutionSpecSchema>
+    ).source_artifact_ids;
+    const loaded = await listSpecialistArtifactsByIds(db, sourceIds);
+    const byId = new Map(loaded.map((artifact) => [artifact.id, artifact]));
+    contextualArtifacts = sourceIds.map((artifactId) => {
+      const artifact = byId.get(artifactId);
+      if (!artifact) throw new Error(`report package missing source artifact ${artifactId}`);
+      if (artifact.merchantId !== task.merchantId) {
+        throw new Error(`report package source artifact ${artifactId} must belong to the same merchant`);
+      }
+      if (!MERCHANT_SAFE_REPORT_ARTIFACT_TYPES.has(artifact.artifactType)) {
+        throw new Error(
+          `report package source artifact ${artifactId} type ${artifact.artifactType} is not merchant-safe`,
+        );
+      }
+      return artifact;
+    });
+    if (!contextualArtifacts.some((artifact) => artifact.artifactType === "AUDIT_REPORT")) {
+      throw new Error("REPORT_PACKAGE work requires a frozen AUDIT_REPORT source artifact");
     }
+  } else {
+    const priorArtifacts = await listSpecialistArtifactsByMerchant(db, task.merchantId);
+    for (const artifactType of contract.requiredArtifactTypes) {
+      if (!priorArtifacts.some((artifact) => artifact.artifactType === artifactType)) {
+        throw new Error(`${task.taskType} work requires a persisted ${artifactType} artifact`);
+      }
+    }
+    contextualArtifacts = contract.contextArtifactTypes
+      .map((artifactType) => priorArtifacts.find((artifact) => artifact.artifactType === artifactType))
+      .filter((artifact): artifact is SpecialistArtifact => artifact !== undefined);
   }
-  const contextualArtifacts = contract.contextArtifactTypes
-    .map((artifactType) => priorArtifacts.find((artifact) => artifact.artifactType === artifactType))
-    .filter((artifact): artifact is SpecialistArtifact => artifact !== undefined);
   return JSON.stringify({
     schema_version: contract.requestSchemaVersion,
     seo_ops_task_id: task.id,
@@ -531,7 +670,7 @@ export async function buildSpecialistRunInput(
       payload: artifact.payload,
       created_at: artifact.createdAt,
     })),
-    execution_spec: parseJsonObject(task.executionSpec, "specialist task execution_spec"),
+    execution_spec: executionSpec,
     output_schema_version: contract.outputSchemaVersion,
     rules: [
       "return_strict_json_only",
@@ -618,6 +757,25 @@ export async function ingestSpecialistRunOutput(
     if (parsed.merchant_id !== task.merchantId) {
       throw new Error("effect review output merchant_id does not match the dispatched task");
     }
+    const executionSpec = parseEffectReviewExecutionSpec(task.executionSpec);
+    const allowedActions = new Map(
+      executionSpec.executed_actions.map((action) => [action.action_id, action]),
+    );
+    if (parsed.action_bundle.length !== allowedActions.size) {
+      throw new Error("effect review output action_bundle must exactly echo the dispatched actions");
+    }
+    for (const [index, action] of parsed.action_bundle.entries()) {
+      const actionId = action.action_id;
+      const accepted = typeof actionId === "string" ? allowedActions.get(actionId) : undefined;
+      if (!accepted
+        || action.action_type !== accepted.action_type
+        || action.executed_at !== accepted.executed_at
+        || action.evidence_ref !== accepted.evidence_ref) {
+        throw new Error(
+          `effect review output action_bundle.${index} does not exactly match the dispatched evidence packet`,
+        );
+      }
+    }
     return persistParsedArtifact(db, task, coreRunId, "EFFECT_REVIEW", parsed, actor);
   }
   if (task.taskType === "REPORT_PACKAGE") {
@@ -625,12 +783,28 @@ export async function ingestSpecialistRunOutput(
     if (parsed.merchant_id !== task.merchantId) {
       throw new Error("report package output merchant_id does not match the dispatched task");
     }
-    const executionSpec = parseJsonObject(task.executionSpec, "report package task execution_spec");
+    const executionSpec = parseReportPackageExecutionSpec(task.executionSpec);
     if (parsed.report_version !== executionSpec.report_version) {
       throw new Error("report package output report_version does not match execution_spec");
     }
     if (parsed.frozen_at !== executionSpec.frozen_at) {
       throw new Error("report package output frozen_at does not match execution_spec");
+    }
+    const allowedSourceIds = new Set(executionSpec.source_artifact_ids);
+    const validateSourceIds = (sourceIds: string[], label: string) => {
+      const seen = new Set<string>();
+      for (const sourceId of sourceIds) {
+        if (seen.has(sourceId) || !allowedSourceIds.has(sourceId)) {
+          throw new Error(
+            `report package output ${label} source_artifact_ids must be a unique subset of the frozen input allowlist`,
+          );
+        }
+        seen.add(sourceId);
+      }
+    };
+    validateSourceIds(parsed.source_artifact_ids, "report");
+    for (const section of parsed.sections) {
+      validateSourceIds(section.source_artifact_ids, `section ${section.id}`);
     }
     return persistParsedArtifact(
       db,
