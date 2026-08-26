@@ -1,8 +1,9 @@
 import { ArrowRight, RefreshCw, SearchCheck, ShieldAlert, Timer } from "lucide-react";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate, useOutletContext } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import type { TaskSummary } from "../../api/types";
+import type { ViewMode } from "../../app/viewMode";
 import { executionModeLabel } from "../../app/statusCopy";
 import { usePageTitle } from "../../hooks/usePageTitle";
 import { useResource } from "../../hooks/useResource";
@@ -11,6 +12,12 @@ import { OutcomeDialog } from "./OutcomeDialog";
 /** 运行：执行链的实时面。四条队列 = 门 2 待确认 → 在途 → 结果待查（冻结源）→ 待核验。
  * Ⓐ级自动任务成功即归档不在此逗留；出现在「结果待查」的都要人裁决。 */
 export function RunsPage() {
+  const { mode } = useOutletContext<{ mode: ViewMode }>();
+  if (mode !== "audit") return <Navigate replace to="/settings#system-status" />;
+  return <AuditRunsLedger />;
+}
+
+function AuditRunsLedger() {
   const navigate = useNavigate();
   usePageTitle("运行");
   const [resolving, setResolving] = useState<TaskSummary>();

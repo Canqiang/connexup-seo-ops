@@ -4,6 +4,7 @@
 @import "./styles/ledger.css";
 @import "./styles/merchant.css";
 @import "./styles/task.css";
+@import "./styles/review-settings.css";
 
 .merchant-switcher { position: relative; }
 .merchant-trigger { min-width: 286px; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 11px; padding: 7px 10px 7px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; text-align: left; cursor: pointer; }
@@ -178,18 +179,6 @@ textarea { padding: 9px; resize: vertical; }
 .mini-cards article { padding: 12px; border: 1px solid var(--line-soft); background: #ffffff; }
 .mini-cards article strong { display: block; margin-top: 8px; font-size: 10px; }
 .mini-cards article p, .unavailable { margin: 5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.6; }
-
-.review-list { display: grid; gap: 15px; }
-.review-card { padding: 18px; border: 1px solid var(--line); background: rgba(216,224,233,.75); }
-.review-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.review-card h2 { margin: 5px 0 0; font-size: 16px; }
-.review-explanation { margin: 12px 0; color: #314457; font-size: 10px; }
-.causal-chain { display: grid; grid-template-columns: repeat(7, minmax(140px, 1fr)); overflow: auto; border: 1px solid var(--line); }
-.causal-chain > div { min-width: 0; padding: 12px; border-right: 1px solid var(--line); }
-.causal-chain > div:last-child { border: 0; }
-.causal-chain span { color: var(--quiet); font: 7px "SFMono-Regular", monospace; letter-spacing: .08em; }
-.causal-chain p { margin: 7px 0 0; color: #243243; font-size: 9px; line-height: 1.55; }
-.review-card footer { display: flex; justify-content: space-between; margin-top: 12px; color: var(--quiet); font-size: 8px; }
 
 .task-state-ribbon { grid-template-columns: repeat(5, 1fr); }
 .task-layout { display: grid; grid-template-columns: minmax(0, 1fr) 370px; align-items: start; gap: 18px; }
@@ -456,11 +445,8 @@ input, select { height: 38px; }
 .compact-list small, .mini-cards article p, .unavailable { color: var(--muted); font-size: 11px; }
 .mini-cards article { border-color: var(--line-soft); }
 
-.review-card, .merchant-row { border-color: var(--line); background: #fff; box-shadow: 0 5px 18px rgba(35, 66, 86, .035); }
-.review-card h2 { color: var(--text); font-size: 19px; }
-.review-explanation, .merchant-row .why { color: var(--muted); font-size: 12px; }
-.causal-chain p { color: #536a7b; font-size: 11px; }
-.causal-chain span, .review-card footer { color: var(--quiet); font-size: 10px; }
+.merchant-row { border-color: var(--line); background: #fff; box-shadow: 0 5px 18px rgba(35, 66, 86, .035); }
+.merchant-row .why { color: var(--muted); font-size: 12px; }
 .merchant-row:hover { background: #f6f9fb; }
 .merchant-row .who strong { color: var(--text); font-size: 14px; }
 .merchant-row .who small { color: var(--quiet); font-size: 11px; }
