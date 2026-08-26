@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
@@ -41,10 +41,14 @@ const kekeLedger: CycleLedgerView = {
 
 let postProgramData: PostProgramView = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: ["VOICE_PROFILE_MISSING"] };
 const failedPaths = new Set<string>();
+let kekeLedgerData: CycleLedgerView = kekeLedger;
+let delayedLedgerResponse: Promise<Response> | null = null;
 
 beforeEach(() => {
   postProgramData = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: ["VOICE_PROFILE_MISSING"] };
   failedPaths.clear();
+  kekeLedgerData = kekeLedger;
+  delayedLedgerResponse = null;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
     const merchantId = path.includes("/merchants/keke/") ? "keke" : "only-bear";
@@ -61,7 +65,7 @@ beforeEach(() => {
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
     if (path.endsWith("/lifecycle")) return json(merchantId === "keke" ? kekeLifecycle : onlyBearLifecycle);
     if (path.endsWith("/ranking")) return json({ round_count: 0, latest: null, previous: null, comparison: null });
-    if (path.endsWith("/cycle-ledger")) return json(merchantId === "keke" ? kekeLedger : { items: [] });
+    if (path.endsWith("/cycle-ledger")) return delayedLedgerResponse ?? json(merchantId === "keke" ? kekeLedgerData : { items: [] });
     if (path.endsWith("/post-program")) return json(postProgramData);
     if (path.includes("/artifacts")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 8, total: 0 });
@@ -96,6 +100,31 @@ test("pending active-cycle proposal takes precedence over lifecycle task languag
   const action = await screen.findByRole("region", { name: "当前动作" });
   expect(within(action).getByRole("heading", { name: "判定本周期建议" })).toBeInTheDocument();
   expect(within(action).getByRole("link", { name: "去判定" })).toHaveAttribute("href", expect.stringContaining("tab=proposals"));
+  expect(within(action).queryByText("推进已授权任务")).not.toBeInTheDocument();
+});
+
+test("lifecycle waits for the active ledger before naming a current-cycle action", async () => {
+  let resolveLedger: ((response: Response) => void) | undefined;
+  delayedLedgerResponse = new Promise<Response>((resolve) => { resolveLedger = resolve; });
+  renderApp("/merchants/keke?view=operator");
+
+  const initialAction = await screen.findByRole("region", { name: "当前动作" });
+  expect(within(initialAction).getByRole("heading", { name: "正在确认本周期账本" })).toBeInTheDocument();
+  expect(within(initialAction).queryByText("推进已授权任务")).not.toBeInTheDocument();
+  expect(within(initialAction).queryByText("判定本周期建议")).not.toBeInTheDocument();
+
+  await act(async () => { resolveLedger!(json(kekeLedger)); });
+  expect(await screen.findByRole("heading", { name: "判定本周期建议" })).toBeInTheDocument();
+});
+
+test("successful empty ledger neutralizes historical execute lifecycle language", async () => {
+  kekeLedgerData = { items: [] };
+  renderApp("/merchants/keke?view=operator");
+
+  const action = await screen.findByRole("region", { name: "当前动作" });
+  expect(within(action).getByRole("heading", { name: "本周期暂无工作" })).toBeInTheDocument();
+  expect(within(action).getByText(/没有持久化任务或建议/)).toBeInTheDocument();
+  expect(within(action).getByText(/Planner/)).toBeInTheDocument();
   expect(within(action).queryByText("推进已授权任务")).not.toBeInTheDocument();
 });
 
