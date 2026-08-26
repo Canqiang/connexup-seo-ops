@@ -282,6 +282,22 @@ describe("lifecycle derivation", () => {
     expect(fresh.exception.type).toBe("NONE");
   });
 
+  it("clamps a slightly future source timestamp to zero days old", () => {
+    const q = mkQuestionnaire({ status: "FILLED", filledAt: NOW.toISOString() });
+    const futureAt = new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString();
+    const wire = deriveLifecycle(
+      M,
+      inputs(q, [
+        mkRun("KEYWORDS"),
+        mkRun("AUDIT"),
+        mkRun("RANKING_BASELINE", { completedAt: futureAt }),
+      ]),
+      tasks(),
+      NOW,
+    );
+    expect(wire.last_report?.age_days).toBe(0);
+  });
+
   it("ranking_round_count counts completed ranking runs with usable deliverables", () => {
     const q = mkQuestionnaire({ status: "FILLED", filledAt: NOW.toISOString() });
     expect(deriveLifecycle(M, inputs(q, []), tasks(), NOW).ranking_round_count).toBe(0);

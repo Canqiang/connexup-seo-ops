@@ -1,6 +1,16 @@
 import type { Location, Merchant } from "../repos/types.js";
 import type { Task } from "../repos/taskTypes.js";
 import type { Questionnaire } from "../repos/questionnaireTypes.js";
+import type { Proposal, ProposalBatch } from "../repos/proposalRepo.js";
+import type { ExecutionAttempt } from "../repos/executionRepo.js";
+import type {
+  AgentBinding,
+  Capability,
+  CycleConfig,
+  StyleProfile,
+} from "../repos/settingsRepo.js";
+import type { ContentDraft } from "../repos/draftRepo.js";
+import type { SpecialistArtifact } from "../repos/specialistArtifactRepo.js";
 
 /** Wire views — snake_case shapes that match the frontend types in
  * `src/api/types.ts` exactly. */
@@ -111,6 +121,15 @@ export interface SeoTaskView {
   execution_spec: string;
   execution_spec_hash: string;
   required_evidence_types: string[];
+  execution_mode: string;
+  proposal_id: string | null;
+  depends_on_task_ids: string[];
+  attempt_count: number;
+  published_ref: string | null;
+  published_at: string | null;
+  verify_due_at: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
   evidence_refs: Array<Record<string, unknown>>;
   approval_decisions: Array<Record<string, unknown>>;
   conversation_links: Array<Record<string, unknown>>;
@@ -143,6 +162,15 @@ export function taskView(
     execution_spec: t.executionSpec,
     execution_spec_hash: t.executionSpecHash,
     required_evidence_types: t.requiredEvidenceTypes,
+    execution_mode: t.executionMode,
+    proposal_id: t.proposalId,
+    depends_on_task_ids: t.dependsOnTaskIds,
+    attempt_count: t.attemptCount,
+    published_ref: t.publishedRef,
+    published_at: t.publishedAt,
+    verify_due_at: t.verifyDueAt,
+    verified_at: t.verifiedAt,
+    verified_by: t.verifiedBy,
     evidence_refs: t.evidenceRefs.map((e) => ({
       id: e.id,
       task_revision: e.taskRevision,
@@ -182,5 +210,163 @@ export function taskView(
       linked_at: a.linkedAt,
     })),
     created_at: t.createdAt,
+  };
+}
+
+// ---------------- 执行域 / 建议层 / 设置 wire views ----------------
+
+export function proposalView(p: Proposal): Record<string, unknown> {
+  return {
+    id: p.id,
+    batch_id: p.batchId,
+    merchant_id: p.merchantId,
+    location_id: p.locationId,
+    seq: p.seq,
+    title: p.title,
+    task_type: p.taskType,
+    execution_mode: p.executionMode,
+    executor_agent: p.executorAgent,
+    depends_on: p.dependsOn,
+    due_at: p.dueAt,
+    priority: p.priority,
+    impact: p.impact,
+    acceptance_criteria: p.acceptanceCriteria,
+    execution_spec: p.executionSpec,
+    required_evidence_types: p.requiredEvidenceTypes,
+    validation_failures: p.validationFailures,
+    status: p.status,
+    decided_by: p.decidedBy,
+    decided_at: p.decidedAt,
+    return_reason: p.returnReason,
+    task_id: p.taskId,
+    created_at: p.createdAt,
+    updated_at: p.updatedAt,
+  };
+}
+
+export function proposalBatchView(
+  b: ProposalBatch,
+  proposals: Proposal[],
+  merchantName?: string,
+): Record<string, unknown> {
+  return {
+    id: b.id,
+    merchant_id: b.merchantId,
+    ...(merchantName ? { merchant_name: merchantName } : {}),
+    origin: b.origin,
+    trigger_reason: b.triggerReason,
+    planner_run_id: b.plannerRunId,
+    snapshot_note: b.snapshotNote,
+    status: b.status,
+    created_by: b.createdBy,
+    created_at: b.createdAt,
+    updated_at: b.updatedAt,
+    proposals: proposals.map(proposalView),
+  };
+}
+
+export function attemptView(a: ExecutionAttempt): Record<string, unknown> {
+  return {
+    id: a.id,
+    task_id: a.taskId,
+    merchant_id: a.merchantId,
+    attempt_no: a.attemptNo,
+    status: a.status,
+    gate: a.gate,
+    agent_run_id: a.agentRunId,
+    core_run_id: a.coreRunId,
+    probe_ref: a.probeRef,
+    error: a.error,
+    started_at: a.startedAt,
+    resolved_at: a.resolvedAt,
+    resolved_by: a.resolvedBy,
+    resolution: a.resolution,
+    resolution_note: a.resolutionNote,
+  };
+}
+
+export function capabilityView(c: Capability): Record<string, unknown> {
+  return {
+    id: c.id,
+    merchant_id: c.merchantId,
+    asset: c.asset,
+    capability: c.capability,
+    external_ref: c.externalRef,
+    tech_connected: c.techConnected,
+    merchant_authorized: c.merchantAuthorized,
+    status: c.status,
+    verified_at: c.verifiedAt,
+    verified_by: c.verifiedBy,
+    note: c.note,
+    updated_at: c.updatedAt,
+  };
+}
+
+export function cycleConfigView(c: CycleConfig): Record<string, unknown> {
+  return {
+    merchant_id: c.merchantId,
+    snapshot_day: c.snapshotDay,
+    post_weekday: c.postWeekday,
+    post_per_week: c.postPerWeek,
+    review_window_days: c.reviewWindowDays,
+    audit_interval_days: c.auditIntervalDays,
+    enabled: c.enabled,
+    updated_by: c.updatedBy,
+    updated_at: c.updatedAt,
+  };
+}
+
+export function agentBindingView(b: AgentBinding): Record<string, unknown> {
+  return {
+    task_type: b.taskType,
+    agent_id: b.agentId,
+    agent_label: b.agentLabel,
+    published_ref: b.publishedRef,
+    updated_by: b.updatedBy,
+    updated_at: b.updatedAt,
+  };
+}
+
+export function styleProfileView(s: StyleProfile): Record<string, unknown> {
+  return {
+    id: s.id,
+    merchant_id: s.merchantId,
+    version: s.version,
+    voice: s.voice,
+    updated_by: s.updatedBy,
+    created_at: s.createdAt,
+  };
+}
+
+export function draftView(d: ContentDraft): Record<string, unknown> {
+  return {
+    id: d.id,
+    task_id: d.taskId,
+    version: d.version,
+    body: d.body,
+    cta_type: d.ctaType,
+    cta_url: d.ctaUrl,
+    media: d.media,
+    source: d.source,
+    feedback: d.feedback,
+    sha256: d.sha256,
+    created_by: d.createdBy,
+    created_at: d.createdAt,
+  };
+}
+
+export function specialistArtifactView(a: SpecialistArtifact): Record<string, unknown> {
+  return {
+    id: a.id,
+    task_id: a.taskId,
+    merchant_id: a.merchantId,
+    artifact_type: a.artifactType,
+    schema_version: a.schemaVersion,
+    title: a.title,
+    summary: a.summary,
+    payload: a.payload,
+    core_run_id: a.coreRunId,
+    created_by: a.createdBy,
+    created_at: a.createdAt,
   };
 }

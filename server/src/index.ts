@@ -11,8 +11,12 @@ import {
   registerSeoOpsRoutes,
 } from "./routes/seoOps.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerExecutionRoutes } from "./routes/executionRoutes.js";
 import { createCoreAiClient, type CoreAiClient } from "./services/coreAiClient.js";
 import { AgentRunPoller } from "./services/agentRunPoller.js";
+import { ExecutionWorker } from "./services/executionWorker.js";
+import { CycleScheduler } from "./services/schedulerService.js";
+import { ensureSingleUserIdentity } from "./auth/singleUser.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +27,10 @@ export interface AppContext {
   coreAi: CoreAiClient | null;
   /** Directory where completed run outputs are persisted as artifacts. */
   artifactsDir: string;
+  /** 执行 worker（attempt 派发/结算）；mock 或 core-ai 配置齐时非 null。 */
+  executionWorker: ExecutionWorker | null;
+  /** 周期 scheduler（Ⓐ级任务自动生成+派发清扫）。 */
+  scheduler: CycleScheduler | null;
 }
 
 /** Test seams: inject a fake client/poller/db, or pass null to force-disable. */
@@ -42,11 +50,12 @@ export async function buildApp(
   const ownsDb = !deps.db;
   const db = deps.db ?? createDb(config.databaseUrl);
   await migrate(db);
+  if (config.singleUserMode) await ensureSingleUserIdentity(db);
 
   const coreAi =
     deps.coreAi !== undefined
       ? deps.coreAi
-      : config.coreAiBaseUrl && config.coreAiToken && config.agentRunAgentId
+      : config.coreAiBaseUrl && config.coreAiToken
         ? createCoreAiClient({
             baseUrl: config.coreAiBaseUrl,
             token: config.coreAiToken,
@@ -55,7 +64,24 @@ export async function buildApp(
         : null;
   const artifactsDir =
     deps.artifactsDir ?? path.resolve(moduleDir, "../../data/artifacts");
-  const ctx: AppContext = { config, db, coreAi, artifactsDir };
+
+  // 执行 worker：mock 模式（无外部副作用）或 core-ai 配置齐全时可用。
+  const executionWorker =
+    config.mockExecution || coreAi
+      ? new ExecutionWorker({
+          db,
+          client: coreAi,
+          mockMode: config.mockExecution,
+          intervalMs: config.executionPollIntervalMs,
+          log: (message, err) => console.warn(message, err ?? ""),
+        })
+      : null;
+  const scheduler = new CycleScheduler(
+    { db, log: (message, err) => console.warn(message, err ?? "") },
+    config.schedulerIntervalMs,
+  );
+
+  const ctx: AppContext = { config, db, coreAi, artifactsDir, executionWorker, scheduler };
 
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
 
@@ -67,6 +93,13 @@ export async function buildApp(
   registerActorResolution(app, ctx);
   registerAuthRoutes(app, ctx);
   registerSeoOpsRoutes(app, ctx);
+  registerExecutionRoutes(app, ctx);
+
+  // 定时器不在测试环境下启动；手动 tick 端点始终可用。
+  if (process.env.NODE_ENV !== "test") {
+    executionWorker?.start();
+    scheduler.start();
+  }
 
   let poller: AgentRunPoller | null = null;
   if (ctx.coreAi && config.agentRunAgentId && deps.poller !== null) {
@@ -85,9 +118,11 @@ export async function buildApp(
   }
 
   app.addHook("onClose", async () => {
-    // Stop the poller before closing the pool so it can't fire a query
-    // against an already-closed connection.
+    // Stop the poller/workers before closing the pool so they can't fire a
+    // query against an already-closed connection.
     poller?.stop();
+    executionWorker?.stop();
+    scheduler.stop();
     if (ownsDb) await db.close();
   });
 

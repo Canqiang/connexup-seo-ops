@@ -38,6 +38,8 @@ describe("POST /api/seo-ops/merchants", () => {
       display_name: "Acme Bakery",
       tags: ["vip"],
       operator_user_ids: ["op-1"],
+      planner_enqueued: false,
+      planner_task_id: null,
     });
     expect(body.id).toBeTruthy();
     expect(body.created_at).toBeTruthy();

@@ -87,8 +87,11 @@ export async function portfolio(
   db: Db,
   actorUserId: string,
   now: Date = new Date(),
+  scopeAll = false,
 ): Promise<PortfolioResponseWire> {
-  const merchants = await listMerchantsForOperator(db, actorUserId);
+  const merchants = scopeAll
+    ? await listMerchants(db)
+    : await listMerchantsForOperator(db, actorUserId);
   const merchantIds = new Set(merchants.map((merchant) => merchant.id));
   const locations = await listLocations(db);
   const tasks = (await listTasks(db)).filter((task) => merchantIds.has(task.merchantId));
@@ -196,6 +199,9 @@ export interface TaskSummaryWire {
   task_revision: number;
   state_version: number;
   updated_at: string;
+  source: string;
+  execution_mode: string;
+  attempt_count: number;
 }
 
 export function taskSummary(
@@ -219,6 +225,9 @@ export function taskSummary(
     task_revision: task.taskRevision,
     state_version: task.stateVersion,
     updated_at: task.updatedAt,
+    source: task.source,
+    execution_mode: task.executionMode,
+    attempt_count: task.attemptCount,
   };
 }
 
@@ -237,6 +246,7 @@ export async function inbox(
   db: Db,
   query: InboxQuery & PageParams,
   actorUserId: string,
+  scopeAll = false,
 ): Promise<PageResult<TaskSummaryWire>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
@@ -245,7 +255,9 @@ export async function inbox(
   const ownerId = str(query.owner_id);
   const evidenceState = str(query.evidence_state);
 
-  const allowedMerchantIds = new Set((await listMerchantsForOperator(db, actorUserId)).map((m) => m.id));
+  const allowedMerchantIds = new Set(
+    (scopeAll ? await listMerchants(db) : await listMerchantsForOperator(db, actorUserId)).map((m) => m.id),
+  );
   const names = await nameLookup(db);
   const filtered = (await listTasks(db)).filter((t) => {
     if (!allowedMerchantIds.has(t.merchantId)) return false;
@@ -324,10 +336,13 @@ export async function reviews(
   db: Db,
   query: PageParams & { merchant_id?: unknown },
   actorUserId: string,
+  scopeAll = false,
 ): Promise<PageResult<Record<string, unknown>>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
-  const allowedMerchantIds = new Set((await listMerchantsForOperator(db, actorUserId)).map((m) => m.id));
+  const allowedMerchantIds = new Set(
+    (scopeAll ? await listMerchants(db) : await listMerchantsForOperator(db, actorUserId)).map((m) => m.id),
+  );
   const items = (await listTasks(db))
     .filter((t) => allowedMerchantIds.has(t.merchantId))
     .filter((t) => !merchantId || t.merchantId === merchantId)
@@ -382,6 +397,7 @@ export async function reports(
   },
   actorUserId: string,
   now: Date = new Date(),
+  scopeAll = false,
 ): Promise<PageResult<Record<string, unknown>>> {
   const { offset, limit } = parsePageParams(query);
   const merchantId = str(query.merchant_id);
@@ -399,7 +415,9 @@ export async function reports(
     }
   }
 
-  const merchants = await listMerchantsForOperator(db, actorUserId);
+  const merchants = scopeAll
+    ? await listMerchants(db)
+    : await listMerchantsForOperator(db, actorUserId);
   const allowedMerchantIds = new Set(merchants.map((merchant) => merchant.id));
   const merchantsById = new Map(merchants.map((merchant) => [merchant.id, merchant]));
   const locationsById = new Map((await listLocations(db)).map((location) => [location.id, location]));

@@ -2,6 +2,7 @@ import type {
   ApprovalAction,
   EvidenceState,
   EvidenceVerification,
+  ExecutionMode,
   SeoTaskStatus,
   TaskImpact,
   TaskPriority,
@@ -22,6 +23,7 @@ export interface TaskDefinitionRecord {
   executionSpec: string;
   executionSpecHash: string;
   requiredEvidenceTypes: string[];
+  executionMode: ExecutionMode;
   createdBy: string;
   createdAt: string;
 }
@@ -104,6 +106,20 @@ export interface Task {
   events: TaskEventRecord[];
   conversationLinks: ConversationLinkRecord[];
   agentRunLinks: AgentRunLinkRecord[];
+  executionMode: ExecutionMode;
+  /** 采纳来源建议（只存 ID）。 */
+  proposalId: string | null;
+  /** 必须先完成的上游 Task。只允许指向同商户、创建时间更早的 Task。 */
+  dependsOnTaskIds: string[];
+  /** 已派发 attempt 数（含在途）。 */
+  attemptCount: number;
+  /** provider 侧发布引用（如 GBP postId），查证/成功后回填。 */
+  publishedRef: string | null;
+  publishedAt: string | null;
+  /** 核验期限（发布后 +N 天）。 */
+  verifyDueAt: string | null;
+  verifiedAt: string | null;
+  verifiedBy: string | null;
   /** idempotency_key -> request fingerprint for task sub-mutations. */
   mutationKeys: Record<string, string>;
   creationIdempotencyKey: string | null;

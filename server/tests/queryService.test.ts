@@ -330,10 +330,12 @@ describe("reviews + reports", () => {
   });
 
   it("projects *_REPORT evidence with freshness tiers and filters", async () => {
-    // fresh (1 day ago), aging (10 days ago), stale (40 days ago) relative to 2026-08-19
-    await addEvidence("SITE_AUDIT_REPORT", "r1", "2026-08-18T00:00:00.000Z");
-    await addEvidence("SITE_AUDIT_REPORT", "r2", "2026-08-09T00:00:00.000Z");
-    await addEvidence("KEYWORD_RANK_REPORT", "r3", "2026-07-10T00:00:00.000Z");
+    // fresh (1 day ago), aging (10 days ago), stale (40 days ago) relative to NOW —
+    // computed, not hardcoded, so the suite doesn't rot as wall-clock time passes.
+    const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString();
+    await addEvidence("SITE_AUDIT_REPORT", "r1", daysAgo(1));
+    await addEvidence("SITE_AUDIT_REPORT", "r2", daysAgo(10));
+    await addEvidence("KEYWORD_RANK_REPORT", "r3", daysAgo(40));
 
     const res = await app.inject({ method: "GET", url: "/api/seo-ops/reports" });
     const page = res.json();
@@ -361,7 +363,7 @@ describe("reviews + reports", () => {
     const byWindow = (
       await app.inject({
         method: "GET",
-        url: "/api/seo-ops/reports?captured_from=2026-08-15T00:00:00.000Z&captured_to=2026-08-20T00:00:00.000Z",
+        url: `/api/seo-ops/reports?captured_from=${encodeURIComponent(daysAgo(4))}&captured_to=${encodeURIComponent(daysAgo(0))}`,
       })
     ).json();
     expect(byWindow.total).toBe(1);
@@ -371,7 +373,7 @@ describe("reviews + reports", () => {
     const built = await makeBuiltApp();
     try {
       const seeded = await seedMerchantWithLocation(built.app);
-      const completedAt = "2026-08-18T12:00:00.000Z";
+      const completedAt = new Date(Date.now() - 86400000).toISOString(); // 1 day ago -> FRESH
       await insertAgentRun(built.db, {
         id: "run-core-audit",
         merchantId: seeded.merchant.id,

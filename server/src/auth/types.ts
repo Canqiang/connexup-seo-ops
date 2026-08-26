@@ -35,6 +35,8 @@ export interface AuthActor {
   role: string;
   identityType: IdentityType;
   permissions: SeoPermission[];
+  /** true = 单人模式合成管理员：跳过商户 operator 归属校验（全商户范围）。 */
+  scopeAll?: boolean;
 }
 
 const SERVICE_FORBIDDEN = new Set<SeoPermission>([

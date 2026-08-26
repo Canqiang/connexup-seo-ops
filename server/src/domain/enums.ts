@@ -6,6 +6,14 @@ export const SEO_TASK_STATUSES = [
   "APPROVED",
   "REVISION_REQUIRED",
   "APPROVAL_REVOKED",
+  // 执行域（双门之后）：见文件尾 EXECUTION_TASK_STATUSES 注释
+  "EXECUTION_CONFIRMED",
+  "DISPATCHING",
+  "OUTCOME_UNKNOWN",
+  "PENDING_VERIFY",
+  "VERIFIED",
+  "DONE",
+  "FAILED",
 ] as const;
 export type SeoTaskStatus = (typeof SEO_TASK_STATUSES)[number];
 
@@ -121,3 +129,105 @@ export const CORE_RUN_TERMINAL_STATUSES = [
 /** 交付物来源：SUMMARY 运行正文 / ATTACHMENT agent 附件 / MANUAL 运营手工上传兜底。 */
 export const DELIVERABLE_KINDS = ["SUMMARY", "ATTACHMENT", "MANUAL"] as const;
 export type DeliverableKind = (typeof DELIVERABLE_KINDS)[number];
+
+// ---------------- 执行域（双门 / attempt / 查证 / 核验） ----------------
+
+/** 执行模式：外部写入 / 成品交付 / 只读采集 / 人工。 */
+export const EXECUTION_MODES = [
+  "AUTO_WRITE",
+  "ARTIFACT",
+  "READ_ONLY",
+  "MANUAL",
+] as const;
+export type ExecutionMode = (typeof EXECUTION_MODES)[number];
+
+/** 执行域任务状态（接在审批域之后）。
+ * APPROVED -(门2)-> EXECUTION_CONFIRMED -> DISPATCHING -> attempt 终态：
+ *   SUCCEEDED  -> PENDING_VERIFY（写入/成品）或 DONE（只读）
+ *   FAILED_CONFIRMED -> 回 APPROVED（写入）或限次自动重试（只读Ⓐ）
+ *   OUTCOME_UNKNOWN  -> 冻结，人工查证二选一
+ * PENDING_VERIFY -(核验)-> VERIFIED -> DONE。 */
+export const EXECUTION_TASK_STATUSES = [
+  "EXECUTION_CONFIRMED",
+  "DISPATCHING",
+  "OUTCOME_UNKNOWN",
+  "PENDING_VERIFY",
+  "VERIFIED",
+  "DONE",
+  "FAILED",
+] as const;
+
+export const ATTEMPT_STATUSES = [
+  "DISPATCHING",
+  "SUCCEEDED",
+  "FAILED_CONFIRMED",
+  "OUTCOME_UNKNOWN",
+] as const;
+export type AttemptStatus = (typeof ATTEMPT_STATUSES)[number];
+
+/** 查证结论：这个写入动作到底发生没有（二选一，等权重）。 */
+export const OUTCOME_RESOLUTIONS = ["HAPPENED", "NOT_HAPPENED"] as const;
+export type OutcomeResolution = (typeof OUTCOME_RESOLUTIONS)[number];
+
+/** 建议（TaskProposal）条目状态：判定前不落任务库。 */
+export const PROPOSAL_STATUSES = [
+  "PENDING",
+  "VALIDATION_FAILED",
+  "ADOPTED",
+  "RETURNED",
+] as const;
+export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
+
+/** 建议批次来源。 */
+export const PROPOSAL_ORIGINS = ["PLANNER", "PLAN_CONVERT", "MANUAL"] as const;
+export type ProposalOrigin = (typeof PROPOSAL_ORIGINS)[number];
+
+/** 能力矩阵：资产接入状态（技术连接 × 商户授权 → 状态）。 */
+export const CAPABILITY_STATUSES = ["ACTIVE", "BLOCKED", "MISSING"] as const;
+export type CapabilityStatus = (typeof CAPABILITY_STATUSES)[number];
+
+/** taskType 全集（Agent 绑定的键；执行域 worker 按此路由）。 */
+export const TASK_TYPES = [
+  "PLANNER",
+  "QUESTIONNAIRE",
+  "KEYWORD_RESEARCH",
+  "KEYWORD_WEEKLY",
+  "AUDIT",
+  "REPORT",
+  "PLAN",
+  "GBP_POST",
+  "GBP_UPDATE",
+  "WEBSITE_CONTENT",
+  "REVIEW",
+  "MANUAL_FOLLOWUP",
+] as const;
+export type TaskType = (typeof TASK_TYPES)[number];
+
+/** taskType × executionMode 兼容表（红线①的机器防线）：
+ * 写入型任务类型不允许标成 READ_ONLY —— 否则一条 LLM 建议只要把
+ * execution_mode 写成 READ_ONLY 就能绕过 G1/G2/能力矩阵直接派发到写入 agent。
+ * MANUAL 任意类型可用（人工兜底）。 */
+export const ALLOWED_EXECUTION_MODES: Record<TaskType, readonly string[]> = {
+  PLANNER: ["READ_ONLY", "MANUAL"],
+  QUESTIONNAIRE: ["READ_ONLY", "MANUAL"],
+  KEYWORD_RESEARCH: ["READ_ONLY", "MANUAL"],
+  KEYWORD_WEEKLY: ["READ_ONLY", "MANUAL"],
+  AUDIT: ["READ_ONLY", "MANUAL"],
+  REPORT: ["READ_ONLY", "MANUAL"],
+  PLAN: ["READ_ONLY", "MANUAL"],
+  GBP_POST: ["AUTO_WRITE", "MANUAL"],
+  GBP_UPDATE: ["AUTO_WRITE", "MANUAL"],
+  WEBSITE_CONTENT: ["AUTO_WRITE", "ARTIFACT", "MANUAL"],
+  REVIEW: ["READ_ONLY", "MANUAL"],
+  MANUAL_FOLLOWUP: ["MANUAL"],
+};
+
+export function isModeAllowedForType(taskType: string, executionMode: string): boolean {
+  const allowed = ALLOWED_EXECUTION_MODES[taskType as TaskType];
+  // 未知 taskType 由 TASK_TYPES 校验单独拦；这里不重复报错。
+  if (!allowed) return true;
+  return allowed.includes(executionMode);
+}
+
+/** 只读Ⓐ级任务失败的自动重试上限（超过则 FAILED 升级人工）。 */
+export const READ_ONLY_AUTO_RETRY_LIMIT = 3;

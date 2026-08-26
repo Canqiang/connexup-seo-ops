@@ -65,12 +65,14 @@ import {
   EVIDENCE_VERIFICATIONS,
   LOCATION_READINESSES,
 } from "../domain/enums.js";
+import { enqueuePlannerTaskIfBound } from "../services/plannerService.js";
 
 const createMerchantSchema = z.object({
   slug: z.string(),
   display_name: z.string().optional().nullable(),
   tags: z.array(z.string()).optional().nullable(),
   operator_user_ids: z.array(z.string()).optional().nullable(),
+  website: z.string().url().max(1000).optional().nullable(),
   idempotency_key: z.string(),
 });
 
@@ -94,6 +96,7 @@ const definitionSchema = z.object({
   due_at: z.string().optional(),
   execution_spec: z.string(),
   required_evidence_types: z.array(z.string()),
+  execution_mode: z.string().optional(),
   conversation_id: z.string().optional(),
 });
 
@@ -215,22 +218,22 @@ export function registerSeoOpsRoutes(
 
   app.get("/api/seo-ops/portfolio", async (request) => {
     const actor = requirePermission(request, "seoops.view");
-    return portfolio(ctx.db, actor.userId);
+    return portfolio(ctx.db, actor.userId, new Date(), actor.scopeAll === true);
   });
 
   app.get("/api/seo-ops/inbox", async (request) => {
     const actor = requirePermission(request, "seoops.view");
-    return inbox(ctx.db, request.query as Record<string, unknown>, actor.userId);
+    return inbox(ctx.db, request.query as Record<string, unknown>, actor.userId, actor.scopeAll === true);
   });
 
   app.get("/api/seo-ops/reviews", async (request) => {
     const actor = requirePermission(request, "seoops.view");
-    return reviews(ctx.db, request.query as Record<string, unknown>, actor.userId);
+    return reviews(ctx.db, request.query as Record<string, unknown>, actor.userId, actor.scopeAll === true);
   });
 
   app.get("/api/seo-ops/reports", async (request) => {
     const actor = requirePermission(request, "seoops.view");
-    return reports(ctx.db, request.query as Record<string, unknown>, actor.userId);
+    return reports(ctx.db, request.query as Record<string, unknown>, actor.userId, new Date(), actor.scopeAll === true);
   });
 
   app.get("/api/seo-ops/tasks/:taskId", async (request, reply) => {
@@ -388,12 +391,24 @@ export function registerSeoOpsRoutes(
       displayName: body.display_name,
       tags: body.tags,
       operatorUserIds: body.operator_user_ids,
+      intakeContext: body.website ? { website: body.website } : null,
       idempotencyKey: body.idempotency_key,
       createdBy: actor.userId,
       actorUserId: actor.userId,
     });
+    const planner = await enqueuePlannerTaskIfBound(ctx.db, result.entity.id, {
+      key: `merchant_created:${result.entity.id}`,
+      type: "MERCHANT_CREATED",
+      reason: "新商户接入",
+      occurredAt: result.entity.createdAt,
+      signals: body.website ? [{ website: body.website }] : [],
+    });
     reply.status(result.replayed ? 200 : 201);
-    return merchantView(result.entity);
+    return {
+      ...merchantView(result.entity),
+      planner_enqueued: planner !== null,
+      planner_task_id: planner?.task.id ?? null,
+    };
   });
 
   app.post(
@@ -469,8 +484,19 @@ export function registerSeoOpsRoutes(
     async (request, reply) => {
       const { slug } = request.params as { slug: string };
       const body = submitQuestionnaireSchema.parse(request.body);
-      const questionnaire = await submitQuestionnaire(ctx.db, slug, body.answers);
-      reply.status(questionnaire.filledAt ? 200 : 201);
+      const { questionnaire, replayed } = await submitQuestionnaire(ctx.db, slug, body.answers);
+      await enqueuePlannerTaskIfBound(
+        ctx.db,
+        questionnaire.merchantId,
+        {
+          key: `questionnaire_filled:${questionnaire.id}`,
+          type: "QUESTIONNAIRE_FILLED",
+          reason: "商户问卷已确认",
+          occurredAt: questionnaire.filledAt ?? questionnaire.updatedAt,
+        },
+        "system:questionnaire",
+      );
+      reply.status(replayed ? 200 : 201);
       return { status: questionnaire.status };
     },
   );

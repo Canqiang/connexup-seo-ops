@@ -224,19 +224,46 @@ export async function triggerStageRun(
   // would starve the pool for as long as core-ai takes to answer).
   try {
     const triggered = await deps.client.trigger(deps.agentId, run.inputMessage);
-    run.coreRunId = triggered.run_id;
-    run.coreStatus = triggered.status;
-    run.status = "RUNNING";
-    run.updatedAt = nowIso();
-    await updateAgentRun(deps.db, run);
+    // 状态守卫更新：触发期间行可能已被操作员取消（CANCELLED 终态）；
+    // 无守卫的整行覆盖会把取消复活成 RUNNING。守卫失败 → 补发远端取消。
+    const adopted = await transitionAgentRun(
+      deps.db,
+      run.id,
+      {
+        coreRunId: triggered.run_id,
+        coreStatus: triggered.status,
+        status: "RUNNING",
+      },
+      ["TRIGGERING"],
+    );
+    if (!adopted) {
+      try {
+        await deps.client.cancel(triggered.run_id);
+      } catch (cancelErr) {
+        void cancelErr;
+        deps.log?.warn(`agent run ${run.id}: cancel of orphaned core run failed`);
+      }
+      const current = await getAgentRun(deps.db, run.id);
+      return { run: current ?? run, replayed: false };
+    }
+    run.coreRunId = adopted.coreRunId;
+    run.coreStatus = adopted.coreStatus;
+    run.status = adopted.status;
+    run.updatedAt = adopted.updatedAt;
   } catch (err) {
+    if (err instanceof ApiError) throw err;
     const detail = err instanceof Error ? err.message : "network error";
-    run.status = "FAILED";
-    run.error = detail;
-    run.errorCode = "TRIGGER_FAILED";
-    run.completedAt = nowIso();
-    run.updatedAt = run.completedAt;
-    await updateAgentRun(deps.db, run);
+    await transitionAgentRun(
+      deps.db,
+      run.id,
+      {
+        status: "FAILED",
+        error: detail,
+        errorCode: "TRIGGER_FAILED",
+        completedAt: nowIso(),
+      },
+      ["TRIGGERING"],
+    );
     throw new ApiError(502, `core-ai trigger failed: ${detail}`, "CORE_AI_TRIGGER_FAILED");
   }
   return { run, replayed: false };

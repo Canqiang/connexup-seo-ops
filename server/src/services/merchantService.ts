@@ -50,6 +50,8 @@ export interface CreateMerchantInput {
   displayName?: string | null;
   tags?: string[] | null;
   operatorUserIds?: string[] | null;
+  /** Request-scoped onboarding facts used by downstream orchestration. */
+  intakeContext?: Record<string, unknown> | null;
   idempotencyKey: string;
   createdBy?: string | null;
   /** The authenticated creator is always an operator, preventing invisible
@@ -135,6 +137,7 @@ export async function createMerchant(
     display_name: displayName,
     tags,
     operator_user_ids: operatorUserIds,
+    intake_context: input.intakeContext ?? null,
   });
 
   return db.withTransaction(async (tx) => {

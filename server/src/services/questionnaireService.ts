@@ -55,22 +55,23 @@ export interface CreateQuestionnaireInput {
   createdBy?: string | null;
 }
 
-export async function createQuestionnaire(
+export interface CreateGeneratedQuestionnaireInput {
+  baseInfo: Record<string, string>;
+  questions: QuestionnaireItem[];
+  idempotencyKey: string;
+  createdBy?: string | null;
+}
+
+async function persistQuestionnaire(
   db: Db,
   merchantId: string,
-  input: CreateQuestionnaireInput,
+  input: CreateGeneratedQuestionnaireInput,
 ): Promise<{ entity: Questionnaire; replayed: boolean }> {
   const key = requireIdempotencyKey(input.idempotencyKey, "idempotency_key");
-  const merchant = await getMerchant(db, merchantId);
-  if (!merchant) throw notFound(`merchant ${merchantId} not found`);
-
-  const baseInfo: Record<string, string> = { name: merchant.displayName };
-  if (input.website && input.website.trim() !== "") {
-    baseInfo.website = input.website.trim();
-  }
   const fingerprint = requestFingerprint({
     merchant_id: merchantId,
-    base_info: baseInfo,
+    base_info: input.baseInfo,
+    questions: input.questions,
   });
 
   return db.withTransaction(async (tx) => {
@@ -83,8 +84,8 @@ export async function createQuestionnaire(
       merchantId,
       shareSlug: shareSlug(),
       status: "DRAFT",
-      baseInfo,
-      questions: buildQuestionnaireTemplate(baseInfo),
+      baseInfo: input.baseInfo,
+      questions: input.questions,
       answers: null,
       sendCount: 0,
       sentAt: null,
@@ -107,6 +108,37 @@ export async function createQuestionnaire(
     }
     return { entity: questionnaire, replayed: false };
   });
+}
+
+export async function createQuestionnaire(
+  db: Db,
+  merchantId: string,
+  input: CreateQuestionnaireInput,
+): Promise<{ entity: Questionnaire; replayed: boolean }> {
+  const key = requireIdempotencyKey(input.idempotencyKey, "idempotency_key");
+  const merchant = await getMerchant(db, merchantId);
+  if (!merchant) throw notFound(`merchant ${merchantId} not found`);
+
+  const baseInfo: Record<string, string> = { name: merchant.displayName };
+  if (input.website && input.website.trim() !== "") {
+    baseInfo.website = input.website.trim();
+  }
+  return persistQuestionnaire(db, merchantId, {
+    baseInfo,
+    questions: buildQuestionnaireTemplate(baseInfo),
+    idempotencyKey: key,
+    createdBy: input.createdBy,
+  });
+}
+
+export async function createGeneratedQuestionnaire(
+  db: Db,
+  merchantId: string,
+  input: CreateGeneratedQuestionnaireInput,
+): Promise<{ entity: Questionnaire; replayed: boolean }> {
+  const merchant = await getMerchant(db, merchantId);
+  if (!merchant) throw notFound(`merchant ${merchantId} not found`);
+  return persistQuestionnaire(db, merchantId, input);
 }
 
 /** 发放/重发：状态置 SENT 并滚动 sent 计数。外发动作本身（短信/邮件）不在
@@ -143,28 +175,28 @@ function requireAnswers(
   return cleaned;
 }
 
-/** 商家提交（公开回收端点调用）。重复提交幂等返回已填问卷。 */
+/** 商家提交（公开回收端点调用）。重复提交幂等返回已填问卷（replayed=true）。 */
 export async function submitQuestionnaire(
   db: Db,
   shareSlugValue: string,
   answers: Record<string, unknown>,
-): Promise<Questionnaire> {
+): Promise<{ questionnaire: Questionnaire; replayed: boolean }> {
   const questionnaire = await getQuestionnaireByShareSlug(db, shareSlugValue);
   if (!questionnaire) {
     throw notFound(`questionnaire form ${shareSlugValue} not found`);
   }
-  if (questionnaire.status === "FILLED") return questionnaire;
+  if (questionnaire.status === "FILLED") return { questionnaire, replayed: true };
   if (questionnaire.status !== "SENT") {
     throw conflict("questionnaire is not open for submission", "NOT_OPEN");
   }
   const cleaned = requireAnswers(questionnaire.questions, answers);
   const at = nowIso();
   const filled = await markQuestionnaireFilled(db, questionnaire.id, cleaned, at);
-  if (filled) return filled;
+  if (filled) return { questionnaire: filled, replayed: false };
 
   const current = await getQuestionnaire(db, questionnaire.id);
   if (!current) throw notFound(`questionnaire form ${shareSlugValue} not found`);
-  if (current.status === "FILLED") return current;
+  if (current.status === "FILLED") return { questionnaire: current, replayed: true };
   throw conflict("questionnaire is not open for submission", "NOT_OPEN");
 }
 

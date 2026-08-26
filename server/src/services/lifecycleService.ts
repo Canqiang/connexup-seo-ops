@@ -8,6 +8,11 @@ import {
 } from "../repos/agentRunRepo.js";
 import { listTasksByMerchant } from "../repos/taskRepo.js";
 import { latestQuestionnaireByMerchant } from "../repos/questionnaireRepo.js";
+import {
+  listSpecialistArtifactsByMerchant,
+  type SpecialistArtifact,
+  type SpecialistArtifactType,
+} from "../repos/specialistArtifactRepo.js";
 import type {
   AgentRunStage,
   LifecycleStage,
@@ -21,6 +26,7 @@ export interface LifecycleInputs {
   questionnaireByMerchant: Map<string, Questionnaire>;
   runsByMerchant: Map<string, AgentRun[]>;
   deliverablesByRun: Map<string, RunDeliverable[]>;
+  artifactsByMerchant?: Map<string, SpecialistArtifact[]>;
 }
 
 /** 每商户任务（调用方预加载，避免逐商户 N+1；单商户场景可只装一条）。 */
@@ -32,17 +38,20 @@ export async function loadLifecycleInputs(
 ): Promise<LifecycleInputs> {
   const questionnaireByMerchant = new Map<string, Questionnaire>();
   const runsByMerchant = new Map<string, AgentRun[]>();
+  const artifactsByMerchant = new Map<string, SpecialistArtifact[]>();
   const allRunIds: string[] = [];
   for (const id of merchantIds) {
     const q = await latestQuestionnaireByMerchant(db, id);
     if (q) questionnaireByMerchant.set(id, q);
     const runs = await listAgentRunsByMerchant(db, id);
     runsByMerchant.set(id, runs);
+    artifactsByMerchant.set(id, await listSpecialistArtifactsByMerchant(db, id));
     for (const run of runs) allRunIds.push(run.id);
   }
   return {
     questionnaireByMerchant,
     runsByMerchant,
+    artifactsByMerchant,
     deliverablesByRun: await listDeliverablesByRunIds(db, allRunIds),
   };
 }
@@ -121,7 +130,7 @@ export interface LifecycleWire {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function daysBetween(fromIso: string, now: Date): number {
-  return Math.floor((now.getTime() - Date.parse(fromIso)) / DAY_MS);
+  return Math.max(0, Math.floor((now.getTime() - Date.parse(fromIso)) / DAY_MS));
 }
 
 function dateLabel(iso: string | null): string {
@@ -130,10 +139,10 @@ function dateLabel(iso: string | null): string {
 
 export interface DerivedFacts {
   q: Questionnaire | null;
-  keywordsDone: AgentRun | null;
-  auditDone: AgentRun | null;
-  rankingDone: AgentRun | null;
-  planDone: AgentRun | null;
+  keywordsDone: LifecycleCompletion | null;
+  auditDone: LifecycleCompletion | null;
+  rankingDone: LifecycleCompletion | null;
+  planDone: LifecycleCompletion | null;
   /** 某阶段有 COMPLETED 运行但没有任何落盘附件——卡片提示重跑/手工上传。 */
   missingDeliverableStage: AgentRunStage | null;
   planConverted: boolean;
@@ -145,6 +154,52 @@ export interface DerivedFacts {
   ranking: { completedAt: string; ageDays: number } | null;
   /** 有附件的 COMPLETED 排名运行次数（轮次徽标）。 */
   rankingRoundCount: number;
+}
+
+interface LifecycleCompletion {
+  id: string;
+  stage: AgentRunStage;
+  runType: string;
+  completedAt: string;
+  createdAt: string;
+  output: string | null;
+  deliverableCount: number;
+}
+
+const ARTIFACT_STAGE: Record<SpecialistArtifactType, { stage: AgentRunStage; runType: string }> = {
+  KEYWORD_SET: { stage: "KEYWORDS", runType: "KEYWORD_RESEARCH" },
+  AUDIT_REPORT: { stage: "AUDIT", runType: "AUDIT" },
+  RANKING_SNAPSHOT: { stage: "RANKING_BASELINE", runType: "REPORT" },
+  EXECUTION_PLAN: { stage: "PLAN", runType: "PLAN" },
+};
+
+function completionFromRun(inputs: LifecycleInputs, run: AgentRun): LifecycleCompletion {
+  return {
+    id: run.id,
+    stage: run.stage,
+    runType: run.runType,
+    completedAt: run.completedAt ?? run.createdAt,
+    createdAt: run.createdAt,
+    output: run.output,
+    deliverableCount: (inputs.deliverablesByRun.get(run.id) ?? []).length,
+  };
+}
+
+function completionFromArtifact(artifact: SpecialistArtifact): LifecycleCompletion {
+  const mapped = ARTIFACT_STAGE[artifact.artifactType];
+  const capturedAt = artifact.artifactType === "RANKING_SNAPSHOT"
+    && typeof artifact.payload.captured_at === "string"
+    ? artifact.payload.captured_at
+    : artifact.createdAt;
+  return {
+    id: artifact.coreRunId,
+    stage: mapped.stage,
+    runType: mapped.runType,
+    completedAt: capturedAt,
+    createdAt: artifact.createdAt,
+    output: JSON.stringify(artifact.payload),
+    deliverableCount: 1,
+  };
 }
 
 function currentRevisionEvidence(task: Task): Task["evidenceRefs"] {
@@ -170,15 +225,23 @@ function deriveFacts(
 ): DerivedFacts {
   const q = inputs.questionnaireByMerchant.get(merchantId) ?? null;
   const runs = inputs.runsByMerchant.get(merchantId) ?? [];
+  const artifacts = inputs.artifactsByMerchant?.get(merchantId) ?? [];
 
-  // runs 按 created_at DESC 排序，find 即最近一次。
-  const doneOf = (stage: AgentRunStage): AgentRun | null =>
-    runs.find(
+  // 兼容旧 stage-run 附件与新 Task specialist artifact；两者都必须已经由 SEO Ops 落库。
+  const doneOf = (stage: AgentRunStage): LifecycleCompletion | null => {
+    const run = runs.find(
       (r) =>
         r.stage === stage &&
         r.status === "COMPLETED" &&
         hasUsableDeliverable(inputs, r),
-    ) ?? null;
+    );
+    const artifact = artifacts.find((item) => ARTIFACT_STAGE[item.artifactType].stage === stage);
+    const candidates = [
+      ...(run ? [completionFromRun(inputs, run)] : []),
+      ...(artifact ? [completionFromArtifact(artifact)] : []),
+    ];
+    return candidates.sort((left, right) => Date.parse(right.completedAt) - Date.parse(left.completedAt))[0] ?? null;
+  };
   const completedWithoutDeliverable = (stage: AgentRunStage): boolean =>
     runs.some(
       (r) =>
@@ -212,9 +275,7 @@ function deriveFacts(
     }
   }
 
-  const rankingAt = rankingDone
-    ? (rankingDone.completedAt ?? rankingDone.createdAt)
-    : null;
+  const rankingAt = rankingDone?.completedAt ?? null;
 
   return {
     q,
@@ -236,7 +297,7 @@ function deriveFacts(
         r.stage === "RANKING_BASELINE" &&
         r.status === "COMPLETED" &&
         hasUsableDeliverable(inputs, r),
-    ).length,
+    ).length + artifacts.filter((item) => item.artifactType === "RANKING_SNAPSHOT").length,
   };
 }
 
@@ -255,7 +316,7 @@ export function deriveException(facts: DerivedFacts, now: Date): ExceptionWire {
   if (facts.planDone && !facts.planConverted) {
     return {
       type: "PLAN_PENDING",
-      since: facts.planDone.completedAt ?? facts.planDone.createdAt,
+      since: facts.planDone.completedAt,
     };
   }
   if (facts.ready > 0) return { type: "APPROVAL", count: facts.ready };
@@ -298,13 +359,13 @@ export function deriveLifecycle(
   // 2) 关键词（DONE = 有附件交付物的 COMPLETED 运行）
   if (!qFilled) push("KEYWORDS", "OFF", "—");
   else if (facts.keywordsDone)
-    push("KEYWORDS", "DONE", dateLabel(facts.keywordsDone.completedAt ?? facts.keywordsDone.createdAt));
+    push("KEYWORDS", "DONE", dateLabel(facts.keywordsDone.completedAt));
   else push("KEYWORDS", "CURRENT", missingNote("KEYWORDS", "待生成关键词库"));
 
   // 3) 双审计（GBP + on-page）
   if (!facts.keywordsDone) push("AUDIT", "OFF", "—");
   else if (facts.auditDone)
-    push("AUDIT", "DONE", `${dateLabel(facts.auditDone.completedAt ?? facts.auditDone.createdAt)} GBP+站内`);
+    push("AUDIT", "DONE", `${dateLabel(facts.auditDone.completedAt)} GBP+站内`);
   else push("AUDIT", "CURRENT", missingNote("AUDIT", "待运行双审计"));
 
   // 4) 排名基线：超复查周期自动回退为 CURRENT（老店稳态复查回到这一格）
@@ -338,15 +399,15 @@ export function deriveLifecycle(
   const lastDone = [...stages].reverse().find((s) => s.status === "DONE");
   const stage: LifecycleStage = firstCurrent?.key ?? lastDone?.key ?? "QUESTIONNAIRE";
 
-  const latest = (run: AgentRun | null): LatestRunWire | undefined =>
+  const latest = (run: LifecycleCompletion | null): LatestRunWire | undefined =>
     run
       ? {
           run_id: run.id,
           stage: run.stage,
           run_type: run.runType,
-          completed_at: run.completedAt ?? run.createdAt,
+          completed_at: run.completedAt,
           output_preview: run.output ? run.output.slice(0, 2000) : null,
-          deliverable_count: (inputs.deliverablesByRun.get(run.id) ?? []).length,
+          deliverable_count: run.deliverableCount,
         }
       : undefined;
 

@@ -228,7 +228,7 @@ expires_at, revoked_at, revoked_by, note
 | 不修改 Core AI | §0 废止声明;实施计划无 core-ai 改动项 |
 | Plan 拆单写入、完整终值 | §6.1 + §12 |
 | 可验证人工授权;内容变更即失效 | §6.3 门 1 |
-| **审批≠执行**,执行是独立人工动作 | §6.3 门 2(五项事务内校验) |
+| **审批≠执行**,执行是独立人工动作 | §6.3 门 2(六项事务内校验) |
 | read-only 不触发写入 | 只读 SOP 与执行 agent 分 id;scheduler 只产候选 |
 | 失败/超时/不确定如实返回 | §6.4 OUTCOME_UNKNOWN / RECONCILIATION_REQUIRED |
 | CREATE/UPLOAD 不自动盲重试 | §6.6;对账前禁重试 |
@@ -249,7 +249,7 @@ expires_at, revoked_at, revoked_by, note
 ## 15. 测试策略(全程 TDD)
 
 - **状态机**:两 mode 全部合法/非法转换;双门顺序与越权拒绝;revision 使门 1 失效;OUTCOME_UNKNOWN 禁重试;VERIFIED 三来源;VERIFICATION_OVERDUE 触发;降级 attempt 不改 requested_mode;应用证据缺失不放行。
-- **门 2 事务校验**:五项校验各自失败路径;并发确认只成功一次(事务+唯一在途约束)。
+- **门 2 事务校验**:六项校验（含前置任务完成）各自失败路径;并发确认只成功一次(事务+唯一在途约束)。
 - **Worker(at-most-once)**:SKIP LOCKED 互斥(两 worker 并发认领不重复);DISPATCHING 崩溃/发送超时 → OUTCOME_UNKNOWN 且不重发;接管者无 run_id 不重新 Trigger、有 run_id 续接轮询;AUTO_WRITE 每 attempt 至多一次 Trigger;ARTIFACT 网络错误自动重试而 AUTO_WRITE 不重试;并发上限;回执 Zod 校验失败 → OUTCOME_UNKNOWN;DEAD letter。
 - **Scheduler**:显式开启前不跑;到期判定;活跃抑制;日上限;暂停;候选任务停在门外。
 - **鉴权**:权限点与商户范围;Chat/服务身份调执行/授权/requeue/capability 接口被拒。

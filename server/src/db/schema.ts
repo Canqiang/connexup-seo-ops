@@ -84,6 +84,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     conversation_links TEXT NOT NULL DEFAULT '[]',
     agent_run_links TEXT NOT NULL DEFAULT '[]',
     mutation_keys TEXT NOT NULL DEFAULT '{}',
+    depends_on_task_ids TEXT NOT NULL DEFAULT '[]',
     creation_idempotency_key TEXT,
     request_fingerprint TEXT,
     created_by TEXT,
@@ -168,4 +169,173 @@ export const SCHEMA_STATEMENTS: string[] = [
     updated_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_questionnaires_merchant_created ON seo_merchant_questionnaires(merchant_id, created_at DESC)`,
+
+  /** Specialist 结构化业务产物：Core AI 只生成，SEO Ops 严格解析后独立持久化。 */
+  `CREATE TABLE IF NOT EXISTS seo_specialist_artifacts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    core_run_id TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(core_run_id, artifact_type)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_specialist_artifacts_task ON seo_specialist_artifacts(task_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_specialist_artifacts_merchant ON seo_specialist_artifacts(merchant_id, artifact_type, created_at DESC)`,
+  // ---------------- 执行域 / 建议层 / 设置面（0827 扩展） ----------------
+
+  `CREATE TABLE IF NOT EXISTS seo_proposal_batches (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    trigger_reason TEXT,
+    planner_run_id TEXT,
+    snapshot_note TEXT,
+    status TEXT NOT NULL,
+    creation_idempotency_key TEXT,
+    request_fingerprint TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_proposal_batches_merchant ON seo_proposal_batches(merchant_id, created_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS seo_proposals (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    location_id TEXT,
+    seq INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    execution_mode TEXT NOT NULL,
+    executor_agent TEXT,
+    depends_on TEXT NOT NULL DEFAULT '[]',
+    due_at TEXT,
+    priority TEXT NOT NULL,
+    impact TEXT NOT NULL,
+    acceptance_criteria TEXT,
+    execution_spec TEXT NOT NULL,
+    required_evidence_types TEXT NOT NULL DEFAULT '[]',
+    validation_failures TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    decided_by TEXT,
+    decided_at TEXT,
+    return_reason TEXT,
+    task_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(batch_id, seq)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_proposals_batch ON seo_proposals(batch_id, seq)`,
+  `CREATE INDEX IF NOT EXISTS idx_proposals_merchant_status ON seo_proposals(merchant_id, status)`,
+
+  /** attempt：一次派发一行；OUTCOME_UNKNOWN 未决即冻结该商户执行链（红线③）。 */
+  `CREATE TABLE IF NOT EXISTS seo_execution_attempts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    gate TEXT NOT NULL,
+    agent_run_id TEXT,
+    core_run_id TEXT,
+    probe_ref TEXT NOT NULL,
+    error TEXT,
+    started_at TEXT NOT NULL,
+    trigger_started_at TEXT,
+    resolved_at TEXT,
+    resolved_by TEXT,
+    resolution TEXT,
+    resolution_note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(task_id, attempt_no)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_attempts_task ON seo_execution_attempts(task_id, attempt_no DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_attempts_merchant_status ON seo_execution_attempts(merchant_id, status)`,
+
+  /** 幂等键唯一索引：并发同 key 双创建靠数据库兜底（23505 → 重试走 replay）。 */
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_idem_key ON seo_tasks(creation_idempotency_key) WHERE creation_idempotency_key IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_proposal_batches_idem_key ON seo_proposal_batches(creation_idempotency_key) WHERE creation_idempotency_key IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_idem_key ON seo_agent_runs(creation_idempotency_key) WHERE creation_idempotency_key IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_questionnaires_idem_key ON seo_merchant_questionnaires(creation_idempotency_key) WHERE creation_idempotency_key IS NOT NULL`,
+
+  /** 能力矩阵：技术连接 × 商户授权 → ACTIVE/BLOCKED/MISSING（门2第3项校验的数据源）。 */
+  `CREATE TABLE IF NOT EXISTS seo_capabilities (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    external_ref TEXT,
+    tech_connected BOOLEAN NOT NULL DEFAULT FALSE,
+    merchant_authorized BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL,
+    verified_at TEXT,
+    verified_by TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(merchant_id, capability)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_capabilities_merchant ON seo_capabilities(merchant_id)`,
+
+  /** 周期配置 = Ⓐ级预授权：scheduler 据此自动出任务（人批规则，不逐件批）。 */
+  `CREATE TABLE IF NOT EXISTS seo_cycle_configs (
+    merchant_id TEXT PRIMARY KEY,
+    snapshot_day INTEGER,
+    post_weekday INTEGER,
+    post_per_week INTEGER NOT NULL DEFAULT 1,
+    review_window_days INTEGER NOT NULL DEFAULT 30,
+    audit_interval_days INTEGER,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+
+  /** taskType → core-ai published agent 绑定（换绑记审计走事件日志）。 */
+  `CREATE TABLE IF NOT EXISTS seo_agent_bindings (
+    task_type TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    agent_label TEXT,
+    published_ref TEXT,
+    updated_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+
+  /** Post 内容稿：v1 生成 → v2 反馈重写 → v3 人工改；每版一行，任务经 rev 引用定稿。 */
+  `CREATE TABLE IF NOT EXISTS seo_content_drafts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    cta_type TEXT,
+    cta_url TEXT,
+    media TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL,
+    feedback TEXT,
+    sha256 TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, version)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_drafts_task ON seo_content_drafts(task_id, version DESC)`,
+
+  /** 商户风格档案：品牌档案 voice + 人工校订，按版本引用（更新不追溯已批准稿）。 */
+  `CREATE TABLE IF NOT EXISTS seo_style_profiles (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    voice TEXT NOT NULL DEFAULT '{}',
+    updated_by TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(merchant_id, version)
+  )`,
 ];

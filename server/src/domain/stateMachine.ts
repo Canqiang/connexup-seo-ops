@@ -120,3 +120,34 @@ export function evaluate(
   }
   return { evidenceState, status };
 }
+
+// ---------------- 执行域（双门 / attempt / 查证 / 核验） ----------------
+
+/** 门 2 可确认的前置状态（写入/成品类需先过门 1）。 */
+export function canConfirmExecution(status: string): boolean {
+  return status === "APPROVED";
+}
+
+/** attempt 成功后的任务终点：只读归档即完成；写入与成品进入核验。 */
+export function statusAfterAttemptSuccess(executionMode: string): SeoTaskStatus {
+  return executionMode === "READ_ONLY" ? "DONE" : "PENDING_VERIFY";
+}
+
+/** attempt 确认失败后的任务状态：回到已批准（授权仍有效，可再次确认）。 */
+export const STATUS_AFTER_ATTEMPT_FAILURE: SeoTaskStatus = "APPROVED";
+
+/** 查证结论 → (attempt 终态, 任务状态)。二选一，等权重。 */
+export function resolveOutcome(
+  resolution: "HAPPENED" | "NOT_HAPPENED",
+  executionMode: string,
+): { attemptStatus: "SUCCEEDED" | "FAILED_CONFIRMED"; taskStatus: SeoTaskStatus } {
+  if (resolution === "HAPPENED") {
+    return { attemptStatus: "SUCCEEDED", taskStatus: statusAfterAttemptSuccess(executionMode) };
+  }
+  return { attemptStatus: "FAILED_CONFIRMED", taskStatus: STATUS_AFTER_ATTEMPT_FAILURE };
+}
+
+/** 核验只针对 PENDING_VERIFY；核验通过 → VERIFIED（事件）→ DONE（终态）。 */
+export function canVerify(status: string): boolean {
+  return status === "PENDING_VERIFY";
+}

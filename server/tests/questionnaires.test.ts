@@ -231,7 +231,7 @@ describe("questionnaire routes", () => {
       url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
       payload: { answers },
     });
-    expect(submitted.statusCode).toBe(200);
+    expect(submitted.statusCode).toBe(201);
     const rejected = await authenticated.rawInject({
       method: "POST",
       url,
@@ -332,7 +332,7 @@ describe("questionnaire routes", () => {
     const sent = await send;
     expect(sent.statusCode).toBe(200);
     const submitted = await submission;
-    expect(submitted.statusCode).toBe(200);
+    expect(submitted.statusCode).toBe(201);
 
     const stored = (await getQuestionnaire(authenticated.db, questionnaire.id))!;
     expect(stored.status).toBe("FILLED");
@@ -367,7 +367,7 @@ describe("questionnaire routes", () => {
       url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
       payload: { answers },
     });
-    expect(submission.statusCode).toBe(200);
+    expect(submission.statusCode).toBe(201);
     const beforeRejectedSend = (await getQuestionnaire(authenticated.db, questionnaire.id))!;
 
     const rejected = await app.inject({
@@ -447,7 +447,8 @@ describe("questionnaire routes", () => {
       url: `/api/public/questionnaire-forms/${questionnaire.share_slug}/submissions`,
       payload: { answers },
     });
-    expect(submitted.statusCode).toBe(200);
+    // 修正后的约定：首次提交 201 Created，幂等重放才是 200
+    expect(submitted.statusCode).toBe(201);
     expect(submitted.json().status).toBe("FILLED");
 
     // 已填问卷不再下发题目

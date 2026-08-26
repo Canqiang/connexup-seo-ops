@@ -1,0 +1,79 @@
+{
+  "schema_version": "seo_ops.planner_context.v1",
+  "seo_ops_task_id": "uat-contract-planner-task-1",
+  "probe_ref": "uat-contract-planner-probe-1",
+  "attempt_no": 1,
+  "generated_at": "2026-08-26T09:30:00.000Z",
+  "trigger": {
+    "schema_version": "seo_ops.planner_trigger.v1",
+    "trigger_key": "merchant_created:uat-contract-merchant-1",
+    "trigger_type": "MERCHANT_CREATED",
+    "trigger_reason": "新商户接入",
+    "occurred_at": "2026-08-26T09:30:00.000Z",
+    "signals": [
+      {
+        "website": "https://uat-contract-new-store.example"
+      }
+    ]
+  },
+  "merchant": {
+    "id": "uat-contract-merchant-1",
+    "slug": "uat-contract-new-store",
+    "display_name": "UAT Contract New Store",
+    "tags": ["restaurant", "uat-contract"]
+  },
+  "locations": [],
+  "questionnaire": null,
+  "cycle_config": null,
+  "capabilities": [],
+  "existing_tasks": [
+    {
+      "id": "uat-contract-planner-task-1",
+      "task_type": "PLANNER",
+      "title": "生成任务图｜新商户接入",
+      "status": "DISPATCHING",
+      "execution_mode": "READ_ONLY",
+      "due_at": null,
+      "proposal_id": null,
+      "updated_at": "2026-08-26T09:30:00.000Z"
+    }
+  ],
+  "policy": {
+    "allowed_task_types": [
+      "PLANNER",
+      "QUESTIONNAIRE",
+      "KEYWORD_RESEARCH",
+      "KEYWORD_WEEKLY",
+      "AUDIT",
+      "REPORT",
+      "PLAN",
+      "GBP_POST",
+      "GBP_UPDATE",
+      "WEBSITE_CONTENT",
+      "REVIEW",
+      "MANUAL_FOLLOWUP"
+    ],
+    "allowed_execution_modes_by_task_type": {
+      "PLANNER": ["READ_ONLY", "MANUAL"],
+      "QUESTIONNAIRE": ["READ_ONLY", "MANUAL"],
+      "KEYWORD_RESEARCH": ["READ_ONLY", "MANUAL"],
+      "KEYWORD_WEEKLY": ["READ_ONLY", "MANUAL"],
+      "AUDIT": ["READ_ONLY", "MANUAL"],
+      "REPORT": ["READ_ONLY", "MANUAL"],
+      "PLAN": ["READ_ONLY", "MANUAL"],
+      "GBP_POST": ["AUTO_WRITE", "MANUAL"],
+      "GBP_UPDATE": ["AUTO_WRITE", "MANUAL"],
+      "WEBSITE_CONTENT": ["AUTO_WRITE", "ARTIFACT", "MANUAL"],
+      "REVIEW": ["READ_ONLY", "MANUAL"],
+      "MANUAL_FOLLOWUP": ["MANUAL"]
+    },
+    "output_schema_version": "seo_ops.task_proposals.v1",
+    "max_items": 50,
+    "rules": [
+      "do_not_duplicate_active_tasks",
+      "dependencies_reference_item_sequence_numbers",
+      "auto_write_requires_active_capability_and_exact_location",
+      "agent_proposes_only_seo_ops_persists"
+    ]
+  }
+}

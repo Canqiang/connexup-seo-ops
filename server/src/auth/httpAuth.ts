@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthActor, SeoPermission } from "./types.js";
+import { SINGLE_USER_ACTOR } from "./singleUser.js";
 import type { AppContext } from "../index.js";
 import { ApiError } from "../errors.js";
 import { resolveActorFromToken } from "../services/authService.js";
@@ -21,6 +22,10 @@ declare module "fastify" {
 export function registerActorResolution(app: FastifyInstance, ctx: AppContext): void {
   app.addHook("onRequest", async (request) => {
     request.actor = null;
+    if (ctx.config.singleUserMode) {
+      request.actor = SINGLE_USER_ACTOR;
+      return;
+    }
     const rawToken = request.cookies.seo_ops_session;
     if (rawToken) {
       request.actor = await resolveActorFromToken(ctx.db, rawToken, ctx.config);
@@ -58,7 +63,8 @@ export async function requireMerchantAccess(
   merchantId: string,
 ): Promise<Merchant> {
   const merchant = await getMerchant(db, merchantId);
-  if (!merchant || !merchant.operatorUserIds.includes(actor.userId)) hiddenResource();
+  if (!merchant) hiddenResource();
+  if (!actor.scopeAll && !merchant.operatorUserIds.includes(actor.userId)) hiddenResource();
   return merchant;
 }
 

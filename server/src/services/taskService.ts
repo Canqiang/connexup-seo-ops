@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { Db } from "../db/connection.js";
+import { isUniqueViolation, type Db } from "../db/connection.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import {
   canonicalize,
@@ -13,6 +13,8 @@ import {
   evaluate,
 } from "../domain/stateMachine.js";
 import {
+  EXECUTION_MODES,
+  isModeAllowedForType,
   TASK_IMPACTS,
   TASK_PRIORITIES,
   type ApprovalAction,
@@ -65,6 +67,7 @@ export interface DefinitionInput {
   due_at?: string;
   execution_spec: string;
   required_evidence_types: string[];
+  execution_mode?: string;
   conversation_id?: string;
 }
 
@@ -95,6 +98,21 @@ function validateDefinition(def: DefinitionInput): void {
     requireIso(def.due_at, "definition.due_at");
   }
   if (
+    def.execution_mode !== undefined &&
+    !EXECUTION_MODES.includes(def.execution_mode as (typeof EXECUTION_MODES)[number])
+  ) {
+    throw badRequest(`definition.execution_mode must be one of ${EXECUTION_MODES.join("/")}`);
+  }
+  // 红线①机器防线：写入型任务类型不许标 READ_ONLY（否则绕过双门直达写入 agent）。
+  if (
+    def.execution_mode !== undefined &&
+    !isModeAllowedForType(def.task_type, def.execution_mode)
+  ) {
+    throw badRequest(
+      `execution_mode ${def.execution_mode} is not allowed for task_type ${def.task_type}`,
+    );
+  }
+  if (
     !Array.isArray(def.required_evidence_types) ||
     def.required_evidence_types.some((t) => typeof t !== "string" || t.trim() === "")
   ) {
@@ -122,6 +140,7 @@ function buildRevision(
     executionSpec: def.execution_spec,
     executionSpecHash: executionSpecHash(def.execution_spec),
     requiredEvidenceTypes: def.required_evidence_types,
+    executionMode: (def.execution_mode ?? "MANUAL") as TaskDefinitionRecord["executionMode"],
     createdBy: actorId,
     createdAt,
   };
@@ -173,7 +192,7 @@ export async function reevaluate(
  * `mutate` runs inside the transaction and receives the tx-bound `Db` so any
  * repo calls it makes (e.g. via `reevaluate`) participate in the same
  * transaction rather than escaping to a separate pooled connection. */
-async function mutateTask(
+export async function mutateTask(
   db: Db,
   taskId: string,
   idempotencyKey: string,
@@ -258,6 +277,10 @@ export interface CreateTaskInput {
   location_id?: string;
   definition: DefinitionInput;
   idempotency_key: string;
+  /** 采纳建议时回链建议 ID（只存 ID）。 */
+  proposal_id?: string;
+  /** 已存在的同商户上游 Task；创建后不可改，天然保持无环。 */
+  depends_on_task_ids?: string[];
 }
 
 export async function createTask(
@@ -272,15 +295,26 @@ export async function createTask(
     merchant_id: input.merchant_id,
     location_id: input.location_id ?? null,
     definition: input.definition,
+    depends_on_task_ids: input.depends_on_task_ids ?? [],
   });
 
-  return db.withTransaction(async (tx) => {
+  const createOnce = () => db.withTransaction(async (tx) => {
     const existing = await findTaskByIdempotencyKey(tx, key);
     const replay = resolveIdempotentCreate(existing, fingerprint);
     if (replay) return { task: replay, replayed: true };
 
     const merchant = await getMerchant(tx, input.merchant_id);
     if (!merchant) throw notFound(`merchant ${input.merchant_id} not found`);
+    const dependsOnTaskIds = input.depends_on_task_ids ?? [];
+    if (new Set(dependsOnTaskIds).size !== dependsOnTaskIds.length) {
+      throw badRequest("depends_on_task_ids must not contain duplicates");
+    }
+    for (const dependencyId of dependsOnTaskIds) {
+      const dependency = await getTask(tx, dependencyId);
+      if (!dependency || dependency.merchantId !== merchant.id) {
+        throw badRequest(`dependency task ${dependencyId} is missing or belongs to another merchant`);
+      }
+    }
     let locationId: string | null = null;
     if (input.location_id !== undefined) {
       const location = await getLocation(tx, input.location_id);
@@ -321,6 +355,15 @@ export async function createTask(
       executionSpec: revision.executionSpec,
       executionSpecHash: revision.executionSpecHash,
       requiredEvidenceTypes: revision.requiredEvidenceTypes,
+      executionMode: revision.executionMode,
+      proposalId: input.proposal_id ?? null,
+      dependsOnTaskIds,
+      attemptCount: 0,
+      publishedRef: null,
+      publishedAt: null,
+      verifyDueAt: null,
+      verifiedAt: null,
+      verifiedBy: null,
       revisions: [revision],
       evidenceRefs: [],
       approvalDecisions: [],
@@ -349,6 +392,14 @@ export async function createTask(
     await insertTask(tx, base);
     return { task: base, replayed: false };
   });
+
+  // 并发同 key 双创建：唯一索引拦下后来者（23505），重试一次走 replay 路径。
+  try {
+    return await createOnce();
+  } catch (error) {
+    if (isUniqueViolation(error)) return createOnce();
+    throw error;
+  }
 }
 
 export interface CreateRevisionInput {
@@ -391,6 +442,7 @@ export function createRevision(
         executionSpec: revision.executionSpec,
         executionSpecHash: revision.executionSpecHash,
         requiredEvidenceTypes: revision.requiredEvidenceTypes,
+        executionMode: revision.executionMode,
         taskRevision: revision.revision,
         revisions: [...task.revisions, revision],
         stateVersion: task.stateVersion + 1,
