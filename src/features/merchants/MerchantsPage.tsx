@@ -5,6 +5,7 @@ import { seoOpsApi } from "../../api/seoOpsApi";
 import type { MerchantSummary } from "../../api/types";
 import { hasPermission } from "../../auth/permissions";
 import { useAuth } from "../../auth/AuthContext";
+import { usePageTitle } from "../../hooks/usePageTitle";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
 import {
   EXCEPTION_GROUPS,
@@ -17,6 +18,7 @@ import { NewMerchantModal } from "./NewMerchantModal";
 /** 商户首页 = 异常清单：按“需要动的原因”分组，卡得最久的置顶。
  * 首屏一秒回答“三十家今天该动哪家”。 */
 export function MerchantsPage() {
+  usePageTitle("商户");
   const workspace = useWorkspace();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -67,7 +69,7 @@ export function MerchantsPage() {
       </div>
     </header>
     {resendError ? <p className="form-message" role="alert">{resendError}</p> : null}
-    {merchants.length === 0 ? <div className="empty-state"><h2>还没有商户</h2><p>点右上「＋ 新店」开始：填店名/官网，生成接入问卷发给商家。</p>{canManage ? <button className="primary-button" onClick={() => setCreating(true)} type="button"><Plus size={15} /> ＋ 新店</button> : null}</div> : null}
+    {merchants.length === 0 ? <div className="empty-state"><h2>还没有商户</h2><p>点右上「＋ 新店」提交店名/官网，由 Planner 生成接入任务计划。</p>{canManage ? <button className="primary-button" onClick={() => setCreating(true)} type="button"><Plus size={15} /> ＋ 新店</button> : null}</div> : null}
     {EXCEPTION_GROUPS.map((group) => {
       const members = byGroup.get(group.key);
       if (!members?.length) return null;

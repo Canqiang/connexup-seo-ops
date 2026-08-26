@@ -22,6 +22,8 @@ export const taskFixture: SeoTask = {
   task_revision: 2, state_version: 5, updated_at: "2026-08-17T08:00:00Z", created_at: "2026-08-16T08:00:00Z",
   execution_spec: "{\"operation\":\"publish_menu\"}", execution_spec_hash: "sha256:abc123",
   required_evidence_types: ["BEFORE_SCREENSHOT", "AFTER_SCREENSHOT"],
+  execution_mode: "MANUAL", proposal_id: null, depends_on_task_ids: [], attempt_count: 0,
+  published_ref: null, published_at: null, verify_due_at: null, verified_at: null, verified_by: null,
   evidence_refs: [], approval_decisions: [], conversation_links: [], agent_run_links: []
 };
 

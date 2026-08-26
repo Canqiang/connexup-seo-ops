@@ -1,4 +1,5 @@
 import type { MerchantSummary, SeoOpsPageRequest, TaskSummary } from "../../api/types";
+import { taskStatusLabel } from "../../app/statusCopy";
 
 export interface DemoPostOccurrence {
   publish_at: string;
@@ -36,7 +37,7 @@ export function taskStatusView(task: TaskSummary | DemoTask): { className: strin
       WAITING: { className: "waiting", label: "待开始" },
     }[task.progress_status];
   }
-  return { className: task.status.toLocaleLowerCase(), label: task.status };
+  return { className: task.status.toLocaleLowerCase(), label: taskStatusLabel(task.status) };
 }
 
 type DemoTemplate = Omit<DemoTask,

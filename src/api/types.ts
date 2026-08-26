@@ -1,6 +1,10 @@
 export type SeoTaskStatus =
   | "DRAFT" | "NEEDS_INPUT" | "BLOCKED" | "READY_FOR_APPROVAL"
-  | "APPROVED" | "REVISION_REQUIRED" | "APPROVAL_REVOKED";
+  | "APPROVED" | "REVISION_REQUIRED" | "APPROVAL_REVOKED"
+  | "EXECUTION_CONFIRMED" | "DISPATCHING" | "OUTCOME_UNKNOWN"
+  | "PENDING_VERIFY" | "VERIFIED" | "DONE" | "FAILED";
+/** Ⓐ READ_ONLY 自动跑；Ⓑ ARTIFACT 成品需批；Ⓒ AUTO_WRITE 双门；MANUAL 人工。 */
+export type ExecutionMode = "AUTO_WRITE" | "ARTIFACT" | "READ_ONLY" | "MANUAL";
 export type EvidenceState = "NONE" | "PARTIAL" | "VERIFIED" | "UNVERIFIABLE";
 export type ApprovalAction = "APPROVE" | "REJECT" | "REVOKE";
 export type TaskPriority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
@@ -125,6 +129,7 @@ export interface SeoOpsPageRequest {
 export interface TaskDefinitionInput {
   title: string; task_type: string; source: string; priority: TaskPriority; impact: TaskImpact;
   owner_id?: string; due_at?: string; execution_spec: string; required_evidence_types: string[];
+  execution_mode?: ExecutionMode;
   conversation_id?: string;
 }
 export interface CreateTaskRequest { merchant_id: string; location_id?: string; definition: TaskDefinitionInput; idempotency_key: string }
@@ -134,6 +139,7 @@ export interface TaskSummary {
   title: string; task_type: string; priority: TaskPriority; impact: TaskImpact; owner_id?: string;
   due_at?: string; status: SeoTaskStatus; evidence_state: EvidenceState; task_revision: number;
   state_version: number; updated_at: string;
+  source?: string; execution_mode?: ExecutionMode; attempt_count?: number;
 }
 export interface Page<T> { items: T[]; offset: number; limit: number; total: number }
 export interface EvidenceRef {
@@ -153,6 +159,10 @@ export interface TaskEvent {
 }
 export interface SeoTask extends TaskSummary {
   source: string; execution_spec: string; execution_spec_hash: string; required_evidence_types: string[];
+  execution_mode: ExecutionMode; proposal_id: string | null; attempt_count: number;
+  depends_on_task_ids: string[];
+  published_ref: string | null; published_at: string | null; verify_due_at: string | null;
+  verified_at: string | null; verified_by: string | null;
   evidence_refs: EvidenceRef[]; approval_decisions: ApprovalDecision[]; conversation_links: ConversationLink[];
   agent_run_links: AgentRunLink[]; created_at: string;
 }
@@ -186,7 +196,91 @@ export interface MerchantView {
   id: string; slug: string; display_name: string; tags: string[]; operator_user_ids: string[];
   created_at: string; updated_at: string;
 }
+export interface MerchantOnboardingView extends MerchantView {
+  planner_enqueued: boolean;
+  planner_task_id: string | null;
+}
 export interface LocationView extends LocationSummary {
   merchant_id: string; slug: string; timezone: string; external_identities: Record<string, string>;
   missing_requirements: string[]; created_at: string; updated_at: string;
+}
+
+// ---------------- 执行域 / 建议层 / 设置（v2 账本视角） ----------------
+
+export type ProposalStatus = "PENDING" | "VALIDATION_FAILED" | "ADOPTED" | "RETURNED";
+export type ProposalOrigin = "PLANNER" | "PLAN_CONVERT" | "MANUAL";
+export type AttemptStatus = "DISPATCHING" | "SUCCEEDED" | "FAILED_CONFIRMED" | "OUTCOME_UNKNOWN";
+export type CapabilityStatus = "ACTIVE" | "BLOCKED" | "MISSING";
+
+export interface ProposalWire {
+  id: string; batch_id: string; merchant_id: string; location_id: string | null;
+  seq: number; title: string; task_type: string; execution_mode: ExecutionMode;
+  executor_agent: string | null; depends_on: number[]; due_at: string | null;
+  priority: TaskPriority; impact: TaskImpact; acceptance_criteria: string | null;
+  execution_spec: string; required_evidence_types: string[];
+  validation_failures: string[]; status: ProposalStatus;
+  decided_by: string | null; decided_at: string | null; return_reason: string | null;
+  task_id: string | null; created_at: string; updated_at: string;
+}
+
+export interface ProposalBatchWire {
+  id: string; merchant_id: string; merchant_name?: string; origin: ProposalOrigin;
+  trigger_reason: string | null; planner_run_id: string | null; snapshot_note: string | null;
+  status: "OPEN" | "CLOSED"; created_by: string | null; created_at: string; updated_at: string;
+  proposals: ProposalWire[];
+}
+
+export interface AttemptWire {
+  id: string; task_id: string; merchant_id: string; attempt_no: number;
+  status: AttemptStatus; gate: "G2" | "AUTO"; agent_run_id: string | null;
+  core_run_id: string | null; probe_ref: string; error: string | null;
+  started_at: string; resolved_at: string | null; resolved_by: string | null;
+  resolution: "HAPPENED" | "NOT_HAPPENED" | null; resolution_note: string | null;
+}
+
+export interface GateCheckWire { key: string; label: string; passed: boolean; detail: string }
+export interface ExecutionPreviewWire {
+  confirmable: boolean; checks: GateCheckWire[]; attempt_count: number; gate_ready_status: boolean;
+}
+
+export interface CapabilityWire {
+  id: string; merchant_id: string; asset: string; capability: string;
+  external_ref: string | null; tech_connected: boolean; merchant_authorized: boolean;
+  status: CapabilityStatus; verified_at: string | null; verified_by: string | null;
+  note: string | null; updated_at: string;
+}
+
+export interface CycleConfigWire {
+  merchant_id: string; snapshot_day: number | null; post_weekday: number | null;
+  post_per_week: number; review_window_days: number; audit_interval_days: number | null;
+  enabled: boolean; updated_by: string | null; updated_at: string;
+}
+
+export interface AgentBindingWire {
+  task_type: string; agent_id: string; agent_label: string | null;
+  published_ref: string | null; updated_by: string | null; updated_at: string;
+}
+
+export interface DraftWire {
+  id: string; task_id: string; version: number; body: string;
+  cta_type: string | null; cta_url: string | null; media: string[];
+  source: "AGENT_GENERATED" | "AGENT_REWRITE" | "HUMAN_EDIT";
+  feedback: string | null; sha256: string; created_by: string | null; created_at: string;
+}
+
+export type SpecialistArtifactType = "KEYWORD_SET" | "AUDIT_REPORT" | "RANKING_SNAPSHOT" | "EXECUTION_PLAN";
+export interface SpecialistArtifactWire {
+  id: string; task_id: string; merchant_id: string; artifact_type: SpecialistArtifactType;
+  schema_version: string; title: string; summary: string; payload: Record<string, unknown>;
+  core_run_id: string; created_by: string | null; created_at: string;
+}
+
+export interface InboxSummaryWire {
+  pending_proposals: number; ready_for_approval: number; awaiting_execution: number;
+  pending_verify: number; outcome_unknown: number; frozen_merchant_ids: string[];
+}
+
+export interface SchedulerTickResult {
+  created: Array<{ task_id: string; key: string; task_type: string; merchant_id: string }>;
+  dispatched: number;
 }

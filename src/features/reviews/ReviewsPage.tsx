@@ -1,11 +1,13 @@
 import { ArrowRight, FlaskConical } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
+import { usePageTitle } from "../../hooks/usePageTitle";
 import { useResource } from "../../hooks/useResource";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
 import { reviewExplanation } from "./reviewCopy";
 
 export function ReviewsPage() {
+  usePageTitle("复盘");
   const navigate = useNavigate();
   const workspace = useWorkspace();
   const resource = useResource((signal) => seoOpsApi.reviews({ merchant_id: workspace.merchantId, limit: 50 }, signal), [workspace.merchantId]);

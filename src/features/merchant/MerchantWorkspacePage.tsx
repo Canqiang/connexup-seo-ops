@@ -5,17 +5,22 @@ import { seoOpsApi } from "../../api/seoOpsApi";
 import { requestJson } from "../../api/client";
 import type {
   AgentRunStage, DeliverableWire, LatestRunWire, LifecycleStageWire, LifecycleView, LocationSummary,
-  RankingOverviewView, RankingRowWire, StageRunView, TaskSummary,
+  RankingOverviewView, RankingRowWire, SpecialistArtifactWire, StageRunView, TaskSummary,
 } from "../../api/types";
 import { hasPermission } from "../../auth/permissions";
 import { useAuth } from "../../auth/AuthContext";
+import { BackButton } from "../../app/BackButton";
+import { publicFormUrl, safeHref } from "../../app/format";
+import { taskStatusLabel } from "../../app/statusCopy";
+import { usePageTitle } from "../../hooks/usePageTitle";
 import { useResource } from "../../hooks/useResource";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
 import { DemoTaskDrawer } from "../inbox/DemoTaskDrawer";
 import { buildDemoTasks, isDemoTask, taskStatusView, type DemoTask } from "../inbox/demoTasks";
 import { reviewExplanation } from "../reviews/reviewCopy";
+import { SpecialistArtifactsPanel } from "../tasks/SpecialistArtifactsPanel";
 import { STAGE_LABELS } from "./lifecycleCopy";
-import { parsePlanItems, planItemExecutionSpec, type PlanItem } from "./planItems";
+import { buildPlanProposalItems, parsePlanItems, planItemsFromArtifact } from "./planItems";
 
 type CurrentQuestionnaire = NonNullable<LifecycleView["questionnaire"]>;
 /** 可一键触发 agent 的阶段（EXECUTE/VERIFY 人工环节，永不可触发）。 */
@@ -42,6 +47,8 @@ export function MerchantWorkspacePage() {
   const tasks = useResource((signal) => seoOpsApi.inbox({ merchant_id: merchantId, limit: 8 }, signal), [merchantId]);
   const reviews = useResource((signal) => seoOpsApi.reviews({ merchant_id: merchantId, limit: 3 }, signal), [merchantId]);
   const reports = useResource((signal) => seoOpsApi.reports({ merchant_id: merchantId, limit: 3 }, signal), [merchantId]);
+  const artifacts = useResource((signal) => seoOpsApi.merchantArtifacts(merchantId, undefined, signal), [merchantId]);
+  usePageTitle(workspace.merchant?.display_name ?? "商户");
   const demoTaskPreview = useMemo(() => buildDemoTasks(workspace.merchants)
     .filter((task) => task.merchant_id === merchantId)
     .sort((left, right) => Date.parse(left.due_at ?? "") - Date.parse(right.due_at ?? ""))
@@ -52,7 +59,10 @@ export function MerchantWorkspacePage() {
 
   const data = lifecycle.data;
   const canManage = hasPermission(user?.permissions, "seoops.manage");
-  const useDemoTaskPreview = Boolean(tasks.data && tasks.data.items.length === 0);
+  const canApprove = hasPermission(user?.permissions, "seoops.approve");
+  const executionPlanArtifact = artifacts.data?.items.find((item) => item.artifact_type === "EXECUTION_PLAN") ?? null;
+  // 与 /inbox 的门槛保持一致：只在整个系统还没有任何真实任务时展示演示卡片
+  const useDemoTaskPreview = Boolean(tasks.data && tasks.data.items.length === 0 && (workspace.portfolio?.totals.tasks ?? 0) === 0);
   const taskPreview = useDemoTaskPreview ? demoTaskPreview : (tasks.data?.items ?? []).slice(0, 4);
   const onboarding = Boolean(merchant.stage && merchant.stage !== "EXECUTE" && merchant.stage !== "VERIFY");
   const openTaskPreview = (task: typeof taskPreview[number]) => {
@@ -70,7 +80,7 @@ export function MerchantWorkspacePage() {
   return <>
     <header className="page-heading">
       <div>
-        <button className="text-button" onClick={() => navigate("/")} type="button">‹ 商户</button>
+        <BackButton fallback="/merchants" label="返回商户列表" />
         <span className="eyebrow" style={{ display: "block", marginTop: 6 }}>MERCHANT / {merchant.slug}</span>
         <h1>{merchant.display_name}</h1>
         <p>
@@ -103,8 +113,18 @@ export function MerchantWorkspacePage() {
         />
       ) : null}
 
-      {data.stage === "PLAN" && data.latest_runs.PLAN && !data.plan_converted
-        ? <PlanConfirmCard lifecycleReload={lifecycle.reload} merchantId={merchant.id} planRun={data.latest_runs.PLAN} />
+      {data.stage === "PLAN" && data.latest_runs.PLAN && !data.plan_converted && artifacts.loading
+        ? <div className="page-state" role="status">读取结构化 Plan 产物…</div>
+        : null}
+
+      {data.stage === "PLAN" && data.latest_runs.PLAN && !data.plan_converted && !artifacts.loading
+        ? <PlanConfirmCard
+            canApprove={canApprove}
+            onConverted={() => { lifecycle.reload(); tasks.reload(); }}
+            merchantId={merchant.id}
+            planArtifact={executionPlanArtifact}
+            planRun={data.latest_runs.PLAN}
+          />
         : null}
 
       {(data.stage === "EXECUTE" || data.stage === "VERIFY") && tasks.data ? (
@@ -120,6 +140,8 @@ export function MerchantWorkspacePage() {
       <RankingSection overview={ranking.data ?? null} />
     </> : null}
 
+    <SpecialistArtifactsPanel artifacts={artifacts.data?.items ?? []} compact />
+
     <div className="workspace-grid">
       <section className="data-panel span-two"><div className="panel-heading"><div><span className="eyebrow">ACTION QUEUE · NEXT ACTIONS</span><div className="task-panel-title"><h2>任务</h2>{useDemoTaskPreview ? <span>FRONTEND DEMO · 最近 4 项</span> : <span>最近 {taskPreview.length} 项</span>}</div></div><Link className="text-button" to={`/inbox?merchant_id=${merchant.id}`}>全部任务 <ArrowRight size={14} /></Link></div>
         {tasks.loading ? <div className="page-state" role="status">读取任务…</div> : <div className="merchant-task-list">{taskPreview.map((task) => {
@@ -134,7 +156,7 @@ export function MerchantWorkspacePage() {
         })}</div>}
       </section>
       <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">CAUSAL REVIEW</span><h2>复盘信号</h2></div><Link className="text-button" to={`/reviews?merchant_id=${merchant.id}`}>查看全部</Link></div><div className="mini-cards">{reviews.data?.items.map((item) => <article key={item.task_id}><span className={`classification is-${item.classification.toLocaleLowerCase()}`}>{item.classification}</span><strong>{item.goal ?? "目标未记录"}</strong><p>{reviewExplanation(item.classification)}</p></article>)}{reviews.data && !reviews.data.items.length ? <p className="unavailable">暂无可复盘数据</p> : null}</div></section>
-      <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">REPORT FRESHNESS</span><h2>报告与数据</h2></div><Link className="text-button" to={`/reports?merchant_id=${merchant.id}`}>查看全部</Link></div><div className="mini-cards">{reports.data?.items.map((item) => <article key={item.report_id}><span className={`freshness is-${item.freshness.toLocaleLowerCase()}`}>{item.freshness}</span><strong>{item.title ?? item.report_type}</strong><p>{item.source_type === "CORE_AI_ARTIFACT" ? "Core AI 附件" : "任务证据"} · {new Date(item.captured_at).toLocaleString("zh-CN")}</p>{item.source_ref ? <a className="text-button" href={item.source_ref} rel="noreferrer" target="_blank">打开报告 ↗</a> : null}</article>)}{reports.data && !reports.data.items.length ? <p className="unavailable">暂无报告证据</p> : null}</div></section>
+      <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">REPORT FRESHNESS</span><h2>报告与数据</h2></div><Link className="text-button" to={`/reports?merchant_id=${merchant.id}`}>查看全部</Link></div><div className="mini-cards">{reports.data?.items.map((item) => <article key={item.report_id}><span className={`freshness is-${item.freshness.toLocaleLowerCase()}`}>{item.freshness}</span><strong>{item.title ?? item.report_type}</strong><p>{item.source_type === "CORE_AI_ARTIFACT" ? "Core AI 附件" : "任务证据"} · {new Date(item.captured_at).toLocaleString("zh-CN")}</p>{safeHref(item.source_ref) ? <a className="text-button" href={safeHref(item.source_ref)!} rel="noreferrer" target="_blank">打开报告 ↗</a> : null}</article>)}{reports.data && !reports.data.items.length ? <p className="unavailable">暂无报告证据</p> : null}</div></section>
     </div>
     {selectedDemoTask ? <DemoTaskDrawer onClose={() => setSelectedDemoTask(undefined)} task={selectedDemoTask} /> : null}
   </>;
@@ -281,7 +303,7 @@ function QuestionnaireCard({ questionnaire, reload, canManage, merchantId }: {
       setBusy(false);
     }
   };
-  const publicUrl = questionnaire ? `${window.location.origin}/q/${questionnaire.share_slug}` : "";
+  const publicUrl = questionnaire ? publicFormUrl(questionnaire.share_slug) : "";
   return <section className="cur-card">
     <span className="eyebrow">CURRENT STEP · 问卷</span>
     <h3>{questionnaire
@@ -521,20 +543,30 @@ async function deliverableText(deliverables: DeliverableWire[]): Promise<string>
 }
 
 /** Plan 待确认：解析建议清单 → 勾选 → 逐条转任务（source=PLAN，走审批）。全系统唯一产生 task 的入口。 */
-function PlanConfirmCard({ planRun, merchantId, lifecycleReload }: {
+function PlanConfirmCard({ planRun, planArtifact, merchantId, canApprove, onConverted }: {
   planRun: LatestRunWire;
+  planArtifact: SpecialistArtifactWire | null;
   merchantId: string;
-  lifecycleReload: () => void;
+  canApprove: boolean;
+  onConverted: () => void;
 }) {
   const [source, setSource] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const [busy, setBusy] = useState(false);
   const [doneCount, setDoneCount] = useState(0);
+  const [reviewCount, setReviewCount] = useState(0);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     setSource(null);
+    setSelected(null);
+    setDoneCount(0);
+    setReviewCount(0);
+    if (planArtifact) {
+      setSource(JSON.stringify(planArtifact.payload, null, 2));
+      return () => { cancelled = true; };
+    }
     void seoOpsApi.stageRun(planRun.run_id)
       .then(async (run) => {
         const text = run.output && run.output.trim() !== "" ? run.output : await deliverableText(run.deliverables);
@@ -542,43 +574,70 @@ function PlanConfirmCard({ planRun, merchantId, lifecycleReload }: {
       })
       .catch(() => { if (!cancelled) setSource(planRun.output_preview ?? ""); });
     return () => { cancelled = true; };
-  }, [planRun.run_id, planRun.output_preview]);
+  }, [planArtifact, planRun.run_id, planRun.output_preview]);
 
-  const items = useMemo(() => parsePlanItems(source ?? ""), [source]);
+  const items = useMemo(
+    () => planArtifact ? planItemsFromArtifact(planArtifact.payload) : parsePlanItems(source ?? ""),
+    [planArtifact, source],
+  );
   useEffect(() => {
     if (selected === null && items.length > 0) setSelected(new Set(items.map((item) => item.id)));
   }, [items, selected]);
 
   const chosen = items.filter((item) => selected?.has(item.id));
-  const priorityOf = (item: PlanItem): "URGENT" | "HIGH" | "MEDIUM" =>
-    item.priority === "P0" ? "URGENT" : item.priority === "P1" ? "HIGH" : "MEDIUM";
+  const conversion = useMemo(() => {
+    try {
+      return {
+        items: buildPlanProposalItems(items, selected ?? new Set(), {
+          artifactId: planArtifact?.id ?? `legacy-${planRun.run_id}`,
+          coreRunId: planArtifact?.core_run_id ?? planRun.run_id,
+          createdAt: planArtifact?.created_at ?? planRun.completed_at,
+        }),
+        error: "",
+      };
+    } catch (caught) {
+      return { items: [], error: caught instanceof Error ? caught.message : "Plan 依赖不完整" };
+    }
+  }, [items, planArtifact, planRun.completed_at, planRun.run_id, selected]);
 
   const convert = async () => {
-    if (chosen.length === 0) return;
+    if (chosen.length === 0 || conversion.error) return;
     setBusy(true);
     setError("");
     let created = 0;
+    let needsReview = 0;
     try {
-      for (const item of chosen) {
-        await seoOpsApi.createTask({
-          merchant_id: merchantId,
-          definition: {
-            title: item.title,
-            task_type: "SEO_EXECUTION",
-            source: "PLAN",
-            priority: priorityOf(item),
-            impact: "MEDIUM",
-            execution_spec: JSON.stringify(planItemExecutionSpec(item, planRun.run_id)),
-            required_evidence_types: ["AFTER_SCREENSHOT"],
-          },
-          idempotency_key: `plan-${planRun.run_id}-${item.id}`,
-        });
-        created += 1;
+      const selectionKey = chosen.map((item) => item.id).join("-");
+      const batch = await seoOpsApi.createProposalBatch({
+        merchant_id: merchantId,
+        origin: "PLAN_CONVERT",
+        trigger_reason: "人工确认结构化 Execution Plan",
+        planner_run_id: planArtifact?.core_run_id ?? planRun.run_id,
+        snapshot_note: planArtifact?.summary ?? "兼容旧版 Plan 报告转换",
+        idempotency_key: `plan-convert:${planArtifact?.id ?? planRun.run_id}:${selectionKey}`,
+        items: conversion.items,
+      });
+      for (const proposal of [...batch.proposals].sort((left, right) => left.seq - right.seq)) {
+        if (proposal.status === "ADOPTED" && proposal.task_id) {
+          created += 1;
+          continue;
+        }
+        if (proposal.status !== "PENDING") {
+          needsReview += 1;
+          continue;
+        }
+        try {
+          const adopted = await seoOpsApi.decideProposal(proposal.id, { action: "ADOPT" });
+          if (adopted.task_id) created += 1; else needsReview += 1;
+        } catch {
+          needsReview += 1;
+        }
       }
       setDoneCount(created);
-      lifecycleReload();
+      setReviewCount(needsReview);
+      onConverted();
     } catch {
-      setError(`转任务中断：已建 ${created}/${chosen.length}。重试不会重复建（幂等键保护），请再点一次。`);
+      setError(`Plan 转换中断：已建 ${created}/${chosen.length} 个任务。幂等键会防止重复创建，可以安全重试。`);
     } finally {
       setBusy(false);
     }
@@ -587,7 +646,7 @@ function PlanConfirmCard({ planRun, merchantId, lifecycleReload }: {
   return <section className="cur-card">
     <span className="eyebrow">CURRENT STEP · PLAN 待确认</span>
     <h3>优化 Plan 已生成 · 等你确认转任务</h3>
-    <p className="desc">基于审计与排名基线生成（{new Date(planRun.completed_at).toLocaleDateString("zh-CN")} · {planRun.deliverable_count} 个附件）。勾选条目后转为执行任务——逐条走审批，批准只记录授权。</p>
+    <p className="desc">基于关键词、Audit 与排名基线生成（{new Date(planRun.completed_at).toLocaleDateString("zh-CN")} · {planArtifact ? "结构化 Agent 产物" : `${planRun.deliverable_count} 个附件`}）。确认后先过建议校验与依赖检查，合格项才会成为任务。</p>
     {source === null ? <p className="desc">读取完整报告…</p> : null}
     {source !== null && items.length === 0 ? <>
       <p className="desc">报告里没有解析到建议清单。可展开正文核对，按需手工建任务。</p>
@@ -610,8 +669,10 @@ function PlanConfirmCard({ planRun, merchantId, lifecycleReload }: {
     </ul> : null}
     <div className="cur-actions">
       {doneCount > 0
-        ? <span className="done-note"><CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> 已生成 {doneCount} 个任务（见下方任务列表），逐条审批后进入执行</span>
-        : <button className="primary-button" disabled={busy || chosen.length === 0} onClick={() => { void convert(); }} type="button">{busy ? "转换中…" : `确认 Plan · 生成 ${chosen.length} 个任务`}</button>}
+        ? <span className="done-note"><CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> 已生成 {doneCount} 个任务{reviewCount > 0 ? `，另有 ${reviewCount} 项留在建议队列等待修复` : ""}</span>
+        : <button className="primary-button" disabled={!canApprove || busy || chosen.length === 0 || Boolean(conversion.error)} onClick={() => { void convert(); }} type="button">{busy ? "转换中…" : `确认 Plan · 生成 ${chosen.length} 个任务`}</button>}
+      {!canApprove ? <span className="quiet-copy">当前账户没有建议采纳权限。</span> : null}
+      {conversion.error ? <span className="form-message" role="alert">{conversion.error}</span> : null}
       {error ? <span className="form-message" role="alert">{error}</span> : null}
     </div>
   </section>;
@@ -625,7 +686,10 @@ function WorkOrderCard({ tasks, unverifiedCount, merchantId }: {
 }) {
   const navigate = useNavigate();
   const approved = tasks.filter((t) => t.status === "APPROVED");
-  const pending = tasks.filter((t) => t.status !== "APPROVED" && t.status !== "APPROVAL_REVOKED");
+  // 执行链上/已终态的任务不属于「未授权」桶 —— 各自有事实状态。
+  const SETTLED = new Set(["EXECUTION_CONFIRMED", "DISPATCHING", "OUTCOME_UNKNOWN", "PENDING_VERIFY", "VERIFIED", "DONE", "FAILED"]);
+  const settled = tasks.filter((t) => SETTLED.has(t.status));
+  const pending = tasks.filter((t) => t.status !== "APPROVED" && t.status !== "APPROVAL_REVOKED" && !SETTLED.has(t.status));
   return <section className="data-panel">
     <div className="panel-heading">
       <div><span className="eyebrow">EXECUTE · 人工工单</span><h2>执行 · {approved.length} 个已授权</h2></div>
@@ -641,15 +705,23 @@ function WorkOrderCard({ tasks, unverifiedCount, merchantId }: {
           <button className="primary-button" onClick={() => navigate(`/tasks/${task.id}`)} type="button">完成并回填证据 ›</button>
         </li>
       ))}
+      {settled.map((task) => (
+        <li className="is-done" key={task.id}>
+          <i aria-hidden />
+          <p>{task.title}<small>执行链上 / 已归档 · 详情见任务页</small></p>
+          <span className={`status-pill is-${task.status.toLocaleLowerCase()}`}>{taskStatusLabel(task.status)}</span>
+          <button className="secondary-button" onClick={() => navigate(`/tasks/${task.id}`)} type="button">打开</button>
+        </li>
+      ))}
       {pending.map((task) => (
         <li className="is-done" key={task.id}>
           <i aria-hidden />
           <p>{task.title}<small>未授权 · 先走输入/审批链</small></p>
-          <span className="status-pill">{task.status}</span>
+          <span className={`status-pill is-${task.status.toLocaleLowerCase()}`}>{taskStatusLabel(task.status)}</span>
           <button className="secondary-button" onClick={() => navigate(`/tasks/${task.id}`)} type="button">打开</button>
         </li>
       ))}
-      {approved.length === 0 && pending.length === 0
+      {approved.length === 0 && pending.length === 0 && settled.length === 0
         ? <li><i aria-hidden /><p>本轮任务已全部走完</p><span /><span /></li>
         : null}
     </ul>

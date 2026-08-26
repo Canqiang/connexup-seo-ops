@@ -121,6 +121,10 @@ beforeEach(() => {
     if (path.startsWith("/api/seo-ops/merchants/only-bear/stage-runs")) return json({ items: [], offset: 0, limit: 1, total: 0 });
     if (path.startsWith("/api/seo-ops/agent-runs/")) return json(stageRunRunningFixture);
     if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
+    if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
+    if (path.startsWith("/api/seo-ops/proposal-batches")) return json({ items: [] });
+    if (path.startsWith("/api/seo-ops/tasks/task-1/attempts")) return json({ items: [] });
+    if (path.startsWith("/api/seo-ops/tasks/task-1/drafts")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews")) return json({ items: [], offset: 0, limit: 50, total: 0 });
     if (path.startsWith("/api/seo-ops/reports")) return json(reportsData);
@@ -143,22 +147,30 @@ test("logout posts the cookie-session endpoint before returning to internal logi
   expect(navigateTo).toHaveBeenCalledWith("/seo-ops/login");
 });
 
-test("Copilot requires SEO Ops view scope instead of the retired chat scope", async () => {
-  authenticatedUser = { ...userFixture, permissions: ["chat.use"] };
+test("application shell does not expose a separate Copilot entry", async () => {
   renderApp("/");
 
-  expect(await screen.findByText("Copilot 未配置")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "总览" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "打开 SEO Ops Copilot" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Copilot 未配置")).not.toBeInTheDocument();
 });
 
-test("homepage is an exception list with merchants in a searchable switcher", async () => {
+test("homepage is the operations overview; merchants keep the searchable switcher at /merchants", async () => {
   const user = userEvent.setup();
   renderApp("/");
+  // 新 IA：/ = 总览（账本视角四队列），商户清单在 /merchants
+  expect(await screen.findByRole("heading", { name: "总览" })).toBeInTheDocument();
+  expect(screen.getByText("待判定建议")).toBeInTheDocument();
+  expect(screen.getByText("待审批（门 1）")).toBeInTheDocument();
+  await user.click(screen.getByRole("combobox", { name: "选择商户工作范围" }));
+  expect(screen.getByRole("option", { name: /Only Bear Chicken & Boba/ })).toBeInTheDocument();
+});
+
+test("merchants page keeps the exception list", async () => {
+  renderApp("/merchants");
   expect(await screen.findByRole("heading", { name: "商户" })).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "周期内无待办" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Only Bear Chicken & Boba" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("combobox", { name: "选择商户工作范围" }));
-  expect(screen.getByRole("option", { name: /Only Bear Chicken & Boba/ })).toBeInTheDocument();
 });
 
 test("merchant lifecycle page walks the stage rail and surfaces the waiting questionnaire", async () => {
@@ -183,6 +195,8 @@ test("merchant workspace presents onboarding health in operator-facing Chinese",
 });
 
 test("merchant workspace previews four upcoming demo tasks when its real queue is empty", async () => {
+  // 演示卡片只在「全库还没有任何真实任务」的初装世界出现（与 /inbox 门槛一致）
+  portfolioData = { ...portfolioFixture, totals: { tasks: 0, blocked: 0, ready_for_approval: 0, overdue: 0 } };
   const user = userEvent.setup();
   renderApp("/merchants/only-bear");
 
@@ -315,14 +329,12 @@ test("each GBP publishing date is an independent task with its own keyword brief
 });
 
 test("task deep link exposes revision hash evidence and approval boundary", async () => {
-  const user = userEvent.setup();
   renderApp("/tasks/task-1");
   expect(await screen.findByRole("heading", { name: "菜单页发布证据复核" })).toBeInTheDocument();
   expect(screen.getByText("rev 2")).toBeInTheDocument();
   expect(screen.getByText("sha256:abc123")).toBeInTheDocument();
   expect(screen.getByText("批准只记录授权，不触发执行")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "打开 SEO Ops Copilot" }));
-  expect(screen.getByRole("button", { name: "执行外部写入（MVP 禁用）" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "打开 SEO Ops Copilot" })).not.toBeInTheDocument();
 });
 
 function renderApp(route: string) {

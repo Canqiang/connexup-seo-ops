@@ -1,6 +1,7 @@
 import { ExternalLink, FileBarChart } from "lucide-react";
 import { useState } from "react";
 import { seoOpsApi } from "../../api/seoOpsApi";
+import { safeHref } from "../../app/format";
 import { useResource } from "../../hooks/useResource";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
 
@@ -30,7 +31,7 @@ export function ReportsPage() {
         <td><span className={`freshness is-${item.freshness.toLocaleLowerCase()}`}>{item.freshness}</span></td>
         <td><strong>{item.source_type === "CORE_AI_ARTIFACT" ? "Core AI 附件" : "任务证据"}</strong><small>{item.core_run_id ?? item.evidence_id ?? "—"}</small></td>
         <td><code>{item.sha256?.slice(0, 12) ?? "—"}</code></td>
-        <td>{item.source_ref ? <a aria-label={item.source_type === "CORE_AI_ARTIFACT" ? `打开 Core AI 附件 ${item.file_name ?? item.report_type}` : `打开报告 ${item.report_type}`} className="row-arrow" href={item.source_ref} rel="noreferrer" target="_blank"><ExternalLink size={14} /></a> : null}</td>
+        <td>{safeHref(item.source_ref) ? <a aria-label={item.source_type === "CORE_AI_ARTIFACT" ? `打开 Core AI 附件 ${item.file_name ?? item.report_type}` : `打开报告 ${item.report_type}`} className="row-arrow" href={safeHref(item.source_ref)!} rel="noreferrer" target="_blank"><ExternalLink size={14} /></a> : null}</td>
       </tr>)}
     </tbody></table>{!resource.data.items.length ? <div className="empty-state"><h2>没有匹配的报告</h2><p>Core AI 尚未生成附件，或当前任务还没有报告证据。</p></div> : null}</div> : null}</section>
   </>;

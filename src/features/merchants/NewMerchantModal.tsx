@@ -1,7 +1,7 @@
 import { CheckCircle2, Plus } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { seoOpsApi } from "../../api/seoOpsApi";
-import type { QuestionnaireView } from "../../api/types";
+import type { MerchantOnboardingView } from "../../api/types";
 
 function slugify(displayName: string): string {
   const slug = displayName
@@ -14,8 +14,8 @@ function slugify(displayName: string): string {
   return slug !== "" ? slug : `m-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-/** ＋ 新店：唯一新建入口。店名/官网 → 建商户 → 生成问卷 → 发放。
- * 外发链接是站内公填页（/q/:slug），发放渠道（短信/邮件）在系统外。 */
+/** ＋ 新店：只提交一次接入事实。后端以确定性事件唤起 Planner，浏览器不再
+ * 直接创建/发送问卷，避免和 Agent 任务图形成两条竞态链路。 */
 export function NewMerchantModal({ onClose, onDone }: {
   onClose: () => void;
   onDone: () => void;
@@ -24,7 +24,7 @@ export function NewMerchantModal({ onClose, onDone }: {
   const [website, setWebsite] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [created, setCreated] = useState<QuestionnaireView | null>(null);
+  const [created, setCreated] = useState<MerchantOnboardingView | null>(null);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -35,14 +35,10 @@ export function NewMerchantModal({ onClose, onDone }: {
       const merchant = await seoOpsApi.createMerchant({
         slug: slugify(displayName),
         display_name: displayName.trim(),
+        ...(website.trim() !== "" ? { website: website.trim() } : {}),
         idempotency_key: `new-merchant-${crypto.randomUUID()}`,
       });
-      const questionnaire = await seoOpsApi.createQuestionnaire(merchant.id, {
-        ...(website.trim() !== "" ? { website: website.trim() } : {}),
-        idempotency_key: `new-questionnaire-${crypto.randomUUID()}`,
-      });
-      const sent = await seoOpsApi.sendQuestionnaire(questionnaire.id);
-      setCreated(sent);
+      setCreated(merchant);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "接入失败，请重试。");
@@ -51,23 +47,19 @@ export function NewMerchantModal({ onClose, onDone }: {
     }
   };
 
-  const publicUrl = created
-    ? `${window.location.origin}/q/${created.share_slug}`
-    : "";
-
   return <div className="modal-layer" role="dialog" aria-modal="true" aria-label="新店接入">
     <div className="modal">
       <header><strong>新店接入</strong><button aria-label="关闭" onClick={onClose} type="button">✕</button></header>
       <div className="modal-body">
         {created ? <>
           <p style={{ margin: 0, color: "var(--teal)", fontSize: 11 }}>
-            <CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> 问卷已生成并发放登记（{created.questions.length} 题）
+            <CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> {created.planner_enqueued
+              ? "新店已进入任务编排"
+              : "新店已登记，等待 Planner 配置"}
           </p>
-          <div className="link-out">
-            <span>{publicUrl}</span>
-            <button className="text-button" onClick={() => { void navigator.clipboard?.writeText(publicUrl); }} type="button">复制</button>
-          </div>
-          <p className="hint">把链接发给商家（短信/邮件在系统外）。发放后该商户进入首页「等待商家回复」组，按发出天数排序、可重发；商家提交后自动进入关键词阶段。</p>
+          <p className="hint">{created.planner_enqueued
+            ? <>Planner 已收到「{created.display_name}」的新店事件，将先生成问卷任务建议。运营采纳后由 Questionnaire Agent 生成站内问卷草稿；人工确认并登记发放后才会进入等待商家回复。</>
+            : <>当前环境没有创建 Planner Task。请在「设置 → Agent 绑定」配置并发布 PLANNER Agent，然后重放该商户的新店接入事件。</>}</p>
           <button className="primary-button" onClick={onClose} style={{ width: "100%", marginTop: 12 }} type="button">完成</button>
         </> : <form onSubmit={submit}>
           <label>店名
@@ -77,9 +69,9 @@ export function NewMerchantModal({ onClose, onDone }: {
             <input onChange={(e) => setWebsite(e.target.value)} placeholder="https://" type="url" value={website} />
           </label>
           <button className="primary-button" disabled={busy} style={{ width: "100%" }} type="submit">
-            <Plus size={14} /> {busy ? "生成中…" : "生成接入问卷并登记发放"}
+            <Plus size={14} /> {busy ? "创建中…" : "创建商户并生成任务计划"}
           </button>
-          <p className="hint">基于店名/官网生成定制问卷（业务描述、服务方式、覆盖范围…）。问卷只读采集商家信息，不涉及任何外部写入。</p>
+          <p className="hint">只提交一次新店事实，由 Planner 生成问卷、关键词、审计和 Plan 的依赖任务图；不会在浏览器里直接发放问卷。</p>
           {error ? <p className="form-message" role="alert">{error}</p> : null}
         </form>}
       </div>

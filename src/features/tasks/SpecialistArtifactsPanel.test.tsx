@@ -1,0 +1,95 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import type { SpecialistArtifactWire } from "../../api/types";
+import { SpecialistArtifactsPanel } from "./SpecialistArtifactsPanel";
+
+const artifacts: SpecialistArtifactWire[] = [
+  {
+    id: "artifact-plan",
+    task_id: "task-plan",
+    merchant_id: "merchant-1",
+    artifact_type: "EXECUTION_PLAN",
+    schema_version: "seo_ops.execution_plan.v1",
+    title: "30-day execution plan",
+    summary: "Turn evidence into ordered work.",
+    payload: {
+      horizon_days: 30,
+      work_items: [{ id: "page", title: "Create Mineola location page", priority: "HIGH" }],
+    },
+    core_run_id: "core-plan",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-26T10:00:00.000Z",
+  },
+  {
+    id: "artifact-ranking",
+    task_id: "task-ranking",
+    merchant_id: "merchant-1",
+    artifact_type: "RANKING_SNAPSHOT",
+    schema_version: "seo_ops.ranking_report.v1",
+    title: "Initial ranking baseline",
+    summary: "One supplied keyword with unavailable live rank.",
+    payload: {
+      source_mode: "CONFIRMED_FACTS_ONLY",
+      keywords: [{ keyword: "family lunch mineola", local_rank: null, organic_rank: null, source: "UNAVAILABLE" }],
+      limitations: ["Local grid is not connected."],
+    },
+    core_run_id: "core-ranking",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-26T09:30:00.000Z",
+  },
+  {
+    id: "artifact-audit",
+    task_id: "task-audit",
+    merchant_id: "merchant-1",
+    artifact_type: "AUDIT_REPORT",
+    schema_version: "seo_ops.audit_report.v1",
+    title: "Evidence-bounded audit",
+    summary: "One high-priority website gap.",
+    payload: {
+      findings: [{ id: "gap", area: "WEBSITE", severity: "HIGH", observation: "Missing location page." }],
+      limitations: ["Search Console is not connected."],
+    },
+    core_run_id: "core-audit",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-26T09:00:00.000Z",
+  },
+  {
+    id: "artifact-keywords",
+    task_id: "task-keywords",
+    merchant_id: "merchant-1",
+    artifact_type: "KEYWORD_SET",
+    schema_version: "seo_ops.keyword_set.v2",
+    title: "Confirmed keyword set",
+    summary: "Keywords from confirmed merchant facts.",
+    payload: {
+      market: { country_code: "US", language: "en-US", search_engine: "GOOGLE", location_name: "Mineola, NY" },
+      generation_method: "UPSTREAM_DETERMINISTIC_ADAPTER",
+      keywords: [
+        { keyword: "family lunch mineola", priority: "P0", strategy: "LOCAL", intent: "LOCAL" },
+        { keyword: "restaurant catering mineola", priority: "P2", strategy: "ORGANIC", intent: "ORGANIC" },
+      ],
+      evidence_gaps: ["Live search volume is not connected."],
+    },
+    core_run_id: "core-keywords",
+    created_by: "system:specialist-agent",
+    created_at: "2026-08-26T08:00:00.000Z",
+  },
+];
+
+describe("SpecialistArtifactsPanel", () => {
+  it("turns specialist JSON into an operations-readable result view", () => {
+    render(<SpecialistArtifactsPanel artifacts={artifacts} />);
+
+    expect(screen.getByRole("heading", { name: "Agent 产物" })).toBeInTheDocument();
+    expect(screen.getByText("30 天 · 1 项工作")).toBeInTheDocument();
+    expect(screen.getByText("Create Mineola location page")).toBeInTheDocument();
+    expect(screen.getByText("1 项发现 · 1 项高风险")).toBeInTheDocument();
+    expect(screen.getByText("Missing location page.")).toBeInTheDocument();
+    expect(screen.getByText("1 个词 · 0 个已测排名")).toBeInTheDocument();
+    expect(screen.getByText("Local grid is not connected.")).toBeInTheDocument();
+    expect(screen.getByText("2 个词 · 1 个 P0/P1")).toBeInTheDocument();
+    expect(screen.getByText("确定性链路适配")).toBeInTheDocument();
+    expect(screen.getAllByText("family lunch mineola")).toHaveLength(2);
+    expect(screen.getByText("Search Console is not connected.")).toBeInTheDocument();
+  });
+});
