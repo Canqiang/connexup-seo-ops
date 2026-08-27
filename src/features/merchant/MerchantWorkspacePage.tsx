@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
+import { ApiError } from "../../api/client";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import type { CycleLedgerView, LifecycleView } from "../../api/types";
 import { BackButton } from "../../app/BackButton";
@@ -14,7 +15,9 @@ import { CycleLedger } from "./CycleLedger";
 import { MerchantAuditTools } from "./MerchantAuditTools";
 import { lifecycleActionCopy, STAGE_LABELS } from "./lifecycleCopy";
 import { PostProgramPanel } from "./PostProgramPanel";
+import { RankingSnapshotPanel } from "./RankingSnapshotPanel";
 import { ReportsDataPanel } from "./ReportsDataPanel";
+import { ReviewSignalPanel } from "./ReviewSignalPanel";
 
 type CurrentQuestionnaire = NonNullable<LifecycleView["questionnaire"]>;
 
@@ -30,11 +33,23 @@ export function MerchantWorkspacePage() {
   const reports = useResource((signal) => seoOpsApi.reports({ merchant_id: merchantId, limit: 8 }, signal), [merchantId]);
   const artifacts = useResource((signal) => seoOpsApi.merchantArtifacts(merchantId, undefined, signal), [merchantId]);
   const postProgram = useResource((signal) => seoOpsApi.postProgram(merchantId, signal), [merchantId]);
+  const ranking = useResource((signal) => seoOpsApi.ranking(merchantId, signal), [merchantId]);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [plannerBusy, setPlannerBusy] = useState(false);
+  const [plannerMessage, setPlannerMessage] = useState("");
   usePageTitle(merchant?.display_name ?? "商户");
 
   const canManage = hasPermission(user?.permissions, "seoops.manage");
+  const requestPlanner = async () => {
+    setPlannerBusy(true); setPlannerMessage("");
+    try {
+      const result = await seoOpsApi.requestPlanner(merchantId, { reason: "商户页人工请求刷新任务图", idempotency_key: crypto.randomUUID() });
+      setPlannerMessage(result.replayed ? "同一请求已存在。" : "已生成 Planner 任务；建议出来后到「任务 · 待判定」判定。");
+      ledger.reload();
+    } catch (cause) { setPlannerMessage(cause instanceof ApiError && cause.code === "PLANNER_NOT_BOUND" ? "Planner 未绑定：请先在设置页绑定 PLANNER。" : "请求失败，请稍后重试。"); }
+    finally { setPlannerBusy(false); }
+  };
   const runQuestionnaireAction = async (questionnaire: CurrentQuestionnaire | null) => {
     setBusy(true);
     setActionError("");
@@ -51,14 +66,15 @@ export function MerchantWorkspacePage() {
   if (workspace.loading) return <div className="page-state" role="status">正在读取商户…</div>;
   if (!merchant) return <div className="page-state is-error" role="alert">商户不存在或当前用户不可见。</div>;
   return <>
-    <header className="page-heading"><div><BackButton fallback="/merchants" label="返回商户列表" /><span className="eyebrow">MERCHANT CONTROL ROOM · {merchant.slug}</span><h1>{merchant.display_name}</h1><p>{merchant.locations.map((location) => location.display_name).join("、") || "未建地点"} · 活跃周期账本</p></div><span className={`status-pill is-${merchant.health.toLowerCase()}`}>{merchant.health}</span></header>
+    <header className="page-heading"><div><BackButton fallback="/merchants" label="返回商户列表" /><span className="eyebrow">MERCHANT CONTROL ROOM · {merchant.slug}</span><h1>{merchant.display_name}</h1><span className="status-pill">{lifecycle.data ? lifecycle.data.ranking_round_count > 0 ? `第 ${lifecycle.data.ranking_round_count} 轮` : "首轮接入" : "—"}</span><p>{merchant.locations.map((location) => location.display_name).join("、") || "未建地点"} · 活跃周期账本</p></div><div className="heading-actions">{canManage ? <button className="secondary-button" disabled={plannerBusy} onClick={() => void requestPlanner()} type="button">{plannerBusy ? "请求中…" : "请求 Planner 刷新任务图"}</button> : null}<span className={`status-pill is-${merchant.health.toLowerCase()}`}>{merchant.health}</span></div></header>
+    {plannerMessage ? <p className="form-message" role="status">{plannerMessage}</p> : null}
     {lifecycle.error ? <div className="page-state is-error" role="alert">生命周期读取失败。<button onClick={lifecycle.reload}>重试</button></div> : null}
     {lifecycle.loading && !lifecycle.data ? <div className="page-state" role="status">读取活跃周期…</div> : null}
     {lifecycle.data ? <LifecycleRail data={lifecycle.data} /> : null}
     {nextAction ? <CurrentActionCard action={nextAction} error={actionError} /> : null}
     {mode === "audit" && lifecycle.data ? <MerchantAuditTools canManage={canManage} lifecycle={lifecycle.data} merchantId={merchantId} locations={merchant.locations} onChanged={lifecycle.reload} /> : null}
     <CycleLedger data={ledger.data ?? null} error={ledger.error} loading={ledger.loading} merchantId={merchantId} onRetry={ledger.reload} />
-    <div className="merchant-control-grid"><ReportsDataPanel artifacts={artifacts.data?.items ?? []} error={reports.error ?? artifacts.error} loading={reports.loading || artifacts.loading} onRetry={() => { reports.reload(); artifacts.reload(); }} reports={reports.data?.items ?? []} /><PostProgramPanel data={postProgram.data ?? null} error={postProgram.error} loading={postProgram.loading} merchantId={merchantId} onRetry={postProgram.reload} /></div>
+    <div className="merchant-control-grid"><ReportsDataPanel artifacts={artifacts.data?.items ?? []} error={reports.error ?? artifacts.error} loading={reports.loading || artifacts.loading} onRetry={() => { reports.reload(); artifacts.reload(); }} questionnaire={lifecycle.data?.questionnaire} reports={reports.data?.items ?? []} /><PostProgramPanel data={postProgram.data ?? null} error={postProgram.error} loading={postProgram.loading} merchantId={merchantId} onRetry={postProgram.reload} /><RankingSnapshotPanel data={ranking.data} error={ranking.error} loading={ranking.loading} onRetry={ranking.reload} /><ReviewSignalPanel artifacts={artifacts.data?.items ?? []} loading={artifacts.loading} merchantId={merchantId} /></div>
   </>;
 }
 

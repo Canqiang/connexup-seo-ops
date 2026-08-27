@@ -1,9 +1,10 @@
 import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
 import { AuthProvider } from "../../auth/AuthContext";
-import type { CycleLedgerView, LifecycleView, PostProgramView } from "../../api/types";
+import type { CycleLedgerView, LifecycleView, PostProgramView, RankingOverviewView, SpecialistArtifactWire } from "../../api/types";
 
 const onlyBearLifecycle: LifecycleView = {
   merchant_id: "only-bear", stage: "QUESTIONNAIRE",
@@ -28,6 +29,7 @@ const kekeLifecycle: LifecycleView = {
   stage: "EXECUTE",
   questionnaire: { ...onlyBearLifecycle.questionnaire!, id: "q-keke", share_slug: "keke", status: "FILLED", filled_at: "2026-08-21T08:00:00Z" },
   stages: onlyBearLifecycle.stages.map((stage) => ({ ...stage, status: stage.key === "EXECUTE" ? "CURRENT" : stage.key === "VERIFY" ? "OFF" : "DONE" })),
+  ranking_round_count: 2,
   exception: { type: "NONE" },
 };
 
@@ -39,16 +41,36 @@ const kekeLedger: CycleLedgerView = {
   }],
 };
 
+const defaultRankingData: RankingOverviewView = {
+  round_count: 2,
+  latest: { run_id: "run-2", captured_at: "2026-08-25T09:00:00Z", keyword_count: 2, rows: [
+    { keyword: "ramen near me", local_rank: 8, organic_rank: 12, local_delta: 4, organic_delta: -2, is_new: false },
+    { keyword: "best ramen flushing", local_rank: null, organic_rank: 15, local_delta: null, organic_delta: null, is_new: true } ] },
+  previous: { run_id: "run-1", captured_at: "2026-08-04T09:00:00Z" },
+  comparison: { local_avg: { current: 8, previous: 12, delta: 4 }, organic_top10: { current: 0, previous: 1, total: 2 }, new_keyword_count: 1 },
+};
+
+const kekeEffectReviewArtifact: SpecialistArtifactWire = {
+  id: "artifact-effect-review-1", task_id: "task-effect-review-1", merchant_id: "keke",
+  artifact_type: "EFFECT_REVIEW", schema_version: "1.0", title: "第 2 轮复盘",
+  summary: "第 2 轮排名复测与上一轮对比。",
+  payload: { conclusion_tier: "ASSOCIATIONAL", conclusion: "正向关联 · 建议续做 Post 周更" },
+  core_run_id: "core-run-effect-review-1", created_by: "operator-1", created_at: "2026-08-25T09:30:00Z",
+  acceptance_status: "ACCEPTED",
+};
+
 let postProgramData: PostProgramView = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: ["VOICE_PROFILE_MISSING"] };
 const failedPaths = new Set<string>();
 let kekeLedgerData: CycleLedgerView = kekeLedger;
 let delayedLedgerResponse: Promise<Response> | null = null;
+let rankingData: RankingOverviewView = defaultRankingData;
 
 beforeEach(() => {
   postProgramData = { voice_profile: null, cluster_signals: [], history: [], proposals: [], evidence_gaps: ["VOICE_PROFILE_MISSING"] };
   failedPaths.clear();
   kekeLedgerData = kekeLedger;
   delayedLedgerResponse = null;
+  rankingData = defaultRankingData;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
     const merchantId = path.includes("/merchants/keke/") ? "keke" : "only-bear";
@@ -64,10 +86,11 @@ beforeEach(() => {
     if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 1, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, verification_overdue: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
     if (path.endsWith("/lifecycle")) return json(merchantId === "keke" ? kekeLifecycle : onlyBearLifecycle);
-    if (path.endsWith("/ranking")) return json({ round_count: 0, latest: null, previous: null, comparison: null });
+    if (path.endsWith("/ranking")) return json(rankingData);
     if (path.endsWith("/cycle-ledger")) return delayedLedgerResponse ?? json(merchantId === "keke" ? kekeLedgerData : { items: [] });
     if (path.endsWith("/post-program")) return json(postProgramData);
-    if (path.includes("/artifacts")) return json({ items: [] });
+    if (path.endsWith("/planner-requests")) return json({ task_id: "task-planner-1", replayed: false });
+    if (path.includes("/artifacts")) return json({ items: merchantId === "keke" ? [kekeEffectReviewArtifact] : [] });
     if (path.startsWith("/api/seo-ops/inbox")) return json({ items: [], offset: 0, limit: 8, total: 0 });
     if (path.startsWith("/api/seo-ops/reviews") || path.startsWith("/api/seo-ops/reports")) return json({ items: [], offset: 0, limit: 3, total: 0 });
     return new Response(null, { status: 404 });
@@ -168,6 +191,30 @@ test("post panel renders allowlisted persisted evidence and blocks hostile links
   expect(within(post).queryByRole("link", { name: "打开发布记录 ↗" })).not.toBeInTheDocument();
   expect(post).toHaveTextContent("证据链接不安全");
   expect(post).toHaveTextContent("发布链接不安全");
+});
+
+test("merchant header shows the ranking round and the ranking snapshot compares with the previous round", async () => {
+  renderApp("/merchants/keke?view=operator");
+  expect(await screen.findByText("第 2 轮")).toBeInTheDocument();
+  const panel = screen.getByRole("region", { name: "排名快照" });
+  expect(within(panel).getByText(/Local 平均 8/)).toBeInTheDocument();
+  const row = within(panel).getByRole("row", { name: /ramen near me/ });
+  expect(within(row).getByText("↑4")).toBeInTheDocument();
+  expect(within(panel).getByText("新词")).toBeInTheDocument();
+});
+
+test("operators can request a planner refresh from the merchant page", async () => {
+  const user = userEvent.setup();
+  renderApp("/merchants/keke?view=operator");
+  await user.click(await screen.findByRole("button", { name: "请求 Planner 刷新任务图" }));
+  expect(await screen.findByText(/已生成 Planner 任务/)).toBeInTheDocument();
+});
+
+test("review signal panel shows the latest effect review capped at its tier", async () => {
+  renderApp("/merchants/keke?view=operator");
+  const panel = await screen.findByRole("region", { name: "复盘信号" });
+  expect(within(panel).getByText(/ASSOCIATIONAL/)).toBeInTheDocument();
+  expect(within(panel).getByRole("link", { name: /打开复盘/ })).toHaveAttribute("href", expect.stringContaining("/reviews"));
 });
 
 function renderApp(route: string) {
