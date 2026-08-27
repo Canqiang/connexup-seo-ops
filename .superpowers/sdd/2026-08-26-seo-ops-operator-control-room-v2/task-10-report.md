@@ -331,3 +331,72 @@ Result: expected exit 1 before client construction or artifact/network action wi
 - Reference and created-Agent GET evidence proves only editable configuration and status, never published runtime snapshot or execution equivalence.
 - Created Agents still have `NO_DELETE_REMOTE_ROLLBACK`; there is no automated remote rollback, PUT, or DELETE capability.
 - Complete discovery remains bounded by what the authenticated Core AI principal is allowed to list. Duplicate, inconsistent, or ambiguous visible state fails closed, but RBAC completeness requires authorized live validation outside Task 10A.
+
+---
+
+## Fix round 3 — write-all evidence journal and pre-publish negative coverage (2026-08-27)
+
+Implementation commit: `3cfafe20ed36ce509ce3e23421aebfd3cd347be4` (`fix(agent-reconcile): make evidence writes complete`). This round changed only `server/src/services/coreAiAgentAdminClient.ts`, `server/tests/coreAiAgentAdminClient.test.ts`, and `docs/RUNBOOK-v2.md`.
+
+### RED evidence
+
+The behavior-first regressions were run before changing production code:
+
+```bash
+cd server
+npm test -- --run tests/coreAiAgentAdminClient.test.ts
+```
+
+Result: exit 1; 4 failed / 27 passed (31 total). The failures were precise:
+
+- repeated seven-byte writes left malformed JSON instead of completing each journal record;
+- a zero-byte `JOURNAL_OPENED` write still allowed create and publish;
+- a partial then zero-byte `CREATE_INTENT` still allowed create;
+- a partial then zero-byte `PUBLISH_INTENT` still allowed publish.
+
+The injected write exception regression already stopped before remote access, while the newly explicit post-create duplicate-global-exact, non-empty unmanaged executable field, unknown remote field, later-page principal roster, and later-page global discovery cases also already failed closed before publish. The latter cases parsed the resulting journal and required `PREPUBLISH_VALIDATION_FAILED` as the final complete record.
+
+An earlier command used `server/tests/...` while already inside `server/` and therefore found no files; it was corrected to `tests/...` and was not counted as RED evidence.
+
+### Corrected durability contract
+
+- Every JSONL event is first encoded to a UTF-8 `Buffer`. `EvidenceJournal.append` loops over byte offsets until the complete record has been written.
+- Each write must report a safe-integer `bytesWritten` greater than zero and no larger than the remaining bytes. Zero, negative, non-integer, oversized, or thrown writes stop immediately.
+- `fsync` occurs only after the complete record has been written. Descriptor/path identity is still checked before writing and after fsync.
+- An incomplete `JOURNAL_OPENED` stops before remote revalidation. An incomplete `CREATE_INTENT` stops before create, and an incomplete `PUBLISH_INTENT` stops before publish.
+- The runbook now states the same write-all-then-fsync ordering and intent-before-POST gate implemented by the code.
+- Pre-publish tests explicitly cover a duplicate exact name on a later global page, a returned existing ID on a later principal-roster page, non-empty unmanaged executable state, and unknown remote fields. Each path permits the create already requested, writes a complete typed validation failure, and makes zero publish calls.
+
+### GREEN and full verification evidence
+
+```bash
+cd server
+npm test -- --run tests/coreAiAgentAdminClient.test.ts
+```
+
+Result: 1 file / 31 tests passed.
+
+```bash
+cd server
+npm test
+npm run typecheck
+npm run build
+```
+
+Results: server 31 files / 345 tests passed; server typecheck and TypeScript build exited 0.
+
+```bash
+npm run test:run
+npm run build
+git diff --check
+```
+
+Results: frontend 24 files / 147 tests passed; root TypeScript/Vite production build exited 0 with 1865 modules transformed; diff check exited 0. Frontend output retained only the existing jsdom local-storage and unimplemented `window.scrollTo` warnings.
+
+### External boundary and residual risks
+
+- No UAT/network request, credential use/persistence, Core AI/FBR repository change, Agent manifest edit, GBP runtime change, binding, or merchant mutation occurred.
+- An underlying I/O failure after a short prefix can leave one incomplete trailing JSONL record. The reconciler stops without fsyncing or acting on that incomplete event; all earlier fsynced records remain durable for recovery.
+- If `PUBLISH_INTENT` fails after create and pre-publish validation, the remote DRAFT may remain. The earlier complete `CREATE_OUTCOME` and validation outcome identify it, but the intentional no-PUT/no-DELETE contract means resolution is manual and remains `NO_DELETE_REMOTE_ROLLBACK`.
+- `fsync` relies on the host filesystem and operating system honoring their documented durability semantics. Existing directory-permission and TOCTOU limitations from Fix Round 2 remain unchanged.
+- Live Core AI visibility, owner/RBAC completeness, eventual consistency, and deployment behavior remain unproved because this task did not access UAT.
