@@ -136,6 +136,8 @@ export const seoOpsApi = {
   // ---- 内容稿 ----
   drafts: (taskId: string, signal?: AbortSignal) =>
     requestJson<{ items: DraftWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(taskId)}/drafts`, { signal }),
+  triggerGbpPostContent: (taskId: string, request: { idempotency_key: string }) =>
+    post<StageRunView>(`/api/seo-ops/tasks/${encodeURIComponent(taskId)}/content-runs`, request),
   addDraft: (taskId: string, request: {
     body: string; cta_type?: string; cta_url?: string; media?: string[];
     source: "AGENT_GENERATED" | "AGENT_REWRITE" | "HUMAN_EDIT"; feedback?: string;
