@@ -349,6 +349,7 @@ export function draftView(
     id: d.id,
     task_id: d.taskId,
     agent_run_id: d.agentRunId,
+    media_source_agent_run_id: d.mediaSourceAgentRunId,
     version: d.version,
     body: d.body,
     cta_type: d.ctaType,

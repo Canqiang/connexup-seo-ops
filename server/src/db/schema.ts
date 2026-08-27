@@ -614,6 +614,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
     agent_run_id TEXT,
+    media_source_agent_run_id TEXT,
     version INTEGER NOT NULL,
     body TEXT NOT NULL,
     cta_type TEXT,

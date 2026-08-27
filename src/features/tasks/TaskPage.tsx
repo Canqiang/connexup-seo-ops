@@ -90,6 +90,7 @@ function TaskPageForId({ taskId }: { taskId: string }) {
   const [auditReferences, setAuditReferences] = useState<TaskAuditReferencesWire>();
   const [auditPageLoading, setAuditPageLoading] = useState(false);
   const [auditPageError, setAuditPageError] = useState(false);
+  const [approvalMediaReadyKey, setApprovalMediaReadyKey] = useState<string>();
   const auditReferenceResource = useResource<TaskKeyed<TaskAuditReferencesWire | undefined>>(
     (signal) => auditOpen
       ? keyed(taskId, seoOpsApi.taskAuditReferences(
@@ -161,9 +162,14 @@ function TaskPageForId({ taskId }: { taskId: string }) {
   const artifacts = artifactResource.data?.taskId === taskId ? artifactResource.data.value.items : [];
   const events = eventResource.data?.taskId === taskId ? eventResource.data.value : undefined;
   const draftDisplay = resolveTaskDraftDisplay(task, drafts);
-  const approvalBlockedReason = task.task_type === "GBP_POST" && !draftDisplay.approvalIdentityValid
-    ? "批准已阻止：当前显示内容与定稿快照不一致。"
-    : undefined;
+  const approvalBlockedReason = task.task_type !== "GBP_POST" ? undefined
+    : !draftDisplay.approvalIdentityValid
+      ? "批准已阻止：当前显示内容与定稿快照不一致。"
+      : !draftDisplay.approvalPreviewKey
+        ? "批准已阻止：当前定稿缺少唯一且匹配的本地图片预览。"
+        : approvalMediaReadyKey !== draftDisplay.approvalPreviewKey
+          ? "批准已阻止：当前定稿图片尚未成功加载。"
+          : undefined;
   const heroAction = !decision.actionLabel ? undefined : decision.actionKind === "APPROVE"
     ? <ApprovalPanel approvalBlockedReason={approvalBlockedReason} canApprove={canApprove} compact onReadback={readback} primaryLabel="批准当前版本" task={task} />
     : decision.actionKind === "MANUAL_COMPLETE"
@@ -176,7 +182,15 @@ function TaskPageForId({ taskId }: { taskId: string }) {
 
   return <>
     <header className="task-page-toolbar"><BackButton fallback="/inbox" label="返回任务列表" /><button aria-label="刷新任务" className="icon-button" onClick={reload} type="button"><RefreshCw size={16} /></button></header>
-    <TaskDecisionHero artifacts={artifacts} candidateDraft={draftDisplay.candidateDraft} decision={decision} displayedDraft={draftDisplay.displayedDraft} task={task}>{heroAction}</TaskDecisionHero>
+    <TaskDecisionHero
+      approvalPreviewKey={draftDisplay.approvalPreviewKey}
+      artifacts={artifacts}
+      candidateDraft={draftDisplay.candidateDraft}
+      decision={decision}
+      displayedDraft={draftDisplay.displayedDraft}
+      onApprovalMediaReady={(key, ready) => setApprovalMediaReadyKey((current) => ready ? key : current === key ? undefined : current)}
+      task={task}
+    >{heroAction}</TaskDecisionHero>
     {showRevision ? <section className="data-panel inline-form"><TaskRevisionForm task={task} onClose={() => setShowRevision(false)} onReadback={readback} /></section> : null}
     {showEvidence ? <section className="data-panel inline-form"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE COMMAND</span><h2>附加当前版本证据</h2></div></div><EvidenceForm task={task} onReadback={readback} /></section> : null}
     <TechnicalDetails onToggle={setAuditOpen} open={auditOpen} task={task}>

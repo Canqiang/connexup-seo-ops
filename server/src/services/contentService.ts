@@ -117,10 +117,11 @@ function buildDraft(
   input: AddDraftInput,
   actorId: string,
   agentRunId: string | null = null,
+  mediaSourceAgentRunId: string | null = null,
 ): ContentDraft {
   const media = input.media ?? [];
   return {
-    id: crypto.randomUUID(), taskId, agentRunId, version, body: input.body,
+    id: crypto.randomUUID(), taskId, agentRunId, mediaSourceAgentRunId, version, body: input.body,
     ctaType: input.cta_type ?? null, ctaUrl: input.cta_url ?? null, media,
     source: input.source, feedback: input.feedback ?? null,
     sha256: draftSha256({ body: input.body, ctaType: input.cta_type ?? null, ctaUrl: input.cta_url ?? null, media }),
@@ -206,14 +207,16 @@ export async function addDraftRevision(
       if (!CONTENT_REVISION_ALLOWED_STATUSES.has(task.status)) {
         throw conflict(`cannot edit content in status ${task.status}`, "INVALID_TRANSITION");
       }
+      let mediaSourceAgentRunId: string | null = null;
       if (task.taskType === "GBP_POST") {
         try {
-          await validateGbpDraftForTask(tx, task, {
+          const resolved = await validateGbpDraftForTask(tx, task, {
             body: input.body,
             ctaType: input.cta_type ?? null,
             ctaUrl: input.cta_url ?? null,
             media: input.media ?? [],
           });
+          mediaSourceAgentRunId = resolved.sourceAgentRunId;
         } catch (error) {
           if (error instanceof ApiDraftMediaError) {
             throw conflict(error.message, "DRAFT_MEDIA_INVALID");
@@ -222,7 +225,7 @@ export async function addDraftRevision(
         }
       }
       const last = await latestDraft(tx, taskId);
-      const draft = buildDraft(taskId, (last?.version ?? 0) + 1, input, actorId);
+      const draft = buildDraft(taskId, (last?.version ?? 0) + 1, input, actorId, null, mediaSourceAgentRunId);
       await insertDraft(tx, draft);
       let original: unknown;
       try { original = JSON.parse(task.executionSpec); } catch { original = task.executionSpec; }
@@ -315,8 +318,15 @@ function hasImageSignature(bytes: Uint8Array, contentType: string): boolean {
 async function validateGbpDraftForTask(
   db: Db,
   task: Task,
-  draft: { body: string; ctaType: string | null; ctaUrl: string | null; media: string[]; agentRunId?: string | null },
-): Promise<void> {
+  draft: {
+    body: string;
+    ctaType: string | null;
+    ctaUrl: string | null;
+    media: string[];
+    agentRunId?: string | null;
+    mediaSourceAgentRunId?: string | null;
+  },
+): Promise<{ sourceAgentRunId: string }> {
   let acceptedContext: unknown;
   try { acceptedContext = JSON.parse(task.executionSpec); } catch { acceptedContext = task.executionSpec; }
   validateGbpPostTextAndCta(draft, acceptedContext);
@@ -329,6 +339,7 @@ async function validateGbpDraftForTask(
   const run = deliverable ? await getAgentRun(db, deliverable.runId) : null;
   if (!deliverable || !run
     || (draft.agentRunId != null && run.id !== draft.agentRunId)
+    || (draft.mediaSourceAgentRunId != null && run.id !== draft.mediaSourceAgentRunId)
     || run.taskId !== task.id
     || run.stage !== "GBP_POST_CONTENT"
     || run.merchantId !== task.merchantId
@@ -357,6 +368,7 @@ async function validateGbpDraftForTask(
     || deliverable.size !== bytes.byteLength) {
     throw new ApiDraftMediaError("draft media local bytes do not match the verified image record");
   }
+  return { sourceAgentRunId: run.id };
 }
 
 async function mediaPreviewForRef(
@@ -366,14 +378,17 @@ async function mediaPreviewForRef(
   raw: string,
 ): Promise<DraftMediaPreview | null> {
   const ref = parseCanonicalMediaRef(raw);
-  if (!ref || !draft.agentRunId) return null;
+  const mediaSourceRunId = draft.source === "HUMAN_EDIT"
+    ? draft.agentRunId === null ? draft.mediaSourceAgentRunId : null
+    : draft.mediaSourceAgentRunId === null ? draft.agentRunId : null;
+  if (!ref || !mediaSourceRunId) return null;
   const [deliverable, run] = await Promise.all([
     getDeliverable(db, ref.deliverable_id),
-    getAgentRun(db, draft.agentRunId),
+    getAgentRun(db, mediaSourceRunId),
   ]);
   if (!deliverable || !run
-    || deliverable.runId !== draft.agentRunId
-    || run.id !== draft.agentRunId
+    || deliverable.runId !== mediaSourceRunId
+    || run.id !== mediaSourceRunId
     || run.taskId !== task.id
     || run.stage !== "GBP_POST_CONTENT"
     || run.merchantId !== task.merchantId

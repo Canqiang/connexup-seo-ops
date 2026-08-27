@@ -516,6 +516,7 @@ describe("migrate on postgres", () => {
         [legacy.schema],
       );
       expect(columns).toContainEqual({ column_name: "agent_run_id", is_nullable: "YES" });
+      expect(columns).toContainEqual({ column_name: "media_source_agent_run_id", is_nullable: "YES" });
 
       const insert = async (id: string, version: number, agentRunId: string | null) => legacy.db.exec(
         `INSERT INTO seo_content_drafts

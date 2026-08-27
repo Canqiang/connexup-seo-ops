@@ -100,6 +100,9 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE seo_content_drafts ADD COLUMN IF NOT EXISTS agent_run_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_drafts_agent_run
      ON seo_content_drafts(agent_run_id) WHERE agent_run_id IS NOT NULL`,
+  `ALTER TABLE seo_content_drafts ADD COLUMN IF NOT EXISTS media_source_agent_run_id TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_drafts_media_source_agent_run
+     ON seo_content_drafts(media_source_agent_run_id) WHERE media_source_agent_run_id IS NOT NULL`,
   `ALTER TABLE seo_specialist_artifacts ADD COLUMN IF NOT EXISTS acceptance_status TEXT NOT NULL DEFAULT 'PENDING'`,
   `ALTER TABLE seo_specialist_artifacts ADD COLUMN IF NOT EXISTS acceptance_decided_by TEXT`,
   `ALTER TABLE seo_specialist_artifacts ADD COLUMN IF NOT EXISTS acceptance_decided_at TEXT`,

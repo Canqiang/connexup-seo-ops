@@ -1572,6 +1572,20 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       body: "Order the confirmed lunch selection online.", cta_type: "ORDER", cta_url: orderUrl,
       media: generated.media,
     });
+    const revisedDraft = (await built.app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts`,
+    })).json().items[1];
+    expect(revisedDraft).toMatchObject({
+      source: "HUMAN_EDIT",
+      agent_run_id: null,
+      media_source_agent_run_id: created.json().id,
+      media: generated.media,
+      media_previews: [{
+        deliverable_id: expect.any(String),
+        sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        download_path: expect.stringMatching(/^\/api\/seo-ops\/deliverables\/.+\/download$/),
+      }],
+    });
   });
 
   it("rejects cross-Task media in a GBP human revision", async () => {

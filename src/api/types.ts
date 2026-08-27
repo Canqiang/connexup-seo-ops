@@ -323,7 +323,7 @@ export interface AgentBindingWire {
 }
 
 export interface DraftWire {
-  id: string; task_id: string; version: number; body: string;
+  id: string; task_id: string; agent_run_id?: string | null; media_source_agent_run_id?: string | null; version: number; body: string;
   cta_type: string | null; cta_url: string | null; media: string[];
   media_previews?: Array<{
     deliverable_id: string; sha256: string; download_path: string; alt_text: string;

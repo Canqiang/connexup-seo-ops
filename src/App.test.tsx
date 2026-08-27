@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -651,8 +651,10 @@ test("task navigation error never falls back to the previous merchant task, draf
 });
 
 test("GBP approval displays the exact finalized v1 snapshot and separates a newer v2 candidate", async () => {
-  const mediaV1 = "canonical-media-v1";
-  const mediaV2 = "canonical-media-v2";
+  const shaV1 = `sha256:${"1".repeat(64)}`;
+  const shaV2 = `sha256:${"2".repeat(64)}`;
+  const mediaV1 = JSON.stringify({ alt_text: "Finalized v1 image", deliverable_id: "final-image-v1", schema_version: "seo_ops.media_ref.v1", sha256: shaV1 });
+  const mediaV2 = JSON.stringify({ alt_text: "Candidate v2 image", deliverable_id: "candidate-image-v2", schema_version: "seo_ops.media_ref.v1", sha256: shaV2 });
   taskData = {
     ...taskFixture,
     task_type: "GBP_POST",
@@ -669,15 +671,16 @@ test("GBP approval displays the exact finalized v1 snapshot and separates a newe
     id: "draft-final-v1", task_id: "task-1", version: 1, body: "Exact finalized v1 copy",
     cta_type: "ORDER", cta_url: "https://example.test/order-v1", media: [mediaV1],
     media_previews: [{
-      deliverable_id: "final-image-v1", sha256: `sha256:${"1".repeat(64)}`,
+      deliverable_id: "final-image-v1", sha256: shaV1,
       download_path: "/api/seo-ops/deliverables/final-image-v1/download", alt_text: "Finalized v1 image",
     }],
-    source: "AGENT_GENERATED", feedback: null, sha256: "sha256:final-v1", created_by: "system", created_at: "2026-08-27T08:00:00Z",
+    agent_run_id: null, media_source_agent_run_id: "source-run-v1",
+    source: "HUMAN_EDIT", feedback: null, sha256: "sha256:final-v1", created_by: "user-1", created_at: "2026-08-27T08:00:00Z",
   }, {
     id: "draft-candidate-v2", task_id: "task-1", version: 2, body: "Newer unfinalized v2 copy",
     cta_type: "LEARN_MORE", cta_url: "https://example.test/v2", media: [mediaV2],
     media_previews: [{
-      deliverable_id: "candidate-image-v2", sha256: `sha256:${"2".repeat(64)}`,
+      deliverable_id: "candidate-image-v2", sha256: shaV2,
       download_path: "/api/seo-ops/deliverables/candidate-image-v2/download", alt_text: "Candidate v2 image",
     }],
     source: "HUMAN_EDIT", feedback: null, sha256: "sha256:candidate-v2", created_by: "user-1", created_at: "2026-08-27T09:00:00Z",
@@ -692,7 +695,118 @@ test("GBP approval displays the exact finalized v1 snapshot and separates a newe
   const candidate = screen.getByLabelText("未定稿候选");
   expect(within(candidate).getByText("未定稿候选 v2")).toBeVisible();
   expect(within(candidate).getByText("Newer unfinalized v2 copy")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
+  fireEvent.load(within(current).getByRole("img", { name: "Finalized v1 image" }));
   expect(screen.getByRole("button", { name: "批准当前版本" })).toBeEnabled();
+});
+
+test("GBP approval stays blocked when the exact draft has no authenticated preview", async () => {
+  const sha = `sha256:${"3".repeat(64)}`;
+  const media = JSON.stringify({ alt_text: "Missing preview", deliverable_id: "missing-preview", schema_version: "seo_ops.media_ref.v1", sha256: sha });
+  taskData = {
+    ...taskFixture, task_type: "GBP_POST", execution_mode: "AUTO_WRITE",
+    execution_spec: JSON.stringify({ content_draft: {
+      draft_version: 1, draft_sha256: "sha256:missing-preview-draft", body: "Exact copy without preview",
+      cta_type: "NONE", cta_url: null, media: [media],
+    } }),
+  };
+  draftData = [{
+    id: "draft-missing-preview", task_id: "task-1", version: 1, body: "Exact copy without preview",
+    cta_type: "NONE", cta_url: null, media: [media], media_previews: [], source: "AGENT_GENERATED",
+    feedback: null, sha256: "sha256:missing-preview-draft", created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  }];
+  renderApp("/tasks/task-1");
+
+  expect((await screen.findAllByText("批准已阻止：当前定稿缺少唯一且匹配的本地图片预览。"))[0]).toBeVisible();
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
+});
+
+test("GBP approval stays blocked when the only preview mismatches the canonical media ref", async () => {
+  const sha = `sha256:${"5".repeat(64)}`;
+  const media = JSON.stringify({ alt_text: "Expected preview", deliverable_id: "expected-preview", schema_version: "seo_ops.media_ref.v1", sha256: sha });
+  taskData = {
+    ...taskFixture, task_type: "GBP_POST", execution_mode: "AUTO_WRITE",
+    execution_spec: JSON.stringify({ content_draft: {
+      draft_version: 1, draft_sha256: "sha256:mismatched-preview-draft", body: "Exact copy with mismatched preview",
+      cta_type: "NONE", cta_url: null, media: [media],
+    } }),
+  };
+  draftData = [{
+    id: "draft-mismatched-preview", task_id: "task-1", version: 1, body: "Exact copy with mismatched preview",
+    cta_type: "NONE", cta_url: null, media: [media], media_previews: [{
+      deliverable_id: "foreign-preview", sha256: sha,
+      download_path: "/api/seo-ops/deliverables/foreign-preview/download", alt_text: "Foreign preview",
+    }], source: "AGENT_GENERATED", feedback: null, sha256: "sha256:mismatched-preview-draft",
+    created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  }];
+  renderApp("/tasks/task-1");
+
+  expect((await screen.findAllByText("批准已阻止：当前定稿缺少唯一且匹配的本地图片预览。"))[0]).toBeVisible();
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
+});
+
+test("GBP approval stays blocked after the exact authenticated preview fails to load", async () => {
+  const sha = `sha256:${"4".repeat(64)}`;
+  const media = JSON.stringify({ alt_text: "Broken exact preview", deliverable_id: "broken-preview", schema_version: "seo_ops.media_ref.v1", sha256: sha });
+  taskData = {
+    ...taskFixture, task_type: "GBP_POST", execution_mode: "AUTO_WRITE",
+    execution_spec: JSON.stringify({ content_draft: {
+      draft_version: 1, draft_sha256: "sha256:broken-preview-draft", body: "Exact copy with broken preview",
+      cta_type: "NONE", cta_url: null, media: [media],
+    } }),
+  };
+  draftData = [{
+    id: "draft-broken-preview", task_id: "task-1", version: 1, body: "Exact copy with broken preview",
+    cta_type: "NONE", cta_url: null, media: [media], media_previews: [{
+      deliverable_id: "broken-preview", sha256: sha,
+      download_path: "/api/seo-ops/deliverables/broken-preview/download", alt_text: "Broken exact preview",
+    }], source: "AGENT_GENERATED", feedback: null, sha256: "sha256:broken-preview-draft",
+    created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  }];
+  renderApp("/tasks/task-1");
+
+  const image = await screen.findByRole("img", { name: "Broken exact preview" });
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
+  fireEvent.error(image);
+  expect(await screen.findByText("图片预览暂不可用；批准前请刷新重试。")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
+});
+
+test("GBP approval image readiness resets when navigating to another task", async () => {
+  const makeTaskAndDraft = (taskId: string, title: string, deliverableId: string, digit: string) => {
+    const sha = `sha256:${digit.repeat(64)}`;
+    const media = JSON.stringify({ alt_text: `${title} image`, deliverable_id: deliverableId, schema_version: "seo_ops.media_ref.v1", sha256: sha });
+    const task = {
+      ...taskFixture, id: taskId, title, task_type: "GBP_POST", execution_mode: "AUTO_WRITE" as const,
+      execution_spec: JSON.stringify({ content_draft: {
+        draft_version: 1, draft_sha256: `sha256:${taskId}-draft`, body: `${title} copy`,
+        cta_type: "NONE", cta_url: null, media: [media],
+      } }),
+    };
+    const draft: DraftWire = {
+      id: `${taskId}-draft`, task_id: taskId, version: 1, body: `${title} copy`, cta_type: "NONE",
+      cta_url: null, media: [media], media_previews: [{
+        deliverable_id: deliverableId, sha256: sha,
+        download_path: `/api/seo-ops/deliverables/${deliverableId}/download`, alt_text: `${title} image`,
+      }], source: "AGENT_GENERATED", feedback: null, sha256: `sha256:${taskId}-draft`,
+      created_by: "system", created_at: "2026-08-27T08:00:00Z",
+    };
+    return { task, draft };
+  };
+  const first = makeTaskAndDraft("task-1", "First GBP task", "first-preview", "6");
+  const second = makeTaskAndDraft("task-2", "Second GBP task", "second-preview", "7");
+  taskData = first.task;
+  draftData = [first.draft];
+  taskResponseOverrides.set("/api/seo-ops/tasks/task-2", () => json(second.task));
+  taskResponseOverrides.set("/api/seo-ops/tasks/task-2/drafts", () => json({ items: [second.draft] }));
+  renderAppWithNavigation("/tasks/task-1");
+  const user = userEvent.setup();
+
+  fireEvent.load(await screen.findByRole("img", { name: "First GBP task image" }));
+  expect(await screen.findByRole("button", { name: "批准当前版本" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "前往第二个任务" }));
+  expect(await screen.findByRole("img", { name: "Second GBP task image" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
 });
 
 test("GBP approval is disabled when no persisted draft exactly matches the execution-spec snapshot", async () => {
