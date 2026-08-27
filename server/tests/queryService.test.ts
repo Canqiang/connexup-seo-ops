@@ -161,10 +161,11 @@ describe("portfolio", () => {
   });
 
   it("keeps synthetic pipeline merchants out of the operator portfolio without deleting them", async () => {
-    for (const [slug, tag] of [
-      ["uat-contract-store", "uat-contract"],
-      ["complete-chain-store", "complete-chain"],
-      ["real-agent-store", "real-agent"],
+    for (const [slug, tags] of [
+      ["uat-contract-store", ["uat", "uat-contract"]],
+      ["complete-chain-store", ["uat", "complete-chain"]],
+      ["real-agent-store", ["uat", "real-agent"]],
+      ["george-merchant-uws", ["real-merchant", "demo", "direct-gbp"]],
     ]) {
       expect((await app.inject({
         method: "POST",
@@ -172,7 +173,7 @@ describe("portfolio", () => {
         payload: {
           slug,
           display_name: slug,
-          tags: ["uat", tag],
+          tags,
           idempotency_key: `merchant-${slug}`,
         },
       })).statusCode).toBe(201);

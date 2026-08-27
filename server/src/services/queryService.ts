@@ -90,10 +90,12 @@ export async function portfolio(
   scopeAll = false,
 ): Promise<PortfolioResponseWire> {
   const hiddenPortfolioTags = new Set(["synthetic", "uat-contract", "complete-chain", "real-agent", "ops-hidden"]);
+  const hiddenLegacyDemoSlugs = new Set(["george-merchant-uws"]);
   const merchants = (scopeAll
     ? await listMerchants(db)
     : await listMerchantsForOperator(db, actorUserId))
-    .filter((merchant) => !merchant.tags.some((tag) => hiddenPortfolioTags.has(tag)));
+    .filter((merchant) => !hiddenLegacyDemoSlugs.has(merchant.slug)
+      && !merchant.tags.some((tag) => hiddenPortfolioTags.has(tag)));
   const merchantIds = new Set(merchants.map((merchant) => merchant.id));
   const locations = await listLocations(db);
   const tasks = (await listTasks(db)).filter((task) => merchantIds.has(task.merchantId));
