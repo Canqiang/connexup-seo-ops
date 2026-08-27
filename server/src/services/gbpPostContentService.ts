@@ -27,7 +27,7 @@ import { getMerchant } from "../repos/merchantRepo.js";
 import { getAgentBinding, latestStyleProfile } from "../repos/settingsRepo.js";
 import { getTask, getTaskForUpdate } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
-import { addAgentGeneratedDraftFromRun } from "./contentService.js";
+import { addAgentGeneratedDraftFromRun, validateGbpPostTextAndCta } from "./contentService.js";
 import { getDraftByAgentRunId } from "../repos/draftRepo.js";
 import type { CoreAiClient } from "./coreAiClient.js";
 import type { CoreAgentRunDetail } from "./coreAiClient.js";
@@ -151,36 +151,6 @@ export class GbpPostImageError extends Error {
   }
 }
 
-function collectStrings(value: unknown, result = new Set<string>()): Set<string> {
-  if (typeof value === "string") result.add(value);
-  else if (Array.isArray(value)) value.forEach((item) => collectStrings(item, result));
-  else if (value !== null && typeof value === "object") {
-    Object.values(value as Record<string, unknown>).forEach((item) => collectStrings(item, result));
-  }
-  return result;
-}
-
-function validateCta(parsed: ReturnType<typeof parseGbpPostDraftOutput>, request: Record<string, unknown>): void {
-  if ((parsed.cta_type === "NONE" || parsed.cta_type === "CALL") && parsed.cta_url !== undefined) {
-    throw new Error(`GBP Post content output ${parsed.cta_type} forbids cta_url`);
-  }
-  if (parsed.cta_type !== "NONE" && parsed.cta_type !== "CALL") {
-    if (!parsed.cta_url) throw new Error(`GBP Post content output ${parsed.cta_type} requires cta_url`);
-    let url: URL;
-    try { url = new URL(parsed.cta_url); } catch { throw new Error("GBP Post content output cta_url must be absolute HTTPS"); }
-    if (url.protocol !== "https:") throw new Error("GBP Post content output cta_url must be absolute HTTPS");
-    const accepted = collectStrings({
-      evidence_references: request.evidence_references,
-      execution_spec: request.execution_spec,
-    });
-    if (!accepted.has(parsed.cta_url)) {
-      throw new Error("GBP Post content output cta_url was not supplied in accepted evidence or execution_spec");
-    }
-  }
-  const phone = /(?:\+?1[\s.()-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/;
-  if (phone.test(parsed.copy)) throw new Error("GBP Post content output copy must contain no phone number");
-}
-
 function parseAndValidateRunOutput(run: AgentRun, output: string | null | undefined) {
   if (!output) throw new Error("GBP Post content run completed without output");
   const parsed = parseGbpPostDraftOutput(output);
@@ -205,8 +175,27 @@ function parseAndValidateRunOutput(run: AgentRun, output: string | null | undefi
   for (const [actual, expected, field] of exactChecks) {
     if (actual !== expected) throw new Error(`GBP Post content output ${field} does not match the dispatched request`);
   }
-  validateCta(parsed, request);
+  validateGbpPostTextAndCta({
+    body: parsed.copy,
+    ctaType: parsed.cta_type,
+    ctaUrl: parsed.cta_url ?? null,
+  }, {
+    evidence_references: request.evidence_references,
+    execution_spec: request.execution_spec,
+  });
   return parsed;
+}
+
+function expectedDispatchedAgentId(run: AgentRun): string | null {
+  try {
+    const message = JSON.parse(run.inputMessage) as Record<string, unknown>;
+    const identity = message.dispatch_identity;
+    if (identity === null || typeof identity !== "object" || Array.isArray(identity)) return null;
+    const expected = (identity as Record<string, unknown>).expected_agent_id;
+    return typeof expected === "string" && expected !== "" ? expected : null;
+  } catch {
+    return null;
+  }
 }
 
 function hasImageSignature(bytes: Uint8Array, contentType: string): boolean {
@@ -240,6 +229,13 @@ export async function acceptGbpPostContentRun(
 ) {
   if (!run.taskId || run.stage !== "GBP_POST_CONTENT") {
     throw new Error("GBP Post content output requires a task-linked content run");
+  }
+  const expectedAgentId = expectedDispatchedAgentId(run);
+  if (!run.coreRunId || core.id !== run.coreRunId || !expectedAgentId || core.agent_id !== expectedAgentId) {
+    throw new GbpPostImageError(
+      "CORE_RUN_IDENTITY_MISMATCH",
+      "Core Run response identity does not match the immutable GBP dispatch identity",
+    );
   }
   const task = await getTask(deps.db, run.taskId);
   if (!task) agentRunScopeReconciliationRequired();
@@ -349,6 +345,7 @@ async function buildRun(
   const message = JSON.stringify({
     schema_version: GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION,
     seo_ops_task_id: task.id,
+    dispatch_identity: { expected_agent_id: binding.agentId },
     market: { country_code: "US", language: "en-US", search_engine: "GOOGLE" },
     merchant: { id: merchant.id, slug: merchant.slug, display_name: merchant.displayName },
     location: {

@@ -1115,6 +1115,81 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(core.downloadCount()).toBe(0);
   });
 
+  it.each([
+    {
+      name: "Core run id differs from the dispatched run",
+      suffix: "identity-run-id",
+      transform: (detail: CoreAgentRunDetail) => ({ ...detail, id: "core-run-from-another-dispatch" }),
+    },
+    {
+      name: "Core agent id differs from the immutable dispatched agent",
+      suffix: "identity-agent-id",
+      transform: (detail: CoreAgentRunDetail) => ({ ...detail, agent_id: "agent-after-binding-change" }),
+    },
+  ])("fails $name before attachment download or persistence", async ({ suffix, transform }) => {
+    const core = fakeCore({ transformCompleted: transform });
+    const built = await setupContentTask(core.client, suffix);
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: `${suffix}-run` },
+    });
+    expect(created.statusCode).toBe(202);
+    const stored = await getAgentRun(built.db, created.json().id);
+    expect(JSON.parse(stored!.inputMessage)).toMatchObject({
+      dispatch_identity: { expected_agent_id: "agent-gbp-content" },
+    });
+
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({
+      status: "FAILED", errorCode: "CORE_RUN_IDENTITY_MISMATCH",
+    });
+    expect(core.downloadCount()).toBe(0);
+    expect(await listDeliverablesByRun(built.db, created.json().id)).toEqual([]);
+    expect((await built.app.inject({ method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts` })).json().items).toEqual([]);
+  }, 10_000);
+
+  it("uses the stored dispatched agent identity even if the current binding changes", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "immutable-agent-identity");
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "immutable-agent-identity-run" },
+    });
+    await built.app.inject({
+      method: "PUT", url: "/api/seo-ops/agent-bindings/GBP_POST",
+      payload: { agent_id: "new-current-binding", agent_label: "Changed after dispatch" },
+    });
+
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "COMPLETED" });
+    expect(core.downloadCount()).toBe(1);
+    expect((await built.app.inject({ method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts` })).json().items).toHaveLength(1);
+  });
+
+  it("fails a GBP Run whose stored input lacks the immutable dispatched agent identity", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "missing-stored-agent-identity");
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "missing-stored-agent-identity-run" },
+    });
+    const run = await getAgentRun(built.db, created.json().id);
+    const input = JSON.parse(run!.inputMessage) as Record<string, unknown>;
+    delete input.dispatch_identity;
+    await built.db.exec("UPDATE seo_agent_runs SET input_message = $1 WHERE id = $2", [JSON.stringify(input), run!.id]);
+
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    expect(await getAgentRun(built.db, run!.id)).toMatchObject({
+      status: "FAILED", errorCode: "CORE_RUN_IDENTITY_MISMATCH",
+    });
+    expect(core.downloadCount()).toBe(0);
+    expect(await listDeliverablesByRun(built.db, run!.id)).toEqual([]);
+    expect((await built.app.inject({ method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts` })).json().items).toEqual([]);
+  });
+
   it("never downloads or exposes Core attachment URLs from a failed GBP content Run", async () => {
     const core = fakeCore({
       transformCompleted: (detail) => ({ ...detail, status: "FAILED", error: "generation failed" }),
@@ -1445,6 +1520,118 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(unchanged.task_revision).toBe(task.task_revision);
   });
 
+  it("rejects unsafe GBP human revisions and accepts an exact server-resolved local media ref", async () => {
+    const orderUrl = "https://example.test/confirmed-order";
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "human-revision-validation", {
+      executionSpecExtras: { approved_order_url: orderUrl },
+    });
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "human-revision-validation-run" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "COMPLETED" });
+    const generated = (await built.app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts`,
+    })).json().items[0];
+
+    const invalidCases = [
+      { key: "missing", payload: { body: "No image selected.", cta_type: "NONE" } },
+      { key: "raw-url", payload: { body: "Raw URL selected.", cta_type: "NONE", media: ["https://core-ai.example/image.png"] } },
+      { key: "multiple", payload: { body: "Two images selected.", cta_type: "NONE", media: [generated.media[0], generated.media[0]] } },
+      { key: "rewritten-ref", payload: { body: "Rewritten reference.", cta_type: "NONE", media: [JSON.stringify({
+        ...JSON.parse(generated.media[0]), alt_text: "Human-rewritten media identity",
+      })] } },
+      { key: "bad-cta", payload: { body: "Invented CTA.", cta_type: "ORDER", cta_url: "https://invented.example/order", media: generated.media } },
+      { key: "phone", payload: { body: "Call (516) 555-0199 for lunch.", cta_type: "NONE", media: generated.media } },
+    ];
+    for (const item of invalidCases) {
+      const response = await built.app.inject({
+        method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/draft-revisions`,
+        payload: {
+          ...item.payload, source: "HUMAN_EDIT", expected_state_version: built.task.state_version,
+          idempotency_key: `human-revision-${item.key}`,
+        },
+      });
+      expect(response.statusCode, item.key).toBeGreaterThanOrEqual(400);
+    }
+    const unchanged = (await built.app.inject({ method: "GET", url: `/api/seo-ops/tasks/${built.task.id}` })).json();
+    expect(unchanged.task_revision).toBe(built.task.task_revision);
+
+    const valid = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/draft-revisions`,
+      payload: {
+        body: "Order the confirmed lunch selection online.", cta_type: "ORDER", cta_url: orderUrl,
+        media: generated.media, source: "HUMAN_EDIT", expected_state_version: built.task.state_version,
+        idempotency_key: "human-revision-valid",
+      },
+    });
+    expect(valid.statusCode).toBe(201);
+    expect(JSON.parse(valid.json().execution_spec).content_draft).toMatchObject({
+      body: "Order the confirmed lunch selection online.", cta_type: "ORDER", cta_url: orderUrl,
+      media: generated.media,
+    });
+  });
+
+  it("rejects cross-Task media in a GBP human revision", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "human-cross-task");
+    const otherTask = (await built.app.inject({
+      method: "POST", url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: built.merchant.id,
+        location_id: built.location.id,
+        definition: {
+          title: "Other human media task", task_type: "GBP_POST", source: "CYCLE",
+          priority: "HIGH", impact: "HIGH", execution_spec: built.task.execution_spec,
+          required_evidence_types: ["CONTENT_DRAFT"], execution_mode: "AUTO_WRITE",
+        },
+        idempotency_key: "human-cross-task-other-task",
+      },
+    })).json();
+    await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${otherTask.id}/content-runs`,
+      payload: { idempotency_key: "human-cross-task-other-run" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const foreignMedia = (await built.app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${otherTask.id}/drafts`,
+    })).json().items[0].media;
+    const rejected = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/draft-revisions`,
+      payload: {
+        body: "Cross-task media must fail.", cta_type: "NONE", media: foreignMedia,
+        source: "HUMAN_EDIT", expected_state_version: built.task.state_version,
+        idempotency_key: "human-cross-task-revision",
+      },
+    });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json().error_code).toBe("DRAFT_MEDIA_INVALID");
+  });
+
+  it("revalidates local image bytes and SHA during generated draft finalization", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "finalize-byte-integrity");
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "finalize-byte-integrity-run" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const draft = (await built.app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts`,
+    })).json().items[0];
+    const deliverable = (await listDeliverablesByRun(built.db, created.json().id))[0]!;
+    writeFileSync(deliverable.localPath!, Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 99]));
+
+    const rejected = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/drafts/${draft.version}/finalize`,
+      payload: { expected_state_version: built.task.state_version, idempotency_key: "finalize-byte-integrity" },
+    });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json().error_code).toBe("DRAFT_MEDIA_INVALID");
+  });
+
   it("shares the merchant daily Agent Run quota before triggering Core AI", async () => {
     const core = fakeCore();
     const artifactsDir = mkdtempSync(join(tmpdir(), "seo-ops-gbp-quota-"));
@@ -1730,6 +1917,10 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       payload: { idempotency_key: key },
     });
     expect(first.statusCode).toBe(202);
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const generated = (await app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items[0];
     expect((await app.inject({
       method: "POST",
       url: `/api/seo-ops/merchants/${merchant.id}/style-profile`,
@@ -1740,6 +1931,8 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       url: `/api/seo-ops/tasks/${task.id}/draft-revisions`,
       payload: {
         body: "A human revision changes the Task definition while the original request remains stable.",
+        cta_type: "NONE",
+        media: generated.media,
         source: "HUMAN_EDIT",
         expected_state_version: task.state_version,
         idempotency_key: "stable-http-task-revision",
@@ -1986,11 +2179,20 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     const core = fakeCore();
     const built = await setupContentTask(core.client, "finalize-wins-allocation");
     const { app, db, task, merchant } = built;
-    const manualDraft = (await app.inject({
+    const seedRun = await app.inject({
       method: "POST",
-      url: `/api/seo-ops/tasks/${task.id}/drafts`,
-      payload: { body: "Finalize before allocation can lock the Task.", source: "HUMAN_EDIT" },
-    })).json();
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "finalize-wins-allocation-seed-run" },
+    });
+    await new AgentRunPoller({ db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const generatedDraft = (await app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items[0];
+    expect(seedRun.statusCode).toBe(202);
+    expect((await app.inject({
+      method: "POST", url: `/api/seo-ops/merchants/${merchant.id}/style-profile`,
+      payload: { voice: { tone: "new input for a competing allocation" } },
+    })).statusCode).toBe(201);
     const held = await holdMerchantLock(db, merchant.id);
     const allocation = app.inject({
       method: "POST",
@@ -2000,7 +2202,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     await waitForBlockedBy(db, held.blockerPid);
     const finalized = await app.inject({
       method: "POST",
-      url: `/api/seo-ops/tasks/${task.id}/drafts/${manualDraft.version}/finalize`,
+      url: `/api/seo-ops/tasks/${task.id}/drafts/${generatedDraft.version}/finalize`,
       payload: {
         expected_state_version: task.state_version,
         idempotency_key: "finalize-wins-allocation-evidence",
@@ -2013,11 +2215,11 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
 
     const rejected = await allocation;
     expect(rejected.statusCode).toBe(409);
-    expect(core.triggerCount()).toBe(0);
+    expect(core.triggerCount()).toBe(1);
     expect(await db.one<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
       [task.id],
-    )).toEqual({ count: "0" });
+    )).toEqual({ count: "1" });
   });
 
   it("rejects Gate 1 approval while allocation owns an active GBP Run without invalidating valid output", async () => {

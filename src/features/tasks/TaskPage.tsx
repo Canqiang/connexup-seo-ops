@@ -16,7 +16,7 @@ import { EvidenceForm } from "./EvidenceForm";
 import { EvidenceRail } from "./EvidenceRail";
 import { ExecutionPanel } from "./ExecutionPanel";
 import { SpecialistArtifactsPanel } from "./SpecialistArtifactsPanel";
-import { TaskDecisionHero } from "./TaskDecisionHero";
+import { resolveTaskDraftDisplay, TaskDecisionHero } from "./TaskDecisionHero";
 import { TaskRevisionForm } from "./TaskRevisionForm";
 import { TaskTimeline } from "./TaskTimeline";
 import { TechnicalDetails } from "./TechnicalDetails";
@@ -62,17 +62,27 @@ function mergeAuditReferencePages(
   };
 }
 
+interface TaskKeyed<T> { taskId: string; value: T }
+
+function keyed<T>(taskId: string, loader: Promise<T>): Promise<TaskKeyed<T>> {
+  return loader.then((value) => ({ taskId, value }));
+}
+
 export function TaskPage() {
   const { taskId = "" } = useParams();
+  return <TaskPageForId key={taskId} taskId={taskId} />;
+}
+
+function TaskPageForId({ taskId }: { taskId: string }) {
   const currentTaskId = useRef(taskId);
   currentTaskId.current = taskId;
   const auditPageController = useRef<AbortController | undefined>(undefined);
   const { mode = "operator" } = useOutletContext<{ mode?: ViewMode }>();
   const { user } = useAuth();
-  const taskResource = useResource((signal) => seoOpsApi.task(taskId, signal), [taskId]);
-  const eventResource = useResource((signal) => seoOpsApi.events(taskId, { limit: 100 }, signal), [taskId]);
-  const artifactResource = useResource((signal) => seoOpsApi.taskArtifacts(taskId, signal), [taskId]);
-  const draftResource = useResource((signal) => seoOpsApi.drafts(taskId, signal), [taskId]);
+  const taskResource = useResource((signal) => keyed(taskId, seoOpsApi.task(taskId, signal)), [taskId]);
+  const eventResource = useResource((signal) => keyed(taskId, seoOpsApi.events(taskId, { limit: 100 }, signal)), [taskId]);
+  const artifactResource = useResource((signal) => keyed(taskId, seoOpsApi.taskArtifacts(taskId, signal)), [taskId]);
+  const draftResource = useResource((signal) => keyed(taskId, seoOpsApi.drafts(taskId, signal)), [taskId]);
   const [task, setTask] = useState<SeoTask>();
   const [showEvidence, setShowEvidence] = useState(false);
   const [showRevision, setShowRevision] = useState(false);
@@ -80,17 +90,19 @@ export function TaskPage() {
   const [auditReferences, setAuditReferences] = useState<TaskAuditReferencesWire>();
   const [auditPageLoading, setAuditPageLoading] = useState(false);
   const [auditPageError, setAuditPageError] = useState(false);
-  const auditReferenceResource = useResource<TaskAuditReferencesWire | undefined>(
+  const auditReferenceResource = useResource<TaskKeyed<TaskAuditReferencesWire | undefined>>(
     (signal) => auditOpen
-      ? seoOpsApi.taskAuditReferences(
+      ? keyed(taskId, seoOpsApi.taskAuditReferences(
           taskId,
           { offset: 0, limit: AUDIT_REFERENCE_PAGE_LIMIT },
           signal,
-        )
-      : Promise.resolve(undefined),
+        ))
+      : Promise.resolve({ taskId, value: undefined }),
     [taskId, auditOpen],
   );
-  useEffect(() => { if (taskResource.data) setTask(taskResource.data); }, [taskResource.data]);
+  useEffect(() => {
+    if (taskResource.data?.taskId === taskId) setTask(taskResource.data.value);
+  }, [taskId, taskResource.data]);
   useEffect(() => {
     auditPageController.current?.abort();
     auditPageController.current = undefined;
@@ -100,13 +112,13 @@ export function TaskPage() {
     return () => auditPageController.current?.abort();
   }, [taskId]);
   useEffect(() => {
-    if (auditReferenceResource.data) {
-      setAuditReferences(auditReferenceResource.data);
+    if (auditReferenceResource.data?.taskId === taskId && auditReferenceResource.data.value) {
+      setAuditReferences(auditReferenceResource.data.value);
       setAuditPageError(false);
     }
-  }, [auditReferenceResource.data]);
+  }, [auditReferenceResource.data, taskId]);
   usePageTitle(task ? task.title : "任务");
-  const readback = (next: SeoTask) => { setTask(next); taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
+  const readback = (next: SeoTask) => { if (next.id === taskId) setTask(next); taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
   const reload = () => { taskResource.reload(); eventResource.reload(); artifactResource.reload(); draftResource.reload(); if (auditOpen) auditReferenceResource.reload(); };
   const nextAuditOffset = (auditReferences?.offset ?? 0)
     + (auditReferences?.limit ?? AUDIT_REFERENCE_PAGE_LIMIT);
@@ -145,8 +157,15 @@ export function TaskPage() {
   const canExecute = hasPermission(user?.permissions, "seoops.execute");
   const canRevise = canManage && REVISABLE_STATUSES.has(task.status);
   const decision = taskDecisionDescriptor(task, { canManage, canApprove, canExecute });
+  const drafts = draftResource.data?.taskId === taskId ? draftResource.data.value.items : [];
+  const artifacts = artifactResource.data?.taskId === taskId ? artifactResource.data.value.items : [];
+  const events = eventResource.data?.taskId === taskId ? eventResource.data.value : undefined;
+  const draftDisplay = resolveTaskDraftDisplay(task, drafts);
+  const approvalBlockedReason = task.task_type === "GBP_POST" && !draftDisplay.approvalIdentityValid
+    ? "批准已阻止：当前显示内容与定稿快照不一致。"
+    : undefined;
   const heroAction = !decision.actionLabel ? undefined : decision.actionKind === "APPROVE"
-    ? <ApprovalPanel canApprove={canApprove} compact onReadback={readback} primaryLabel="批准当前版本" task={task} />
+    ? <ApprovalPanel approvalBlockedReason={approvalBlockedReason} canApprove={canApprove} compact onReadback={readback} primaryLabel="批准当前版本" task={task} />
     : decision.actionKind === "MANUAL_COMPLETE"
       ? <ManualCompletionPanel onReadback={readback} task={task} />
       : decision.actionKind === "CONFIRM" || decision.actionKind === "VERIFY" || decision.actionKind === "RECONCILE"
@@ -157,7 +176,7 @@ export function TaskPage() {
 
   return <>
     <header className="task-page-toolbar"><BackButton fallback="/inbox" label="返回任务列表" /><button aria-label="刷新任务" className="icon-button" onClick={reload} type="button"><RefreshCw size={16} /></button></header>
-    <TaskDecisionHero artifacts={artifactResource.data?.items ?? []} decision={decision} drafts={draftResource.data?.items ?? []} task={task}>{heroAction}</TaskDecisionHero>
+    <TaskDecisionHero artifacts={artifacts} candidateDraft={draftDisplay.candidateDraft} decision={decision} displayedDraft={draftDisplay.displayedDraft} task={task}>{heroAction}</TaskDecisionHero>
     {showRevision ? <section className="data-panel inline-form"><TaskRevisionForm task={task} onClose={() => setShowRevision(false)} onReadback={readback} /></section> : null}
     {showEvidence ? <section className="data-panel inline-form"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE COMMAND</span><h2>附加当前版本证据</h2></div></div><EvidenceForm task={task} onReadback={readback} /></section> : null}
     <TechnicalDetails onToggle={setAuditOpen} open={auditOpen} task={task}>
@@ -173,16 +192,16 @@ export function TaskPage() {
         {artifactResource.loading && !artifactResource.data ? <div className="page-state" role="status">读取 Agent 产物…</div> : null}
         {artifactResource.error ? <div className="page-state is-error" role="alert">Agent 产物读取失败。</div> : null}
         <SpecialistArtifactsPanel
-          artifacts={artifactResource.data?.items ?? []}
+          artifacts={artifacts}
           canApprove={canApprove}
           onRefresh={artifactResource.reload}
         />
         <DraftsPanel onReadback={readback} task={task} />
-        <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>事件时间线</h2></div><span className="result-count">{eventResource.data?.total ?? "—"}</span></div>{eventResource.loading ? <div className="page-state" role="status">读取事件…</div> : <TaskTimeline events={eventResource.data?.items ?? []} />}</section>
+        <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>事件时间线</h2></div><span className="result-count">{events?.total ?? "—"}</span></div>{eventResource.loading ? <div className="page-state" role="status">读取事件…</div> : <TaskTimeline events={events?.items ?? []} />}</section>
       </div><aside className="task-context">
         <ExecutionPanel audit={mode === "audit"} canExecute={canExecute} onReadback={readback} task={task} />
         <section className="data-panel evidence-panel"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE SPINE</span><h2>证据脊柱</h2></div></div><EvidenceRail task={task} /></section>
-        <ApprovalPanel canApprove={canApprove} onReadback={readback} task={task} />
+        <ApprovalPanel approvalBlockedReason={approvalBlockedReason} canApprove={canApprove} onReadback={readback} task={task} />
         <section className="link-panel"><div><MessageSquareText size={15} /><span><strong>{task.conversation_links.length}</strong> 对话链接</span></div><div><Bot size={15} /><span><strong>{task.agent_run_links.length}</strong> Agent Run 引用</span></div><p><ShieldCheck size={13} /> 这里只显示 ID 和状态摘要，不载入聊天正文或运行载荷。</p></section>
       </aside></div>
     </TechnicalDetails>

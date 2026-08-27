@@ -107,6 +107,7 @@ let attemptData: AttemptWire[] = [];
 let auditReferenceData: TaskAuditReferencesWire = { agent_runs: [], artifacts: [] };
 let auditReferencePages = new Map<number, TaskAuditReferencesWire>();
 let delayedAuditLoadMore: Promise<Response> | undefined;
+let taskResponseOverrides = new Map<string, () => Response | Promise<Response>>();
 let inboxFails = false;
 let inboxData: unknown = { items: [], offset: 0, limit: 50, total: 0 };
 type InboxResponder = (offset: number, limit: number) => Response | Promise<Response>;
@@ -129,6 +130,7 @@ beforeEach(() => {
   auditReferenceData = { agent_runs: [], artifacts: [] };
   auditReferencePages = new Map();
   delayedAuditLoadMore = undefined;
+  taskResponseOverrides = new Map();
   inboxFails = false;
   inboxData = { items: [], offset: 0, limit: 50, total: 0 };
   inboxResponder = undefined;
@@ -142,8 +144,9 @@ beforeEach(() => {
     if (path === "/api/seo-ops/portfolio") return json(portfolioData);
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
+    if (taskResponseOverrides.has(path)) return taskResponseOverrides.get(path)!();
     if (path === "/api/seo-ops/tasks/task-1") return json(taskData);
-    if (path === "/api/seo-ops/tasks/task-2") return json({ ...taskFixture, id: "task-2", title: "第二个任务" });
+    if (path === "/api/seo-ops/tasks/task-2") return json({ ...taskFixture, id: "task-2", merchant_id: "second-merchant", merchant_name: "Second Merchant", title: "第二个任务" });
     if (path === "/api/seo-ops/merchants/only-bear/lifecycle") return json(lifecycleData);
     if (path === "/api/seo-ops/merchants/only-bear/ranking") return json(rankingData);
     if (path === "/api/seo-ops/merchants/only-bear/cycle-ledger") return json(cycleLedgerData);
@@ -589,6 +592,130 @@ test("task hero never turns raw or malformed draft media into an image source", 
   expect(document.querySelector('img[src*="core-ai.example"]')).toBeNull();
 });
 
+test("task navigation clears every Task A identity while cross-merchant Task B is delayed", async () => {
+  taskData = { ...taskFixture, title: "Merchant A private task" };
+  draftData = [{
+    id: "draft-a", task_id: "task-1", version: 1, body: "Merchant A private copy",
+    cta_type: "NONE", cta_url: null, media: ["raw-a"],
+    media_previews: [{
+      deliverable_id: "merchant-a-image", sha256: `sha256:${"a".repeat(64)}`,
+      download_path: "/api/seo-ops/deliverables/merchant-a-image/download", alt_text: "Merchant A private image",
+    }],
+    source: "AGENT_GENERATED", feedback: null, sha256: "sha256:draft-a",
+    created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  }];
+  let resolveTaskB!: (response: Response) => void;
+  const delayedTaskB = new Promise<Response>((resolve) => { resolveTaskB = resolve; });
+  taskResponseOverrides.set("/api/seo-ops/tasks/task-2", () => delayedTaskB);
+  renderAppWithNavigation("/tasks/task-1");
+  const user = userEvent.setup();
+
+  expect(await screen.findByText("Merchant A private copy")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "前往第二个任务" }));
+
+  expect(await screen.findByText("正在读取任务聚合…")).toBeVisible();
+  expect(screen.queryByText("Merchant A private task")).not.toBeInTheDocument();
+  expect(screen.queryByText("Merchant A private copy")).not.toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "Merchant A private image" })).not.toBeInTheDocument();
+
+  await act(async () => {
+    resolveTaskB(json({ ...taskFixture, id: "task-2", merchant_id: "second-merchant", merchant_name: "Second Merchant", title: "Merchant B task" }));
+    await delayedTaskB;
+  });
+  expect(await screen.findByRole("heading", { name: "Merchant B task" })).toBeVisible();
+});
+
+test("task navigation error never falls back to the previous merchant task, draft, or image", async () => {
+  taskData = { ...taskFixture, title: "Merchant A rejected-navigation task" };
+  draftData = [{
+    id: "draft-a-rejected", task_id: "task-1", version: 1, body: "Merchant A rejected-navigation copy",
+    cta_type: "NONE", cta_url: null, media: ["raw-a"],
+    media_previews: [{
+      deliverable_id: "merchant-a-rejected-image", sha256: `sha256:${"b".repeat(64)}`,
+      download_path: "/api/seo-ops/deliverables/merchant-a-rejected-image/download", alt_text: "Merchant A rejected-navigation image",
+    }],
+    source: "AGENT_GENERATED", feedback: null, sha256: "sha256:draft-a-rejected",
+    created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  }];
+  taskResponseOverrides.set("/api/seo-ops/tasks/task-2", () => json({ message: "forbidden" }, 403));
+  renderAppWithNavigation("/tasks/task-1");
+  const user = userEvent.setup();
+
+  expect(await screen.findByText("Merchant A rejected-navigation copy")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "前往第二个任务" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("任务不存在、不可见或读取失败");
+  expect(screen.queryByText("Merchant A rejected-navigation task")).not.toBeInTheDocument();
+  expect(screen.queryByText("Merchant A rejected-navigation copy")).not.toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "Merchant A rejected-navigation image" })).not.toBeInTheDocument();
+});
+
+test("GBP approval displays the exact finalized v1 snapshot and separates a newer v2 candidate", async () => {
+  const mediaV1 = "canonical-media-v1";
+  const mediaV2 = "canonical-media-v2";
+  taskData = {
+    ...taskFixture,
+    task_type: "GBP_POST",
+    execution_mode: "AUTO_WRITE",
+    execution_spec: JSON.stringify({
+      operation: "draft_gbp_post",
+      content_draft: {
+        draft_version: 1, draft_sha256: "sha256:final-v1", body: "Exact finalized v1 copy",
+        cta_type: "ORDER", cta_url: "https://example.test/order-v1", media: [mediaV1],
+      },
+    }),
+  };
+  draftData = [{
+    id: "draft-final-v1", task_id: "task-1", version: 1, body: "Exact finalized v1 copy",
+    cta_type: "ORDER", cta_url: "https://example.test/order-v1", media: [mediaV1],
+    media_previews: [{
+      deliverable_id: "final-image-v1", sha256: `sha256:${"1".repeat(64)}`,
+      download_path: "/api/seo-ops/deliverables/final-image-v1/download", alt_text: "Finalized v1 image",
+    }],
+    source: "AGENT_GENERATED", feedback: null, sha256: "sha256:final-v1", created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  }, {
+    id: "draft-candidate-v2", task_id: "task-1", version: 2, body: "Newer unfinalized v2 copy",
+    cta_type: "LEARN_MORE", cta_url: "https://example.test/v2", media: [mediaV2],
+    media_previews: [{
+      deliverable_id: "candidate-image-v2", sha256: `sha256:${"2".repeat(64)}`,
+      download_path: "/api/seo-ops/deliverables/candidate-image-v2/download", alt_text: "Candidate v2 image",
+    }],
+    source: "HUMAN_EDIT", feedback: null, sha256: "sha256:candidate-v2", created_by: "user-1", created_at: "2026-08-27T09:00:00Z",
+  }];
+  renderApp("/tasks/task-1");
+
+  const current = await screen.findByLabelText("当前内容");
+  expect(within(current).getByText("当前批准对象 v1")).toBeVisible();
+  expect(within(current).getByText("Exact finalized v1 copy")).toBeVisible();
+  expect(within(current).getByRole("img", { name: "Finalized v1 image" })).toBeInTheDocument();
+  expect(within(current).queryByText("Newer unfinalized v2 copy")).not.toBeInTheDocument();
+  const candidate = screen.getByLabelText("未定稿候选");
+  expect(within(candidate).getByText("未定稿候选 v2")).toBeVisible();
+  expect(within(candidate).getByText("Newer unfinalized v2 copy")).toBeVisible();
+  expect(screen.getByRole("button", { name: "批准当前版本" })).toBeEnabled();
+});
+
+test("GBP approval is disabled when no persisted draft exactly matches the execution-spec snapshot", async () => {
+  taskData = {
+    ...taskFixture,
+    task_type: "GBP_POST",
+    execution_mode: "AUTO_WRITE",
+    execution_spec: JSON.stringify({ content_draft: {
+      draft_version: 1, draft_sha256: "sha256:final-v1", body: "Finalized body",
+      cta_type: "NONE", cta_url: null, media: ["canonical-media-v1"],
+    } }),
+  };
+  draftData = [{
+    id: "draft-mismatch", task_id: "task-1", version: 1, body: "Displayed body does not match",
+    cta_type: "NONE", cta_url: null, media: ["canonical-media-v1"], media_previews: [],
+    source: "HUMAN_EDIT", feedback: null, sha256: "sha256:final-v1", created_by: "user-1", created_at: "2026-08-27T08:00:00Z",
+  }];
+  renderApp("/tasks/task-1");
+
+  expect((await screen.findAllByText("批准已阻止：当前显示内容与定稿快照不一致。"))[0]).toBeVisible();
+  expect(screen.queryByRole("button", { name: "批准当前版本" })).not.toBeInTheDocument();
+});
+
 test("task hero shows an accepted artifact when no current draft exists", async () => {
   artifactData = [{ id: "artifact-full-1", task_id: "task-1", merchant_id: "only-bear", artifact_type: "AUDIT_REPORT", schema_version: "v1", title: "已接受的审计报告", summary: "当前可交付审计摘要", payload: {}, core_run_id: "core-run-full", created_by: "user-1", created_at: "2026-08-26T08:00:00Z" }];
   renderApp("/tasks/task-1");
@@ -753,6 +880,7 @@ test("an old load-more response cannot repopulate audit references after navigat
 
   await user.click(screen.getByRole("button", { name: "前往第二个任务" }));
   expect(await screen.findByRole("heading", { name: "第二个任务" })).toBeVisible();
+  await user.click(screen.getByText("技术详情（审计）"));
   expect(await screen.findByText("task-2-run")).toBeVisible();
 
   await act(async () => {

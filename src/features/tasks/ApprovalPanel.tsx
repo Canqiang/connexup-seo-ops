@@ -5,7 +5,7 @@ import { formatDateTime } from "../../app/format";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import type { ApprovalAction, ApprovalPreview, SeoTask } from "../../api/types";
 
-export function ApprovalPanel({ task, canApprove, onReadback, compact = false, primaryLabel = "生成审批预览" }: { task: SeoTask; canApprove: boolean; onReadback: (task: SeoTask) => void; compact?: boolean; primaryLabel?: string }) {
+export function ApprovalPanel({ task, canApprove, onReadback, compact = false, primaryLabel = "生成审批预览", approvalBlockedReason }: { task: SeoTask; canApprove: boolean; onReadback: (task: SeoTask) => void; compact?: boolean; primaryLabel?: string; approvalBlockedReason?: string }) {
   const [preview, setPreview] = useState<ApprovalPreview>();
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
@@ -18,6 +18,7 @@ export function ApprovalPanel({ task, canApprove, onReadback, compact = false, p
   };
   const decide = async (action: ApprovalAction) => {
     if (!preview) return;
+    if (action === "APPROVE" && approvalBlockedReason) return setMessage(approvalBlockedReason);
     if ((action === "REJECT" || action === "REVOKE") && !reason.trim()) return setMessage("拒绝或撤销必须填写原因。");
     setBusy(true); setMessage("");
     try {
@@ -46,11 +47,12 @@ export function ApprovalPanel({ task, canApprove, onReadback, compact = false, p
     </p> : null}
     {!actionable ? <p className="boundary-note">{task.status === "DONE" ? "任务已归档，审批链只读。" : "任务已进入执行链，审批链只读；需要改动请先撤销批准或等执行终态。"}</p> : <>
       {!canApprove ? <p className="boundary-note">当前账号只能查看审批历史。</p> : null}
-      {canApprove && !preview ? <button className={compact ? "primary-button" : "secondary-button"} disabled={busy} onClick={generate} type="button">{primaryLabel}</button> : null}
+      {canApprove && approvalBlockedReason ? <p className="boundary-note">{approvalBlockedReason}</p> : null}
+      {canApprove && !approvalBlockedReason && !preview ? <button className={compact ? "primary-button" : "secondary-button"} disabled={busy} onClick={generate} type="button">{primaryLabel}</button> : null}
       {preview ? <div className="approval-preview"><dl><div><dt>版本</dt><dd>rev {preview.task_revision} / state {preview.state_version}</dd></div><div><dt>证据</dt><dd>{preview.evidence_state}</dd></div><div><dt>执行哈希</dt><dd><code>{preview.execution_spec_hash}</code></dd></div><div><dt>影响范围</dt><dd>{task.impact}</dd></div></dl>
         {preview.blockers.length ? <ul className="blocker-list">{preview.blockers.map((item) => <li key={item}>{item}</li>)}</ul> : null}
         <label>拒绝 / 撤销原因<textarea value={reason} onChange={(event) => setReason(event.target.value)} /></label>
-        <div className="button-row">{task.status === "READY_FOR_APPROVAL" ? <><button className="primary-button" disabled={busy || !preview.reviewable} onClick={() => decide("APPROVE")} type="button">{primaryLabel}</button><button className="secondary-button" disabled={busy} onClick={() => decide("REJECT")} type="button">退回修订</button></> : null}{task.status === "APPROVED" ? <button className="danger-button" disabled={busy} onClick={() => decide("REVOKE")} type="button">撤销批准</button> : null}</div>
+        <div className="button-row">{task.status === "READY_FOR_APPROVAL" ? <><button className="primary-button" disabled={busy || !preview.reviewable || Boolean(approvalBlockedReason)} onClick={() => decide("APPROVE")} type="button">{primaryLabel}</button><button className="secondary-button" disabled={busy} onClick={() => decide("REJECT")} type="button">退回修订</button></> : null}{task.status === "APPROVED" ? <button className="danger-button" disabled={busy} onClick={() => decide("REVOKE")} type="button">撤销批准</button> : null}</div>
       </div> : null}
     </>}<p className="form-message" role="status">{message}</p>
     {task.status === "APPROVED" ? <p className="boundary-note is-approved">{task.execution_mode === "READ_ONLY" ? "已批准 — Ⓐ级只读任务由调度器自动派发。" : task.execution_mode === "MANUAL" ? "已批准 — 人工完成后记录完成证据，不进入门 2。" : "已批准 — 等待门 2 执行确认（见执行面板）。"}</p> : null}

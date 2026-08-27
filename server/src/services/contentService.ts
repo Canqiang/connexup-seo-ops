@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import type { Db } from "../db/connection.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { getTask, getTaskForUpdate } from "../repos/taskRepo.js";
 import type { EvidenceRefRecord, Task, TaskDefinitionRecord } from "../repos/taskTypes.js";
-import { canonicalize, executionSpecHash, requestFingerprint } from "../domain/hashing.js";
+import { canonicalize, executionSpecHash, requestFingerprint, sha256HashBytes } from "../domain/hashing.js";
 import { buildEvent, mutateTask, reevaluate } from "./taskService.js";
 import {
   insertDraft,
@@ -59,6 +60,44 @@ const CONTENT_REVISION_ALLOWED_STATUSES = new Set([
 const AGENT_DRAFT_ALLOWED_STATUSES = new Set([
   "DRAFT", "NEEDS_INPUT", "BLOCKED", "READY_FOR_APPROVAL", "REVISION_REQUIRED", "APPROVAL_REVOKED",
 ]);
+
+const GBP_CTA_TYPES = new Set(["NONE", "BOOK", "ORDER", "SHOP", "LEARN_MORE", "SIGN_UP", "CALL"]);
+const GBP_PHONE_PATTERN = /(?:\+?1[\s.()-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/;
+const GBP_POST_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+function collectStrings(value: unknown, result = new Set<string>()): Set<string> {
+  if (typeof value === "string") result.add(value);
+  else if (Array.isArray(value)) value.forEach((item) => collectStrings(item, result));
+  else if (value !== null && typeof value === "object") {
+    Object.values(value as Record<string, unknown>).forEach((item) => collectStrings(item, result));
+  }
+  return result;
+}
+
+/** One authoritative GBP copy/CTA policy used both at Core output ingestion
+ * and again when a persisted draft is selected or edited by a human. */
+export function validateGbpPostTextAndCta(input: {
+  body: string;
+  ctaType: string | null;
+  ctaUrl: string | null;
+}, acceptedContext: unknown): void {
+  if (!GBP_CTA_TYPES.has(input.ctaType ?? "")) {
+    throw new Error("GBP Post cta_type must be one of the supported CTA values");
+  }
+  if ((input.ctaType === "NONE" || input.ctaType === "CALL") && input.ctaUrl !== null) {
+    throw new Error(`GBP Post ${input.ctaType} forbids cta_url`);
+  }
+  if (input.ctaType !== "NONE" && input.ctaType !== "CALL") {
+    if (!input.ctaUrl) throw new Error(`GBP Post ${input.ctaType} requires cta_url`);
+    let url: URL;
+    try { url = new URL(input.ctaUrl); } catch { throw new Error("GBP Post cta_url must be absolute HTTPS"); }
+    if (url.protocol !== "https:") throw new Error("GBP Post cta_url must be absolute HTTPS");
+    if (!collectStrings(acceptedContext).has(input.ctaUrl)) {
+      throw new Error("GBP Post cta_url was not supplied in accepted evidence or execution_spec");
+    }
+  }
+  if (GBP_PHONE_PATTERN.test(input.body)) throw new Error("GBP Post copy must contain no phone number");
+}
 
 function validateDraftInput(input: AddDraftInput): void {
   if (typeof input.body !== "string" || input.body.trim() === "") {
@@ -167,6 +206,21 @@ export async function addDraftRevision(
       if (!CONTENT_REVISION_ALLOWED_STATUSES.has(task.status)) {
         throw conflict(`cannot edit content in status ${task.status}`, "INVALID_TRANSITION");
       }
+      if (task.taskType === "GBP_POST") {
+        try {
+          await validateGbpDraftForTask(tx, task, {
+            body: input.body,
+            ctaType: input.cta_type ?? null,
+            ctaUrl: input.cta_url ?? null,
+            media: input.media ?? [],
+          });
+        } catch (error) {
+          if (error instanceof ApiDraftMediaError) {
+            throw conflict(error.message, "DRAFT_MEDIA_INVALID");
+          }
+          throw badRequest(error instanceof Error ? error.message : "invalid GBP Post draft");
+        }
+      }
       const last = await latestDraft(tx, taskId);
       const draft = buildDraft(taskId, (last?.version ?? 0) + 1, input, actorId);
       await insertDraft(tx, draft);
@@ -246,6 +300,65 @@ function parseCanonicalMediaRef(raw: string): CanonicalMediaRef | null {
   return record as unknown as CanonicalMediaRef;
 }
 
+class ApiDraftMediaError extends Error {}
+
+function hasImageSignature(bytes: Uint8Array, contentType: string): boolean {
+  if (contentType === "image/png") {
+    const png = [137, 80, 78, 71, 13, 10, 26, 10];
+    return bytes.byteLength >= png.length && png.every((value, index) => bytes[index] === value);
+  }
+  return bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
+/** Resolves the canonical local media reference from server state and verifies
+ * exact Task/Run/tenant ownership plus the bytes currently on disk. */
+async function validateGbpDraftForTask(
+  db: Db,
+  task: Task,
+  draft: { body: string; ctaType: string | null; ctaUrl: string | null; media: string[]; agentRunId?: string | null },
+): Promise<void> {
+  let acceptedContext: unknown;
+  try { acceptedContext = JSON.parse(task.executionSpec); } catch { acceptedContext = task.executionSpec; }
+  validateGbpPostTextAndCta(draft, acceptedContext);
+  if (draft.media.length !== 1) {
+    throw new ApiDraftMediaError("GBP Post drafts require exactly one canonical image reference");
+  }
+  const ref = parseCanonicalMediaRef(draft.media[0]!);
+  if (!ref) throw new ApiDraftMediaError("GBP Post draft media must be one canonical seo_ops.media_ref.v1");
+  const deliverable = await getDeliverable(db, ref.deliverable_id);
+  const run = deliverable ? await getAgentRun(db, deliverable.runId) : null;
+  if (!deliverable || !run
+    || (draft.agentRunId != null && run.id !== draft.agentRunId)
+    || run.taskId !== task.id
+    || run.stage !== "GBP_POST_CONTENT"
+    || run.merchantId !== task.merchantId
+    || run.locationId !== task.locationId
+    || deliverable.kind !== "ATTACHMENT"
+    || deliverable.localPath === null
+    || deliverable.sha256 !== ref.sha256
+    || (deliverable.contentType !== "image/png" && deliverable.contentType !== "image/jpeg")) {
+    throw new ApiDraftMediaError("draft media does not belong to this exact Task-linked GBP Run");
+  }
+  if (draft.agentRunId == null) {
+    const generatedOwner = (await listDraftsByTask(db, task.id)).find((item) =>
+      item.agentRunId === run.id && item.media.includes(draft.media[0]!),
+    );
+    if (!generatedOwner) {
+      throw new ApiDraftMediaError("GBP Post human revisions must preserve a server-issued canonical media reference");
+    }
+  }
+  let bytes: Uint8Array;
+  try { bytes = await fs.readFile(deliverable.localPath); } catch {
+    throw new ApiDraftMediaError("draft media local bytes are unavailable");
+  }
+  if (bytes.byteLength === 0 || bytes.byteLength > GBP_POST_IMAGE_MAX_BYTES
+    || !hasImageSignature(bytes, deliverable.contentType)
+    || sha256HashBytes(bytes) !== ref.sha256
+    || deliverable.size !== bytes.byteLength) {
+    throw new ApiDraftMediaError("draft media local bytes do not match the verified image record");
+  }
+}
+
 async function mediaPreviewForRef(
   db: Db,
   task: Task,
@@ -319,9 +432,12 @@ export function finalizeDraftRevision(
       }
       const draft = await getDraftByTaskVersion(tx, task.id, input.version);
       if (!draft) throw notFound(`draft v${input.version} not found`);
-      const previews = await mediaPreviewsForDraft(tx, task, draft);
-      if (draft.media.length > 0 && previews.length !== draft.media.length) {
-        throw conflict("draft media does not belong to this exact Task-linked GBP Run", "DRAFT_MEDIA_INVALID");
+      if (task.taskType === "GBP_POST") {
+        try {
+          await validateGbpDraftForTask(tx, task, draft);
+        } catch (error) {
+          throw conflict(error instanceof Error ? error.message : "invalid GBP Post draft", "DRAFT_MEDIA_INVALID");
+        }
       }
       let original: unknown;
       try { original = JSON.parse(task.executionSpec); } catch { original = task.executionSpec; }
