@@ -410,6 +410,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
       id: "foreign-task-attempt", taskId: task.id, merchantId: "foreign-merchant", attemptNo: 99,
       status: "SUCCEEDED", gate: "G2", agentRunId: "foreign-attempt-run",
       coreRunId: "foreign-attempt-core", traceRef: "foreign-attempt-trace",
+      gbpCommandId: null,
       probeRef: "foreign-attempt-probe", error: null, startedAt: now, triggerStartedAt: null,
       resolvedAt: now, resolvedBy: "foreign-operator", resolution: null, resolutionNote: null,
       createdAt: now, updatedAt: now,

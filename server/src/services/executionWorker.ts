@@ -122,7 +122,6 @@ export class ExecutionWorker {
 
   async pollOnce(): Promise<void> {
     if (this.running) return;
-    if (!this.deps.mockMode && !this.deps.client) return; // 未配置 core-ai：不裁决，等配置
     this.running = true;
     try {
       const attempts = await listDispatchingAttempts(this.deps.db);
@@ -196,6 +195,19 @@ export class ExecutionWorker {
         resolvedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
+      return;
+    }
+    if (task.executionMode === "AUTO_WRITE"
+      && (task.taskType === "GBP_POST" || task.taskType === "GBP_UPDATE")) {
+      // Command-bound rows are excluded by the repository query. Any new GBP
+      // write reaching the generic queue is therefore a legacy/invalid row and
+      // must be terminalized before an Agent binding or Core client is read.
+      await settleAttemptFailure(
+        this.deps.db,
+        attempt,
+        "GBP_DEDICATED_COMMAND_REQUIRED",
+        this.actor(),
+      );
       return;
     }
     if (attempt.coreRunId === null) {

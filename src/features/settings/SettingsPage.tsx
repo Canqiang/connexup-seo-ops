@@ -8,6 +8,7 @@ import { AgentBindingsPanel } from "./AgentBindingsPanel";
 import { CadencePanel } from "./CadencePanel";
 import { CapabilityMatrixPanel } from "./CapabilityMatrixPanel";
 import { SystemStatusPanel } from "./SystemStatusPanel";
+import { GbpLocationBindingPanel } from "./GbpLocationBindingPanel";
 
 export function SettingsPage() {
   const { user } = useAuth();
@@ -20,6 +21,7 @@ export function SettingsPage() {
   }, [workspace.merchants, merchantId]);
   const canManageCapabilities = hasPermission(user?.permissions, "seoops.capability.manage");
   const canSchedule = hasPermission(user?.permissions, "seoops.schedule.manage");
+  const selectedMerchant = workspace.merchants.find((merchant) => merchant.id === merchantId);
 
   return <>
     <header className="page-heading settings-heading"><div><span className="eyebrow">OPERATOR GOVERNANCE / 可回读治理</span><h1>设置</h1><p>配置商户节奏与执行能力，同时把没有后端证据的系统状态留白标明。</p></div><span className="scope-chip"><ShieldCheck size={14} /> 已登录身份回读</span></header>
@@ -27,6 +29,7 @@ export function SettingsPage() {
     <div className="settings-ledger">
       <CapabilityMatrixPanel canManage={canManageCapabilities} merchantId={merchantId || undefined} />
       <CadencePanel canManage={canSchedule} merchantId={merchantId || undefined} />
+      <GbpLocationBindingPanel canManage={canSchedule} locations={selectedMerchant?.locations ?? []} merchantId={merchantId || undefined} />
       <AgentBindingsPanel canManage={canSchedule} />
       <UserPermissionsPanel />
       <SystemStatusPanel canSchedule={canSchedule} />

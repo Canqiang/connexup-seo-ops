@@ -1,4 +1,4 @@
-import type { Location, Merchant } from "../repos/types.js";
+import type { GbpLocationBinding, Location, Merchant } from "../repos/types.js";
 import type { Task } from "../repos/taskTypes.js";
 import type { Questionnaire } from "../repos/questionnaireTypes.js";
 import type { Proposal, ProposalBatch } from "../repos/proposalRepo.js";
@@ -12,6 +12,7 @@ import type {
 import type { ContentDraft } from "../repos/draftRepo.js";
 import type { DraftMediaPreview } from "../services/contentService.js";
 import type { SpecialistArtifact } from "../repos/specialistArtifactRepo.js";
+import type { getGbpExecution } from "../services/gbpExecutionService.js";
 
 /** Wire views — snake_case shapes that match the frontend types in
  * `src/api/types.ts` exactly. */
@@ -278,6 +279,7 @@ export function attemptView(a: ExecutionAttempt): Record<string, unknown> {
     agent_run_id: a.agentRunId,
     core_run_id: a.coreRunId,
     trace_ref: a.traceRef,
+    gbp_command_id: a.gbpCommandId,
     probe_ref: a.probeRef,
     error: a.error,
     started_at: a.startedAt,
@@ -285,6 +287,139 @@ export function attemptView(a: ExecutionAttempt): Record<string, unknown> {
     resolved_by: a.resolvedBy,
     resolution: a.resolution,
     resolution_note: a.resolutionNote,
+  };
+}
+
+const GBP_BINDING_FIELDS = [
+  "account_resource", "location_resource", "timezone", "core_api_user_id",
+  "core_api_user_external_id", "write_secret_ref", "readback_secret_ref",
+  "write_agent_id", "write_agent_published_ref", "readback_agent_id",
+  "readback_agent_published_ref", "status",
+] as const;
+
+/** Exact location binding projection. Values are logical coordinates and
+ * mounted-secret references only; credential material has no domain field. */
+export function gbpLocationBindingView(
+  binding: GbpLocationBinding | null,
+  merchantId: string,
+  locationId: string,
+  location?: Location | null,
+): Record<string, unknown> {
+  if (!binding) return {
+    merchant_id: merchantId, location_id: locationId,
+    account_resource: null, location_resource: null, timezone: null,
+    core_api_user_id: null, core_api_user_external_id: null,
+    write_secret_ref: null, readback_secret_ref: null,
+    write_agent_id: null, write_agent_published_ref: null,
+    readback_agent_id: null, readback_agent_published_ref: null,
+    status: "MISSING", state_version: 0, ready_for_gate2: false,
+    missing_fields: [...GBP_BINDING_FIELDS], updated_by: null, updated_at: null,
+  };
+  const exactLocation = Boolean(location
+    && location.id === binding.locationId
+    && location.merchantId === binding.merchantId
+    && location.timezone === binding.timezone
+    && Object.values(location.externalIdentities).includes(binding.locationResource));
+  const missingFields = binding.status !== "READY"
+    ? ["status"]
+    : exactLocation ? [] : [
+        ...(location?.timezone === binding.timezone ? [] : ["timezone"]),
+        ...(location && Object.values(location.externalIdentities).includes(binding.locationResource)
+          ? [] : ["location_resource"]),
+      ];
+  return {
+    merchant_id: binding.merchantId, location_id: binding.locationId,
+    account_resource: binding.accountResource, location_resource: binding.locationResource,
+    timezone: binding.timezone, core_api_user_id: binding.coreApiUserId,
+    core_api_user_external_id: binding.coreApiUserExternalId,
+    write_secret_ref: binding.writeSecretRef, readback_secret_ref: binding.readbackSecretRef,
+    write_agent_id: binding.writeAgentId,
+    write_agent_published_ref: binding.writeAgentPublishedRef,
+    readback_agent_id: binding.readbackAgentId,
+    readback_agent_published_ref: binding.readbackAgentPublishedRef,
+    status: binding.status, state_version: binding.stateVersion,
+    ready_for_gate2: binding.status === "READY" && exactLocation,
+    missing_fields: missingFields,
+    updated_by: binding.updatedBy, updated_at: binding.updatedAt,
+  };
+}
+
+export function gbpExecutionView(
+  data: NonNullable<Awaited<ReturnType<typeof getGbpExecution>>>,
+): Record<string, unknown> {
+  if (!data.command) return {
+    task_id: data.task.id,
+    available: false,
+    store: {
+      merchant_name: data.merchant?.displayName ?? data.task.merchantId,
+      location_name: data.location?.displayName ?? data.task.locationId,
+      account_resource: data.binding?.accountResource ?? null,
+      location_resource: data.binding?.locationResource ?? null,
+      timezone: data.binding?.timezone ?? data.location?.timezone ?? null,
+    },
+    approved: {
+      body: data.previewDraft.body,
+      cta: data.previewDraft.cta,
+      image: {
+        ...data.previewDraft.image,
+        download_path: `/api/seo-ops/deliverables/${encodeURIComponent(data.previewDraft.image.deliverable_id)}/download`,
+      },
+    },
+    hashes: {
+      execution_spec: data.task.executionSpecHash,
+      draft: data.previewDraft.sha256,
+      image: data.previewDraft.image.sha256,
+    },
+    task_revision: data.task.taskRevision,
+    draft_version: data.previewDraft.version,
+    binding: gbpLocationBindingView(data.binding, data.task.merchantId, data.task.locationId!, data.location),
+  };
+  const { command } = data.command;
+  return {
+    task_id: data.task.id,
+    available: true,
+    store: {
+      merchant_name: data.merchant?.displayName ?? data.task.merchantId,
+      location_name: data.location?.displayName ?? data.task.locationId,
+      account_resource: command.gbp.account_resource,
+      location_resource: command.gbp.location_resource,
+      timezone: command.gbp.timezone,
+    },
+    schedule: { utc: command.scheduled_for, local: command.gbp.scheduled_for_local },
+    approved: {
+      body: command.draft.body,
+      cta: command.draft.cta,
+      image: {
+        deliverable_id: command.draft.image.deliverable_id,
+        sha256: command.draft.image.sha256,
+        alt_text: command.draft.image.alt_text,
+        download_path: `/api/seo-ops/deliverables/${encodeURIComponent(command.draft.image.deliverable_id)}/download`,
+      },
+    },
+    hashes: {
+      command: data.command.commandSha256,
+      execution_spec: command.task.execution_spec_sha256,
+      draft: command.draft.sha256,
+      body: data.bodySha256,
+      cta: data.ctaSha256,
+      image: data.imageSha256,
+    },
+    task_revision: command.task.task_revision,
+    draft_version: command.draft.version,
+    command_state: data.state ? {
+      status: data.state.status, state_version: data.state.stateVersion,
+      scheduled_for: data.state.scheduledFor, safe_error_code: data.state.safeErrorCode,
+      trigger_started_at: data.state.triggerStartedAt, updated_at: data.state.updatedAt,
+    } : null,
+    receipt: data.receipt ? {
+      status: data.receipt.receipt.status,
+      provider_mutation_count: data.receipt.receipt.provider_mutation_count,
+      created_at: data.receipt.createdAt,
+    } : null,
+    readbacks: data.readbacks.map((attempt) => ({
+      id: attempt.id, diff_codes: attempt.diffCodes,
+      safe_error_code: attempt.safeErrorCode, created_at: attempt.createdAt,
+    })),
   };
 }
 

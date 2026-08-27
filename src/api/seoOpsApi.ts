@@ -1,7 +1,7 @@
 import { requestJson } from "./client";
 import type {
   AgentBindingWire, AppendEvidenceRequest, ApprovalDecisionRequest, ApprovalPreview, AttemptWire,
-  CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire,
+  CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire, GbpExecutionWire, GbpLocationBindingWire,
   CycleLedgerView, DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
   PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
@@ -84,8 +84,13 @@ export const seoOpsApi = {
     requestJson<InboxSummaryWire>("/api/seo-ops/inbox-summary", { signal }),
   executionPreview: (id: string, signal?: AbortSignal) =>
     requestJson<ExecutionPreviewWire>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/execution-preview`, { signal }),
-  confirmExecution: (id: string, request: { expected_state_version: number; idempotency_key: string }) =>
+  confirmExecution: (id: string, request: {
+    expected_state_version: number; idempotency_key: string;
+    expected_task_revision?: number; expected_execution_spec_hash?: string; scheduled_for?: string;
+  }) =>
     post<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/execution-confirmations`, request),
+  gbpExecution: (id: string, signal?: AbortSignal) =>
+    requestJson<GbpExecutionWire>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/gbp-execution`, { signal }),
   attempts: (id: string, signal?: AbortSignal) =>
     requestJson<{ items: AttemptWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/attempts`, { signal }),
   taskArtifacts: (id: string, signal?: AbortSignal) =>
@@ -158,6 +163,21 @@ export const seoOpsApi = {
     requestJson<{ items: AgentBindingWire[]; binding_keys: string[] }>("/api/seo-ops/agent-bindings", { signal }),
   upsertAgentBinding: (taskType: string, request: { agent_id: string; agent_label?: string | null; published_ref?: string | null }) =>
     requestJson<AgentBindingWire>(`/api/seo-ops/agent-bindings/${encodeURIComponent(taskType)}`, { method: "PUT", body: JSON.stringify(request) }),
+  gbpLocationBinding: (merchantId: string, locationId: string, signal?: AbortSignal) =>
+    requestJson<GbpLocationBindingWire>(
+      `/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/locations/${encodeURIComponent(locationId)}/gbp-execution-binding`,
+      { signal },
+    ),
+  putGbpLocationBinding: (merchantId: string, locationId: string, request: {
+    expected_state_version: number; account_resource: string; location_resource: string;
+    timezone: string; core_api_user_id: string; core_api_user_external_id: string;
+    write_secret_ref: string; readback_secret_ref: string; write_agent_id: string;
+    write_agent_published_ref: string; readback_agent_id: string;
+    readback_agent_published_ref: string; status: "DISABLED" | "READY" | "BLOCKED";
+  }) => requestJson<GbpLocationBindingWire>(
+    `/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/locations/${encodeURIComponent(locationId)}/gbp-execution-binding`,
+    { method: "PUT", body: JSON.stringify(request) },
+  ),
 
   // ---- 管理入口（冒烟/演示） ----
   schedulerTick: () => post<SchedulerTickResult>("/api/seo-ops/admin/scheduler-tick", {}),

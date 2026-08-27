@@ -8,6 +8,7 @@ import { safeHref } from "../../app/format";
 import { useResource } from "../../hooks/useResource";
 import { ReconciliationDialog } from "./ReconciliationDialog";
 import { ModeTag } from "../runs/RunsPage";
+import { GbpExecutionPanel } from "./GbpExecutionPanel";
 
 /** 执行面板（门 2 → attempt → 查证/核验）。门 1 批的是「能不能做」，这里管
  * 「做没做、做成没成」。所有校验都在服务端复核，这里只是预览与入口。 */
@@ -31,6 +32,11 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
   if (mode === "MANUAL") {
     return <section className="data-panel execution-panel"><div className="panel-heading"><div><span className="eyebrow">EXECUTION</span><h2>执行</h2></div><ModeTag mode={mode} /></div>
       <div className="execution-body"><p className="quiet-copy">人工任务：完成后附加证据并走审批归档，无系统派发。</p></div></section>;
+  }
+  if (task.task_type === "GBP_POST" && mode === "AUTO_WRITE"
+    && ["APPROVED", "EXECUTION_CONFIRMED", "DISPATCHING", "OUTCOME_UNKNOWN", "PENDING_VERIFY"]
+      .includes(task.status)) {
+    return <GbpExecutionPanel canExecute={canExecute} onReadback={onReadback} task={task} />;
   }
 
   /** 统一的失败处理：409 = 任务已被别人/worker 推进 → 拉最新回读并说人话。 */

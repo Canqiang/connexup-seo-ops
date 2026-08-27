@@ -58,6 +58,27 @@ beforeEach(() => {
     });
     if (path === "/api/seo-ops/merchants/only-bear/capabilities") return json({ items: [] });
     if (path === "/api/seo-ops/merchants/only-bear/cycle-config") return json(null);
+    if (path === "/api/seo-ops/merchants/only-bear/locations/mineola/gbp-execution-binding") return json({
+      merchant_id: "only-bear",
+      location_id: "mineola",
+      account_resource: null,
+      location_resource: null,
+      timezone: null,
+      core_api_user_id: null,
+      core_api_user_external_id: null,
+      write_secret_ref: null,
+      readback_secret_ref: null,
+      write_agent_id: null,
+      write_agent_published_ref: null,
+      readback_agent_id: null,
+      readback_agent_published_ref: null,
+      status: "MISSING",
+      state_version: 0,
+      ready_for_gate2: false,
+      missing_fields: ["account_resource", "location_resource", "write_agent_published_ref", "readback_agent_published_ref"],
+      updated_by: null,
+      updated_at: null,
+    });
     if (path.startsWith("/api/seo-ops/reviews")) return json({
       items: [{
         task_id: "task-review-1",
@@ -93,7 +114,7 @@ afterEach(() => {
 test("settings separates the five operator governance sections and reads existing APIs", async () => {
   renderApp("/settings");
 
-  for (const name of ["能力矩阵", "周期配置", "Agent 绑定", "用户与权限", "系统状态"]) {
+  for (const name of ["能力矩阵", "周期配置", "GBP 地点执行绑定", "Agent 绑定", "用户与权限", "系统状态"]) {
     expect(await screen.findByRole("heading", { name })).toBeInTheDocument();
   }
   expect(screen.getByDisplayValue("Local SEO Audit")).toBeInTheDocument();
@@ -105,6 +126,20 @@ test("settings separates the five operator governance sections and reads existin
     "/api/seo-ops/merchants/only-bear/capabilities",
     "/api/seo-ops/merchants/only-bear/cycle-config",
   ]));
+});
+
+test("settings names exact GBP binding gaps and marks generic GBP signals as legacy", async () => {
+  renderApp("/settings");
+
+  const binding = await screen.findByRole("region", { name: "GBP 地点执行绑定" });
+  expect(await within(binding).findByText("Mineola")).toBeInTheDocument();
+  expect((await within(binding).findAllByText("account_resource")).length).toBeGreaterThan(0);
+  for (const field of ["location_resource", "write_agent_published_ref", "readback_agent_published_ref"]) {
+    expect(binding).toHaveTextContent(field);
+  }
+  expect(binding).toHaveTextContent("Gate2 已禁用");
+  const agents = await screen.findByRole("region", { name: "Agent 绑定" });
+  expect(agents).toHaveTextContent("GBP_EXECUTION 是旧通用信号，不能满足 GBP Gate2");
 });
 
 test("users and permissions shows the authenticated actor and exact permission codes without account controls", async () => {

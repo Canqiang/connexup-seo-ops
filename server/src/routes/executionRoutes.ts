@@ -78,11 +78,18 @@ import {
   specialistArtifactView,
   styleProfileView,
   taskView,
+  gbpExecutionView,
+  gbpLocationBindingView,
 } from "../views/mappers.js";
 import { TASK_TYPES } from "../domain/enums.js";
 import { stageRunView } from "../services/agentRunService.js";
 import { triggerGbpPostContentRun } from "../services/gbpPostContentService.js";
 import { decideArtifactAcceptance } from "../services/artifactAcceptanceService.js";
+import {
+  getGbpExecution,
+  putGbpLocationBinding,
+} from "../services/gbpExecutionService.js";
+import { getGbpLocationBinding } from "../repos/gbpExecutionRepo.js";
 
 /** agent 绑定键 = 任务类型 + 执行专用键（GBP 写入由 GBP_EXECUTION agent 执行）。 */
 const BINDING_KEYS = [...TASK_TYPES, "GBP_EXECUTION"] as const;
@@ -122,7 +129,10 @@ const decideProposalSchema = z.object({
 const confirmExecutionSchema = z.object({
   expected_state_version: z.number().int().nonnegative(),
   idempotency_key: z.string(),
-});
+  expected_task_revision: z.number().int().positive().optional(),
+  expected_execution_spec_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  scheduled_for: z.string().datetime({ offset: false }).optional(),
+}).strict();
 
 const completeManualSchema = z.object({
   source_ref: z.string().min(1).max(1000),
@@ -314,13 +324,40 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     async (request, reply) => {
       const actor = requirePermission(request, "seoops.execute");
       const { taskId } = request.params as { taskId: string };
-      await requireTaskAccess(ctx.db, actor, taskId);
+      const authorizedTask = await requireTaskAccess(ctx.db, actor, taskId);
+      const raw = request.body;
+      if (authorizedTask.taskType === "GBP_POST" && authorizedTask.executionMode === "AUTO_WRITE"
+        && raw !== null && typeof raw === "object" && !Array.isArray(raw)
+        && Object.keys(raw).some((key) => ![
+          "expected_state_version", "idempotency_key", "expected_task_revision",
+          "expected_execution_spec_hash", "scheduled_for",
+        ].includes(key))) {
+        throw new ApiError(
+          400,
+          "GBP execution content is immutable and comes from the approved draft",
+          "GBP_COMMAND_CONTENT_IMMUTABLE",
+        );
+      }
       const body = confirmExecutionSchema.parse(request.body);
-      const { task, replayed } = await confirmExecution(ctx.db, taskId, body, actor.userId);
+      const { task: confirmedTask, replayed } = await confirmExecution(ctx.db, taskId, body, actor.userId);
       reply.status(replayed ? 200 : 201);
-      return taskView(task, await taskNames(ctx, task));
+      const projectedTask = taskView(confirmedTask, await taskNames(ctx, confirmedTask));
+      if (confirmedTask.taskType === "GBP_POST" && confirmedTask.executionMode === "AUTO_WRITE") {
+        const execution = await getGbpExecution(ctx.db, taskId);
+        return { ...projectedTask, ...(execution ? { gbp_execution: gbpExecutionView(execution) } : {}) };
+      }
+      return projectedTask;
     },
   );
+
+  app.get("/api/seo-ops/tasks/:taskId/gbp-execution", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const { taskId } = request.params as { taskId: string };
+    await requireTaskAccess(ctx.db, actor, taskId);
+    const view = await getGbpExecution(ctx.db, taskId);
+    if (!view) throw new ApiError(404, "GBP execution is not available for this Task");
+    return gbpExecutionView(view);
+  });
 
   app.post("/api/seo-ops/tasks/:taskId/manual-completions", async (request, reply) => {
     const actor = requirePermission(request, "seoops.execute");
@@ -662,6 +699,34 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       binding_keys: BINDING_KEYS,
     };
   });
+
+  app.get(
+    "/api/seo-ops/merchants/:merchantId/locations/:locationId/gbp-execution-binding",
+    async (request) => {
+      const actor = requirePermission(request, "seoops.view");
+      const { merchantId, locationId } = request.params as { merchantId: string; locationId: string };
+      await requireMerchantAccess(ctx.db, actor, merchantId);
+      const location = await getLocation(ctx.db, locationId);
+      if (!location || location.merchantId !== merchantId) throw new ApiError(404, "resource not found");
+      return gbpLocationBindingView(
+        await getGbpLocationBinding(ctx.db, merchantId, locationId), merchantId, locationId, location,
+      );
+    },
+  );
+
+  app.put(
+    "/api/seo-ops/merchants/:merchantId/locations/:locationId/gbp-execution-binding",
+    async (request, reply) => {
+      const actor = requirePermission(request, "seoops.schedule.manage");
+      const { merchantId, locationId } = request.params as { merchantId: string; locationId: string };
+      await requireMerchantAccess(ctx.db, actor, merchantId);
+      const saved = await putGbpLocationBinding(
+        ctx.db, merchantId, locationId, request.body, actor.userId,
+      );
+      reply.status(saved.created ? 201 : 200);
+      return gbpLocationBindingView(saved.binding, merchantId, locationId, await getLocation(ctx.db, locationId));
+    },
+  );
 
   app.put("/api/seo-ops/agent-bindings/:taskType", async (request) => {
     const actor = requirePermission(request, "seoops.schedule.manage");

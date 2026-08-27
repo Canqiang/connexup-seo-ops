@@ -257,6 +257,7 @@ export interface AttemptWire {
   id: string; task_id: string; merchant_id: string; attempt_no: number;
   status: AttemptStatus; gate: "G2" | "AUTO"; agent_run_id: string | null;
   core_run_id: string | null; probe_ref: string; error: string | null;
+  gbp_command_id?: string | null;
   started_at: string; resolved_at: string | null; resolved_by: string | null;
   resolution: "HAPPENED" | "NOT_HAPPENED" | null; resolution_note: string | null;
 }
@@ -320,6 +321,43 @@ export interface PostProgramView {
 export interface AgentBindingWire {
   task_type: string; agent_id: string; agent_label: string | null;
   published_ref: string | null; updated_by: string | null; updated_at: string;
+}
+
+export type GbpBindingStatus = "MISSING" | "DISABLED" | "READY" | "BLOCKED";
+export interface GbpLocationBindingWire {
+  merchant_id: string; location_id: string;
+  account_resource: string | null; location_resource: string | null; timezone: string | null;
+  core_api_user_id: string | null; core_api_user_external_id: string | null;
+  write_secret_ref: string | null; readback_secret_ref: string | null;
+  write_agent_id: string | null; write_agent_published_ref: string | null;
+  readback_agent_id: string | null; readback_agent_published_ref: string | null;
+  status: GbpBindingStatus; state_version: number; ready_for_gate2: boolean;
+  missing_fields: string[]; updated_by: string | null; updated_at: string | null;
+}
+
+export interface GbpExecutionWire {
+  task_id: string;
+  available: boolean;
+  store?: {
+    merchant_name: string; location_name: string;
+    account_resource: string | null; location_resource: string | null; timezone: string | null;
+  };
+  schedule?: { utc: string; local: string };
+  approved?: {
+    body: string;
+    cta: { type: string; url: string | null };
+    image: { deliverable_id: string; sha256: string; alt_text: string; download_path: string };
+  };
+  hashes?: { command?: string; execution_spec: string; draft: string; body?: string; cta?: string; image: string };
+  task_revision?: number;
+  draft_version?: number;
+  binding?: GbpLocationBindingWire;
+  command_state?: {
+    status: string; state_version: number; scheduled_for: string; safe_error_code: string | null;
+    trigger_started_at: string | null; updated_at: string;
+  } | null;
+  receipt?: { status: string; provider_mutation_count: number; created_at: string } | null;
+  readbacks?: Array<{ id: string; diff_codes: string[]; safe_error_code: string | null; created_at: string }>;
 }
 
 export interface DraftWire {

@@ -13,6 +13,9 @@ export interface ExecutionAttempt {
   agentRunId: string | null;
   coreRunId: string | null;
   traceRef: string | null;
+  /** Dedicated GBP command identity. Generic workers and manual outcome paths
+   * must never process an attempt carrying this reference. */
+  gbpCommandId: string | null;
   /** 查证线索编号 exec-<task>-rev<r>-attempt<n>。 */
   probeRef: string;
   error: string | null;
@@ -56,6 +59,7 @@ interface AttemptRow {
   agent_run_id: string | null;
   core_run_id: string | null;
   trace_ref: string | null;
+  gbp_command_id: string | null;
   probe_ref: string;
   error: string | null;
   started_at: string;
@@ -90,6 +94,7 @@ function toAttempt(row: AttemptRow): ExecutionAttempt {
     agentRunId: row.agent_run_id,
     coreRunId: row.core_run_id,
     traceRef: row.trace_ref,
+    gbpCommandId: row.gbp_command_id ?? null,
     probeRef: row.probe_ref,
     error: row.error,
     startedAt: row.started_at,
@@ -107,12 +112,12 @@ export async function insertAttempt(db: Db, a: ExecutionAttempt): Promise<Execut
   await db.exec(
     `INSERT INTO seo_execution_attempts
       (id, task_id, merchant_id, attempt_no, status, gate, agent_run_id, core_run_id, trace_ref,
-       probe_ref, error, started_at, trigger_started_at, resolved_at, resolved_by,
+       gbp_command_id, probe_ref, error, started_at, trigger_started_at, resolved_at, resolved_by,
        resolution, resolution_note, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
     [
       a.id, a.taskId, a.merchantId, a.attemptNo, a.status, a.gate, a.agentRunId,
-      a.coreRunId, a.traceRef, a.probeRef, a.error, a.startedAt, a.triggerStartedAt, a.resolvedAt,
+      a.coreRunId, a.traceRef, a.gbpCommandId, a.probeRef, a.error, a.startedAt, a.triggerStartedAt, a.resolvedAt,
       a.resolvedBy, a.resolution, a.resolutionNote, a.createdAt, a.updatedAt,
     ],
   );
@@ -239,7 +244,7 @@ export async function listWorkbenchUnknownAttempts(
   const rows = await db.query<Pick<AttemptRow, "id" | "task_id" | "merchant_id" | "started_at">>(
     `SELECT id, task_id, merchant_id, started_at
      FROM seo_execution_attempts
-     WHERE status = 'OUTCOME_UNKNOWN' AND merchant_id = ANY($1::text[])
+     WHERE status = 'OUTCOME_UNKNOWN' AND gbp_command_id IS NULL AND merchant_id = ANY($1::text[])
      ORDER BY started_at, id`,
     [merchantIds],
   );
@@ -267,7 +272,9 @@ export async function listInFlightAttempts(
 
 export async function listDispatchingAttempts(db: Db): Promise<ExecutionAttempt[]> {
   const rows = await db.query<AttemptRow>(
-    `SELECT * FROM seo_execution_attempts WHERE status = 'DISPATCHING' ORDER BY started_at`,
+    `SELECT * FROM seo_execution_attempts
+      WHERE status = 'DISPATCHING' AND gbp_command_id IS NULL
+      ORDER BY started_at`,
   );
   return rows.map(toAttempt);
 }

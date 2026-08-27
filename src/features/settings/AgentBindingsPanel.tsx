@@ -43,7 +43,7 @@ export function AgentBindingsPanel({ canManage }: { canManage: boolean }) {
   };
 
   return <section aria-labelledby="agent-bindings-heading" className="settings-section data-panel">
-    <div className="panel-heading"><div><span className="eyebrow">AGENT BINDINGS</span><h2 id="agent-bindings-heading"><Bot size={15} /> Agent 绑定</h2><p className="quiet-copy">任务派发按类型读取已发布 Agent 绑定；缺少绑定时，非人工建议不能被采纳。</p></div>
+    <div className="panel-heading"><div><span className="eyebrow">AGENT BINDINGS</span><h2 id="agent-bindings-heading"><Bot size={15} /> Agent 绑定</h2><p className="quiet-copy">任务派发按类型读取已发布 Agent 绑定；缺少绑定时，非人工建议不能被采纳。</p><p className="quiet-copy">GBP_WRITE / GBP_EXECUTION 是旧通用信号，不能满足 GBP Gate2；Gate2 只认上方精确地点绑定。</p></div>
       <button aria-label="刷新绑定" className="icon-button" onClick={resource.reload} type="button"><RefreshCw size={15} /></button></div>
     {!canManage ? <p className="settings-readonly">当前账号可查看绑定，但没有修改权限。</p> : null}
     {saveError ? <p className="form-error" role="alert">{saveError}</p> : null}

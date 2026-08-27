@@ -26,7 +26,9 @@ import {
   type ExecutionAttempt,
 } from "../repos/executionRepo.js";
 import { getCapability } from "../repos/settingsRepo.js";
+import { getGbpLocationBinding } from "../repos/gbpExecutionRepo.js";
 import { buildEvent, mutateTask, mutateTaskRetry } from "./taskService.js";
+import { confirmGbpExecution } from "./gbpExecutionService.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -112,7 +114,20 @@ export async function gateChecks(db: Db, task: Task): Promise<GateCheck[]> {
   const requiredCapability = requiredCapabilityFor(task.taskType, task.executionMode);
   let capabilityPassed = true;
   let capabilityDetail = "无需外部资产";
-  if (requiredCapability) {
+  if (requiredCapability === "GBP_WRITE" && task.executionMode === "AUTO_WRITE") {
+    const [binding, location] = task.locationId
+      ? await Promise.all([
+          getGbpLocationBinding(db, task.merchantId, task.locationId),
+          getLocation(db, task.locationId),
+        ])
+      : [null, null];
+    capabilityPassed = task.taskType === "GBP_POST" && binding?.status === "READY"
+      && location?.timezone === binding.timezone
+      && Object.values(location.externalIdentities).includes(binding.locationResource);
+    capabilityDetail = binding
+      ? `精确地点绑定 · ${binding.status} · v${binding.stateVersion}`
+      : "精确地点绑定 · 未配置（旧 GBP_WRITE/全局 Agent 绑定不能替代）";
+  } else if (requiredCapability) {
     const capability = await getCapability(db, task.merchantId, requiredCapability);
     capabilityPassed = capability?.status === "ACTIVE";
     capabilityDetail = capability
@@ -217,6 +232,7 @@ async function createAttemptInTx(
     agentRunId: null,
     coreRunId: null,
     traceRef: null,
+    gbpCommandId: null,
     probeRef: probeRef(task, task.attemptCount + 1),
     error: null,
     startedAt: now,
@@ -235,6 +251,9 @@ async function createAttemptInTx(
 export interface ConfirmExecutionInput {
   expected_state_version: number;
   idempotency_key: string;
+  expected_task_revision?: number;
+  expected_execution_spec_hash?: string;
+  scheduled_for?: string;
 }
 
 /** 门 2：独立人工动作。全部校验在同一事务内复核后创建 attempt 并转 DISPATCHING。 */
@@ -244,6 +263,26 @@ export async function confirmExecution(
   input: ConfirmExecutionInput,
   actorId: string,
 ): Promise<{ task: Task; replayed: boolean }> {
+  const current = await getTask(db, taskId);
+  if (!current) throw notFound(`task ${taskId} not found`);
+  if (current.taskType === "GBP_POST" && current.executionMode === "AUTO_WRITE") {
+    if (input.expected_task_revision === undefined
+      || input.expected_execution_spec_hash === undefined
+      || input.scheduled_for === undefined) {
+      throw badRequest("GBP confirmation requires schedule and exact Task revision/hash");
+    }
+    const result = await confirmGbpExecution(db, taskId, {
+      expected_state_version: input.expected_state_version,
+      expected_task_revision: input.expected_task_revision,
+      expected_execution_spec_hash: input.expected_execution_spec_hash,
+      scheduled_for: input.scheduled_for,
+      idempotency_key: input.idempotency_key,
+    }, actorId);
+    return { task: result.task, replayed: result.replayed };
+  }
+  if (current.taskType === "GBP_UPDATE" && current.executionMode === "AUTO_WRITE") {
+    throw conflict("GBP UPDATE is disabled; only dedicated CREATE_POST is supported", "GBP_UPDATE_DISABLED");
+  }
   const fingerprint = requestFingerprint({ action: "CONFIRM_EXECUTION" });
   return mutateTask(
     db,
@@ -531,6 +570,16 @@ export async function resolveAttemptOutcome(
     throw badRequest(`resolution must be one of ${OUTCOME_RESOLUTIONS.join("/")}`);
   }
   const resolution = input.resolution as OutcomeResolution;
+  const current = await getTask(db, taskId);
+  const currentAttempt = await getAttempt(db, attemptId);
+  if (current?.executionMode === "AUTO_WRITE"
+    && (current.taskType === "GBP_POST" || current.taskType === "GBP_UPDATE")
+    && (currentAttempt?.gbpCommandId !== null || current.taskType === "GBP_POST")) {
+    throw conflict(
+      "GBP write outcomes require dedicated readback and cannot be manually reconciled",
+      "GBP_MANUAL_RECONCILIATION_FORBIDDEN",
+    );
+  }
   const fingerprint = requestFingerprint({
     attempt: attemptId,
     resolution,
@@ -610,6 +659,11 @@ export async function markVerified(
   input: VerifyInput,
   actorId: string,
 ): Promise<{ task: Task; replayed: boolean }> {
+  const current = await getTask(db, taskId);
+  if (current?.executionMode === "AUTO_WRITE"
+    && (current.taskType === "GBP_POST" || current.taskType === "GBP_UPDATE")) {
+    throw conflict("GBP writes can complete only from exact readback", "GBP_READBACK_REQUIRED");
+  }
   const fingerprint = requestFingerprint({
     action: "VERIFY",
     note: input.note ?? null,
