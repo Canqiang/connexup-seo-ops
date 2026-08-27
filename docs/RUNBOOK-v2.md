@@ -86,6 +86,31 @@ Task 状态或商户阶段推进。本地开发库的 `QUESTIONNAIRE` binding �
 
 旧变量（DATABASE_URL / CORE_AI_* / SESSION_*）不变。`SEO_OPS_AUTH_DISABLED` 仍被拒绝。
 
+## Core AI Agent 对账工具（本地管理面）
+
+该工具只读取本仓库 `server/core-ai-agents/*.json` 作为 desired state。凭证只能通过服务端环境
+变量 `CORE_AI_BASE_URL`、`CORE_AI_TOKEN` 注入，禁止作为 CLI 参数、日志或 evidence 内容传入。
+先执行只读 dry-run；只有审核 changed field/hash 后才允许显式 apply：
+
+```bash
+cd server
+npm run agents:reconcile -- --mode=dry-run
+npm run agents:reconcile -- --mode=apply \
+  --evidence="$PWD/../docs/evidence/2026-08-26-core-ai-agent-reconciliation.md"
+```
+
+- 非 loopback URL 必须使用 HTTPS；redirect、跨 origin、非 JSON、超限响应均 fail closed。
+- `GooglePost每周图文助手` 只作为 `EDITABLE_REFERENCE_ONLY`：GET/export 是可编辑视图，不代表
+  已发布 runtime snapshot，也不构成 clone 证明。它的 ID 永远不能成为 PUT、publish 或 rollback 目标。
+- dry-run 只发 GET，并只打印 Agent ID、动作、changed field/hash；不打印 prompt、response body 或凭证。
+- apply 只可创建 `[SEO Ops]` Agent，或更新当前 Core AI 用户拥有且非 system-default 的同名
+  `[SEO Ops]` Agent；每个 Agent 均需 publish 后按返回 UUID 独立 GET 并逐字段核对。首个不匹配即停止。
+- evidence 必须是仓库内绝对路径；路径穿越和 symlink escape 会被拒绝。
+
+回滚只适用于有已审核 previous desired state 的既有 managed Agent：以 evidence 中的 managed Agent ID
+定位，但实际恢复值必须来自对应的已审核/版本化 manifest；执行 PUT → publish → 独立 GET。新建 Agent
+没有 DELETE 回滚，必须停下交由人工处置；本工具没有 DELETE 方法，也不会把 reference Agent 作为回滚目标。
+
 ## 六导航（账本视角）
 
 1. **总览 `/`** —— 四个人工队列（待判定 / 门1 / 门2 / 待核验）+ 冻结商户横幅 + 商户面。

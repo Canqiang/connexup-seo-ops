@@ -9,6 +9,7 @@
     "start": "node --env-file-if-exists=.env dist/index.js",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
+    "agents:reconcile": "tsx scripts/reconcile-core-ai-agents.ts",
     "migrate:from-sqlite": "tsx scripts/migrate-sqlite-to-pg.ts",
     "user:bootstrap": "tsx scripts/bootstrap-user.ts",
     "seed:demo": "tsx scripts/seed-demo.ts"
