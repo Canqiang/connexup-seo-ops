@@ -8,3 +8,19 @@ export function reviewExplanation(classification: ReviewClassification): string 
     default: return "证据不足，无法判断因果。先补齐基线、动作记录与后测。";
   }
 }
+
+export function classificationLabel(classification: ReviewClassification): string {
+  switch (classification) {
+    case "CAUSAL_READY": return "因果设计就绪（需单独批准）";
+    case "CORRELATIONAL": return "关联（上限 ASSOCIATIONAL）";
+    case "FACTUAL": return "事实记录";
+    default: return "证据不足";
+  }
+}
+
+export type ConclusionTier = "INSUFFICIENT_EVIDENCE" | "DESCRIPTIVE" | "ASSOCIATIONAL";
+export function tierLabel(tier: string): string {
+  if (tier === "ASSOCIATIONAL") return "正向/负向关联 · ASSOCIATIONAL";
+  if (tier === "DESCRIPTIVE") return "仅描述 · DESCRIPTIVE";
+  return "无法定论 · INSUFFICIENT";
+}

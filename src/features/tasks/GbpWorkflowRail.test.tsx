@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import { taskFixture } from "../../test/fixtures";
 import { GbpWorkflowRail } from "./GbpWorkflowRail";
 
-test("shows the four-step GBP Post operating path and the current approval step", () => {
+test("shows the five-step GBP Post operating path and the current approval step", () => {
   render(<GbpWorkflowRail directPublish hasDraft task={{
     ...taskFixture,
     task_type: "GBP_POST",
@@ -21,6 +21,13 @@ test("shows the four-step GBP Post operating path and the current approval step"
   expect(screen.getByText("生成图文").closest("li")).toHaveAttribute("data-state", "done");
   expect(screen.getByText("修改与定稿").closest("li")).toHaveAttribute("data-state", "done");
   expect(screen.getByText("人工批准").closest("li")).toHaveAttribute("data-state", "current");
-  expect(screen.getByText("自动发布").closest("li")).toHaveAttribute("data-state", "pending");
+  expect(screen.getByText("发布").closest("li")).toHaveAttribute("data-state", "pending");
+  expect(screen.getByText("生效核对").closest("li")).toHaveAttribute("data-state", "pending");
   expect(screen.getByText("GBP 已授权 · 可直接发布")).toBeVisible();
+});
+
+test("a published post shows 发布 done and 生效核对 current — publish never implies verified", () => {
+  render(<GbpWorkflowRail hasDraft task={{ ...taskFixture, task_type: "GBP_POST", execution_mode: "AUTO_WRITE", status: "PENDING_VERIFY", evidence_refs: [] }} />);
+  expect(screen.getByText("发布").closest("li")).toHaveAttribute("data-state", "done");
+  expect(screen.getByText("生效核对").closest("li")).toHaveAttribute("data-state", "current");
 });
