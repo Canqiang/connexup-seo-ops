@@ -143,6 +143,7 @@ beforeEach(() => {
     if (path === "/api/auth/logout") return new Response(null, { status: 204 });
     if (path === "/api/seo-ops/portfolio") return json(portfolioData);
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
+    if (path.startsWith("/api/seo-ops/activity")) return json({ items: [], since: "2026-08-27T00:00:00.000Z" });
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: true, copilot_agent_id: "agent-safe", agent_run_enabled: true, agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"] });
     if (taskResponseOverrides.has(path)) return taskResponseOverrides.get(path)!();
     if (path === "/api/seo-ops/tasks/task-1") return json(taskData);
@@ -158,9 +159,15 @@ beforeEach(() => {
     }
     if (path.startsWith("/api/seo-ops/merchants/only-bear/stage-runs")) return json({ items: [], offset: 0, limit: 1, total: 0 });
     if (path.startsWith("/api/seo-ops/agent-runs/")) return json(stageRunRunningFixture);
+    if (path === "/api/seo-ops/agent-runs" || path.startsWith("/api/seo-ops/agent-runs?")) {
+      return json({
+        summary: { in_flight: 0, queued: 0, completed_today: 0, failed_today: 0, content_runs_today: 0, token_total_today: 0, outcome_unknown: 0, frozen_merchant_ids: [], day_start: "2026-08-27T00:00:00.000Z" },
+        items: [], offset: 0, limit: 1, total: 0,
+      });
+    }
     if (path.startsWith("/api/seo-ops/tasks/task-1/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
     if (path.startsWith("/api/seo-ops/tasks/task-2/events")) return json({ items: [], offset: 0, limit: 100, total: 0 });
-    if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
+    if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, verification_overdue: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/proposal-batches")) return json({ items: [] });
     if (path.startsWith("/api/seo-ops/tasks/task-1/attempts")) return json({ items: attemptData });
     if (path.startsWith("/api/seo-ops/tasks/task-1/audit-references")) {

@@ -18,7 +18,7 @@ beforeEach(() => {
     requestedPaths.push(path);
     if (path === "/api/auth/me") return json(userFixture);
     if (path === "/api/seo-ops/portfolio") return json(portfolioWithMerchants(100));
-    if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
+    if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 0, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, verification_overdue: 0, frozen_merchant_ids: [] });
     if (path === "/api/seo-ops/config") return json({ copilot_enabled: false, copilot_agent_id: null, agent_run_enabled: false, agent_run_stages: [] });
     if (path.startsWith("/api/seo-ops/workbench")) {
       const url = new URL(path, "https://seo-ops.test");

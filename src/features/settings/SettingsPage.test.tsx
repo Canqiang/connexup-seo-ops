@@ -48,6 +48,7 @@ beforeEach(() => {
       awaiting_execution: 1,
       pending_verify: 4,
       outcome_unknown: 1,
+      verification_overdue: 0,
       frozen_merchant_ids: ["only-bear"],
     });
     if (path === "/api/seo-ops/config") return json(runtimeConfig);

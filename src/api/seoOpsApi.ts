@@ -1,6 +1,6 @@
 import { requestJson } from "./client";
 import type {
-  AgentBindingWire, AppendEvidenceRequest, ApprovalDecisionRequest, ApprovalPreview, AttemptWire,
+  ActivityFeedView, AgentBindingWire, AppendEvidenceRequest, ApprovalDecisionRequest, ApprovalPreview, AttemptWire,
   CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire, GbpExecutionWire, GbpLocationBindingWire,
   CycleLedgerView, DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
@@ -85,6 +85,8 @@ export const seoOpsApi = {
   // ---- 执行域（门 2 / attempts / 查证 / 核验） ----
   inboxSummary: (signal?: AbortSignal) =>
     requestJson<InboxSummaryWire>("/api/seo-ops/inbox-summary", { signal }),
+  activity: (request: { hours?: number; limit?: number } = {}, signal?: AbortSignal) =>
+    requestJson<ActivityFeedView>(`/api/seo-ops/activity${query(request as SeoOpsPageRequest)}`, { signal }),
   executionPreview: (id: string, signal?: AbortSignal) =>
     requestJson<ExecutionPreviewWire>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/execution-preview`, { signal }),
   confirmExecution: (id: string, request: {

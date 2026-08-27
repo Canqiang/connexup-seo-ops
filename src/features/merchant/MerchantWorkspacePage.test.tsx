@@ -61,7 +61,7 @@ beforeEach(() => {
         { id: "keke", slug: "keke", display_name: "Keke Food", operator_user_ids: ["operator-1"], operators: [], owner_ids: [], locations: [{ id: "flushing", display_name: "Flushing", readiness_status: "READY" }], location_count: 1, task_count: 1, ready_for_approval_count: 0, blocked_count: 0, overdue_count: 0, health: "STABLE" },
       ],
     });
-    if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 1, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, frozen_merchant_ids: [] });
+    if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 1, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, verification_overdue: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
     if (path.endsWith("/lifecycle")) return json(merchantId === "keke" ? kekeLifecycle : onlyBearLifecycle);
     if (path.endsWith("/ranking")) return json({ round_count: 0, latest: null, previous: null, comparison: null });

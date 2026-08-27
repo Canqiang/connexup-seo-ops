@@ -43,6 +43,7 @@ beforeEach(() => {
       awaiting_execution: 0,
       pending_verify: 0,
       outcome_unknown: 0,
+      verification_overdue: 0,
       frozen_merchant_ids: [],
     });
     if (path.startsWith("/api/seo-ops/inbox?")) {

@@ -403,8 +403,16 @@ export interface TaskAuditReferencesWire {
 
 export interface InboxSummaryWire {
   pending_proposals: number; ready_for_approval: number; awaiting_execution: number;
-  pending_verify: number; outcome_unknown: number; frozen_merchant_ids: string[];
+  pending_verify: number; outcome_unknown: number; verification_overdue: number;
+  frozen_merchant_ids: string[];
 }
+
+export type ActivitySeverity = "INFO" | "WARN" | "DANGER";
+export interface ActivityItem {
+  id: string; kind: "TASK_EVENT" | "AGENT_RUN" | "PROPOSAL_BATCH"; occurred_at: string;
+  merchant_id: string; merchant_name: string; title: string; detail: string | null; href: string; severity: ActivitySeverity;
+}
+export interface ActivityFeedView { items: ActivityItem[]; since: string }
 
 export interface SchedulerTickResult {
   created: Array<{ task_id: string; key: string; task_type: string; merchant_id: string }>;
