@@ -252,3 +252,73 @@ SHA-256 server/tests/gbpPostContentAgent.test.ts
 - No UAT, network, credentials, Core Agent mutation, FBR access, or GBP external write was performed. Live Core/provider identity and attachment behavior remain unproven here.
 - Frontend proof is component-level under jsdom. It proves route-key and request-key isolation plus exact identity selection, but not browser pixel acceptance.
 - Local image integrity is reread at human revision/finalization. Later filesystem corruption remains a preview/download stop condition; approval operators must still treat an unavailable image as a hard stop.
+
+## Fix Round 2 — source Run and preview readiness (2026-08-27)
+
+Implementation commit: `5861796fe35edfdc9ecb7e0f79c46fa82543687b`
+
+### Closed invariant
+
+- Added nullable `media_source_agent_run_id` for human revisions. The existing unique `agent_run_id` remains unchanged and continues to identify the single `AGENT_GENERATED` draft owned by a Run.
+- The authoritative GBP media validator returns the verified deliverable's source Run ID. A legal human revision stores that ID separately, while keeping `agent_run_id = null`.
+- Draft preview projection selects generated `agent_run_id` or human `media_source_agent_run_id` according to draft source, then revalidates deliverable-to-Run, Task, merchant, location, MIME, and SHA ownership before returning a local authenticated URL.
+- Approval eligibility now requires one exact finalized draft, one canonical media reference, one matching authenticated preview with the same deliverable/SHA, the exact local download path, and a successful image `load` event. Missing, multiple, mismatched, loading, or `error` preview states block approval. Task route remounting resets image readiness.
+- The migration is narrowly adjacent to the pre-existing Task 10B draft columns/index. No Task 11A GBP command, receipt, readback, execution repository, or domain contract was changed.
+
+### RED
+
+```text
+cd server && npm test -- gbpPostContentAgent.test.ts -t "unsafe GBP human revisions"
+Test Files  1 failed (1)
+Tests       1 failed | 47 skipped
+Key failure: legal HUMAN_EDIT draft returned agent_run_id=null and media_previews=[] instead of a persisted source Run and one preview.
+
+npm test -- --run src/App.test.tsx -t "GBP approval displays|no authenticated preview|fails to load"
+Test Files  1 failed (1)
+Tests       3 failed | 39 skipped
+Key failures: approval was available before image load, missing-preview blocker was absent, and onError did not remove approval eligibility.
+```
+
+### GREEN
+
+```text
+npm test -- --run src/App.test.tsx -t "GBP approval displays|no authenticated preview|mismatches the canonical|fails to load|readiness resets"
+Test Files  1 passed (1)
+Tests       5 passed | 39 skipped
+
+cd server && npm test -- gbpPostContentAgent.test.ts -t "unsafe GBP human revisions"
+Test Files  1 passed (1)
+Tests       1 passed | 47 skipped
+
+cd server && npm test -- migrate.test.ts -t "adds agent_run_id"
+Test Files  1 passed (1)
+Tests       1 passed | 14 skipped
+
+cd server && npm run typecheck && npm run build
+exit 0
+
+npm run build
+exit 0; TypeScript project build and Vite production build completed
+
+git diff --check
+exit 0
+```
+
+Verification stayed focused per the speed constraint; no broad suite was run.
+
+### Fix-round hashes
+
+```text
+server/src/services/contentService.ts  a36aae40ebd976b4ec8484b15be9772b04b97437e2a86173b819d864cdb5e0f6
+server/src/repos/draftRepo.ts           b15fafb0a3ed7cfdf1dfdd1c441720c7affe9ded66ff249fdd6152270edce438
+src/features/tasks/TaskDecisionHero.tsx a3889710d6b3596d35d08815950887233cb4376aed58b6178effddc9eecd401a
+src/features/tasks/TaskPage.tsx         d81096d64fb5663f15c6cf934ca18ed6ddc90a5bafde5fb23f81e3e930cf267b
+src/App.test.tsx                         964426ed18716aa71ea128d37c7f2225e525cc51a119181e57ea1e4c4b164adf
+server/tests/gbpPostContentAgent.test.ts 4878fe97bf84739144f00b5384040ed1d03cd2203d08d97b91bb50905ed710e1
+server/src/db/migrate.ts                 ae7b5de795e0ddb956aa82fc5e30d70d357eba38e0ae140d1fe8ff0b75bf3855
+```
+
+### Residual risks
+
+- No live browser image decode, UAT, network, credentials, Core/FBR action, or GBP write was performed. jsdom `load`/`error` tests prove the state gate, not live browser/provider behavior.
+- Existing historical human drafts are not guessed or backfilled from mutable bindings. Those without a durable verified media source remain safely without previews and therefore cannot be approved until explicitly revised from a server-resolved source.
