@@ -36,7 +36,7 @@ export function PostPlanPage() {
 
   return <>
     <header className="page-heading"><div><BackButton fallback={`/merchants/${merchantId}`} label="返回商户" /><span className="eyebrow">MERCHANT · {workspace.merchant?.display_name ?? merchantId} · GBP POST</span><h1>Post 内容 · 周计划</h1>
-      <p>周期 <strong>{cycle.loading ? "…" : cadence}</strong>（<Link to="/settings">设置 · 周期配置</Link>）· 选题由每周关键词分析驱动，类型与目标簇随稿件固定</p></div></header>
+      {cycle.error ? <div className="page-state compact is-error" role="alert">周期配置读取失败。<button onClick={cycle.reload} type="button">重试</button></div> : <p>周期 <strong>{cycle.loading ? "…" : cadence}</strong>（<Link to="/settings">设置 · 周期配置</Link>）· 选题由每周关键词分析驱动，类型与目标簇随稿件固定</p>}</div></header>
 
     <section aria-label="类型规约" className="post-types">{POST_TYPES.map((t) => <div key={t.key}><strong>{t.label}</strong><code>{t.key}</code><small>{t.note}</small></div>)}<p className="quiet-copy">类型不可合并为泛任务；类型 × 目标簇由选题建议给出，采纳后随 rev 固定。</p></section>
 
@@ -47,10 +47,10 @@ export function PostPlanPage() {
         <p className="quiet-copy">表现分级为周环比关联信号；「处置」是 Planner 建议，判定采纳后才创建任务。</p>
       </section>
 
-      <VoiceProfileEditor canManage={canManage} merchantId={merchantId} onSaved={profile.reload} profile={profile.data ?? null} />
+      <VoiceProfileEditor canManage={canManage} error={profile.error} merchantId={merchantId} onRetry={profile.reload} onSaved={profile.reload} profile={profile.data ?? null} />
 
       <section aria-label="本周档期" className="data-panel"><div className="panel-heading"><div><span className="eyebrow">THIS WEEK</span><h2>本周档期</h2><p className="quiet-copy">采纳后即任务 · 双门与查证同 Task 页</p></div></div>
-        {slots.length ? <ul className="program-list">{slots.map((s) => <li key={s.task_id}><strong>{s.title}</strong><span>{s.due_at ? formatDateOnly(s.due_at) : "未定时"} · {taskStatusLabel(s.status)}</span>{s.task_id ? <Link className="text-button" to={`/tasks/${s.task_id}`}>打开任务</Link> : null}</li>)}</ul> : <p className="quiet-copy">本周期没有 GBP Post 任务。</p>}
+        {ledger.error ? <div className="page-state compact is-error" role="alert">本周档期读取失败。<button onClick={ledger.reload} type="button">重试</button></div> : slots.length ? <ul className="program-list">{slots.map((s) => <li key={s.task_id}><strong>{s.title}</strong><span>{s.due_at ? formatDateOnly(s.due_at) : "未定时"} · {taskStatusLabel(s.status)}</span>{s.task_id ? <Link className="text-button" to={`/tasks/${s.task_id}`}>打开任务</Link> : null}</li>)}</ul> : <p className="quiet-copy">本周期没有 GBP Post 任务。</p>}
       </section>
 
       <section aria-label="下周候选" className="data-panel"><div className="panel-heading"><div><span className="eyebrow">CANDIDATES · 建议未判定 · 不落库</span><h2>下周候选</h2></div></div>

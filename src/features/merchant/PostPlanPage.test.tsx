@@ -7,6 +7,7 @@ import { AuthProvider } from "../../auth/AuthContext";
 import type { CycleConfigWire, CycleLedgerView, PostProgramView, StyleProfileWire } from "../../api/types";
 
 const calls: Array<{ path: string; body?: unknown }> = [];
+const failedPaths = new Set<string>();
 
 const kekeCycleConfig: CycleConfigWire = {
   merchant_id: "keke", snapshot_day: 5, post_weekday: 4, post_per_week: 1,
@@ -17,7 +18,7 @@ const kekeCycleConfig: CycleConfigWire = {
 const kekeStyleProfile: StyleProfileWire = {
   id: "style-1", merchant_id: "keke", version: 2,
   voice: {
-    tone: "邻里咖啡馆口吻", address: "we / neighbors", banned: ["best", "top-rated"],
+    tone: "邻里咖啡馆口吻", address: "we / neighbors", banned: ["best, cheapest", "top-rated"],
     example: "Smashed avocado…", source: "问卷 + 人工校订",
   },
   updated_by: "operator-1", created_at: "2026-08-10T08:00:00Z",
@@ -53,10 +54,12 @@ let styleProfileData: StyleProfileWire | null = kekeStyleProfile;
 
 beforeEach(() => {
   calls.length = 0;
+  failedPaths.clear();
   styleProfileData = kekeStyleProfile;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (failedPaths.has(path)) return new Response(JSON.stringify({ message: "projection unavailable" }), { status: 503, headers: { "Content-Type": "application/json" } });
     if (path === "/api/auth/me") return json({ user_id: "operator-1", name: "Operator", role: "operator", permissions: ["seoops.manage", "seoops.approve"] });
     if (path === "/api/seo-ops/portfolio") return json({
       totals: { tasks: 1, blocked: 0, ready_for_approval: 0, overdue: 0 },
@@ -94,7 +97,7 @@ test("post plan page shows cadence, weekly signals, voice profile, this week's s
   expect(await within(screen.getByRole("region", { name: "历史发布" })).findByText("Perfect brunch weather")).toBeInTheDocument();
 });
 
-test("editing the voice profile posts a new version and never touches approved drafts", async () => {
+test("editing the voice profile posts the full merged object — untouched fields survive and commas inside a phrase are not split", async () => {
   const user = userEvent.setup();
   renderApp("/merchants/keke/post-plan?view=operator");
   await user.click(await screen.findByRole("button", { name: "编辑（记版本）" }));
@@ -102,8 +105,31 @@ test("editing the voice profile posts a new version and never touches approved d
   await user.type(screen.getByLabelText("语气"), "短句直给");
   await user.click(screen.getByRole("button", { name: "保存为 v3" }));
   const saved = calls.find((c) => c.path.endsWith("/style-profile") && c.body);
-  expect(saved?.body).toMatchObject({ voice: { tone: "短句直给" } });
+  expect(saved?.body).toEqual({
+    voice: {
+      tone: "短句直给", address: "we / neighbors", banned: ["best, cheapest", "top-rated"],
+      example: "Smashed avocado…", source: "问卷 + 人工校订",
+    },
+  });
   expect(screen.getByText(/档案更新不追溯已批准稿/)).toBeInTheDocument();
+});
+
+test("saving reloads the profile and the heading advances to the new version", async () => {
+  const user = userEvent.setup();
+  renderApp("/merchants/keke/post-plan?view=operator");
+  await user.click(await screen.findByRole("button", { name: "编辑（记版本）" }));
+  await user.clear(screen.getByLabelText("语气"));
+  await user.type(screen.getByLabelText("语气"), "短句直给");
+  await user.click(screen.getByRole("button", { name: "保存为 v3" }));
+  expect(await screen.findByRole("heading", { name: "风格档案 · v3" })).toBeInTheDocument();
+});
+
+test("voice profile fetch failure surfaces an alert instead of the empty state", async () => {
+  failedPaths.add("/api/seo-ops/merchants/keke/style-profile");
+  renderApp("/merchants/keke/post-plan?view=operator");
+  const region = await screen.findByRole("region", { name: "风格档案" });
+  expect(await within(region).findByRole("alert")).toHaveTextContent("风格档案读取失败");
+  expect(within(region).queryByText(/尚无风格档案/)).not.toBeInTheDocument();
 });
 
 function renderApp(route: string) {
