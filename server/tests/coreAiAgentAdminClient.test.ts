@@ -28,7 +28,7 @@ type AgentManifest = {
 };
 
 type RemoteAgent = AgentManifest & {
-  id: string; status: string; created_by: string; system_default: boolean;
+  id: string; status: string; created_by: string; system_default: boolean | null;
   created_at: string; updated_at: string; published_at: string | null;
   system_prompt_id: string | null; multi_modal_model: string | null;
   prefer_caption_path: boolean | null; input_template: string | null;
@@ -433,6 +433,30 @@ describe("complete paginated discovery and create-only classification", () => {
     expect(String(error)).not.toContain("SECRETLY_NAMED_REMOTE_FIELD");
   });
 
+  it("accepts a null non-system marker only with exact global and authenticated-roster ownership proof", async () => {
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const ownedRepo = await makeRepository();
+    const ownedFake = new FakeCore([referenceAgent(), remoteAgent({ system_default: null, mine: true })]);
+    const plan = await dryRun({
+      client: createClient(ownedFake), repositoryRoot: ownedRepo.root, manifestRoot: ownedRepo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: ownedRepo.paths }, planPath: ownedRepo.planPath,
+    });
+    expect(plan.selected).toMatchObject([{ action: "NO_CHANGE", remote_agent_id: MANAGED_ID }]);
+
+    for (const desired of [
+      remoteAgent({ system_default: null, mine: false }),
+      remoteAgent({ system_default: true, mine: true }),
+    ]) {
+      const repo = await makeRepository();
+      const fake = new FakeCore([referenceAgent(), desired]);
+      await expect(dryRun({
+        client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath,
+      })).rejects.toThrow(/owned|system|collision|ambiguous/i);
+      expect(fake.mutations()).toEqual([]);
+    }
+  });
+
   it("never classifies a matching DRAFT Agent as NO_CHANGE", async () => {
     const repo = await makeRepository();
     const fake = new FakeCore([referenceAgent(), remoteAgent({ status: "DRAFT", published_at: null })]);
@@ -705,6 +729,39 @@ describe("durable apply journal and immutable create boundary", () => {
     expect(persisted).not.toContain("REFERENCE_PROMPT_SENTINEL");
   });
 
+  it("creates and publishes a roster-owned Agent whose detail uses the null non-system marker", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    fake.onCreate = (created) => { created.system_default = null; };
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+
+    const result = await apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      planPath: repo.planPath, evidencePath: repo.evidencePath });
+
+    expect(result).toMatchObject([{ action: "CREATE", agent_id: CREATED_ID }]);
+    expect(fake.mutations()).toEqual(["POST /api/agents", `POST /api/agents/${CREATED_ID}/publish`]);
+    expect((await readJournal(repo.evidencePath)).at(-1)).toMatchObject({ type: "READBACK_OUTCOME" });
+  });
+
+  it("fails published readback when the Agent leaves the authenticated principal roster", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    fake.onPublish = (created) => { created.mine = false; };
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+
+    await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/readback|owned|roster/i);
+
+    expect(fake.mutations()).toEqual(["POST /api/agents", `POST /api/agents/${CREATED_ID}/publish`]);
+    expect((await readJournal(repo.evidencePath)).at(-1)).toMatchObject({ type: "READBACK_FAILED" });
+  });
+
   it("writes each complete journal record across repeated short writes before allowing POST", async () => {
     const repo = await makeRepository();
     const fake = new FakeCore([referenceAgent()]);
@@ -864,7 +921,8 @@ describe("durable apply journal and immutable create boundary", () => {
       { name: "wrong config", mutate: (created) => { created.description = "wrong created config"; } },
       { name: "non-DRAFT", mutate: (created) => { created.status = "PUBLISHED"; } },
       { name: "system default", mutate: (created) => { created.system_default = true; } },
-      { name: "ambiguous system default", mutate: (created) => { (created as Record<string, unknown>).system_default = null; } },
+      { name: "null without roster", mutate: (created) => { created.system_default = null; created.mine = false; } },
+      { name: "invalid system default type", mutate: (created) => { (created as Record<string, unknown>).system_default = "false"; } },
       { name: "unmanaged executable", mutate: (created) => { created.system_prompt_id = "unsafe"; } },
       { name: "unknown remote field", mutate: (created) => { created.future_remote_setting = "unsafe"; } },
     ];

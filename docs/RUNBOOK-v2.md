@@ -121,9 +121,12 @@ npm --prefix server run agents:reconcile -- --mode=apply \
   该 snapshot 类型不能生成 mutation payload，也不用于 `[SEO Ops]` desired 校验，后者仍执行严格 manifest 规则。
 - reference 与 desired name 都通过完整分页 global query 做 exact/unique 判断；既有 desired Agent 还必须在
   完整 `my=true&include_system_default=false` roster 中唯一对应。跨 owner、system-default 或重复同名一律停止。
+  detail 的 `system_default=false` 可作为非系统标记；API 返回 null 时，只有同一 ID 同时通过上述完整 global
+  exact 与 authenticated-principal roster 证明才按非系统 Agent 处理。true、缺失或其他类型一律拒绝。
 - 既有 `[SEO Ops]` Agent 只有状态精确为 `PUBLISHED`、完整 editable config 相同且所有未管理执行字段为空时
   可返回 `NO_CHANGE`；
   任一漂移都要求新建更高版本名（例如 v2 → v3），工具没有 PUT existing Agent 能力。
+  先前失败 create 留下的 exact-name `DRAFT` 不会被复用、更新或发布；cleanup 或新版本名必须由操作员另行明确决定。
 - apply 在任何 POST 前重新校验全部本地文件、ALL/explicit scope、reference coordinate 和远端 pre-state；
   任一文件、scope、reference 或 remote hash 漂移都会停止。
 - plan 只能位于 `docs/evidence/core-ai-agent-plans/`，journal 只能位于独立的
@@ -135,7 +138,8 @@ npm --prefix server run agents:reconcile -- --mode=apply \
 - create 后先按返回 UUID 独立 GET，并通过完整 `my=true&include_system_default=false` roster 与 global exact
   discovery 证明它是当前主体新建的 exact-name、`DRAFT`、非 system-default、完整配置匹配且无未管理执行字段
   的 Agent；验证失败只写 durable failure 并停止，不 publish、不 PUT、不 DELETE。验证通过后才 publish，
-  再独立 GET；readback 会再次拒绝未管理执行字段。
+  再独立 GET，并重新完整执行 global exact 与 authenticated-principal roster 发现；readback 会再次校验
+  `PUBLISHED`、完整配置、非系统证明并拒绝未管理执行字段。
   它只证明 editable config/status，不证明 published runtime snapshot 等价。
 - 新 Agent 的远端恢复事实固定记录为 `NO_DELETE_REMOTE_ROLLBACK`。工具没有 PUT、DELETE 或可执行 rollback；
   reference UUID 也不能作为 create response 后的 publish/readback 坐标。

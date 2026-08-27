@@ -709,6 +709,21 @@ async function discoverReference(client: CoreAiAgentAdminClient): Promise<Refere
   };
 }
 
+function assertOwnedExactNonSystem(input: {
+  detail: CoreAiAgentView;
+  expectedId: string;
+  expectedName: string;
+  globalExact: CoreAiAgentView[];
+  myExact: CoreAiAgentView[];
+}): void {
+  if (input.globalExact.length !== 1 || input.globalExact[0]!.id !== input.expectedId
+    || input.myExact.length !== 1 || input.myExact[0]!.id !== input.expectedId
+    || input.detail.id !== input.expectedId || input.detail.name !== input.expectedName
+    || (input.detail.system_default !== false && input.detail.system_default !== null)) {
+    throw new CoreAiAgentAdminError("Agent ownership/system/name proof is ambiguous");
+  }
+}
+
 async function classifyDesired(
   client: CoreAiAgentAdminClient,
   prepared: PreparedManifest,
@@ -734,9 +749,10 @@ async function classifyDesired(
     throw new CoreAiAgentAdminError(`Desired Agent exact-name collision is not proven owned: ${prepared.manifest.name}`);
   }
   const detail = await client.getAgent(selected.id);
-  if (detail.id !== selected.id || detail.name !== prepared.manifest.name || detail.system_default !== false) {
-    throw new CoreAiAgentAdminError("Desired Agent ownership/system/name detail is ambiguous");
-  }
+  assertOwnedExactNonSystem({
+    detail, expectedId: selected.id, expectedName: prepared.manifest.name,
+    globalExact: exact, myExact,
+  });
   if (detail.status !== "PUBLISHED") {
     throw new CoreAiAgentAdminError("Existing Agent is not PUBLISHED; CREATE-ONLY requires a new versioned manifest name");
   }
@@ -1183,12 +1199,15 @@ async function validateCreatedDraft(input: {
     includeSystemDefault: false,
   });
   const myExact = mine.filter((agent) => agent.id === input.createdId && agent.name === input.prepared.manifest.name);
-  if (globalExact.length !== 1 || globalExact[0]!.id !== input.createdId
-    || myExact.length !== 1 || myExact[0]!.id !== input.createdId
-    || detail.id !== input.createdId || detail.name !== input.prepared.manifest.name
-    || detail.status !== "DRAFT" || detail.system_default !== false) {
+  try {
+    assertOwnedExactNonSystem({
+      detail, expectedId: input.createdId, expectedName: input.prepared.manifest.name,
+      globalExact, myExact,
+    });
+  } catch {
     throw new CoreAiAgentAdminError("Created Agent is not a new owned exact DRAFT");
   }
+  if (detail.status !== "DRAFT") throw new CoreAiAgentAdminError("Created Agent is not a new owned exact DRAFT");
   const snapshot = editableSnapshot(detail, true);
   if (sha256(snapshot.managed) !== input.prepared.manifestHash) {
     throw new CoreAiAgentAdminError("Created Agent DRAFT editable configuration mismatch");
@@ -1325,10 +1344,19 @@ export async function applyAgentReconciliationPlan(input: {
 
       try {
         const readback = await input.client.getAgent(created.id);
-        if (readback.id !== created.id || readback.name !== local.manifest.name || readback.status !== "PUBLISHED"
-          || readback.system_default !== false) {
-          throw new CoreAiAgentAdminError("Created Agent readback mismatch");
-        }
+        const global = await collectAllAgents(input.client, { query: local.manifest.name });
+        const globalExact = global.filter((agent) => agent.name === local.manifest.name);
+        const mine = await collectAllAgents(input.client, {
+          query: "",
+          my: true,
+          includeSystemDefault: false,
+        });
+        const myExact = mine.filter((agent) => agent.id === created.id && agent.name === local.manifest.name);
+        assertOwnedExactNonSystem({
+          detail: readback, expectedId: created.id, expectedName: local.manifest.name,
+          globalExact, myExact,
+        });
+        if (readback.status !== "PUBLISHED") throw new CoreAiAgentAdminError("Created Agent readback mismatch");
         const snapshot = editableSnapshot(readback, true);
         if (sha256(snapshot.managed) !== local.manifestHash) throw new CoreAiAgentAdminError("Created Agent readback mismatch");
         await journal.append({
