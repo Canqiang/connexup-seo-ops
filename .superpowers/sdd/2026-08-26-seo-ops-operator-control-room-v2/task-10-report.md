@@ -451,3 +451,57 @@ Results: focused Task 10A 1 file / 35 tests passed; server typecheck exited 0; d
 - Nullable scalar fields that are absent are normalized to null for compatibility; nullable arrays preserve the security-relevant null-versus-array distinction required by the reviewed coordinate.
 - Any future Core API reference field or tool-shape change fails closed and requires a reviewed compatibility update; this code does not infer a mutation payload from an unfamiliar reference response.
 - GET/reference hashes remain editable configuration/status evidence only, not published snapshot or runtime-equivalence proof.
+
+---
+
+## Fix round 5 — roster-proven nullable system-default marker (2026-08-27)
+
+Implementation commit: `2bd3e522bf53d25dc451ab1a85abc1b4f833d88f` (`fix(agent-reconcile): prove nullable system ownership`). This round changed only `server/src/services/coreAiAgentAdminClient.ts`, `server/tests/coreAiAgentAdminClient.test.ts`, and `docs/RUNBOOK-v2.md`.
+
+### Trigger and RED evidence
+
+An authenticated read-only diagnostic performed outside this implementation task showed that a newly created exact DRAFT was uniquely present in both complete global exact discovery and `my=true&include_system_default=false` discovery with the same ID, while detail returned `system_default=null`. The existing reconciler stopped before publish solely because it required detail `system_default === false`.
+
+Local behavior-first regressions were added and run without network or credentials:
+
+```bash
+cd server
+npm test -- --run tests/coreAiAgentAdminClient.test.ts
+```
+
+Result before production changes: exit 1; 3 failed / 35 passed (38 total):
+
+- an existing exact PUBLISHED desired Agent with null detail marker and complete global/principal ownership proof was rejected;
+- a newly created exact owned DRAFT with the same null marker stopped before publish;
+- an Agent removed from the authenticated-principal roster after publish incorrectly passed detail-only readback.
+
+The same suite already rejected a true marker, null without principal-roster membership, and invalid marker types.
+
+### Corrected proof boundary
+
+- A shared fail-closed assertion now requires exactly one global exact row, exactly one authenticated-principal exact row with the same ID, exact detail ID/name, and a detail marker of only boolean false or null.
+- Null is never accepted from detail alone. True, missing, string, or any other marker remains invalid; false is still accepted under the same ownership proof.
+- Existing desired classification uses the proof before allowing PUBLISHED `NO_CHANGE`; status, strict configuration, unmanaged-field, ownership, and create-only checks remain unchanged.
+- New DRAFT validation uses the proof after the existing pre-create full principal-roster snapshot and before publish. Returned IDs still cannot be pre-existing, the reference ID, duplicated, non-DRAFT, misnamed, or configuration-drifted.
+- Post-publish readback now independently repeats complete global exact and full `my=true&include_system_default=false` discovery, then rechecks exact PUBLISHED status, normalized managed configuration, unmanaged executable state, unknown fields, and the nullable non-system proof.
+- A post-publish ownership/roster drift writes durable `READBACK_FAILED` evidence and stops. It does not PUT, DELETE, retry-publish, or claim rollback.
+- The runbook records the nullable-marker proof and states that an exact DRAFT left by an earlier failed create is never reused, updated, or published. Cleanup versus a new version remains an explicit operator decision.
+
+### GREEN verification evidence
+
+```bash
+cd server
+npm test -- --run tests/coreAiAgentAdminClient.test.ts
+npm run typecheck
+cd ..
+git diff --check
+```
+
+Results: focused Task 10A 1 file / 38 tests passed; server typecheck exited 0; diff check exited 0.
+
+### External boundary and residual status
+
+- This implementation round made no UAT/network request, used or persisted no credential, and changed no Task 10B/11 file, Agent manifest, GBP runtime, Core AI/FBR repository, binding, or merchant state.
+- The exact DRAFT reported by the external diagnostic remains a create-only collision. This reconciler intentionally cannot reuse, publish, update, or delete it; UAT cleanup or a new versioned manifest decision remains explicit and outside this change.
+- Roster proof is bounded by the authenticated Core API principal's visible complete result set. Server-side RBAC completeness and deployment behavior still require authorized operational validation.
+- Published GET plus repeated discovery proves editable configuration/status and visible ownership classification only, not runtime snapshot equivalence.
