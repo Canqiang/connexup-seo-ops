@@ -322,3 +322,25 @@ server/src/db/migrate.ts                 ae7b5de795e0ddb956aa82fc5e30d70d357eba3
 
 - No live browser image decode, UAT, network, credentials, Core/FBR action, or GBP write was performed. jsdom `load`/`error` tests prove the state gate, not live browser/provider behavior.
 - Existing historical human drafts are not guessed or backfilled from mutable bindings. Those without a durable verified media source remain safely without previews and therefore cannot be approved until explicitly revised from a server-resolved source.
+
+## UAT recovery desired-state bump (2026-08-27)
+
+Implementation commit: `a3e6b0c`
+
+- Replaced the desired-state file `server/core-ai-agents/seo-ops-gbp-post-content-v2.json` with `server/core-ai-agents/seo-ops-gbp-post-content-v3.json` and changed only the Agent name to `[SEO Ops] GBP Post Content v3` because the UAT v2 coordinate is an orphan DRAFT from a failed safe apply.
+- A structural comparison against the committed v2 manifest confirmed every field except `name` is identical. The response contract remains `seo_ops.gbp_post_draft.v2`; prompt, tool, model, limits, and runtime fields are unchanged.
+
+```text
+RED: cd server && npm test -- coreAiAgentManifests.test.ts
+     1 file failed; 8 failed, 4 passed; v3 file missing while v2 remained.
+GREEN: cd server && npm test -- coreAiAgentManifests.test.ts
+       1 file passed; 12 passed.
+TYPECHECK: cd server && npm run typecheck
+           exit 0.
+DIFF: git diff --cached --check
+      exit 0.
+SHA-256 server/core-ai-agents/seo-ops-gbp-post-content-v3.json
+dcdd8f7f83abb9992c7a510e6e61e20aa90ccdf5acc3667836ee09579f7f80e2
+```
+
+No UAT, network, credentials, Core/FBR mutation, Agent creation/publish, or GBP write was performed. The orphan remote v2 DRAFT remains an authenticated UAT reconciliation concern; this change only establishes the local v3 desired state.
