@@ -68,8 +68,8 @@ const expectedRoster = {
     name: "[SEO Ops] Execution Plan v1",
     output: "seo_ops.execution_plan.v1",
   },
-  "seo-ops-gbp-post-content-v2.json": {
-    name: "[SEO Ops] GBP Post Content v2",
+  "seo-ops-gbp-post-content-v3.json": {
+    name: "[SEO Ops] GBP Post Content v3",
     output: "seo_ops.gbp_post_draft.v2",
   },
   "seo-ops-keyword-set-v2.json": {
@@ -234,7 +234,7 @@ describe("Core AI SEO Ops Agent manifests", () => {
     for (const file of Object.keys(expectedRoster) as Array<keyof typeof expectedRoster>) {
       const manifest = loadManifest(file);
       for (const tool of manifest.tools) {
-        if (file === "seo-ops-gbp-post-content-v2.json") {
+        if (file === "seo-ops-gbp-post-content-v3.json") {
           expect(tool).toEqual({
             id: "builtin:builtin-media-generation",
             type: "BUILTIN",
@@ -287,7 +287,7 @@ describe("Core AI SEO Ops Agent manifests", () => {
   });
 
   it("makes GBP content an exact US-English draft and never a publication claim", () => {
-    const post = loadManifest("seo-ops-gbp-post-content-v2.json");
+    const post = loadManifest("seo-ops-gbp-post-content-v3.json");
     expect(post.tools).toEqual([{
       id: "builtin:builtin-media-generation",
       type: "BUILTIN",
