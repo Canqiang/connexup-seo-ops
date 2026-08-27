@@ -66,6 +66,7 @@ import {
   LOCATION_READINESSES,
 } from "../domain/enums.js";
 import { enqueuePlannerTaskIfBound } from "../services/plannerService.js";
+import { runsLedger } from "../services/runsLedgerService.js";
 
 const createMerchantSchema = z.object({
   slug: z.string(),
@@ -213,6 +214,7 @@ export function registerSeoOpsRoutes(
       copilot_enabled: false,
       agent_run_enabled: ctx.coreAi !== null && ctx.config.agentRunAgentId !== null,
       agent_run_stages: AGENT_RUN_STAGES,
+      core_ai_console_url: ctx.config.coreAiBaseUrl ?? null,
     };
   });
 
@@ -302,6 +304,28 @@ export function registerSeoOpsRoutes(
         stageRunView(run, deliverablesByRun.get(run.id) ?? []),
       ),
     };
+  });
+
+  const agentRunsQuerySchema = z.object({
+    merchant_id: z.string().min(1).optional(),
+    status: z.enum(["TRIGGERING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]).optional(),
+    stage: z.string().min(1).max(40).optional(),
+    include_content: z.enum(["true", "false"]).optional(),
+    /** 测试注入用；生产不传。 */
+    now: z.string().datetime().optional(),
+  });
+
+  // 跨商户 Run 账本（只读）：Run 完成 ≠ Task 完成，这里不改任何任务状态。
+  app.get("/api/seo-ops/agent-runs", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const query = agentRunsQuerySchema.parse(request.query);
+    const { offset, limit } = parsePageParams(request.query as Record<string, unknown>);
+    if (query.merchant_id) await requireMerchantAccess(ctx.db, actor, query.merchant_id);
+    return runsLedger(ctx.db, {
+      actorUserId: actor.userId, scopeAll: actor.scopeAll === true,
+      merchantId: query.merchant_id, status: query.status, stage: query.stage,
+      includeContentRuns: query.include_content === "true", offset, limit,
+    }, query.now ? new Date(query.now) : new Date());
   });
 
   app.get("/api/seo-ops/agent-runs/:runId", async (request) => {

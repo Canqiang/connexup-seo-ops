@@ -100,6 +100,7 @@ describe("auth + config", () => {
           "PLAN",
           "REVIEW",
         ],
+        core_ai_console_url: null,
       });
     } finally {
       await app.close();
