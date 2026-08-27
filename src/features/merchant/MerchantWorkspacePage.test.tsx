@@ -63,6 +63,7 @@ let postProgramData: PostProgramView = { voice_profile: null, cluster_signals: [
 const failedPaths = new Set<string>();
 let kekeLedgerData: CycleLedgerView = kekeLedger;
 let delayedLedgerResponse: Promise<Response> | null = null;
+let delayedLifecycleResponse: Promise<Response> | null = null;
 let rankingData: RankingOverviewView = defaultRankingData;
 
 beforeEach(() => {
@@ -70,6 +71,7 @@ beforeEach(() => {
   failedPaths.clear();
   kekeLedgerData = kekeLedger;
   delayedLedgerResponse = null;
+  delayedLifecycleResponse = null;
   rankingData = defaultRankingData;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
@@ -85,7 +87,7 @@ beforeEach(() => {
     });
     if (path === "/api/seo-ops/inbox-summary") return json({ pending_proposals: 1, ready_for_approval: 0, awaiting_execution: 0, pending_verify: 0, outcome_unknown: 0, verification_overdue: 0, frozen_merchant_ids: [] });
     if (path.startsWith("/api/seo-ops/workbench")) return json({ summary: { gatekeeping: 0, exception: 0, merchant_contact: 0, total: 0 }, items: [], offset: 0, limit: 50, total: 0 });
-    if (path.endsWith("/lifecycle")) return json(merchantId === "keke" ? kekeLifecycle : onlyBearLifecycle);
+    if (path.endsWith("/lifecycle")) return delayedLifecycleResponse ?? json(merchantId === "keke" ? kekeLifecycle : onlyBearLifecycle);
     if (path.endsWith("/ranking")) return json(rankingData);
     if (path.endsWith("/cycle-ledger")) return delayedLedgerResponse ?? json(merchantId === "keke" ? kekeLedgerData : { items: [] });
     if (path.endsWith("/post-program")) return json(postProgramData);
@@ -215,6 +217,31 @@ test("review signal panel shows the latest effect review capped at its tier", as
   const panel = await screen.findByRole("region", { name: "复盘信号" });
   expect(within(panel).getByText(/ASSOCIATIONAL/)).toBeInTheDocument();
   expect(within(panel).getByRole("link", { name: /打开复盘/ })).toHaveAttribute("href", expect.stringContaining("/reviews"));
+});
+
+test("brand profile row shows the filled questionnaire copy and never shows 未生成问卷 for a filled merchant", async () => {
+  renderApp("/merchants/keke?view=operator");
+  expect(await screen.findByText(/回收 · 已落库/)).toBeInTheDocument();
+  expect(screen.queryByText("未生成问卷")).not.toBeInTheDocument();
+});
+
+test("brand profile row shows a loading state before lifecycle resolves", async () => {
+  let resolveLifecycle: ((response: Response) => void) | undefined;
+  delayedLifecycleResponse = new Promise<Response>((resolve) => { resolveLifecycle = resolve; });
+  renderApp("/merchants/keke?view=operator");
+
+  expect(await screen.findByText("读取中…")).toBeInTheDocument();
+  await act(async () => { resolveLifecycle!(json(kekeLifecycle)); });
+  expect(await screen.findByText(/回收 · 已落库/)).toBeInTheDocument();
+});
+
+test("review signal panel surfaces an artifacts read failure instead of the empty state", async () => {
+  failedPaths.add("/api/seo-ops/merchants/keke/artifacts");
+  renderApp("/merchants/keke?view=operator");
+
+  const panel = await screen.findByRole("region", { name: "复盘信号" });
+  expect(within(panel).getByRole("alert")).toHaveTextContent("复盘信号读取失败");
+  expect(within(panel).queryByText(/首轮执行完成/)).not.toBeInTheDocument();
 });
 
 function renderApp(route: string) {
