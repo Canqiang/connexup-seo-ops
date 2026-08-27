@@ -281,6 +281,12 @@ export interface CycleConfigWire {
   enabled: boolean; updated_by: string | null; updated_at: string;
 }
 
+/** 风格档案：voice 编辑生成新版本，稿件按引用固定版本；档案更新不追溯已批准稿。 */
+export interface StyleProfileWire {
+  id: string; merchant_id: string; version: number; voice: Record<string, unknown>;
+  updated_by: string | null; created_at: string;
+}
+
 /** Merchant control-room projections retain the Task/proposal boundary all
  * the way to the client.  A proposal row is never executable work. */
 export interface CycleLedgerItem {

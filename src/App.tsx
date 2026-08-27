@@ -5,6 +5,7 @@ import { RouteErrorPage } from "./app/RouteErrorPage";
 import type { ViewMode } from "./app/viewMode";
 import { InboxPage } from "./features/inbox/InboxPage";
 import { MerchantWorkspacePage } from "./features/merchant/MerchantWorkspacePage";
+import { PostPlanPage } from "./features/merchant/PostPlanPage";
 import { MerchantsPage } from "./features/merchants/MerchantsPage";
 import { OverviewPage } from "./features/overview/OverviewPage";
 import { ReportsPage } from "./features/reports/ReportsPage";
@@ -33,6 +34,7 @@ export default function App() {
     <Route path="merchants" element={<MerchantsPage />} />
     <Route path="inbox" element={<InboxPage />} />
     <Route path="merchants/:merchantId" element={<MerchantWorkspacePage />} />
+    <Route path="merchants/:merchantId/post-plan" element={<PostPlanPage />} />
     <Route path="tasks/:taskId" element={<TaskPage />} />
     <Route path="runs" element={<RunsPage />} />
     <Route path="reviews" element={<ReviewsPage />} />

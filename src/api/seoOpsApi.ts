@@ -7,7 +7,7 @@ import type {
   PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
   RuntimeControlsView, RuntimeControlWire, RunsLedgerRequest, RunsLedgerView,
   SchedulerTickResult, SeoOpsPageRequest, SeoTask, SpecialistArtifactType, SpecialistArtifactWire,
-  StageRunView, TaskAuditReferencesWire, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
+  StageRunView, StyleProfileWire, TaskAuditReferencesWire, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
 } from "./types";
 
 function query(request: SeoOpsPageRequest = {}): string {
@@ -60,6 +60,10 @@ export const seoOpsApi = {
     requestJson<CycleLedgerView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/cycle-ledger`, { signal }),
   postProgram: (merchantId: string, signal?: AbortSignal) =>
     requestJson<PostProgramView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/post-program`, { signal }),
+  styleProfile: (merchantId: string, signal?: AbortSignal) =>
+    requestJson<StyleProfileWire | null>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/style-profile`, { signal }),
+  saveStyleProfile: (merchantId: string, request: { voice: Record<string, unknown> }) =>
+    post<StyleProfileWire>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/style-profile`, request),
   createQuestionnaire: (merchantId: string, request: { website?: string; idempotency_key: string }) =>
     post<QuestionnaireView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/questionnaires`, request),
   sendQuestionnaire: (questionnaireId: string) =>
