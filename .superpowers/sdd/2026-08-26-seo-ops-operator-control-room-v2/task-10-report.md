@@ -221,3 +221,113 @@ Result: expected exit 1 with `CORE_AI_BASE_URL and CORE_AI_TOKEN are required in
 - Created remote Agents cannot be automatically rolled back because DELETE is intentionally absent. The fsynced journal preserves the exact safe mutation coordinates for manual handling.
 - The reviewed-plan SHA-256 digest detects accidental/local drift but is not a signature or independent authorization system; operator review of the repository-contained plan remains the authorization boundary.
 - Complete discovery can prove only the Agents visible to the authenticated Core AI API principal. The reconciler fails closed on duplicate/inconsistent visible results and ownership ambiguity, but cannot independently prove server-side RBAC completeness without authorized live validation.
+
+---
+
+## Fix round 2 — immutable reference, inode-isolated artifacts, and pre-publish identity proof (2026-08-27)
+
+Implementation commit: `42d696c2ae7994a412079a44168a06c96c9498dc` (`fix(agents): harden reconciliation identity gates`). This round changed only `server/src/services/coreAiAgentAdminClient.ts`, `server/tests/coreAiAgentAdminClient.test.ts`, and `docs/RUNBOOK-v2.md`. The existing Task 10A CLI script required no code change because every new boundary is enforced by the library entry points it invokes.
+
+### RED evidence
+
+Controller-ruling regression suite before production changes:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts
+```
+
+Result: exit 1; 9 failed / 14 passed. The failures proved that callers could replace the reference name, unknown remote field names leaked in errors, a matching DRAFT could become `NO_CHANGE`, plan paths were not restricted to a fixed directory, hard-linked manifests were not identified by inode, reference `field_hashes` were not covered by `coordinate_hash`, evidence could alias a manifest/plan or reuse a pre-existing journal, the normal path lacked pre-publish validation events, and an unsafe create response was published before independent validation.
+
+The first path-gate implementation run exposed a test-environment canonicalization bug:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts
+```
+
+Result: exit 1; 16 failed / 7 passed because macOS temp paths entered as `/var/...` canonicalized to `/private/var/...`; the target basename was subsequently resolved against the already-realpathed fixed parent rather than comparing lexical aliases.
+
+Ambiguous system-default regression:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts \
+  -t "validates the created ID as a new owned exact DRAFT before publish"
+```
+
+Result before the exact-false gate: exit 1; 1 failed / 22 skipped. A created view with `system_default=null` was published. The corrected gate requires `system_default === false` before publish and after publish readback; the same exactness applies to existing-Agent `NO_CHANGE`.
+
+Fixed-directory component-symlink regression:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts \
+  -t "symlinked fixed artifact directory"
+```
+
+Result before component validation: exit 1; 1 failed / 23 skipped because a symlinked configured plan directory resolving to another repository directory was accepted. The corrected implementation lstat-checks every fixed directory component before realpath containment checks.
+
+Pre-existing principal ID regression:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts \
+  -t "already present in the full principal roster"
+```
+
+Result before the pre-POST roster snapshot: exit 1; 1 failed / 24 skipped. A malicious fake service rewrote an existing principal-owned Agent into a matching DRAFT during POST and the reconciler published it. Apply now snapshots the complete authenticated-principal roster before any POST and rejects any returned ID already present there.
+
+### Corrected safety contract
+
+- The only reference coordinate is the private fixed constant `GooglePost每周图文助手`; dry-run has no `referenceName` input and CLI rejects `--reference`. Runtime objects containing an override-shaped property are ignored and never queried.
+- The plan reference record binds fixed name, ID, status, timestamps, explicit `owner_id` when available, managed hash, per-managed-field hashes, per-unsupported-executable-field hashes, unmanaged-executable-empty and unknown-fields-empty summaries, label, and evidence scope. `coordinate_hash` covers that full record. Apply rediscovers and compares the complete canonical record before any POST.
+- When Core AI does not expose a stable `owner_id`, the reference records null. It does not reinterpret display-name `created_by` as an owner ID.
+- Plan files are restricted to `docs/evidence/core-ai-agent-plans/*.json`; journals are restricted to the distinct `docs/evidence/core-ai-agent-journals/*.jsonl`; both directories must exist, be non-symlink directory components, remain in the repository, and remain outside the manifest root.
+- Plan, journal, and selected manifests must have distinct canonical paths and file identities. Existing files are checked by `dev/ino` and must have `nlink === 1`; symlinks, hardlinks, traversal, wrong extensions, and path/inode changes fail closed.
+- New plan and journal files use exclusive create and `O_NOFOLLOW`. The implementation refuses to run if `O_NOFOLLOW` is unavailable. It rechecks descriptor/path `dev/ino`, canonical path, regular-file status, and link count around durable writes.
+- Apply requires a nonexistent journal, durably creates and fsyncs its first typed record plus parent directory before reference/remote revalidation, and rechecks journal identity before and after every append. It never appends to a prior journal.
+- Existing exact desired Agents may be `NO_CHANGE` only when status is exactly `PUBLISHED`, `system_default` is exactly false, ownership roster proof succeeds, and full managed/unmanaged state matches. Status and published timestamp participate in `remote_state_hash` and apply drift checks.
+- Before any publish of a new Agent, apply has already snapshotted the complete principal roster. It then independently GETs the returned ID, completes global exact-name and full `my=true&include_system_default=false` pagination, and requires a previously unseen ID, exact desired name, exact DRAFT status, exact non-system-default state, full managed-field equality, and empty unsupported/unknown executable state. Failure writes a durable typed `PREPUBLISH_VALIDATION_FAILED` record and stops without publish, PUT, or DELETE.
+- Unknown remote field names are no longer echoed in errors. Evidence and errors continue to omit prompt/token/body contents.
+
+### GREEN and full verification evidence
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts tests/coreAiClient.test.ts
+```
+
+Results: Task 10A 25/25 passed; focused compatibility 2 files / 33 tests passed (25 admin/reconciler plus 8 existing Core AI client tests).
+
+```bash
+npm --prefix server test -- --maxWorkers=1
+```
+
+Result: 31 files / 339 tests passed.
+
+```bash
+npm run test:run
+npm --prefix server run typecheck
+npm --prefix server run build
+npm run build
+cd server && npx tsc --noEmit --module NodeNext --moduleResolution NodeNext \
+  --target ES2022 --types node scripts/reconcile-core-ai-agents.ts
+git diff --check
+```
+
+Results: frontend 24 files / 147 tests passed; server typecheck/build, root TypeScript/Vite build (1865 modules), standalone reconciler script compilation, and diff check all exited 0. Frontend output retained only the existing jsdom local-storage and `window.scrollTo` warnings.
+
+Credential-free command-interface smoke:
+
+```bash
+env -u CORE_AI_BASE_URL -u CORE_AI_TOKEN \
+  npm --prefix server run agents:reconcile -- --mode=dry-run --all \
+  --plan=/Users/xander/git_repo/connexup-seo-ops/.worktrees/operator-control-room-v2-impl/docs/evidence/core-ai-agent-plans/no-env-smoke.json
+```
+
+Result: expected exit 1 before client construction or artifact/network action with `CORE_AI_BASE_URL and CORE_AI_TOKEN are required in the environment`.
+
+### External boundary and residual risks
+
+- No UAT/network request, credential use/persistence, Core AI/FBR repository change, Agent manifest edit, GBP runtime change, binding, or merchant mutation occurred. Live API permissions, owner visibility, eventual consistency, and deployment behavior remain unproved.
+- The pre-publish identity proof intentionally uses one immediate bounded readback sequence. A deployment with delayed list/read consistency will fail closed and require operator retry with a new reviewed plan; it will not guess or publish an unproved ID.
+- `O_NOFOLLOW`, exclusive creation, repeated canonical/dev/ino/nlink checks, and descriptor-based I/O reduce filesystem races but cannot eliminate every TOCTOU action by another process that has write permission to the fixed directories or manifest tree. Those paths must remain operator-restricted.
+- Reference and created-Agent GET evidence proves only editable configuration and status, never published runtime snapshot or execution equivalence.
+- Created Agents still have `NO_DELETE_REMOTE_ROLLBACK`; there is no automated remote rollback, PUT, or DELETE capability.
+- Complete discovery remains bounded by what the authenticated Core AI principal is allowed to list. Duplicate, inconsistent, or ambiguous visible state fails closed, but RBAC completeness requires authorized live validation outside Task 10A.
