@@ -1,7 +1,7 @@
 import { requestJson } from "./client";
 import type {
   ActivityFeedView, AgentBindingWire, AppendEvidenceRequest, ApprovalDecisionRequest, ApprovalPreview, AttemptWire,
-  CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire, GbpExecutionWire, GbpLocationBindingWire,
+  CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire, EffectReviewsView, GbpExecutionWire, GbpLocationBindingWire,
   CycleLedgerView, DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
   PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
@@ -32,6 +32,8 @@ export const seoOpsApi = {
     requestJson<WorkbenchView>(`/api/seo-ops/workbench${query(request)}`, { signal }),
   reviews: (request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<ReviewItem>>(`/api/seo-ops/reviews${query(request)}`, { signal }),
+  effectReviews: (merchantId?: string, signal?: AbortSignal) =>
+    requestJson<EffectReviewsView>(`/api/seo-ops/effect-reviews${merchantId ? `?merchant_id=${encodeURIComponent(merchantId)}` : ""}`, { signal }),
   reports: (request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<ReportItem>>(`/api/seo-ops/reports${query(request)}`, { signal }),
   task: (id: string, signal?: AbortSignal) => requestJson<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(id)}`, { signal }),

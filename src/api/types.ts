@@ -199,6 +199,9 @@ export interface ReviewItem {
   goal?: string; baseline?: string; action?: string; observed_change?: string; competing_explanations: string[];
   conclusion_strength: string; follow_up_test?: string; evidence_ids: string[]; updated_at: string;
 }
+export interface EffectReviewItem { artifact_id: string; merchant_id: string; merchant_name: string; task_id: string; core_run_id: string; title: string; summary: string; conclusion_tier: string; conclusion: string; baseline: Record<string, unknown>; observed_change: Record<string, unknown>; action_bundle: Array<Record<string, unknown>>; confounders: string[]; limitations: string[]; planning_signals: Array<Record<string, unknown>>; acceptance_status: string; created_at: string; causal_identified: false }
+export interface ReviewWindow { merchant_id: string; merchant_name: string; review_window_days: number | null; last_review_at: string | null; next_window_at: string | null; status: "DUE" | "UPCOMING" | "UNSCHEDULED" }
+export interface EffectReviewsView { summary: { total: number; by_tier: Record<string, number>; due_count: number }; items: EffectReviewItem[]; windows: ReviewWindow[] }
 export interface ReportItem {
   report_id: string; source_type: "TASK_EVIDENCE" | "CORE_AI_ARTIFACT";
   merchant_id: string; merchant_name: string; location_id?: string; location_name?: string;

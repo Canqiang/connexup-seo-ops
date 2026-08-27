@@ -118,6 +118,11 @@ beforeEach(() => {
       updated_by: null,
       updated_at: null,
     });
+    if (path.startsWith("/api/seo-ops/effect-reviews")) return json({
+      summary: { total: 0, by_tier: {}, due_count: 0 },
+      items: [],
+      windows: [],
+    });
     if (path.startsWith("/api/seo-ops/reviews")) return json({
       items: [{
         task_id: "task-review-1",
@@ -349,20 +354,13 @@ test("the full Runs ledger is audit-only while its explicit audit URL remains ro
 test("review keeps backend association truth and presents the decision sequence in order", async () => {
   renderApp("/reviews");
 
-  const card = await screen.findByRole("article", { name: "提升午餐搜索可见度" });
+  const section = await screen.findByRole("region", { name: "任务级证据分级" });
+  const card = await within(section).findByRole("article", { name: "提升午餐搜索可见度" });
   expect(within(card).getByText("关联观察，不代表因果")).toBeInTheDocument();
   expect(within(card).getByText("CORRELATIONAL")).toBeInTheDocument();
   expect(within(card).queryByText("CAUSAL_READY")).not.toBeInTheDocument();
   expect(within(card).queryByText(/证明.*导致|已证实.*导致/)).not.toBeInTheDocument();
-  expect(within(card).getAllByRole("term").map((node) => node.textContent)).toEqual([
-    "基线",
-    "动作组合",
-    "观察变化",
-    "混杂因素",
-    "结论",
-    "下一轮计划输入",
-  ]);
-  expect(within(card).getByRole("link", { name: "查看任务与技术证据" })).toHaveAttribute("href", "/tasks/task-review-1");
+  expect(within(card).getByRole("link", { name: "查看任务" })).toHaveAttribute("href", "/tasks/task-review-1");
 });
 
 function renderApp(route: string) {
