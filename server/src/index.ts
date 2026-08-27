@@ -17,6 +17,7 @@ import { registerMerchantControlRoomRoutes } from "./routes/merchantControlRoomR
 import { createCoreAiClient, type CoreAiClient } from "./services/coreAiClient.js";
 import { AgentRunPoller } from "./services/agentRunPoller.js";
 import { ExecutionWorker } from "./services/executionWorker.js";
+import { GbpExecutionWorker } from "./services/gbpExecutionWorker.js";
 import { CycleScheduler } from "./services/schedulerService.js";
 import { ensureSingleUserIdentity } from "./auth/singleUser.js";
 
@@ -31,6 +32,8 @@ export interface AppContext {
   artifactsDir: string;
   /** 执行 worker（attempt 派发/结算）；mock 或 core-ai 配置齐时非 null。 */
   executionWorker: ExecutionWorker | null;
+  /** Dedicated at-most-once GBP CREATE_POST worker. Disabled unless explicitly configured. */
+  gbpExecutionWorker: GbpExecutionWorker | null;
   /** 周期 scheduler（Ⓐ级任务自动生成+派发清扫）。 */
   scheduler: CycleScheduler | null;
 }
@@ -43,12 +46,20 @@ export interface AppDeps {
   /** Injected Db (e.g. an isolated test schema). When set, buildApp does not
    * close it in onClose — that stays the caller's responsibility. */
   db?: Db;
+  /** Test seam; null force-disables even if config is enabled. */
+  gbpExecutionWorker?: GbpExecutionWorker | null;
 }
 
 export async function buildApp(
   config: ServerConfig = loadConfig(),
   deps: AppDeps = {},
-): Promise<{ app: FastifyInstance; config: ServerConfig; db: Db; poller: AgentRunPoller | null }> {
+): Promise<{
+  app: FastifyInstance;
+  config: ServerConfig;
+  db: Db;
+  poller: AgentRunPoller | null;
+  gbpExecutionWorker: GbpExecutionWorker | null;
+}> {
   const ownsDb = !deps.db;
   const db = deps.db ?? createDb(config.databaseUrl);
   await migrate(db);
@@ -82,8 +93,25 @@ export async function buildApp(
     { db, log: (message, err) => console.warn(message, err ?? "") },
     config.schedulerIntervalMs,
   );
+  const gbpExecutionWorker = deps.gbpExecutionWorker !== undefined
+    ? deps.gbpExecutionWorker
+    : config.gbpExecutionEnabled && config.coreAiBaseUrl && config.gbpSecretDir
+      ? new GbpExecutionWorker({
+          db,
+          coreAiBaseUrl: config.coreAiBaseUrl,
+          secretDir: config.gbpSecretDir,
+          coreHttpTimeoutMs: config.gbpCoreHttpTimeoutMs,
+          leaseMs: config.gbpLeaseMs,
+          pollIntervalMs: config.gbpCorePollIntervalMs,
+          maxPolls: config.gbpCoreMaxPolls,
+          intervalMs: config.gbpExecutionPollIntervalMs,
+          log: (message) => console.warn(message),
+        })
+      : null;
 
-  const ctx: AppContext = { config, db, coreAi, artifactsDir, executionWorker, scheduler };
+  const ctx: AppContext = {
+    config, db, coreAi, artifactsDir, executionWorker, gbpExecutionWorker, scheduler,
+  };
 
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
 
@@ -102,6 +130,7 @@ export async function buildApp(
   // 定时器不在测试环境下启动；手动 tick 端点始终可用。
   if (process.env.NODE_ENV !== "test") {
     executionWorker?.start();
+    gbpExecutionWorker?.start();
     scheduler.start();
   }
 
@@ -125,11 +154,12 @@ export async function buildApp(
     // query against an already-closed connection.
     poller?.stop();
     executionWorker?.stop();
+    gbpExecutionWorker?.stop();
     scheduler.stop();
     if (ownsDb) await db.close();
   });
 
-  return { app, config, db, poller };
+  return { app, config, db, poller, gbpExecutionWorker };
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

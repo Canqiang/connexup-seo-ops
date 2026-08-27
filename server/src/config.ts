@@ -1,6 +1,14 @@
+import path from "node:path";
+
 function positiveInt(raw: string | undefined, fallback: number): number {
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function explicitBoolean(raw: string | undefined, name: string): boolean {
+  if (raw === undefined || raw === "false") return false;
+  if (raw === "true") return true;
+  throw new Error(`${name} must be exactly true or false`);
 }
 
 function sessionTtlHours(raw: string | undefined): number {
@@ -59,6 +67,14 @@ export interface ServerConfig {
   schedulerIntervalMs: number;
   /** 执行 worker 轮询间隔（DISPATCHING attempt 派发与终态结算）。 */
   executionPollIntervalMs: number;
+  /** 专用 GBP CREATE_POST worker；默认关闭，只有挂载逐商户凭证后才可显式开启。 */
+  gbpExecutionEnabled: boolean;
+  gbpSecretDir: string | null;
+  gbpExecutionPollIntervalMs: number;
+  gbpCorePollIntervalMs: number;
+  gbpCoreMaxPolls: number;
+  gbpCoreHttpTimeoutMs: number;
+  gbpLeaseMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -77,6 +93,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       throw new Error("SEO_OPS_MOCK_EXECUTION must not be enabled in production");
     }
   }
+  const coreAiBaseUrl = env.CORE_AI_BASE_URL?.trim() || null;
+  const gbpExecutionEnabled = explicitBoolean(
+    env.SEO_OPS_GBP_EXECUTION_ENABLED,
+    "SEO_OPS_GBP_EXECUTION_ENABLED",
+  );
+  const gbpSecretDir = env.SEO_OPS_GBP_SECRET_DIR?.trim() || null;
+  if (gbpExecutionEnabled) {
+    if (!coreAiBaseUrl) throw new Error("CORE_AI_BASE_URL is required when GBP execution is enabled");
+    if (!gbpSecretDir || !path.isAbsolute(gbpSecretDir)) {
+      throw new Error("SEO_OPS_GBP_SECRET_DIR must be an absolute mounted directory when GBP execution is enabled");
+    }
+  }
   return {
     port: Number(env.PORT ?? "8787"),
     host: env.HOST ?? "127.0.0.1",
@@ -84,7 +112,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     sessionSecret,
     sessionTtlHours: sessionTtlHours(env.SESSION_TTL_HOURS),
     sessionCookieSecure: sessionCookieSecure(env.SESSION_COOKIE_SECURE, env.NODE_ENV),
-    coreAiBaseUrl: env.CORE_AI_BASE_URL?.trim() || null,
+    coreAiBaseUrl,
     coreAiToken: env.CORE_AI_TOKEN?.trim() || null,
     copilotAgentId: env.COPILOT_AGENT_ID?.trim() || null,
     agentRunAgentId: env.AGENT_RUN_AGENT_ID?.trim() || null,
@@ -95,5 +123,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     mockExecution: env.SEO_OPS_MOCK_EXECUTION === "true",
     schedulerIntervalMs: positiveInt(env.SEO_OPS_SCHEDULER_INTERVAL_MS, 60_000),
     executionPollIntervalMs: positiveInt(env.SEO_OPS_EXECUTION_POLL_INTERVAL_MS, 10_000),
+    gbpExecutionEnabled,
+    gbpSecretDir,
+    gbpExecutionPollIntervalMs: positiveInt(env.SEO_OPS_GBP_EXECUTION_POLL_INTERVAL_MS, 10_000),
+    gbpCorePollIntervalMs: positiveInt(env.SEO_OPS_GBP_CORE_POLL_INTERVAL_MS, 3_000),
+    gbpCoreMaxPolls: positiveInt(env.SEO_OPS_GBP_CORE_MAX_POLLS, 120),
+    gbpCoreHttpTimeoutMs: positiveInt(env.SEO_OPS_GBP_CORE_HTTP_TIMEOUT_MS, 15_000),
+    gbpLeaseMs: positiveInt(env.SEO_OPS_GBP_LEASE_MS, 10 * 60_000),
   };
 }
