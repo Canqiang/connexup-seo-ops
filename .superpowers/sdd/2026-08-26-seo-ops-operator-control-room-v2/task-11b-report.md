@@ -119,3 +119,93 @@ SHA-256 src/features/tasks/GbpExecutionPanel.test.tsx
 - UI proof is jsdom component coverage plus a production build, not browser pixel acceptance.
 - Broad non-GBP regression and migration integration remain Task 12 scope, per the explicit speed constraint. Existing generic execution behavior was changed only at the dedicated-command exclusion/fail-closed boundary.
 - The branch and worktree are preserved after the narrow commit; no merge or push is performed.
+
+## Fix Round 1 — minimal execution projection and full lifecycle UI
+
+### Review findings closed
+
+- The pre-confirmation Task execution projection no longer reuses the permissioned settings binding view. Its `binding` member is exactly `ready_for_gate2`, `missing_fields`, and `state_version`; account/location resources, Core API-user identities, write/readback Agent identities, published refs, secret refs, and binding audit identities are absent. Merchant/location display names and the location's own timezone remain available for the approved content/schedule preview. The settings GET/PUT projection remains unchanged and permissioned.
+- `GBP_POST / AUTO_WRITE` now routes to `GbpExecutionPanel` for every Task lifecycle status. It cannot fall through to generic reconciliation, verification, DONE, or failure controls.
+- Loading and failed GET states have explicit `载入中` and `读取失败` badges. `Gate2 已禁用` appears only after a successful projection reports missing/mismatched exact binding readiness.
+- The immutable command panel now renders command status and state version, typed safe error, trigger marker/update time, immutable receipt status/mutation count, and independent readback diff/safe-error evidence already present in the strictly scoped non-secret projection.
+- No Task 10A reconciler, Task 10B media logic, worker, credential path, Core/FBR integration, network/UAT behavior, or GBP write path was changed or invoked.
+
+### Focused RED
+
+The pre-confirmation leakage test failed against the full settings binding projection:
+
+```text
+cd server && npm test -- --run tests/gbpExecutionService.test.ts
+Test Files  1 failed (1)
+Tests       1 failed | 10 passed (11)
+Key failure: binding returned 19 fields including Core/Agent/published/secret/account identities instead of the three readiness fields.
+```
+
+The initial UI review tests failed at the three missing behavior boundaries:
+
+```text
+npm test -- --run src/features/tasks/GbpExecutionPanel.test.tsx
+Test Files  1 failed (1)
+Tests       3 failed | 4 passed (7)
+Failures: loading was labelled Gate2 disabled; state/receipt/readback evidence was absent; DONE used the generic panel.
+```
+
+After closing the named statuses, the exhaustive lifecycle test exposed the remaining whitelist boundary before its removal:
+
+```text
+npm test -- --run src/features/tasks/GbpExecutionPanel.test.tsx
+Test Files  1 failed (1)
+Tests       6 failed | 12 passed (18)
+Failures: DRAFT, NEEDS_INPUT, BLOCKED, READY_FOR_APPROVAL, REVISION_REQUIRED, and APPROVAL_REVOKED still used the generic panel.
+```
+
+### Final focused GREEN
+
+```text
+cd server && npm test -- --run tests/gbpExecutionService.test.ts
+Test Files  1 passed (1)
+Tests       11 passed (11)
+
+npm test -- --run src/features/tasks/GbpExecutionPanel.test.tsx
+Test Files  1 passed (1)
+Tests       18 passed (18)
+
+cd server && npm run typecheck
+exit 0
+
+npm run build
+exit 0; TypeScript project build and Vite production build completed
+
+git diff --check
+exit 0
+```
+
+The 18 frontend tests include explicit loading, error, OUTCOME_UNKNOWN, PENDING_VERIFY, and DONE coverage plus every other `SeoTaskStatus`. No broad suite or browser/UAT run was performed.
+
+### Fix-round deterministic hashes
+
+```text
+SHA-256 server/src/views/mappers.ts
+ee7a67c76e74199e2fad0650326797fb4de03b6c1afece5f649f17a63945be6a
+
+SHA-256 server/tests/gbpExecutionService.test.ts
+9b3ae18c96a57b56ccf64faf755cbb9e2f635ed69b0dac74caafd07d80096821
+
+SHA-256 src/api/types.ts
+f1787ed65312f60edf7e238b72177fa4d460688e0ba32a8c75d08a79ce92a138
+
+SHA-256 src/features/tasks/ExecutionPanel.tsx
+055fe30edc2adf8b9f364dc4e0d0f2f3adc5368d94808f570dbdb98343b580fb
+
+SHA-256 src/features/tasks/GbpExecutionPanel.tsx
+3de5c333fad0d74317820bbe5d5f78249b5598f9bbfdbfacc62494965aa533ee
+
+SHA-256 src/features/tasks/GbpExecutionPanel.test.tsx
+9d73d7c4093b6cb5e797b0b1ae6f849949f0684ab251d8c996e12a3f84c9aa29
+```
+
+### Remaining proof boundary
+
+- Receipt/readback rendering is proven with strict wire fixtures and production build, not live worker/provider data. Task 11C/11D remain responsible for producing those records safely.
+- Pre-approval GBP Tasks with no finalized Task 10B snapshot may correctly show a read error in the always-mounted dedicated panel; they are never mislabelled as a missing-binding Gate 2 decision.
+- Broad non-GBP regression, browser visual QA, and live provider semantics remain deferred under the original stop rules.

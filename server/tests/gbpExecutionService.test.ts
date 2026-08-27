@@ -208,6 +208,38 @@ describe("GBP Gate 2 command and binding", () => {
     expect(JSON.stringify(response.json())).not.toContain(unsafe);
   });
 
+  it("projects only minimal binding readiness before confirmation", async () => {
+    expect((await putReadyBinding(app)).statusCode).toBe(201);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${ids.task}/gbp-execution`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().binding).toEqual({
+      ready_for_gate2: true,
+      missing_fields: [],
+      state_version: 1,
+    });
+    const projection = JSON.stringify(response.json());
+    for (const forbiddenKey of [
+      "account_resource", "location_resource", "core_api_user_id",
+      "core_api_user_external_id", "write_secret_ref", "readback_secret_ref",
+      "write_agent_id", "write_agent_published_ref", "readback_agent_id",
+      "readback_agent_published_ref", "updated_by",
+    ]) {
+      expect(projection).not.toContain(`"${forbiddenKey}"`);
+    }
+    for (const forbiddenValue of [
+      ids.apiUser, ids.writeAgent, ids.readAgent, "accounts/123456789",
+      "locations/987654321", "george-gbp-write", "george-gbp-readback",
+      "published:gbp-write:v1", "published:gbp-readback:v1",
+    ]) {
+      expect(projection).not.toContain(forbiddenValue);
+    }
+  });
+
   it("atomically snapshots the approved draft and converges duplicate confirmation", async () => {
     expect((await putReadyBinding(app)).statusCode).toBe(201);
     const payload = {

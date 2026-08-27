@@ -39,6 +39,9 @@ export function GbpExecutionPanel({ task, onReadback, canExecute }: {
   const [error, setError] = useState<string>();
   const view = resource.data;
   const bindingReady = view?.binding?.ready_for_gate2 ?? view?.available === true;
+  const badge = view?.command_state?.status
+    ?? (view ? (bindingReady ? "待确认" : "Gate2 已禁用")
+      : resource.error ? "读取失败" : "载入中");
   const scheduledIso = useMemo(() => {
     if (!scheduleUtc) return null;
     const parsed = new Date(`${scheduleUtc}:00.000Z`);
@@ -72,14 +75,14 @@ export function GbpExecutionPanel({ task, onReadback, canExecute }: {
 
   return <section aria-labelledby="gbp-execution-heading" className="data-panel execution-panel">
     <div className="panel-heading"><div><span className="eyebrow">DEDICATED CREATE_POST</span><h2 id="gbp-execution-heading"><ShieldCheck size={15} /> GBP 执行</h2><p className="quiet-copy">仅冻结当前审批版本；本面板不会触发 Core 或 Google 写入。</p></div>
-      <span className={`status-pill ${view?.available ? "is-stable" : "is-warning"}`}>{view?.command_state?.status ?? (bindingReady ? "待确认" : "Gate2 已禁用")}</span></div>
+      <span className={`status-pill ${view?.available ? "is-stable" : "is-warning"}`}>{badge}</span></div>
     {resource.loading ? <div className="page-state compact" role="status">读取精确 GBP 执行快照…</div> : null}
     {resource.error ? <div className="page-state compact is-error" role="alert">GBP 执行快照读取失败。<button onClick={resource.reload} type="button">重试</button></div> : null}
     {view?.store ? <dl className="identity-ledger">
       <div><dt>商户</dt><dd>{view.store.merchant_name}</dd></div>
       <div><dt>门店</dt><dd><MapPin size={13} /> {view.store.location_name}</dd></div>
-      <div><dt>GBP account</dt><dd><code>{view.store.account_resource ?? "未绑定"}</code></dd></div>
-      <div><dt>GBP location</dt><dd><code>{view.store.location_resource ?? "未绑定"}</code></dd></div>
+      {view.store.account_resource !== undefined ? <div><dt>GBP account</dt><dd><code>{view.store.account_resource ?? "未绑定"}</code></dd></div> : null}
+      {view.store.location_resource !== undefined ? <div><dt>GBP location</dt><dd><code>{view.store.location_resource ?? "未绑定"}</code></dd></div> : null}
       <div><dt>时区</dt><dd><code>{view.store.timezone ?? "未绑定"}</code></dd></div>
     </dl> : null}
     {view?.schedule ? <dl className="identity-ledger">
@@ -87,6 +90,28 @@ export function GbpExecutionPanel({ task, onReadback, canExecute }: {
       <div><dt>门店本地</dt><dd>{view.schedule.local}</dd></div>
     </dl> : null}
     {view ? <ApprovedPost view={view} /> : null}
+    {view?.command_state ? <div className="execution-body">
+      <h3>命令状态</h3>
+      <dl className="identity-ledger">
+        <div><dt>状态</dt><dd>{view.command_state.status}</dd></div>
+        <div><dt>版本</dt><dd>state v{view.command_state.state_version}</dd></div>
+        <div><dt>安全错误</dt><dd><code>{view.command_state.safe_error_code ?? "—"}</code></dd></div>
+        <div><dt>触发标记</dt><dd>{view.command_state.trigger_started_at ?? "尚未触发"}</dd></div>
+        <div><dt>更新时间</dt><dd>{view.command_state.updated_at}</dd></div>
+      </dl>
+    </div> : null}
+    {view?.receipt ? <div className="execution-body">
+      <h3>不可变回执</h3>
+      <p><strong>{view.receipt.status}</strong> · mutation {view.receipt.provider_mutation_count} · {view.receipt.created_at}</p>
+    </div> : null}
+    {view?.readbacks?.length ? <div className="execution-body">
+      <h3>独立回读</h3>
+      <ul>{view.readbacks.map((readback) => <li key={readback.id}>
+        <code>{readback.diff_codes.length ? readback.diff_codes.join(" · ") : "EXACT_MATCH"}</code>
+        {readback.safe_error_code ? <> · <code>{readback.safe_error_code}</code></> : null}
+        <> · {readback.created_at}</>
+      </li>)}</ul>
+    </div> : null}
     {view && !view.available ? <div className="execution-body">
       {!bindingReady ? <><p className="form-error">Gate2 已禁用：精确地点绑定不完整。</p><p className="quiet-copy">旧 GBP_WRITE / 全局 GBP_EXECUTION 不能替代精确地点绑定。</p>
         <ul>{(view.binding?.missing_fields ?? []).map((field) => <li key={field}><code>{field}</code></li>)}</ul></> : null}

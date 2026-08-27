@@ -33,9 +33,7 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
     return <section className="data-panel execution-panel"><div className="panel-heading"><div><span className="eyebrow">EXECUTION</span><h2>执行</h2></div><ModeTag mode={mode} /></div>
       <div className="execution-body"><p className="quiet-copy">人工任务：完成后附加证据并走审批归档，无系统派发。</p></div></section>;
   }
-  if (task.task_type === "GBP_POST" && mode === "AUTO_WRITE"
-    && ["APPROVED", "EXECUTION_CONFIRMED", "DISPATCHING", "OUTCOME_UNKNOWN", "PENDING_VERIFY"]
-      .includes(task.status)) {
+  if (task.task_type === "GBP_POST" && mode === "AUTO_WRITE") {
     return <GbpExecutionPanel canExecute={canExecute} onReadback={onReadback} task={task} />;
   }
 

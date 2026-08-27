@@ -297,23 +297,14 @@ const GBP_BINDING_FIELDS = [
   "readback_agent_published_ref", "status",
 ] as const;
 
-/** Exact location binding projection. Values are logical coordinates and
- * mounted-secret references only; credential material has no domain field. */
-export function gbpLocationBindingView(
+function gbpBindingReadiness(
   binding: GbpLocationBinding | null,
-  merchantId: string,
-  locationId: string,
   location?: Location | null,
-): Record<string, unknown> {
+): { ready_for_gate2: boolean; missing_fields: string[]; state_version: number } {
   if (!binding) return {
-    merchant_id: merchantId, location_id: locationId,
-    account_resource: null, location_resource: null, timezone: null,
-    core_api_user_id: null, core_api_user_external_id: null,
-    write_secret_ref: null, readback_secret_ref: null,
-    write_agent_id: null, write_agent_published_ref: null,
-    readback_agent_id: null, readback_agent_published_ref: null,
-    status: "MISSING", state_version: 0, ready_for_gate2: false,
-    missing_fields: [...GBP_BINDING_FIELDS], updated_by: null, updated_at: null,
+    ready_for_gate2: false,
+    missing_fields: [...GBP_BINDING_FIELDS],
+    state_version: 0,
   };
   const exactLocation = Boolean(location
     && location.id === binding.locationId
@@ -328,6 +319,31 @@ export function gbpLocationBindingView(
           ? [] : ["location_resource"]),
       ];
   return {
+    ready_for_gate2: binding.status === "READY" && exactLocation,
+    missing_fields: missingFields,
+    state_version: binding.stateVersion,
+  };
+}
+
+/** Exact location binding projection. Values are logical coordinates and
+ * mounted-secret references only; credential material has no domain field. */
+export function gbpLocationBindingView(
+  binding: GbpLocationBinding | null,
+  merchantId: string,
+  locationId: string,
+  location?: Location | null,
+): Record<string, unknown> {
+  const readiness = gbpBindingReadiness(binding, location);
+  if (!binding) return {
+    merchant_id: merchantId, location_id: locationId,
+    account_resource: null, location_resource: null, timezone: null,
+    core_api_user_id: null, core_api_user_external_id: null,
+    write_secret_ref: null, readback_secret_ref: null,
+    write_agent_id: null, write_agent_published_ref: null,
+    readback_agent_id: null, readback_agent_published_ref: null,
+    status: "MISSING", ...readiness, updated_by: null, updated_at: null,
+  };
+  return {
     merchant_id: binding.merchantId, location_id: binding.locationId,
     account_resource: binding.accountResource, location_resource: binding.locationResource,
     timezone: binding.timezone, core_api_user_id: binding.coreApiUserId,
@@ -337,9 +353,7 @@ export function gbpLocationBindingView(
     write_agent_published_ref: binding.writeAgentPublishedRef,
     readback_agent_id: binding.readbackAgentId,
     readback_agent_published_ref: binding.readbackAgentPublishedRef,
-    status: binding.status, state_version: binding.stateVersion,
-    ready_for_gate2: binding.status === "READY" && exactLocation,
-    missing_fields: missingFields,
+    status: binding.status, ...readiness,
     updated_by: binding.updatedBy, updated_at: binding.updatedAt,
   };
 }
@@ -353,9 +367,7 @@ export function gbpExecutionView(
     store: {
       merchant_name: data.merchant?.displayName ?? data.task.merchantId,
       location_name: data.location?.displayName ?? data.task.locationId,
-      account_resource: data.binding?.accountResource ?? null,
-      location_resource: data.binding?.locationResource ?? null,
-      timezone: data.binding?.timezone ?? data.location?.timezone ?? null,
+      timezone: data.location?.timezone ?? null,
     },
     approved: {
       body: data.previewDraft.body,
@@ -372,7 +384,7 @@ export function gbpExecutionView(
     },
     task_revision: data.task.taskRevision,
     draft_version: data.previewDraft.version,
-    binding: gbpLocationBindingView(data.binding, data.task.merchantId, data.task.locationId!, data.location),
+    binding: gbpBindingReadiness(data.binding, data.location),
   };
   const { command } = data.command;
   return {

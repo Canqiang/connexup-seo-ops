@@ -340,7 +340,7 @@ export interface GbpExecutionWire {
   available: boolean;
   store?: {
     merchant_name: string; location_name: string;
-    account_resource: string | null; location_resource: string | null; timezone: string | null;
+    account_resource?: string | null; location_resource?: string | null; timezone: string | null;
   };
   schedule?: { utc: string; local: string };
   approved?: {
@@ -351,7 +351,7 @@ export interface GbpExecutionWire {
   hashes?: { command?: string; execution_spec: string; draft: string; body?: string; cta?: string; image: string };
   task_revision?: number;
   draft_version?: number;
-  binding?: GbpLocationBindingWire;
+  binding?: { ready_for_gate2: boolean; missing_fields: string[]; state_version: number };
   command_state?: {
     status: string; state_version: number; scheduled_for: string; safe_error_code: string | null;
     trigger_started_at: string | null; updated_at: string;
