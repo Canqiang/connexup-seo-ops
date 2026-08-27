@@ -10,6 +10,7 @@ import type {
   StyleProfile,
 } from "../repos/settingsRepo.js";
 import type { ContentDraft } from "../repos/draftRepo.js";
+import type { DraftMediaPreview } from "../services/contentService.js";
 import type { SpecialistArtifact } from "../repos/specialistArtifactRepo.js";
 
 /** Wire views — snake_case shapes that match the frontend types in
@@ -340,7 +341,10 @@ export function styleProfileView(s: StyleProfile): Record<string, unknown> {
   };
 }
 
-export function draftView(d: ContentDraft): Record<string, unknown> {
+export function draftView(
+  d: ContentDraft,
+  mediaPreviews: DraftMediaPreview[] = [],
+): Record<string, unknown> {
   return {
     id: d.id,
     task_id: d.taskId,
@@ -350,6 +354,7 @@ export function draftView(d: ContentDraft): Record<string, unknown> {
     cta_type: d.ctaType,
     cta_url: d.ctaUrl,
     media: d.media,
+    media_previews: mediaPreviews,
     source: d.source,
     feedback: d.feedback,
     sha256: d.sha256,

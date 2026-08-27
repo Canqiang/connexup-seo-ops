@@ -68,9 +68,9 @@ const expectedRoster = {
     name: "[SEO Ops] Execution Plan v1",
     output: "seo_ops.execution_plan.v1",
   },
-  "seo-ops-gbp-post-content-v1.json": {
-    name: "[SEO Ops] GBP Post Content v1",
-    output: "seo_ops.gbp_post_draft.v1",
+  "seo-ops-gbp-post-content-v2.json": {
+    name: "[SEO Ops] GBP Post Content v2",
+    output: "seo_ops.gbp_post_draft.v2",
   },
   "seo-ops-keyword-set-v2.json": {
     name: "[SEO Ops] Keyword Set v2",
@@ -233,7 +233,17 @@ describe("Core AI SEO Ops Agent manifests", () => {
 
     for (const file of Object.keys(expectedRoster) as Array<keyof typeof expectedRoster>) {
       const manifest = loadManifest(file);
-      for (const tool of manifest.tools) expect(establishedReadOnlyToolIds.has(tool.id), `${file}: ${tool.id}`).toBe(true);
+      for (const tool of manifest.tools) {
+        if (file === "seo-ops-gbp-post-content-v2.json") {
+          expect(tool).toEqual({
+            id: "builtin:builtin-media-generation",
+            type: "BUILTIN",
+            source: "builtin",
+          });
+        } else {
+          expect(establishedReadOnlyToolIds.has(tool.id), `${file}: ${tool.id}`).toBe(true);
+        }
+      }
       for (const skillId of manifest.skill_ids) expect(establishedSkillIds.has(skillId), `${file}: ${skillId}`).toBe(true);
     }
   });
@@ -277,17 +287,33 @@ describe("Core AI SEO Ops Agent manifests", () => {
   });
 
   it("makes GBP content an exact US-English draft and never a publication claim", () => {
-    const post = loadManifest("seo-ops-gbp-post-content-v1.json");
-    expect(post.tools).toEqual([]);
+    const post = loadManifest("seo-ops-gbp-post-content-v2.json");
+    expect(post.tools).toEqual([{
+      id: "builtin:builtin-media-generation",
+      type: "BUILTIN",
+      source: "builtin",
+    }]);
     expect(post.skill_ids).toEqual([]);
     expect(post.system_prompt).toContain("one exact dated occurrence");
     expect(post.system_prompt).toContain("voice-profile version");
     expect(post.system_prompt).toContain("primary keyword cluster");
     expect(post.system_prompt).toContain("United States English");
+    expect(post.system_prompt).toContain("generate_image exactly once with n=1");
+    expect(post.system_prompt).toMatch(/never (?:call|use).*video/i);
+    expect(post.system_prompt).toContain("actual image is a Core Run attachment");
+    expect(post.system_prompt).toMatch(/no phone number/i);
     expect(post.system_prompt).toContain("Never publish");
     expect(post.system_prompt).not.toMatch(/publication_(?:id|status|success)/i);
 
     const schema = JSON.parse(post.response_schema);
+    expect(schema.required).toEqual(expect.arrayContaining(["cta_type", "media_brief"]));
+    expect(schema.properties.cta_type.enum).toEqual([
+      "NONE", "BOOK", "ORDER", "SHOP", "LEARN_MORE", "SIGN_UP", "CALL",
+    ]);
+    expect(schema.properties.media_brief.required).toEqual([
+      "concept", "image_prompt", "alt_text", "expected_attachment_count",
+    ]);
+    expect(schema.properties.media_brief.properties.expected_attachment_count.const).toBe(1);
     expect(Object.keys(schema.properties)).not.toEqual(
       expect.arrayContaining(["publication_id", "published", "publication_success"]),
     );

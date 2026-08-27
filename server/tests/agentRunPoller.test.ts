@@ -14,7 +14,7 @@ import {
 import type { AgentRun } from "../src/repos/agentRunTypes.js";
 import { AgentRunPoller } from "../src/services/agentRunPoller.js";
 import type { AgentRunPollerDeps } from "../src/services/agentRunPoller.js";
-import type { CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiClient.js";
+import type { ArtifactDownloadOptions, CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiClient.js";
 import { createTestDb } from "./helpers/pgTest.js";
 
 const T0 = "2026-08-19T10:00:00.000Z";
@@ -35,6 +35,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2000): Pro
 function fakeClient(
   coreByRun: Record<string, CoreAgentRunDetail | Error>,
   artifactBytesByUrl: Record<string, Uint8Array | Error> = {},
+  onDownload?: (options: ArtifactDownloadOptions | undefined) => void,
 ): CoreAiClient {
   return {
     async trigger() {
@@ -49,7 +50,8 @@ function fakeClient(
     async cancel() {
       throw new Error("cancel not expected in poller tests");
     },
-    async downloadArtifact(url) {
+    async downloadArtifact(url, options) {
+      onDownload?.(options);
       const value = artifactBytesByUrl[url];
       if (value instanceof Error) throw value;
       if (!value) throw new Error(`unexpected download for ${url}`);
@@ -123,10 +125,11 @@ describe("AgentRunPoller", () => {
     coreByRun: Record<string, CoreAgentRunDetail | Error>,
     deps: Partial<AgentRunPollerDeps> = {},
     artifactBytesByUrl: Record<string, Uint8Array | Error> = {},
+    onDownload?: (options: ArtifactDownloadOptions | undefined) => void,
   ) {
     return new AgentRunPoller({
       db,
-      client: fakeClient(coreByRun, artifactBytesByUrl),
+      client: fakeClient(coreByRun, artifactBytesByUrl, onDownload),
       agentId: "agent-1",
       artifactsDir,
       ...deps,
@@ -167,6 +170,7 @@ describe("AgentRunPoller", () => {
         { file_id: "f-2", file_name: "chart.png", content_type: "image/png", download_url: "https://core.example/files/f-2" },
       ],
     };
+    const downloadOptions: Array<ArtifactDownloadOptions | undefined> = [];
     const poller = makePoller(
       { "core-1": core },
       {},
@@ -174,6 +178,7 @@ describe("AgentRunPoller", () => {
         "https://core.example/files/f-1": csv,
         "https://core.example/files/f-2": new Error("boom"),
       },
+      (options) => downloadOptions.push(options),
     );
     await poller.pollOnce();
 
@@ -192,6 +197,7 @@ describe("AgentRunPoller", () => {
     expect(failed.localPath).toBeNull();
     expect(failed.remoteUrl).toBe("https://core.example/files/f-2");
     expect(failed.downloadError).toBe("boom");
+    expect(downloadOptions).toEqual([undefined, undefined]);
   });
 
   it("second pollOnce after terminal is a no-op (crash-replay idempotence)", async () => {

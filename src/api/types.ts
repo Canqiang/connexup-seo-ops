@@ -325,6 +325,9 @@ export interface AgentBindingWire {
 export interface DraftWire {
   id: string; task_id: string; version: number; body: string;
   cta_type: string | null; cta_url: string | null; media: string[];
+  media_previews?: Array<{
+    deliverable_id: string; sha256: string; download_path: string; alt_text: string;
+  }>;
   source: "AGENT_GENERATED" | "AGENT_REWRITE" | "HUMAN_EDIT";
   feedback: string | null; sha256: string; created_by: string | null; created_at: string;
 }

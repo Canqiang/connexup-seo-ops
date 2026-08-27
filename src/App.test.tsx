@@ -548,6 +548,47 @@ test("task hero shows the latest draft before technical details", async () => {
   expect(screen.getByText("技术详情（审计）").closest("details")).not.toHaveAttribute("open");
 });
 
+test("task hero previews only the authenticated local GBP image and CTA before approval", async () => {
+  draftData = [{
+    id: "draft-image", task_id: "task-1", version: 2,
+    body: "Order the confirmed lunch selection online.",
+    cta_type: "ORDER", cta_url: "https://example.test/order",
+    media: ["https://core-ai.example/remote-image.png"],
+    media_previews: [{
+      deliverable_id: "deliverable-image",
+      sha256: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      download_path: "/api/seo-ops/deliverables/deliverable-image/download",
+      alt_text: "Confirmed lunch plate",
+    }],
+    source: "AGENT_GENERATED", feedback: null,
+    sha256: "sha256:draft-image", created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  } as DraftWire];
+  renderApp("/tasks/task-1");
+
+  const image = await screen.findByRole("img", { name: "Confirmed lunch plate" });
+  expect(within(screen.getByLabelText("当前内容")).getByRole("status")).toHaveTextContent("图片加载中");
+  expect(image).toHaveAttribute("src", "/api/seo-ops/deliverables/deliverable-image/download");
+  expect(image).not.toHaveAttribute("src", expect.stringContaining("core-ai.example"));
+  expect(screen.getByText("CTA：ORDER · https://example.test/order")).toBeVisible();
+  const approval = screen.getByRole("button", { name: "批准当前版本" });
+  expect(image.compareDocumentPosition(approval) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("task hero never turns raw or malformed draft media into an image source", async () => {
+  draftData = [{
+    id: "draft-unsafe-image", task_id: "task-1", version: 2, body: "Safe copy.",
+    cta_type: "NONE", cta_url: null,
+    media: ["https://core-ai.example/remote-image.png", "{malformed"],
+    media_previews: [], source: "AGENT_GENERATED", feedback: null,
+    sha256: "sha256:draft-unsafe-image", created_by: "system", created_at: "2026-08-27T08:00:00Z",
+  } as DraftWire];
+  renderApp("/tasks/task-1");
+
+  await screen.findByText("Safe copy.");
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  expect(document.querySelector('img[src*="core-ai.example"]')).toBeNull();
+});
+
 test("task hero shows an accepted artifact when no current draft exists", async () => {
   artifactData = [{ id: "artifact-full-1", task_id: "task-1", merchant_id: "only-bear", artifact_type: "AUDIT_REPORT", schema_version: "v1", title: "已接受的审计报告", summary: "当前可交付审计摘要", payload: {}, core_run_id: "core-run-full", created_by: "user-1", created_at: "2026-08-26T08:00:00Z" }];
   renderApp("/tasks/task-1");

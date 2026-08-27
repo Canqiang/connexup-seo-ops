@@ -23,8 +23,13 @@ import {
   resetFailedTask,
   resolveAttemptOutcome,
 } from "../services/executionService.js";
-import { addDraft, addDraftRevision, draftsView } from "../services/contentService.js";
-import { finalizeDraftEvidence } from "../services/taskService.js";
+import {
+  addDraft,
+  addDraftRevision,
+  draftsView,
+  finalizeDraftRevision,
+  mediaPreviewsForDraft,
+} from "../services/contentService.js";
 import { schedulerTick } from "../services/schedulerService.js";
 import {
   deriveCapabilityStatus,
@@ -480,8 +485,14 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
   app.get("/api/seo-ops/tasks/:taskId/drafts", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     const { taskId } = request.params as { taskId: string };
-    await requireTaskAccess(ctx.db, actor, taskId);
-    return { items: (await draftsView(ctx.db, taskId)).map(draftView) };
+    const task = await requireTaskAccess(ctx.db, actor, taskId);
+    const drafts = await draftsView(ctx.db, taskId);
+    return {
+      items: await Promise.all(drafts.map(async (draft) => draftView(
+        draft,
+        await mediaPreviewsForDraft(ctx.db, task, draft),
+      ))),
+    };
   });
 
   app.post("/api/seo-ops/tasks/:taskId/content-runs", async (request, reply) => {
@@ -535,7 +546,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     return taskView(task, await taskNames(ctx, task));
   });
 
-  // 定稿 = 把指定版本的稿子作为 CONTENT_DRAFT 证据挂到当前修订版。
+  // 定稿 = 锁定指定稿件并嵌入新 Task 修订版；新证据与审批哈希绑定同一内容块。
   app.post(
     "/api/seo-ops/tasks/:taskId/drafts/:version/finalize",
     async (request, reply) => {
@@ -547,20 +558,11 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       if (!Number.isInteger(versionNo) || versionNo < 1) {
         throw new ApiError(400, "version must be a positive integer");
       }
-      const drafts = await draftsView(ctx.db, taskId);
-      const draft = drafts.find((d) => d.version === versionNo);
-      if (!draft) throw new ApiError(404, `draft v${versionNo} not found`);
-      const { task, replayed } = await finalizeDraftEvidence(
+      const { task, replayed } = await finalizeDraftRevision(
         ctx.db,
         taskId,
         {
-          type: "CONTENT_DRAFT",
-          source_ref: `draft:${taskId}:v${draft.version}`,
-          sha256: draft.sha256,
-          // 取稿子自身的创建时间（确定性）：同 key 重试的指纹才能一致，网络重试走 replay 而不是 409。
-          captured_at: draft.createdAt,
-          verification_status: "VERIFIED",
-          requirement_key: "CONTENT_DRAFT",
+          version: versionNo,
           expected_state_version: body.expected_state_version,
           idempotency_key: body.idempotency_key,
         },

@@ -3,15 +3,18 @@ import type { Db } from "../db/connection.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { getTask, getTaskForUpdate } from "../repos/taskRepo.js";
 import type { EvidenceRefRecord, Task, TaskDefinitionRecord } from "../repos/taskTypes.js";
-import { executionSpecHash, requestFingerprint } from "../domain/hashing.js";
+import { canonicalize, executionSpecHash, requestFingerprint } from "../domain/hashing.js";
 import { buildEvent, mutateTask, reevaluate } from "./taskService.js";
 import {
   insertDraft,
   getDraftByAgentRunId,
+  getDraftByTaskVersion,
   latestDraft,
   listDraftsByTask,
   type ContentDraft,
 } from "../repos/draftRepo.js";
+import { findActiveGbpContentRunByTask, getAgentRun, getDeliverable } from "../repos/agentRunRepo.js";
+import { canAppendEvidence } from "../domain/stateMachine.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -93,10 +96,10 @@ export async function addAgentGeneratedDraftFromRun(
   db: Db,
   taskId: string,
   agentRunId: string,
-  body: string,
+  input: Pick<AddDraftInput, "body" | "cta_type" | "cta_url" | "media">,
   actorId: string,
 ): Promise<{ draft: ContentDraft; replayed: boolean }> {
-  validateDraftInput({ body, source: "AGENT_GENERATED" });
+  validateDraftInput({ ...input, source: "AGENT_GENERATED" });
   return db.withTransaction(async (tx) => {
     const task = await getTaskForUpdate(tx, taskId);
     if (!task) throw notFound(`task ${taskId} not found`);
@@ -112,7 +115,7 @@ export async function addAgentGeneratedDraftFromRun(
     const draft = buildDraft(
       taskId,
       (last?.version ?? 0) + 1,
-      { body, source: "AGENT_GENERATED" },
+      { ...input, source: "AGENT_GENERATED" },
       actorId,
       agentRunId,
     );
@@ -209,6 +212,166 @@ export async function draftsView(db: Db, taskId: string): Promise<ContentDraft[]
   const task = await getTask(db, taskId);
   if (!task) throw notFound(`task ${taskId} not found`);
   return listDraftsByTask(db, taskId);
+}
+
+export interface DraftMediaPreview {
+  deliverable_id: string;
+  sha256: string;
+  download_path: string;
+  alt_text: string;
+}
+
+interface CanonicalMediaRef {
+  schema_version: "seo_ops.media_ref.v1";
+  deliverable_id: string;
+  sha256: string;
+  alt_text: string;
+}
+
+function parseCanonicalMediaRef(raw: string): CanonicalMediaRef | null {
+  let value: unknown;
+  try {
+    if (canonicalize(raw) !== raw) return null;
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(",") !== "alt_text,deliverable_id,schema_version,sha256") return null;
+  if (record.schema_version !== "seo_ops.media_ref.v1"
+    || typeof record.deliverable_id !== "string" || record.deliverable_id === ""
+    || typeof record.sha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.sha256)
+    || typeof record.alt_text !== "string" || record.alt_text.trim() === "") return null;
+  return record as unknown as CanonicalMediaRef;
+}
+
+async function mediaPreviewForRef(
+  db: Db,
+  task: Task,
+  draft: ContentDraft,
+  raw: string,
+): Promise<DraftMediaPreview | null> {
+  const ref = parseCanonicalMediaRef(raw);
+  if (!ref || !draft.agentRunId) return null;
+  const [deliverable, run] = await Promise.all([
+    getDeliverable(db, ref.deliverable_id),
+    getAgentRun(db, draft.agentRunId),
+  ]);
+  if (!deliverable || !run
+    || deliverable.runId !== draft.agentRunId
+    || run.id !== draft.agentRunId
+    || run.taskId !== task.id
+    || run.stage !== "GBP_POST_CONTENT"
+    || run.merchantId !== task.merchantId
+    || run.locationId !== task.locationId
+    || deliverable.kind !== "ATTACHMENT"
+    || deliverable.localPath === null
+    || deliverable.sha256 !== ref.sha256
+    || (deliverable.contentType !== "image/png" && deliverable.contentType !== "image/jpeg")) return null;
+  return {
+    deliverable_id: deliverable.id,
+    sha256: ref.sha256,
+    download_path: `/api/seo-ops/deliverables/${encodeURIComponent(deliverable.id)}/download`,
+    alt_text: ref.alt_text,
+  };
+}
+
+export async function mediaPreviewsForDraft(
+  db: Db,
+  task: Task,
+  draft: ContentDraft,
+): Promise<DraftMediaPreview[]> {
+  const previews = await Promise.all(draft.media.map((raw) => mediaPreviewForRef(db, task, draft, raw)));
+  return previews.filter((item): item is DraftMediaPreview => item !== null);
+}
+
+export interface FinalizeDraftInput {
+  version: number;
+  expected_state_version: number;
+  idempotency_key: string;
+}
+
+/** Finalization is a definition mutation. The selected draft is reloaded under
+ * the Task lock and embedded byte-for-byte into a new revision so approval
+ * binds body, CTA, deliverable identity, and image SHA. */
+export function finalizeDraftRevision(
+  db: Db,
+  taskId: string,
+  input: FinalizeDraftInput,
+  actorId: string,
+): Promise<{ task: Task; replayed: boolean }> {
+  const fingerprint = requestFingerprint({ draft_version: input.version });
+  return mutateTask(
+    db,
+    taskId,
+    input.idempotency_key,
+    fingerprint,
+    input.expected_state_version,
+    async (task, tx) => {
+      if (await findActiveGbpContentRunByTask(tx, {
+        stage: "GBP_POST_CONTENT", taskId: task.id, merchantId: task.merchantId, locationId: task.locationId,
+      })) {
+        throw conflict("cannot finalize a GBP Post draft while content generation is active", "CONTENT_RUN_ACTIVE");
+      }
+      if (!canAppendEvidence(task.status)) {
+        throw conflict(`cannot finalize content in status ${task.status}`, "INVALID_TRANSITION");
+      }
+      const draft = await getDraftByTaskVersion(tx, task.id, input.version);
+      if (!draft) throw notFound(`draft v${input.version} not found`);
+      const previews = await mediaPreviewsForDraft(tx, task, draft);
+      if (draft.media.length > 0 && previews.length !== draft.media.length) {
+        throw conflict("draft media does not belong to this exact Task-linked GBP Run", "DRAFT_MEDIA_INVALID");
+      }
+      let original: unknown;
+      try { original = JSON.parse(task.executionSpec); } catch { original = task.executionSpec; }
+      const executionSpec = JSON.stringify(
+        original !== null && typeof original === "object" && !Array.isArray(original)
+          ? { ...(original as Record<string, unknown>), content_draft: specBlockForDraft(draft) }
+          : { execution: original, content_draft: specBlockForDraft(draft) },
+      );
+      const createdAt = nowIso();
+      const revision: TaskDefinitionRecord = {
+        ...task.revisions.at(-1)!,
+        revision: task.taskRevision + 1,
+        executionSpec,
+        executionSpecHash: executionSpecHash(executionSpec),
+        createdBy: actorId,
+        createdAt,
+      };
+      const evidence: EvidenceRefRecord = {
+        id: crypto.randomUUID(), taskRevision: revision.revision, type: "CONTENT_DRAFT",
+        sourceRef: `draft:${taskId}:v${draft.version}`, sha256: draft.sha256,
+        capturedAt: draft.createdAt, verificationStatus: "VERIFIED", requirementKey: "CONTENT_DRAFT",
+        createdBy: actorId, createdAt,
+      };
+      const reusableEvidence = task.evidenceRefs
+        .filter((item) => item.taskRevision === task.taskRevision
+          && item.type !== "CONTENT_DRAFT" && item.verificationStatus === "VERIFIED")
+        .map((item) => ({
+          ...item, id: crypto.randomUUID(), taskRevision: revision.revision,
+          createdBy: actorId, createdAt, reusedFromEvidenceId: item.id,
+        }));
+      const updated: Task = {
+        ...task,
+        executionSpec,
+        executionSpecHash: revision.executionSpecHash,
+        taskRevision: revision.revision,
+        revisions: [...task.revisions, revision],
+        evidenceRefs: [...task.evidenceRefs, evidence, ...reusableEvidence],
+        stateVersion: task.stateVersion + 1,
+        updatedAt: createdAt,
+      };
+      const derived = await reevaluate(tx, updated);
+      updated.status = derived.status;
+      updated.evidenceState = derived.evidenceState;
+      updated.events = [...task.events, buildEvent(
+        "CONTENT_DRAFT_FINALIZED", updated.taskRevision, updated.stateVersion, actorId,
+        { fromStatus: task.status, toStatus: updated.status, referenceId: draft.id },
+      )];
+      return updated;
+    },
+  );
 }
 
 /** 定稿引用：写进任务修订版 execution_spec 的内容块。审批哈希由 taskService

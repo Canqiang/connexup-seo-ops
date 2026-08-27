@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import {
   triggerGbpPostContentRun,
 } from "../src/services/gbpPostContentService.js";
 import { allocateAgentRun } from "../src/services/agentRunAllocator.js";
-import { addAgentGeneratedDraftFromRun } from "../src/services/contentService.js";
+import { addAgentGeneratedDraftFromRun, draftSha256 } from "../src/services/contentService.js";
 import {
   getAgentRun,
   insertAgentRun,
@@ -35,6 +36,9 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     failTriggerNumbers?: number[];
     onTriggerStarted?: () => void;
     waitBeforeTriggerReturn?: () => Promise<void>;
+    transformCompleted?: (detail: CoreAgentRunDetail) => CoreAgentRunDetail;
+    downloadBytes?: Uint8Array;
+    downloadError?: Error;
   } = {}) {
     let triggerCount = 0;
     let getRunCount = 0;
@@ -71,12 +75,12 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
           primary_keyword_cluster: Record<string, unknown>;
           evidence_references: string[];
         };
-        return {
+        const completed: CoreAgentRunDetail = {
           id,
           agent_id: "agent-gbp-content",
           status: "COMPLETED",
           output: JSON.stringify({
-            schema_version: "seo_ops.gbp_post_draft.v1",
+            schema_version: "seo_ops.gbp_post_draft.v2",
             merchant_id: request.merchant.id,
             location_id: request.location.id,
             occurrence_at: request.occurrence_at,
@@ -86,18 +90,31 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
             primary_keyword_cluster: request.primary_keyword_cluster,
             evidence_references: request.evidence_references,
             copy: "Try our crispy chicken lunch in Mineola this Thursday.",
+            cta_type: "NONE",
             media_brief: {
               concept: "Crispy chicken lunch plate in the restaurant.",
+              image_prompt: "Square restaurant photograph of the supplied crispy chicken lunch plate.",
               alt_text: "Crispy chicken lunch served in Mineola.",
+              expected_attachment_count: 1,
             },
             limitations: [],
           }),
+          artifacts: [{
+            file_id: "generated-image-1",
+            file_name: "gbp-post.png",
+            content_type: "image/png",
+            size: 8,
+            download_url: "https://core-ai.example/api/files/generated-image-1",
+          }],
         };
+        return options.transformCompleted?.(completed) ?? completed;
       },
       async cancel() {},
-      async downloadArtifact() {
+      async downloadArtifact(_url, downloadOptions) {
         downloadCount += 1;
-        throw new Error("GBP content has no attachments");
+        expect(downloadOptions?.maxBytes).toBeGreaterThan(0);
+        if (options.downloadError) throw options.downloadError;
+        return options.downloadBytes ?? Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
       },
     };
     return {
@@ -112,7 +129,11 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
   async function setupContentTask(
     coreAi: CoreAiClient,
     suffix: string,
-    config: { dailyRunLimit?: number; stageAgentId?: string } = {},
+    config: {
+      dailyRunLimit?: number;
+      stageAgentId?: string;
+      executionSpecExtras?: Record<string, unknown>;
+    } = {},
   ) {
     const artifactsDir = mkdtempSync(join(tmpdir(), `seo-ops-gbp-${suffix}-`));
     tempDirs.push(artifactsDir);
@@ -180,6 +201,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
               keywords: ["crispy chicken lunch mineola"],
             },
             evidence_references: ["artifact:keyword-set-v2"],
+            ...config.executionSpecExtras,
           }),
           required_evidence_types: ["CONTENT_DRAFT"],
           execution_mode: "AUTO_WRITE",
@@ -950,7 +972,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
 
   it("rejects publication claims at the strict output parser boundary", () => {
     const output = {
-      schema_version: "seo_ops.gbp_post_draft.v1",
+      schema_version: "seo_ops.gbp_post_draft.v2",
       merchant_id: "merchant-1",
       location_id: "location-1",
       occurrence_at: "2026-08-27T17:00:00.000-04:00",
@@ -964,14 +986,201 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       },
       evidence_references: ["artifact:keyword-set-v2"],
       copy: "Try our crispy chicken lunch in Mineola this Thursday.",
-      media_brief: { concept: "Lunch plate", alt_text: "Crispy chicken lunch" },
+      cta_type: "NONE",
+      media_brief: {
+        concept: "Lunch plate",
+        image_prompt: "Square restaurant photograph of the supplied lunch plate.",
+        alt_text: "Crispy chicken lunch",
+        expected_attachment_count: 1,
+      },
       limitations: [],
     };
     expect(parseGbpPostDraftOutput(JSON.stringify(output))).toMatchObject({
-      schema_version: "seo_ops.gbp_post_draft.v1",
+      schema_version: "seo_ops.gbp_post_draft.v2",
     });
     expect(() => parseGbpPostDraftOutput(JSON.stringify({ ...output, published: true })))
       .toThrow(/published/);
+  });
+
+  it("binds body, CTA, deliverable identity, and image SHA into the draft hash", () => {
+    const media = (deliverableId: string, sha256: string) => [JSON.stringify({
+      alt_text: "Lunch plate",
+      deliverable_id: deliverableId,
+      schema_version: "seo_ops.media_ref.v1",
+      sha256,
+    })];
+    const base = { body: "Lunch copy", ctaType: "ORDER", ctaUrl: "https://example.test/order", media: media("d-1", "sha256:aaa") };
+    const hashes = [
+      draftSha256(base),
+      draftSha256({ ...base, body: "Changed lunch copy" }),
+      draftSha256({ ...base, ctaType: "LEARN_MORE" }),
+      draftSha256({ ...base, ctaUrl: "https://example.test/menu" }),
+      draftSha256({ ...base, media: media("d-2", "sha256:aaa") }),
+      draftSha256({ ...base, media: media("d-1", "sha256:bbb") }),
+    ];
+    expect(new Set(hashes).size).toBe(hashes.length);
+  });
+
+  it.each([
+    {
+      name: "missing image",
+      suffix: "img-missing",
+      code: "IMAGE_ATTACHMENT_MISSING",
+      transform: (detail: CoreAgentRunDetail) => ({ ...detail, artifacts: [] }),
+    },
+    {
+      name: "multiple images",
+      suffix: "img-multiple",
+      code: "IMAGE_ATTACHMENT_COUNT_INVALID",
+      transform: (detail: CoreAgentRunDetail) => ({ ...detail, artifacts: [
+        ...detail.artifacts!,
+        { ...detail.artifacts![0], file_id: "generated-image-2" },
+      ] }),
+    },
+    {
+      name: "declared non-image",
+      suffix: "img-type",
+      code: "IMAGE_ATTACHMENT_INVALID_TYPE",
+      transform: (detail: CoreAgentRunDetail) => ({ ...detail, artifacts: [
+        { ...detail.artifacts![0], content_type: "video/mp4" },
+      ] }),
+    },
+  ])("fails $name before download with the bounded GBP code", async ({ code, suffix, transform }) => {
+    const core = fakeCore({ transformCompleted: transform });
+    const built = await setupContentTask(core.client, suffix);
+    const created = await built.app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: `run-${code.toLowerCase()}` },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    const run = await getAgentRun(built.db, created.json().id);
+    expect(run).toMatchObject({ status: "FAILED", errorCode: code });
+    expect(core.downloadCount()).toBe(0);
+    expect((await built.app.inject({ method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts` })).json().items).toEqual([]);
+  });
+
+  it.each([
+    { name: "download failure", suffix: "img-download", code: "IMAGE_ATTACHMENT_UNDOWNLOADED", error: new Error("socket closed") },
+    { name: "oversize", suffix: "img-oversize", code: "IMAGE_ATTACHMENT_TOO_LARGE", error: new Error("artifact download exceeds byte limit") },
+  ])("fails $name without creating a draft", async ({ code, error, suffix }) => {
+    const core = fakeCore({ downloadError: error });
+    const built = await setupContentTask(core.client, suffix);
+    const created = await built.app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: `run-${code.toLowerCase()}` },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "FAILED", errorCode: code });
+    expect(core.downloadCount()).toBe(1);
+    expect((await built.app.inject({ method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts` })).json().items).toEqual([]);
+  });
+
+  it("rejects empty or signature-mismatched image bytes", async () => {
+    const core = fakeCore({ downloadBytes: new TextEncoder().encode("not-a-png") });
+    const built = await setupContentTask(core.client, "image-invalid-bytes");
+    const created = await built.app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "run-image-invalid-bytes" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({
+      status: "FAILED",
+      errorCode: "IMAGE_ATTACHMENT_INVALID_BYTES",
+    });
+    expect((await built.app.inject({ method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts` })).json().items).toEqual([]);
+  });
+
+  it("validates strict output and CTA before downloading the image", async () => {
+    const core = fakeCore({
+      transformCompleted: (detail) => ({
+        ...detail,
+        output: JSON.stringify({ ...JSON.parse(detail.output!), cta_type: "ORDER", cta_url: "https://invented.example/order" }),
+      }),
+    });
+    const built = await setupContentTask(core.client, "invalid-cta-before-download");
+    const created = await built.app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "run-invalid-cta-before-download" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "FAILED", errorCode: "OUTPUT_INVALID" });
+    expect(core.downloadCount()).toBe(0);
+  });
+
+  it("never downloads or exposes Core attachment URLs from a failed GBP content Run", async () => {
+    const core = fakeCore({
+      transformCompleted: (detail) => ({ ...detail, status: "FAILED", error: "generation failed" }),
+    });
+    const built = await setupContentTask(core.client, "failed-core-artifact");
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "failed-core-artifact-run" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "FAILED" });
+    expect(core.downloadCount()).toBe(0);
+    expect(await listDeliverablesByRun(built.db, created.json().id)).toEqual([]);
+  });
+
+  it.each([
+    {
+      suffix: "cta-call-url",
+      transform: (output: Record<string, unknown>) => ({
+        ...output, cta_type: "CALL", cta_url: "https://example.test/call",
+      }),
+    },
+    {
+      suffix: "copy-phone",
+      transform: (output: Record<string, unknown>) => ({
+        ...output, copy: "Call us at (516) 555-0199 for this lunch.",
+      }),
+    },
+  ])("rejects $suffix before image download", async ({ suffix, transform }) => {
+    const core = fakeCore({
+      transformCompleted: (detail) => ({
+        ...detail,
+        output: JSON.stringify(transform(JSON.parse(detail.output!))),
+      }),
+    });
+    const built = await setupContentTask(core.client, suffix);
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: `${suffix}-run` },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "FAILED", errorCode: "OUTPUT_INVALID" });
+    expect(core.downloadCount()).toBe(0);
+  });
+
+  it("accepts an exact HTTPS link CTA already supplied in execution_spec", async () => {
+    const orderUrl = "https://example.test/confirmed-order";
+    const core = fakeCore({
+      transformCompleted: (detail) => ({
+        ...detail,
+        output: JSON.stringify({ ...JSON.parse(detail.output!), cta_type: "ORDER", cta_url: orderUrl }),
+      }),
+    });
+    const built = await setupContentTask(core.client, "cta-accepted", {
+      executionSpecExtras: { confirmed_order_url: orderUrl },
+    });
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "cta-accepted-run" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "COMPLETED" });
+    expect((await built.app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts`,
+    })).json().items[0]).toMatchObject({ cta_type: "ORDER", cta_url: orderUrl });
   });
 
   it("triggers once, persists one Agent draft under concurrent polling, and stays before Gate 1", async () => {
@@ -1092,7 +1301,36 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       source: "AGENT_GENERATED",
       agent_run_id: calls[0].json().id,
       body: "Try our crispy chicken lunch in Mineola this Thursday.",
+      cta_type: "NONE",
+      cta_url: null,
     })]);
+    const expectedImageSha = `sha256:${crypto.createHash("sha256")
+      .update(Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      .digest("hex")}`;
+    const mediaRef = JSON.parse(drafts[0].media[0]);
+    expect(mediaRef).toEqual({
+      alt_text: "Crispy chicken lunch served in Mineola.",
+      deliverable_id: `${calls[0].json().id}-att-generated-image-1`,
+      schema_version: "seo_ops.media_ref.v1",
+      sha256: expectedImageSha,
+    });
+    expect(drafts[0].media_previews).toEqual([{
+      deliverable_id: mediaRef.deliverable_id,
+      sha256: expectedImageSha,
+      download_path: `/api/seo-ops/deliverables/${mediaRef.deliverable_id}/download`,
+      alt_text: "Crispy chicken lunch served in Mineola.",
+    }]);
+    const deliverables = await listDeliverablesByRun(db, calls[0].json().id);
+    expect(deliverables).toEqual([expect.objectContaining({
+      id: mediaRef.deliverable_id,
+      kind: "ATTACHMENT",
+      contentType: "image/png",
+      sha256: expectedImageSha,
+      remoteUrl: null,
+    })]);
+    const imageDownload = await app.inject({ method: "GET", url: drafts[0].media_previews[0].download_path });
+    expect(imageDownload.statusCode).toBe(200);
+    expect(imageDownload.headers["content-type"]).toContain("image/png");
     const afterPoll = (await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}` })).json();
     expect(afterPoll).toMatchObject({ status: "NEEDS_INPUT", attempt_count: 0 });
     const run = (await app.inject({
@@ -1138,6 +1376,73 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     });
     expect(activeConflict.statusCode).toBe(409);
     expect(core.triggerCount()).toBe(2);
+  });
+
+  it("hides and rejects a canonical image reference owned by another Task and Run", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "cross-task-media");
+    const { app, db, task, merchant, location } = built;
+    const firstRun = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "cross-task-media-first-run" },
+    });
+    await new AgentRunPoller({ db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const firstDraft = (await app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items[0];
+
+    const otherTask = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: merchant.id,
+        location_id: location.id,
+        definition: {
+          title: "Other GBP Post",
+          task_type: "GBP_POST",
+          source: "CYCLE",
+          priority: "HIGH",
+          impact: "HIGH",
+          execution_spec: task.execution_spec,
+          required_evidence_types: ["CONTENT_DRAFT"],
+          execution_mode: "AUTO_WRITE",
+        },
+        idempotency_key: "cross-task-media-other-task",
+      },
+    })).json();
+    const otherRun = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${otherTask.id}/content-runs`,
+      payload: { idempotency_key: "cross-task-media-other-run" },
+    });
+    expect(firstRun.statusCode).toBe(202);
+    expect(otherRun.statusCode).toBe(202);
+    await new AgentRunPoller({ db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    const otherDraft = (await app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${otherTask.id}/drafts`,
+    })).json().items[0];
+    await db.exec(`UPDATE seo_content_drafts SET media = $1 WHERE id = $2`, [
+      JSON.stringify(otherDraft.media), firstDraft.id,
+    ]);
+
+    const hidden = (await app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items[0];
+    expect(hidden.media).toEqual(otherDraft.media);
+    expect(hidden.media_previews).toEqual([]);
+    const finalize = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/drafts/${firstDraft.version}/finalize`,
+      payload: {
+        expected_state_version: task.state_version,
+        idempotency_key: "cross-task-media-finalize",
+      },
+    });
+    expect(finalize.statusCode).toBe(409);
+    expect(finalize.json().error_code).toBe("DRAFT_MEDIA_INVALID");
+    const unchanged = (await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}` })).json();
+    expect(unchanged.task_revision).toBe(task.task_revision);
   });
 
   it("shares the merchant daily Agent Run quota before triggering Core AI", async () => {
@@ -1349,6 +1654,32 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     });
     expect(finalized.statusCode).toBe(201);
     expect(finalized.json().status).toBe("READY_FOR_APPROVAL");
+    expect(finalized.json().task_revision).toBe(beforeFinalize.task_revision + 1);
+    expect(finalized.json().execution_spec_hash).not.toBe(beforeFinalize.execution_spec_hash);
+    expect(JSON.parse(finalized.json().execution_spec).content_draft).toEqual({
+      draft_version: draft.version,
+      draft_sha256: draft.sha256,
+      body: draft.body,
+      cta_type: draft.cta_type,
+      cta_url: draft.cta_url,
+      media: draft.media,
+    });
+    expect(finalized.json().evidence_refs).toContainEqual(expect.objectContaining({
+      task_revision: beforeFinalize.task_revision + 1,
+      type: "CONTENT_DRAFT",
+      sha256: draft.sha256,
+      verification_status: "VERIFIED",
+    }));
+    const finalizeReplay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/drafts/${draft.version}/finalize`,
+      payload: {
+        expected_state_version: beforeFinalize.state_version,
+        idempotency_key: "stable-http-after-gate-finalize",
+      },
+    });
+    expect(finalizeReplay.statusCode).toBe(200);
+    expect(finalizeReplay.json().task_revision).toBe(finalized.json().task_revision);
     const approved = await app.inject({
       method: "POST",
       url: `/api/seo-ops/tasks/${task.id}/approval-decisions`,
@@ -1957,7 +2288,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       db,
       task.id,
       cancelledRetry.json().id,
-      "Completed retry draft.",
+      { body: "Completed retry draft.", media: [] },
       "system:test",
     );
     const completedReplay = await app.inject({

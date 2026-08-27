@@ -12,7 +12,7 @@ import {
   hasValidTaskLinkedGbpContentScope,
   isTaskLinkedGbpContentRun,
 } from "./agentRunScopeService.js";
-import { ingestGbpPostContentRunOutput } from "./gbpPostContentService.js";
+import { acceptGbpPostContentRun, GbpPostImageError } from "./gbpPostContentService.js";
 
 /** Injectable clock/scheduler so tests never sleep. */
 export interface PollerScheduler {
@@ -145,29 +145,34 @@ export class AgentRunPoller {
     }
 
     if ((CORE_RUN_TERMINAL_STATUSES as readonly string[]).includes(core.status)) {
-      // Deliverables land first (upsert by deterministic id = idempotent); a
-      // crash here leaves the row RUNNING and the next poll replays both steps.
-      await recordDeliverables(this.deps, fresh, core);
-      if (core.status === "COMPLETED" && fresh.stage === "GBP_POST_CONTENT") {
-        try {
-          await ingestGbpPostContentRunOutput(this.deps.db, fresh, core.output);
-        } catch (error) {
-          const errorCode = error instanceof ApiError
-            && error.code === "CONTENT_RUN_RECONCILIATION_REQUIRED"
-            ? error.code
-            : "OUTPUT_INVALID";
-          await transitionAgentRun(this.deps.db, fresh.id, {
-            status: "FAILED",
-            coreStatus: core.status,
-            traceRef: core.trace_id ?? fresh.traceRef,
-            output: core.output ?? null,
-            error: error instanceof Error ? error.message : "invalid GBP Post content output",
-            errorCode,
-            completedAt: core.completed_at ?? this.nowIso(),
-            lastPolledAt: this.nowIso(),
-          }, ["RUNNING"]);
-          return;
+      if (fresh.stage === "GBP_POST_CONTENT") {
+        if (core.status === "COMPLETED") {
+          try {
+            await acceptGbpPostContentRun(this.deps, fresh, core);
+          } catch (error) {
+            const errorCode = error instanceof ApiError
+              && error.code === "CONTENT_RUN_RECONCILIATION_REQUIRED"
+              ? error.code
+              : error instanceof GbpPostImageError
+                ? error.code
+                : "OUTPUT_INVALID";
+            await transitionAgentRun(this.deps.db, fresh.id, {
+              status: "FAILED",
+              coreStatus: core.status,
+              traceRef: core.trace_id ?? fresh.traceRef,
+              output: core.output ?? null,
+              error: error instanceof Error ? error.message : "invalid GBP Post content output",
+              errorCode,
+              completedAt: core.completed_at ?? this.nowIso(),
+              lastPolledAt: this.nowIso(),
+            }, ["RUNNING"]);
+            return;
+          }
         }
+      } else {
+        // Generic Runs retain tolerant multi-artifact semantics. GBP content
+        // uses the stricter branch above and never records an unvalidated Core URL.
+        await recordDeliverables(this.deps, fresh, core);
       }
       await applyTerminalTransition(this.deps, fresh, core);
     } else {

@@ -64,6 +64,18 @@ export async function listDraftsByTask(db: Db, taskId: string): Promise<ContentD
   return rows.map(toDraft);
 }
 
+export async function getDraftByTaskVersion(
+  db: Db,
+  taskId: string,
+  version: number,
+): Promise<ContentDraft | null> {
+  const row = await db.one<DraftRow>(
+    `SELECT * FROM seo_content_drafts WHERE task_id = $1 AND version = $2`,
+    [taskId, version],
+  );
+  return row ? toDraft(row) : null;
+}
+
 export async function latestDraft(db: Db, taskId: string): Promise<ContentDraft | null> {
   const row = await db.one<DraftRow>(
     `SELECT * FROM seo_content_drafts WHERE task_id = $1 ORDER BY version DESC LIMIT 1`,

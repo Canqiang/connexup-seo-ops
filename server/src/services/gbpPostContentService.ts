@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import type { Db } from "../db/connection.js";
-import { canonicalize, requestFingerprint } from "../domain/hashing.js";
+import { canonicalize, requestFingerprint, sha256HashBytes } from "../domain/hashing.js";
 import { gbpContentHttpRequestFingerprint } from "../domain/gbpContentRunIdentity.js";
 import {
   agentRunScopeReconciliationRequired,
@@ -15,9 +17,11 @@ import {
   findAgentRunByTaskFingerprint,
   findLatestGbpContentRunByBusinessFingerprint,
   getAgentRun,
+  upsertDeliverable,
   transitionAgentRun,
 } from "../repos/agentRunRepo.js";
 import type { AgentRun } from "../repos/agentRunTypes.js";
+import type { RunDeliverable } from "../repos/agentRunTypes.js";
 import { getLocation } from "../repos/locationRepo.js";
 import { getMerchant } from "../repos/merchantRepo.js";
 import { getAgentBinding, latestStyleProfile } from "../repos/settingsRepo.js";
@@ -26,11 +30,13 @@ import type { Task } from "../repos/taskTypes.js";
 import { addAgentGeneratedDraftFromRun } from "./contentService.js";
 import { getDraftByAgentRunId } from "../repos/draftRepo.js";
 import type { CoreAiClient } from "./coreAiClient.js";
+import type { CoreAgentRunDetail } from "./coreAiClient.js";
 import { requireIdempotencyKey } from "./merchantService.js";
 import { allocateAgentRun, resolveAgentRunRequestReplay } from "./agentRunAllocator.js";
 
 export const GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION = "seo_ops.gbp_post_request.v1";
-export const GBP_POST_CONTENT_OUTPUT_SCHEMA_VERSION = "seo_ops.gbp_post_draft.v1";
+export const GBP_POST_CONTENT_OUTPUT_SCHEMA_VERSION = "seo_ops.gbp_post_draft.v2";
+export const GBP_POST_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
 const clusterSchema = z.object({
   cluster_id: z.string().trim().min(1).max(200),
@@ -60,9 +66,13 @@ const gbpPostDraftOutputSchema = z.object({
   primary_keyword_cluster: clusterSchema,
   evidence_references: z.array(z.string().trim().min(1).max(500)).min(1).max(50),
   copy: z.string().trim().min(1).max(1500),
+  cta_type: z.enum(["NONE", "BOOK", "ORDER", "SHOP", "LEARN_MORE", "SIGN_UP", "CALL"]),
+  cta_url: z.string().trim().min(1).max(1000).optional(),
   media_brief: z.object({
     concept: z.string().trim().min(1).max(1000),
+    image_prompt: z.string().trim().min(1).max(2000),
     alt_text: z.string().trim().min(1).max(500),
+    expected_attachment_count: z.literal(1),
   }).strict(),
   limitations: z.array(z.string().trim().min(1).max(1000)).max(30),
 }).strict();
@@ -132,6 +142,171 @@ export function parseGbpPostDraftOutput(output: string) {
     );
   }
   return parsed.data;
+}
+
+export class GbpPostImageError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message);
+    this.name = "GbpPostImageError";
+  }
+}
+
+function collectStrings(value: unknown, result = new Set<string>()): Set<string> {
+  if (typeof value === "string") result.add(value);
+  else if (Array.isArray(value)) value.forEach((item) => collectStrings(item, result));
+  else if (value !== null && typeof value === "object") {
+    Object.values(value as Record<string, unknown>).forEach((item) => collectStrings(item, result));
+  }
+  return result;
+}
+
+function validateCta(parsed: ReturnType<typeof parseGbpPostDraftOutput>, request: Record<string, unknown>): void {
+  if ((parsed.cta_type === "NONE" || parsed.cta_type === "CALL") && parsed.cta_url !== undefined) {
+    throw new Error(`GBP Post content output ${parsed.cta_type} forbids cta_url`);
+  }
+  if (parsed.cta_type !== "NONE" && parsed.cta_type !== "CALL") {
+    if (!parsed.cta_url) throw new Error(`GBP Post content output ${parsed.cta_type} requires cta_url`);
+    let url: URL;
+    try { url = new URL(parsed.cta_url); } catch { throw new Error("GBP Post content output cta_url must be absolute HTTPS"); }
+    if (url.protocol !== "https:") throw new Error("GBP Post content output cta_url must be absolute HTTPS");
+    const accepted = collectStrings({
+      evidence_references: request.evidence_references,
+      execution_spec: request.execution_spec,
+    });
+    if (!accepted.has(parsed.cta_url)) {
+      throw new Error("GBP Post content output cta_url was not supplied in accepted evidence or execution_spec");
+    }
+  }
+  const phone = /(?:\+?1[\s.()-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/;
+  if (phone.test(parsed.copy)) throw new Error("GBP Post content output copy must contain no phone number");
+}
+
+function parseAndValidateRunOutput(run: AgentRun, output: string | null | undefined) {
+  if (!output) throw new Error("GBP Post content run completed without output");
+  const parsed = parseGbpPostDraftOutput(output);
+  const request = JSON.parse(run.inputMessage) as Record<string, unknown> & {
+    merchant: { id: string };
+    location: { id: string };
+    occurrence_at: string;
+    post_type: string;
+    voice_profile: { version_ref: string };
+    primary_keyword_cluster: unknown;
+    evidence_references: unknown;
+  };
+  const exactChecks: Array<[unknown, unknown, string]> = [
+    [parsed.merchant_id, request.merchant.id, "merchant_id"],
+    [parsed.location_id, request.location.id, "location_id"],
+    [parsed.occurrence_at, request.occurrence_at, "occurrence_at"],
+    [parsed.post_type, request.post_type, "post_type"],
+    [parsed.voice_profile_version, request.voice_profile.version_ref, "voice_profile_version"],
+    [canonicalize(JSON.stringify(parsed.primary_keyword_cluster)), canonicalize(JSON.stringify(request.primary_keyword_cluster)), "primary_keyword_cluster"],
+    [canonicalize(JSON.stringify(parsed.evidence_references)), canonicalize(JSON.stringify(request.evidence_references)), "evidence_references"],
+  ];
+  for (const [actual, expected, field] of exactChecks) {
+    if (actual !== expected) throw new Error(`GBP Post content output ${field} does not match the dispatched request`);
+  }
+  validateCta(parsed, request);
+  return parsed;
+}
+
+function hasImageSignature(bytes: Uint8Array, contentType: string): boolean {
+  if (contentType === "image/png") {
+    const png = [137, 80, 78, 71, 13, 10, 26, 10];
+    return bytes.byteLength >= png.length && png.every((value, index) => bytes[index] === value);
+  }
+  return bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
+function safeFileName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "image";
+}
+
+function writeFileAtomic(filePath: string, bytes: Uint8Array): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, bytes);
+    fs.renameSync(tmpPath, filePath);
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch { /* already renamed */ }
+  }
+}
+
+export async function acceptGbpPostContentRun(
+  deps: Pick<GbpPostContentDeps, "db" | "client"> & { artifactsDir: string },
+  run: AgentRun,
+  core: CoreAgentRunDetail,
+  actor = "system:gbp-post-content-agent",
+) {
+  if (!run.taskId || run.stage !== "GBP_POST_CONTENT") {
+    throw new Error("GBP Post content output requires a task-linked content run");
+  }
+  const task = await getTask(deps.db, run.taskId);
+  if (!task) agentRunScopeReconciliationRequired();
+  assertAgentRunTaskScope(run, {
+    stage: "GBP_POST_CONTENT", taskId: task.id, merchantId: task.merchantId, locationId: task.locationId,
+  });
+  // Output and CTA validation is deliberately first: invalid model output must
+  // never spend I/O on an untrusted attachment URL.
+  const parsed = parseAndValidateRunOutput(run, core.output);
+  const artifacts = core.artifacts ?? [];
+  if (artifacts.length === 0) throw new GbpPostImageError("IMAGE_ATTACHMENT_MISSING", "GBP Post image attachment is missing");
+  if (artifacts.length !== 1) throw new GbpPostImageError("IMAGE_ATTACHMENT_COUNT_INVALID", "GBP Post requires exactly one image attachment");
+  const artifact = artifacts[0]!;
+  if (artifact.content_type !== "image/png" && artifact.content_type !== "image/jpeg") {
+    throw new GbpPostImageError("IMAGE_ATTACHMENT_INVALID_TYPE", "GBP Post attachment must declare image/png or image/jpeg");
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = await deps.client.downloadArtifact(artifact.download_url, { maxBytes: GBP_POST_IMAGE_MAX_BYTES });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "attachment download failed";
+    const code = /exceeds byte limit/i.test(message)
+      ? "IMAGE_ATTACHMENT_TOO_LARGE"
+      : "IMAGE_ATTACHMENT_UNDOWNLOADED";
+    throw new GbpPostImageError(code, message);
+  }
+  if (bytes.byteLength === 0 || bytes.byteLength > GBP_POST_IMAGE_MAX_BYTES
+    || !hasImageSignature(bytes, artifact.content_type)) {
+    throw new GbpPostImageError(
+      bytes.byteLength > GBP_POST_IMAGE_MAX_BYTES ? "IMAGE_ATTACHMENT_TOO_LARGE" : "IMAGE_ATTACHMENT_INVALID_BYTES",
+      "GBP Post attachment bytes do not match the declared image type",
+    );
+  }
+  const deliverableId = `${run.id}-att-${artifact.file_id}`;
+  const filePath = path.join(deps.artifactsDir, `${run.id}-image-${safeFileName(artifact.file_name)}`);
+  writeFileAtomic(filePath, bytes);
+  const sha256 = sha256HashBytes(bytes);
+  const stamp = core.completed_at ?? nowIso();
+  const deliverable: RunDeliverable = await upsertDeliverable(deps.db, {
+    id: deliverableId,
+    runId: run.id,
+    kind: "ATTACHMENT",
+    fileId: artifact.file_id,
+    fileName: artifact.file_name,
+    contentType: artifact.content_type,
+    size: bytes.byteLength,
+    title: artifact.title ?? null,
+    description: artifact.description ?? null,
+    sha256,
+    localPath: filePath,
+    remoteUrl: null,
+    downloadedAt: stamp,
+    downloadError: null,
+    createdAt: stamp,
+  });
+  const mediaRef = canonicalize(JSON.stringify({
+    schema_version: "seo_ops.media_ref.v1",
+    deliverable_id: deliverable.id,
+    sha256,
+    alt_text: parsed.media_brief.alt_text,
+  }));
+  return addAgentGeneratedDraftFromRun(deps.db, run.taskId, run.id, {
+    body: parsed.copy,
+    cta_type: parsed.cta_type,
+    cta_url: parsed.cta_url,
+    media: [mediaRef],
+  }, actor);
 }
 
 async function buildRun(
@@ -444,47 +619,4 @@ export async function triggerGbpPostContentRun(
 ): Promise<{ run: AgentRun; replayed: boolean }> {
   const key = requireIdempotencyKey(idempotencyKey, "idempotency_key");
   return triggerOnce(deps, authorizedScope.taskId, authorizedScope, key, actorId, retry);
-}
-
-export async function ingestGbpPostContentRunOutput(
-  db: Db,
-  run: AgentRun,
-  output: string | null | undefined,
-  actor = "system:gbp-post-content-agent",
-) {
-  if (!run.taskId || run.stage !== "GBP_POST_CONTENT") {
-    throw new Error("GBP Post content output requires a task-linked content run");
-  }
-  const task = await getTask(db, run.taskId);
-  if (!task) agentRunScopeReconciliationRequired();
-  assertAgentRunTaskScope(run, {
-    stage: "GBP_POST_CONTENT",
-    taskId: task.id,
-    merchantId: task.merchantId,
-    locationId: task.locationId,
-  });
-  if (!output) throw new Error("GBP Post content run completed without output");
-  const parsed = parseGbpPostDraftOutput(output);
-  const request = JSON.parse(run.inputMessage) as {
-    merchant: { id: string };
-    location: { id: string };
-    occurrence_at: string;
-    post_type: string;
-    voice_profile: { version_ref: string };
-    primary_keyword_cluster: unknown;
-    evidence_references: unknown;
-  };
-  const exactChecks: Array<[unknown, unknown, string]> = [
-    [parsed.merchant_id, request.merchant.id, "merchant_id"],
-    [parsed.location_id, request.location.id, "location_id"],
-    [parsed.occurrence_at, request.occurrence_at, "occurrence_at"],
-    [parsed.post_type, request.post_type, "post_type"],
-    [parsed.voice_profile_version, request.voice_profile.version_ref, "voice_profile_version"],
-    [canonicalize(JSON.stringify(parsed.primary_keyword_cluster)), canonicalize(JSON.stringify(request.primary_keyword_cluster)), "primary_keyword_cluster"],
-    [canonicalize(JSON.stringify(parsed.evidence_references)), canonicalize(JSON.stringify(request.evidence_references)), "evidence_references"],
-  ];
-  for (const [actual, expected, field] of exactChecks) {
-    if (actual !== expected) throw new Error(`GBP Post content output ${field} does not match the dispatched request`);
-  }
-  return addAgentGeneratedDraftFromRun(db, run.taskId, run.id, parsed.copy, actor);
 }
