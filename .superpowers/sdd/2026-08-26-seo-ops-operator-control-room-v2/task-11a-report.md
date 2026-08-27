@@ -2,100 +2,80 @@
 
 ## Outcome
 
-Task 11A is implemented locally on `codex/operator-control-room-v2-impl` in implementation commit `c929dd9cd8863dae43a4f3d0df591958e72560e3`.
+Task 11A is implemented locally on `codex/operator-control-room-v2-impl`.
 
-The change adds strict CREATE-only command, receipt, and readback contracts; canonical parsed-JSON hashing; additive/rerunnable PostgreSQL persistence; exact tenant/location repository reads; immutable command/receipt storage; append-only readbacks; and a transactional `FOR UPDATE SKIP LOCKED` claim. It does not add workers, routes, UI, credentials, Core/FBR changes, network calls, UAT, or any GBP write.
+- Initial implementation: `c929dd9cd8863dae43a4f3d0df591958e72560e3`
+- Review Fix Round 1: `4c9bf2c11e9ea9f9336830af52f3f2ec0fc771a9`
+
+The review fix replaces unrestricted state-row CAS with explicit legal transitions, hardens runtime and SQL invariants, and adds locked Task/approval/binding revalidation before command creation. It remains persistence-only: no worker, route, UI, credential access, Core/FBR edit, network/UAT action, or GBP write was added.
 
 ## Scope delivered
 
-- Added strict `seo_ops.gbp_execution_command.v1` parsing with:
-  - UUID-bound instruction/Task/Core/draft identities;
-  - exact Task revision, execution-spec hash, approval decision, Core user and Agent snapshots;
-  - basename-only write/readback secret references, never secret values;
-  - exact GBP account/location/timezone schedule snapshot;
-  - one finalized body/normalized CTA/local image identity;
-  - literal `CREATE_POST`; `UPDATE_POST` is rejected;
-  - deterministic canonical JSON and `sha256:<hex>` over UTF-8 bytes after parsing.
-- Added strict `seo_ops.gbp_execution_receipt.v1` and `seo_ops.gbp_readback.v1` parsing.
-  - Unknown keys are rejected.
-  - Provider mutation count is only `0 | 1`.
-  - `APPLIED`, `ALREADY_APPLIED`, and `REJECTED_PRE_MUTATION` cross-field invariants are enforced.
-  - Readback is exact structured observation; semantic similarity is not represented.
-- Added five additive GBP tables and nullable `seo_execution_attempts.gbp_command_id`:
-  - `seo_gbp_location_bindings`;
-  - `seo_gbp_commands`;
-  - `seo_gbp_command_states`;
-  - `seo_gbp_receipts`;
-  - `seo_gbp_readback_attempts`.
-- Database constraints enforce:
-  - exact location/binding and Task/merchant/location composite ownership;
-  - unique `(task_id, task_revision)` and `instruction_id`;
-  - CREATE-only operation;
-  - one unresolved command state per merchant/location;
-  - all-null or fully populated, ordered lease tuple;
-  - one immutable receipt per command;
-  - one generic execution-attempt projection per GBP command;
-  - no token-named columns in the new GBP tables.
-- Added repository primitives for:
-  - exact location binding insert/read and state-version CAS update;
-  - atomic standalone command+state insertion and a transaction-bound variant for Task 2;
-  - exact command lookup by scope and Task revision;
-  - command state read/CAS update;
-  - due-command claim in one transaction with `FOR UPDATE OF s SKIP LOCKED`;
-  - strict immutable receipt insert/read;
-  - strict append-only readback insert/list.
-- Every command, receipt, and successful readback read reparses strict JSON and verifies canonical bytes, SHA-256, duplicated identity columns, and immutable command linkage before returning data.
+- Strict CREATE-only command, receipt, and readback schemas reject unknown keys before every repository write and reparse every read.
+- Secret references are short lowercase logical names only. Token-shaped values, `coreai_` values, bearer strings, paths, whitespace, and overlong values are rejected without echoing rejected input.
+- Scheduled UTC instants must be canonical millisecond `Z` timestamps. Local schedules require an explicit offset, represent the same instant, and match a valid IANA timezone.
+- Canonical body, CTA, and image JSON/hash helpers are computed from the parsed command. Receipt hashes must match them exactly.
+- Receipt status invariants are enforced:
+  - `APPLIED`: mutation count 1, provider post identity, and applied time;
+  - `ALREADY_APPLIED`: mutation count 0 and provider post identity;
+  - `REJECTED_PRE_MUTATION`: mutation count 0 with no post identity or applied time.
+- Safe failure persistence uses a closed typed error-code set; free-form error text is not stored.
+- GBP schedule, lease, trigger, resolution, creation, and update columns use `TIMESTAMPTZ`, with chronological SQL checks.
+- The command-state machine exposes only explicit legal transitions guarded by exact merchant/location scope, state version, current lease owner, and lease token.
+  - `trigger_started_at` is monotonic and cannot be cleared.
+  - A command cannot move backward to `SCHEDULED`.
+  - `OUTCOME_UNKNOWN` must remain unresolved and occupies the unresolved-location uniqueness slot.
+  - Only exact persisted readback completion can atomically move `OUTCOME_UNKNOWN` or `READBACK_RUNNING` to `DONE`.
+- Every public command-state, receipt, and readback method joins `seo_gbp_commands` and requires exact merchant and location ownership.
+- Claiming validates scope, canonical times, and lease ordering, then uses a transactional `FOR UPDATE OF s SKIP LOCKED` claim with a complete lease tuple.
+- Command creation starts a transaction, locks and rereads the exact Task, approval decision, and location binding, and compares revision, hashes, identities, binding state/version, and schedule snapshots before inserting.
+- Additive/rerunnable DDL includes `seo_execution_attempts.gbp_command_id -> seo_gbp_commands(id)` and rejects orphan references.
+- Unique Task revision, instruction identity, and unresolved location-command constraints remain enforced.
 
 ## TDD evidence
 
-### RED
+### Original implementation RED
 
-1. Contract test before implementation:
+The initial Task 11A report recorded missing-module RED runs, a deliberately removed uniqueness constraint caught by tests, and an atomic command/state rollback failure caught before the transaction wrapper was added.
+
+### Fix Round 1 RED
+
+1. Contract hardening tests before implementation:
 
 ```text
 npm test -- --run tests/gbpExecutionContract.test.ts
 Test Files  1 failed (1)
-Tests       no tests
-Cause: missing ../src/domain/gbpExecutionContract.js
+Tests       4 failed | 3 passed (7)
 ```
 
-2. Repository/migration test before implementation:
+The failures covered logical-name secret references, canonical/same-instant schedules, missing content-hash helpers, and rejected-pre-mutation receipt nullability.
+
+2. Repository and migration hardening tests before implementation:
 
 ```text
 npm test -- --run tests/gbpExecutionRepo.test.ts
 Test Files  1 failed (1)
-Tests       no tests
-Cause: missing ../src/repos/gbpExecutionRepo.js
+Tests       6 failed (6)
 ```
 
-3. Constraint mutation check after adding explicit uniqueness/unresolved tests:
+The failures exposed free-form error storage, text timestamp/FK gaps, scope/state-claim gaps, and command creation that did not reject stale locked Task state.
+
+3. Approval snapshot lock/revalidation test before implementation:
 
 ```text
-npm test -- --run tests/gbpExecutionRepo.test.ts
+npm test -- --run tests/gbpExecutionRepo.test.ts -t "approval decision"
 Test Files  1 failed (1)
-Tests       1 failed | 3 passed (4)
-Key failure: duplicate Task revision insert resolved instead of rejecting after the constraint was intentionally removed.
+Tests       1 failed | 6 skipped (7)
 ```
 
-The constraints were restored before GREEN.
+The command insert incorrectly succeeded when the locked Task's approval decision was absent.
 
-4. Atomic command/state regression before the transaction wrapper:
-
-```text
-npm test -- --run tests/gbpExecutionRepo.test.ts
-Test Files  1 failed (1)
-Tests       1 failed | 4 passed (5)
-Key failure: state uniqueness rejected, but command-competing remained persisted.
-```
-
-The standalone wrapper now owns one transaction; Task 2 can use the exported transaction-bound primitive inside its aggregate transaction.
-
-### GREEN
+### Final GREEN
 
 ```text
 npm test -- --run tests/gbpExecutionContract.test.ts tests/gbpExecutionRepo.test.ts
 Test Files  2 passed (2)
-Tests       9 passed (9)
+Tests       14 passed (14)
 
 npm run typecheck
 exit 0
@@ -104,32 +84,28 @@ git diff --check
 exit 0
 ```
 
-One earlier parallel focused run hit the test framework's 10-second `beforeAll` hook timeout while migrating the isolated PostgreSQL schema and skipped four repo tests. The same repo file then passed 4/4 in 1.76 seconds, and the fresh final combined run passed 9/9 in 1.82 seconds. No timeout threshold was changed; this negative run is retained as transient local PostgreSQL/runner contention evidence.
+Only the two focused Task 11A test files were run, per the speed constraint. No broad suite was run.
 
-## Deterministic hashes
+## Deterministic hashes after Fix Round 1
 
 ```text
-implementation commit
-c929dd9cd8863dae43a4f3d0df591958e72560e3
-
 SHA-256 server/src/domain/gbpExecutionContract.ts
-efee91971953c429cabb9930e23cf45dbbb18210213dc83f08254ce1755f3541
+a4c880d604f348387465f1c6107ef06dcfdd839c9d6b48b59007d00fa5262ae2
 
 SHA-256 server/src/repos/gbpExecutionRepo.ts
-17d9907e9ebd47745f82e5501185a5cd165e26a75c595204401020b9675aab7a
+f61aed04bb1067ca57cade44012c7867c57c98531e2fe0642f2a16a8cae5cee0
 
 SHA-256 server/src/db/schema.ts
-c1ced6a028fa265f3c1cfecb36d8e7b353de3e4fc9fae62f2ba6359967d20b55
+8e13fc7312991f9027aed71ba4a1284020c8daf1c1c58fae023f26a3d9bdb6b5
 
 SHA-256 server/src/db/migrate.ts
-8f0833e4f4ab0caa1e931971cba5d81b9e12ff71448ba6b0d32e23b84d230b8f
+63f0b791d537a0d22fdd7ca5b3ed7e18209c3d7d32a9c1ec6a4de7e30dbbca7c
 ```
 
 ## Residual risks and deferred proof
 
-- No Task 2 confirmation service exists yet, so approval/draft/deliverable snapshot selection and duplicate-confirmation convergence are not claimed by Task 11A.
-- No write or readback worker exists yet. Lease/state primitives are persisted, but trigger ambiguity, receipt acceptance transitions, exact comparison, and the sole DONE transition remain Tasks 3–4.
-- No API/UI projection exists yet. Secret references are stored; later projections must continue excluding them and later workers must sanitize all safe error fields before persistence.
-- Migrations were exercised twice against isolated local PostgreSQL schemas. No UAT or production database migration/readback occurred.
-- Exact live Core Agent/Skill/tool, merchant API-user authorization, provider idempotency, provider receipt semantics, and stable media identity remain blocked on the later authenticated GET-only preflight and explicit bounded UAT approval.
-- The dedicated path remains disabled and cannot perform any provider mutation in this phase.
+- Tasks 2–4 remain unimplemented: no confirmation orchestration, provider worker, readback worker, route, or UI exists.
+- The state machine permits `OUTCOME_UNKNOWN -> DONE` only through strict persisted exact-readback completion, but the future authenticated provider readback worker still needs its own contract and tests.
+- Migration behavior was exercised against isolated local PostgreSQL schemas, including rerun after populated terminal state. No UAT or production migration/readback occurred.
+- Exact live Core Agent/Skill/tool identity, merchant API-user authorization, provider idempotency, and provider receipt semantics remain deferred to the later authenticated GET-only preflight and explicitly approved bounded UAT.
+- The dedicated execution path remains disabled and cannot perform provider mutation in this phase.
