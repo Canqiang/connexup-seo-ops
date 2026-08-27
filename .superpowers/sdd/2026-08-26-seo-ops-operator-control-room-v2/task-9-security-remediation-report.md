@@ -263,3 +263,131 @@ Report:
 - `LEGACY_BOUND` intentionally favors the exact historical binding over fingerprint comparison because non-creation historical fingerprints are not derivable. Reusing such a key with a different body returns the historic Run only after exact Task/merchant/location validation; it never allocates or rebinds.
 - The request ledger retains the repository's existing no-foreign-key posture. Runtime and migration perform explicit integrity validation instead.
 - No Core AI UAT publication, binding, Run output, four-merchant reconciliation, or external GBP write was attempted or proven. Task 10/UAT work may proceed separately subject to its own credentials, stop rules, and acceptance conditions.
+
+## Fix round 1/5 — pre-I/O scope enforcement and authorized-scope continuity
+
+### Status and commit
+
+**DONE**
+
+Implementation commit: `09757be` (`fix: fail closed on corrupt GBP run scope`).
+
+This fix remained confined to the isolated SEO Ops worktree. It did not call or mutate Core AI UAT, create merchant data outside test databases, perform an external GBP write, or modify `core-ai`, `fbr-project`, or `fbr-agent`.
+
+### Root-cause confirmation
+
+The independent review findings were reproduced against `945e3ce`:
+
+1. `AgentRunPoller.processRun` called `client.getRun`, then persisted terminal deliverables, before GBP ingestion loaded the Task and detected a merchant/location mismatch. The late ingestion check could reject the draft but could not prevent foreign Core output or attachments from being materialized.
+2. Task-linked replay scope omitted the expected stage. The runtime applied the GBP-stage check only to `LEGACY_BOUND`; a `STRICT_CURRENT` alias could therefore bind an authorized GBP Task to a same-Task/merchant/location non-GBP Run and return that wrong-stage Run view.
+3. The route-authorized Task scope was not compared with the service-reloaded or transaction-locked Task. The allocator validated replay candidates but not the newly constructed `input.run`, so a mismatched Run could be inserted and subsequently triggered.
+4. Direct Run/deliverable authorization trusted `run.merchant_id`, while merchant Run lists did not reconcile task-linked GBP rows with their Task. Corrupt rows were therefore visible to the corrupt Run merchant even though the Task merchant's task-audit query omitted them.
+
+### RED evidence
+
+Poll-before-scope mutation caught:
+
+```bash
+npm --prefix server test -- --run tests/gbpPostContentAgent.test.ts \
+  -t "terminalizes a corrupt RUNNING"
+```
+
+RED result: **1 failed / 27 skipped**. The zero-I/O assertion failed with `expected 1 to be 0`, proving the poller called `client.getRun` before validating the persisted GBP aggregate.
+
+Strict-current wrong-stage mutation caught:
+
+```bash
+npm --prefix server test -- --run tests/gbpPostContentAgent.test.ts \
+  -t "strict-current alias that references"
+```
+
+RED result: **1 failed / 27 skipped**. The real route returned `200` instead of the hand-derived generic reconciliation `409`, proving `STRICT_CURRENT` did not enforce expected stage.
+
+Reloaded/locked Task and new-Run mutations caught together:
+
+```bash
+npm --prefix server test -- --run tests/gbpPostContentAgent.test.ts \
+  -t "reloaded Task whose scope|transaction-locked Task whose scope|newly constructed Run"
+```
+
+RED result: **3 failed / 25 skipped**:
+
+- reloaded corrupt Task produced an unrelated `400` instead of `409 CONTENT_RUN_RECONCILIATION_REQUIRED`;
+- transaction-locked corrupt Task likewise returned `400` instead of the generic reconciliation `409`;
+- mismatched `input.run` resolved with `{ inserted: true }` instead of rejecting before insertion.
+
+These are behavior-first real service/route/PostgreSQL regressions. The concurrent test holds the authorized merchant aggregate lock, changes the Task scope while the route is blocked, releases the lock, and proves the locked recheck prevents both insertion and Core trigger.
+
+### Implementation
+
+- `AgentRunTaskScope` now requires literal stage `GBP_POST_CONTENT`; its shared assertion checks stage, Task ID, merchant ID, and null-sensitive location equality. Reconciliation uses the generic response `GBP Post content Run requires reconciliation` with `CONTENT_RUN_RECONCILIATION_REQUIRED`.
+- Every task-linked replay contract supplies the expected stage. Both `STRICT_CURRENT` and `LEGACY_BOUND` aliases validate the same exact scope before returning a Run.
+- The GBP content service compares the reloaded Task and transaction-locked Task with the route-authorized scope, validates the constructed Run before allocator entry, and revalidates it before Core trigger.
+- The allocator validates task-linked `input.run` both at entry and immediately before insert. Replay, compatibility, business-convergence, and unique-race candidates retain the same full scope check.
+- The poller loads and validates the linked Task before any Core `getRun`. It rechecks the fresh Run before terminal handling. A mismatch transitions the active Run to terminal `FAILED` with the generic reconciliation code/message, clears output, and returns before Core fetch, attachment download, deliverable persistence, draft ingestion, or terminal output persistence.
+- Direct Run and deliverable authorization validates a task-linked GBP Run against its Task before merchant authorization, so neither the Task merchant nor a corrupt Run merchant can enumerate it. Merchant Run lists filter corrupt task-linked GBP rows before pagination/count. Task audit SQL applies exact GBP stage/Task/location predicates within the already-authorized Task merchant boundary, and deliverables are loaded only for visible Runs.
+
+### GREEN and proportional verification
+
+The five new security regressions:
+
+```bash
+npm --prefix server test -- --run tests/gbpPostContentAgent.test.ts \
+  -t "terminalizes a corrupt RUNNING|strict-current alias that references|reloaded Task whose scope|transaction-locked Task whose scope|newly constructed Run"
+```
+
+Result: **1 file passed; 5 passed / 23 skipped**. The corrupt polling regression independently proves `getRunCount = 0`, attachment-download count `= 0`, no new deliverables, `output = null`, terminal generic reconciliation failure, empty task-merchant and corrupt-merchant lists, empty task audit Run list, and generic `404` for both Run detail and deliverable download.
+
+Focused GBP/migration/generic alias compatibility:
+
+```bash
+npm --prefix server test -- --run \
+  tests/gbpPostContentAgent.test.ts \
+  tests/migrate.test.ts \
+  tests/agentRuns.test.ts
+```
+
+Result: **3 files / 56 tests passed**.
+
+Full backend:
+
+```bash
+npm --prefix server test
+```
+
+Result: **30 files / 314 tests passed**.
+
+Full frontend and builds:
+
+```bash
+npm run test:run
+npm --prefix server run typecheck
+npm --prefix server run build
+npm run build
+git diff --check
+```
+
+Result: **24 frontend files / 147 tests passed**; server typecheck passed; server build passed; root production build passed with **1865 modules transformed**; `git diff --check` passed. Frontend output contained only the previously recorded jsdom `--localstorage-file` and unimplemented `window.scrollTo` warnings.
+
+### Fix-round changed files
+
+- `server/src/auth/httpAuth.ts`
+- `server/src/domain/agentRunScope.ts`
+- `server/src/repos/agentRunRepo.ts`
+- `server/src/routes/executionRoutes.ts`
+- `server/src/services/agentRunAllocator.ts`
+- `server/src/services/agentRunPoller.ts`
+- `server/src/services/agentRunScopeService.ts`
+- `server/src/services/agentRunService.ts`
+- `server/src/services/gbpPostContentService.ts`
+- `server/src/services/taskService.ts`
+- `server/tests/gbpPostContentAgent.test.ts`
+- `.superpowers/sdd/2026-08-26-seo-ops-operator-control-room-v2/task-9-security-remediation-report.md`
+
+### Residual risks and deferred Minors
+
+- Corrupt rows are intentionally hidden from operator Run/deliverable surfaces and require an administrative reconciliation path not added in Task 9S. They remain directly auditable in the database by authorized maintainers.
+- Merchant Run-list validation performs a Task lookup for each candidate GBP content Run before pagination. This is bounded by existing merchant history in the current implementation, but a future repository-level integrity projection may be preferable at larger scale.
+- The review Minor requesting immutable raw runner logs remains deferred. This report records the exact commands, failure counts, distinguishing assertion output, and final suite counts, but does not add a new log-artifact subsystem.
+- The allocator's generic-versus-task-linked input remains one API with an optional full `expectedReplayScope`; all current GBP callers now require exact stage/Task/merchant/location. A future discriminated allocator input can make that mode distinction structural without broadening this security fix.
+- No Core AI UAT result, four-real-merchant reconciliation, or external persistence/readback was attempted; those remain separate acceptance work after review of this commit.
