@@ -7,6 +7,7 @@ Task 11A is implemented locally on `codex/operator-control-room-v2-impl`.
 - Initial implementation: `c929dd9cd8863dae43a4f3d0df591958e72560e3`
 - Review Fix Round 1: `4c9bf2c11e9ea9f9336830af52f3f2ec0fc771a9`
 - Review Fix Round 2: `505bdf570e21b2d1205b3a17924384597ae1a538`
+- Review Fix Round 3: `f855072e5efb0fd5b107852aaff096a249464084`
 
 The review fixes replace unrestricted state-row CAS with explicit legal transitions, make readback diffs server-owned and deterministic, preserve old-schema compatibility, harden runtime and SQL invariants, and add locked Task/approval/binding revalidation before command creation. The work remains persistence-only: no worker, route, UI, credential access, Core/FBR edit, network/UAT action, or GBP write was added.
 
@@ -22,14 +23,14 @@ The review fixes replace unrestricted state-row CAS with explicit legal transiti
   - `REJECTED_PRE_MUTATION`: mutation count 0 with no post identity or applied time.
 - Safe failure persistence uses a closed typed error-code set. The deprecated `safe_error_message` column is retained for additive compatibility, purged to `NULL`, protected by a validated always-NULL constraint, and never written by repository methods.
 - GBP schedule, lease, trigger, resolution, creation, and update columns use `TIMESTAMPTZ`, with chronological SQL checks.
-- The command-state machine exposes only explicit legal transitions guarded by exact merchant/location scope, state version, current lease owner, and lease token.
+- The command-state machine exposes only explicit legal transitions. Write-side transitions require exact merchant/location scope, state version, current lease owner, and lease token; exact readback completion uses its separate proof and CAS.
   - `trigger_started_at` is monotonic and cannot be cleared.
   - A command cannot move backward to `SCHEDULED`.
   - `OUTCOME_UNKNOWN` must remain unresolved and occupies the unresolved-location uniqueness slot.
   - Only exact persisted readback completion can atomically move `OUTCOME_UNKNOWN` or `READBACK_RUNNING` to `DONE`.
 - Every public command-state, receipt, and readback method joins `seo_gbp_commands` and requires exact merchant and location ownership.
 - Public readback insertion rejects caller-supplied `diffCodes`. One deterministic comparator computes account, location, provider post, body, CTA, exact one-media identity presence/image hash, and readback-Agent diffs from the persisted strict command, valid receipt, and strict observation.
-- Readback completion transactionally reloads and verifies command, receipt, and observation hashes, recomputes the comparator, and allows `DONE` only when the recomputed diff set is empty.
+- Readback completion transactionally reloads and verifies command, receipt, and observation hashes, recomputes the comparator, and allows `DONE` only when the recomputed diff set is empty. It uses exact readback-attempt identity plus merchant/location/state-version CAS and never depends on or restores the historical write lease; mismatch remains `OUTCOME_UNKNOWN` and cannot reset to a write-enabled state.
 - Claiming validates scope, canonical times, and lease ordering, then uses a transactional `FOR UPDATE OF s SKIP LOCKED` claim with a complete lease tuple.
 - Command creation starts a transaction, locks and rereads the exact Task, approval decision, and location binding, and compares revision, hashes, identities, binding state/version, and schedule snapshots before inserting.
 - Additive/rerunnable DDL includes `seo_execution_attempts.gbp_command_id -> seo_gbp_commands(id)` and rejects orphan references.
@@ -96,6 +97,16 @@ Tests       3 failed | 5 passed (8)
 
 The migration failures remained, and an account mismatch was rejected before a server-owned typed diff could be persisted. This established the missing deterministic comparator behavior before its implementation.
 
+### Fix Round 3 RED
+
+```text
+npm test -- --run tests/gbpExecutionRepo.test.ts
+Test Files  1 failed (1)
+Tests       2 failed | 6 passed (8)
+```
+
+Both failures were `Invalid GBP exact-readback completion`: the migrated triggered command was correctly `OUTCOME_UNKNOWN` with its incomplete write lease cleared, but completion still required the historical write lease. The regression also covered mismatch remaining unresolved before an exact observation completes it.
+
 ### Final GREEN
 
 ```text
@@ -112,14 +123,14 @@ exit 0
 
 Only the two focused Task 11A test files were run, per the speed constraint. No broad suite was run.
 
-## Deterministic hashes after Fix Round 2
+## Deterministic hashes after Fix Round 3
 
 ```text
 SHA-256 server/src/domain/gbpExecutionContract.ts
 55d1ce35b5c130a71c5f12e49f12c55edec24c62bbb589d59160d31ce7e1262e
 
 SHA-256 server/src/repos/gbpExecutionRepo.ts
-dd517b68e9177ce5566a5220fbadf8156077c918df491014f28491aedf5c0918
+4f7c8dc7631da90413d1307b20ff994dc524ad4afc056070e5a96313e61fc587
 
 SHA-256 server/src/db/schema.ts
 b048157e3ef4871005df9049752181f4b75c59b7cf250486d3960ac3e41b2488
@@ -132,6 +143,7 @@ SHA-256 server/src/db/migrate.ts
 
 - Tasks 2–4 remain unimplemented: no confirmation orchestration, provider worker, readback worker, route, or UI exists.
 - The state machine permits `OUTCOME_UNKNOWN -> DONE` only through strict persisted exact-readback completion, but the future authenticated provider readback worker still needs its own contract and tests.
+- `READBACK_RUNNING` currently uses exact attempt ID plus command state version because readback attempts do not yet have their own lease tuple; Task 11D must retain this fail-closed CAS or add an attempt-owned read lease without reusing the command write lease.
 - Migration behavior was exercised against isolated local PostgreSQL schemas, including both incomplete legacy active-lease branches, rerun after normalization, and rerun after populated terminal state. No UAT or production migration/readback occurred.
 - Exact live Core Agent/Skill/tool identity, merchant API-user authorization, provider idempotency, and provider receipt semantics remain deferred to the later authenticated GET-only preflight and explicitly approved bounded UAT.
 - The dedicated execution path remains disabled and cannot perform provider mutation in this phase.
