@@ -90,26 +90,38 @@ Task 状态或商户阶段推进。本地开发库的 `QUESTIONNAIRE` binding �
 
 该工具只读取本仓库 `server/core-ai-agents/*.json` 作为 desired state。凭证只能通过服务端环境
 变量 `CORE_AI_BASE_URL`、`CORE_AI_TOKEN` 注入，禁止作为 CLI 参数、日志或 evidence 内容传入。
-先执行只读 dry-run；只有审核 changed field/hash 后才允许显式 apply：
+首个版本是 **versioned CREATE-ONLY**。dry-run 必须显式选择全部 manifest 或逐个选择 manifest，
+并生成一个仓库内、不可覆盖、已 fsync 的 reviewed plan；人工审核该 plan 后，apply 只能消费这一个
+plan，不能重新声明 scope：
 
 ```bash
 cd server
-npm run agents:reconcile -- --mode=dry-run
+PLAN="$PWD/../docs/evidence/2026-08-27-core-ai-agent-plan.json"
+JOURNAL="$PWD/../docs/evidence/2026-08-27-core-ai-agent-journal.jsonl"
+
+npm run agents:reconcile -- --mode=dry-run --all --plan="$PLAN"
+# 或：重复 --manifest=server/core-ai-agents/<file>.json 进行显式子集审核
+
+# 人工核对 PLAN 中的 ordered paths、manifest/action/reference hashes 与 overall digest 后：
 npm run agents:reconcile -- --mode=apply \
-  --evidence="$PWD/../docs/evidence/2026-08-26-core-ai-agent-reconciliation.md"
+  --plan="$PLAN" --evidence="$JOURNAL"
 ```
 
 - 非 loopback URL 必须使用 HTTPS；redirect、跨 origin、非 JSON、超限响应均 fail closed。
 - `GooglePost每周图文助手` 只作为 `EDITABLE_REFERENCE_ONLY`：GET/export 是可编辑视图，不代表
-  已发布 runtime snapshot，也不构成 clone 证明。它的 ID 永远不能成为 PUT、publish 或 rollback 目标。
-- dry-run 只发 GET，并只打印 Agent ID、动作、changed field/hash；不打印 prompt、response body 或凭证。
-- apply 只可创建 `[SEO Ops]` Agent，或更新当前 Core AI 用户拥有且非 system-default 的同名
-  `[SEO Ops]` Agent；每个 Agent 均需 publish 后按返回 UUID 独立 GET 并逐字段核对。首个不匹配即停止。
-- evidence 必须是仓库内绝对路径；路径穿越和 symlink escape 会被拒绝。
-
-回滚只适用于有已审核 previous desired state 的既有 managed Agent：以 evidence 中的 managed Agent ID
-定位，但实际恢复值必须来自对应的已审核/版本化 manifest；执行 PUT → publish → 独立 GET。新建 Agent
-没有 DELETE 回滚，必须停下交由人工处置；本工具没有 DELETE 方法，也不会把 reference Agent 作为回滚目标。
+  已发布 runtime snapshot，也不构成 clone 证明；输出证据范围固定为 `EDITABLE_CONFIG_AND_STATUS_ONLY`。
+- reference 与 desired name 都通过完整分页 global query 做 exact/unique 判断；既有 desired Agent 还必须在
+  完整 `my=true&include_system_default=false` roster 中唯一对应。跨 owner、system-default 或重复同名一律停止。
+- 既有 `[SEO Ops]` Agent 只有完整 editable config 相同且所有未管理执行字段为空时可返回 `NO_CHANGE`；
+  任一漂移都要求新建更高版本名（例如 v2 → v3），工具没有 PUT existing Agent 能力。
+- apply 在任何 POST 前重新校验全部本地文件、ALL/explicit scope、reference coordinate 和远端 pre-state；
+  任一文件、scope、reference 或 remote hash 漂移都会停止。
+- evidence journal 必须是仓库内绝对路径且父目录已存在；路径穿越和 symlink 会被拒绝。journal 在首个
+  mutation 前创建并 fsync，每次 create/publish intent 与 response/readback outcome 都逐条 append + fsync。
+- create 后只 publish 服务端返回的新 UUID，再按该 UUID 独立 GET；readback 会同时拒绝未管理执行字段。
+  它只证明 editable config/status，不证明 published runtime snapshot 等价。
+- 新 Agent 的远端恢复事实固定记录为 `NO_DELETE_REMOTE_ROLLBACK`。工具没有 PUT、DELETE 或可执行 rollback；
+  reference UUID 也不能作为 create response 后的 publish/readback 坐标。
 
 ## 六导航（账本视角）
 
