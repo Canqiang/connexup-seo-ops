@@ -127,8 +127,9 @@ npm --prefix server run agents:reconcile -- --mode=apply \
 - plan 只能位于 `docs/evidence/core-ai-agent-plans/`，journal 只能位于独立的
   `docs/evidence/core-ai-agent-journals/`；两者必须在 manifest root 外，且 canonical path 与所有 manifest
   不同。symlink、hardlink inode alias、路径穿越和预先存在的 journal 都会被拒绝。journal 以 exclusive
-  create + no-follow 打开，在任何远端重验/POST 前 fsync；每次 create/validate/publish intent 与 outcome
-  都逐条 append + fsync。
+  create + no-follow 打开，在任何远端重验/POST 前执行 write-all（短写循环，0-byte/非法进度即停止），完整
+  `JOURNAL_OPENED` record 写完后才 fsync；每次 create/validate/publish intent 与 outcome 也都先完整
+  write-all，再逐条 fsync。任一 intent 未完整耐久时，对应 POST 不会执行。
 - create 后先按返回 UUID 独立 GET，并通过完整 `my=true&include_system_default=false` roster 与 global exact
   discovery 证明它是当前主体新建的 exact-name、`DRAFT`、非 system-default、完整配置匹配且无未管理执行字段
   的 Agent；验证失败只写 durable failure 并停止，不 publish、不 PUT、不 DELETE。验证通过后才 publish，

@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile, symlink, link, open, unlink, rmdir } from "node:fs/promises";
+import {
+  mkdtemp, mkdir, readFile, writeFile, symlink, link, open, unlink, rmdir,
+  type FileHandle,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -192,6 +195,59 @@ function sha256(value: unknown): string {
 async function readJournal(path: string): Promise<Array<Record<string, unknown>>> {
   const text = await readFile(path, "utf8");
   return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+type FileHandleWrite = (this: FileHandle, ...args: any[]) => Promise<any>;
+
+async function spyOnFileHandleWrite(
+  root: string,
+  implementation: (original: FileHandleWrite, handle: FileHandle, args: any[]) => Promise<any>,
+): Promise<ReturnType<typeof vi.spyOn>> {
+  const probePath = resolve(root, "write-probe");
+  const probe = await open(probePath, "w");
+  const prototype = Object.getPrototypeOf(probe) as { write: FileHandleWrite };
+  const original = prototype.write;
+  await probe.close();
+  await unlink(probePath);
+  return vi.spyOn(prototype, "write").mockImplementation(function (this: FileHandle, ...args: any[]) {
+    return implementation(original, this, args);
+  });
+}
+
+function pendingWriteText(args: any[]): string {
+  const value = args[0];
+  if (typeof value === "string") return value;
+  if (!ArrayBuffer.isView(value)) return "";
+  const offset = typeof args[1] === "number" ? args[1] : 0;
+  const length = typeof args[2] === "number" ? args[2] : value.byteLength - offset;
+  return Buffer.from(value.buffer, value.byteOffset + offset, length).toString("utf8");
+}
+
+async function writeAtMost(
+  original: FileHandleWrite,
+  handle: FileHandle,
+  args: any[],
+  maxBytes: number,
+): Promise<any> {
+  const value = args[0];
+  if (typeof value === "string") {
+    return original.call(handle, value.slice(0, maxBytes), args[1], args[2]);
+  }
+  const offset = typeof args[1] === "number" ? args[1] : 0;
+  const length = typeof args[2] === "number" ? args[2] : value.byteLength - offset;
+  return original.call(handle, value, offset, Math.min(length, maxBytes), args[3]);
+}
+
+async function partialThenZeroForEvent(root: string, eventType: string): Promise<ReturnType<typeof vi.spyOn>> {
+  let armed = false;
+  return spyOnFileHandleWrite(root, async (original, handle, args) => {
+    if (armed) return { bytesWritten: 0, buffer: args[0] };
+    if (pendingWriteText(args).includes(`"type":"${eventType}"`)) {
+      armed = true;
+      return writeAtMost(original, handle, args, 7);
+    }
+    return original.apply(handle, args);
+  });
 }
 
 describe("complete paginated discovery and create-only classification", () => {
@@ -559,6 +615,106 @@ describe("durable apply journal and immutable create boundary", () => {
     expect(persisted).not.toContain("REFERENCE_PROMPT_SENTINEL");
   });
 
+  it("writes each complete journal record across repeated short writes before allowing POST", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+
+    const writeSpy = await spyOnFileHandleWrite(repo.root,
+      (original, handle, args) => writeAtMost(original, handle, args, 7));
+    try {
+      await apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath: repo.evidencePath });
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(fake.mutations()).toEqual(["POST /api/agents", `POST /api/agents/${CREATED_ID}/publish`]);
+    expect((await readJournal(repo.evidencePath)).map((record) => record.type)).toEqual([
+      "JOURNAL_OPENED", "CREATE_INTENT", "CREATE_OUTCOME", "PREPUBLISH_VALIDATION_INTENT",
+      "PREPUBLISH_VALIDATION_OUTCOME", "PUBLISH_INTENT", "PUBLISH_OUTCOME", "READBACK_OUTCOME",
+    ]);
+  });
+
+  it("stops before any remote call when JOURNAL_OPENED writes zero bytes", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+    const callsBeforeApply = fake.calls.length;
+    const writeSpy = await spyOnFileHandleWrite(repo.root, async (_original, _handle, args) => (
+      { bytesWritten: 0, buffer: args[0] }
+    ));
+    try {
+      await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/journal|write|durable/i);
+    } finally {
+      writeSpy.mockRestore();
+    }
+    expect(fake.calls).toHaveLength(callsBeforeApply);
+    expect(fake.mutations()).toEqual([]);
+  });
+
+  it("stops before any remote call when JOURNAL_OPENED write throws", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+    const callsBeforeApply = fake.calls.length;
+    const writeSpy = await spyOnFileHandleWrite(repo.root, async () => {
+      throw new Error("injected journal write failure");
+    });
+    try {
+      await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/injected journal write failure/i);
+    } finally {
+      writeSpy.mockRestore();
+    }
+    expect(fake.calls).toHaveLength(callsBeforeApply);
+    expect(fake.mutations()).toEqual([]);
+  });
+
+  it("does not create when CREATE_INTENT cannot be completely written", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+    const writeSpy = await partialThenZeroForEvent(repo.root, "CREATE_INTENT");
+    try {
+      await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/journal|write|durable/i);
+    } finally {
+      writeSpy.mockRestore();
+    }
+    expect(fake.mutations()).toEqual([]);
+  });
+
+  it("does not publish when PUBLISH_INTENT cannot be completely written", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+    const writeSpy = await partialThenZeroForEvent(repo.root, "PUBLISH_INTENT");
+    try {
+      await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/journal|write|durable/i);
+    } finally {
+      writeSpy.mockRestore();
+    }
+    expect(fake.mutations()).toEqual(["POST /api/agents"]);
+  });
+
   it("keeps earlier Agent outcomes durable when a later readback fails", async () => {
     const secondManifest = { ...manifest, name: "[SEO Ops] Second Agent v1" };
     const repo = await makeRepository([
@@ -619,6 +775,8 @@ describe("durable apply journal and immutable create boundary", () => {
       { name: "non-DRAFT", mutate: (created) => { created.status = "PUBLISHED"; } },
       { name: "system default", mutate: (created) => { created.system_default = true; } },
       { name: "ambiguous system default", mutate: (created) => { (created as Record<string, unknown>).system_default = null; } },
+      { name: "unmanaged executable", mutate: (created) => { created.system_prompt_id = "unsafe"; } },
+      { name: "unknown remote field", mutate: (created) => { created.future_remote_setting = "unsafe"; } },
     ];
 
     for (const scenario of scenarios) {
@@ -641,7 +799,8 @@ describe("durable apply journal and immutable create boundary", () => {
   it("rejects an ID already present in the full principal roster even if POST rewrites it into a matching DRAFT", async () => {
     const repo = await makeRepository();
     const existing = remoteAgent({ id: CREATED_ID, name: "Existing Principal Agent", mine: true });
-    const fake = new FakeCore([referenceAgent(), existing]);
+    const filler = remoteAgent({ id: SECOND_CREATED_ID, name: "Earlier Principal Agent", mine: true });
+    const fake = new FakeCore([referenceAgent(), filler, existing]);
     fake.createIds = [CREATED_ID];
     fake.onCreate = (created) => {
       Object.assign(existing, created);
@@ -649,12 +808,39 @@ describe("durable apply journal and immutable create boundary", () => {
     };
     const dryRun = exported<DryRun>("dryRunAgentReconciliation");
     const apply = exported<Apply>("applyAgentReconciliationPlan");
-    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+    await dryRun({ client: createClient(fake, 1), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
       selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
-    await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+    await expect(apply({ client: createClient(fake, 1), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
       planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/created|existing|validation/i);
     expect(fake.mutations()).toEqual(["POST /api/agents"]);
     expect((await readJournal(repo.evidencePath)).at(-1)).toMatchObject({ type: "PREPUBLISH_VALIDATION_FAILED" });
+    const principalPages = fake.calls.filter((call) => call.method === "GET"
+      && call.url.pathname === "/api/agents" && call.url.searchParams.get("my") === "true"
+      && call.url.searchParams.get("query") === "").map((call) => call.url.searchParams.get("page"));
+    expect(principalPages).toContain("2");
+  });
+
+  it("rejects a duplicate global exact name found on a later post-create page before publish", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake, 1), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+    fake.onCreate = () => {
+      fake.agents.push(remoteAgent({
+        id: SECOND_CREATED_ID, name: manifest.name, status: "DRAFT", published_at: null, mine: true,
+      }));
+    };
+
+    await expect(apply({ client: createClient(fake, 1), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/created|exact|validation|duplicate/i);
+    expect(fake.mutations()).toEqual(["POST /api/agents"]);
+    expect((await readJournal(repo.evidencePath)).at(-1)).toMatchObject({ type: "PREPUBLISH_VALIDATION_FAILED" });
+    const exactPages = fake.calls.filter((call) => call.method === "GET"
+      && call.url.pathname === "/api/agents" && call.url.searchParams.get("query") === manifest.name)
+      .map((call) => call.url.searchParams.get("page"));
+    expect(exactPages).toContain("2");
   });
 
   it("has no PUT, DELETE, or executable rollback capability", () => {

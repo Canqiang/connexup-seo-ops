@@ -940,7 +940,18 @@ class EvidenceJournal {
   ) {}
   async append(event: JournalEvent): Promise<void> {
     await verifyOpenedIdentity(this.handle, this.target);
-    await this.handle.write(`${JSON.stringify(event)}\n`);
+    const record = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
+    let offset = 0;
+    while (offset < record.byteLength) {
+      const remaining = record.byteLength - offset;
+      const result = await this.handle.write(record, offset, remaining, null);
+      if (!Number.isSafeInteger(result.bytesWritten)
+        || result.bytesWritten <= 0
+        || result.bytesWritten > remaining) {
+        throw new CoreAiAgentAdminError("Evidence journal write did not make safe forward progress");
+      }
+      offset += result.bytesWritten;
+    }
     await this.handle.sync();
     await verifyOpenedIdentity(this.handle, this.target);
   }
