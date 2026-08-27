@@ -36,11 +36,16 @@ export async function resolveAgentRunRequestReplay(
   db: Db,
   idempotencyKey: string,
   httpRequestFingerprint: string,
-  expected: { merchantId?: string; taskId?: string; locationId?: string | null } = {},
+  expected: AgentRunTaskScope | {
+    merchantId: string;
+    stage?: never;
+    taskId?: never;
+    locationId?: never;
+  },
 ): Promise<AgentRun | null> {
   const request = await findAgentRunRequestByIdempotencyKey(db, idempotencyKey);
   if (!request) return null;
-  if (expected.merchantId !== undefined && request.merchantId !== expected.merchantId) {
+  if (request.merchantId !== expected.merchantId) {
     agentRunScopeReconciliationRequired();
   }
   if (request.semanticsVersion !== CURRENT_AGENT_RUN_REQUEST_SEMANTICS
@@ -58,18 +63,7 @@ export async function resolveAgentRunRequestReplay(
   const run = await getAgentRun(db, request.runId);
   if (!run) agentRunScopeReconciliationRequired();
   if (expected.taskId !== undefined) {
-    if (expected.merchantId === undefined || expected.locationId === undefined) {
-      throw new Error("task-linked Agent Run replay requires merchant and location scope");
-    }
-    assertAgentRunTaskScope(run, {
-      taskId: expected.taskId,
-      merchantId: expected.merchantId,
-      locationId: expected.locationId,
-    });
-    if (request.semanticsVersion === LEGACY_BOUND_AGENT_RUN_REQUEST_SEMANTICS
-      && run.stage !== "GBP_POST_CONTENT") {
-      agentRunScopeReconciliationRequired();
-    }
+    assertAgentRunTaskScope(run, expected as AgentRunTaskScope);
   }
   return run;
 }
@@ -112,6 +106,9 @@ export async function allocateAgentRun(
   input: AgentRunAllocationInput,
 ): Promise<{ run: AgentRun; inserted: boolean }> {
   const key = input.run.creationIdempotencyKey!;
+  if (input.expectedReplayScope) {
+    assertAgentRunTaskScope(input.run, input.expectedReplayScope);
+  }
   try {
     return await input.db.withTransaction(async (tx) => {
       if (!await lockMerchantForUpdate(tx, input.run.merchantId)) {
@@ -167,6 +164,9 @@ export async function allocateAgentRun(
         );
       }
 
+      if (input.expectedReplayScope) {
+        assertAgentRunTaskScope(input.run, input.expectedReplayScope);
+      }
       await insertAgentRun(tx, input.run);
       await persistRequestAlias(tx, input.run, key, input.httpRequestFingerprint);
       return { run: input.run, inserted: true };

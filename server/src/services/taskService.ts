@@ -540,6 +540,7 @@ function appendEvidenceWithPolicy(
     input.expected_state_version,
     async (task, tx) => {
       if (rejectActiveGbpRun && await findActiveGbpContentRunByTask(tx, {
+        stage: "GBP_POST_CONTENT",
         taskId: task.id,
         merchantId: task.merchantId,
         locationId: task.locationId,
@@ -762,6 +763,7 @@ export function approvalDecision(
         );
       }
       if (action === "APPROVE" && await findActiveGbpContentRunByTask(tx, {
+        stage: "GBP_POST_CONTENT",
         taskId: task.id,
         merchantId: task.merchantId,
         locationId: task.locationId,

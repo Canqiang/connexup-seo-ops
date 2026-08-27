@@ -1,11 +1,21 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiClient.js";
 import { AgentRunPoller } from "../src/services/agentRunPoller.js";
-import { parseGbpPostDraftOutput } from "../src/services/gbpPostContentService.js";
+import {
+  parseGbpPostDraftOutput,
+  triggerGbpPostContentRun,
+} from "../src/services/gbpPostContentService.js";
+import { allocateAgentRun } from "../src/services/agentRunAllocator.js";
 import { addAgentGeneratedDraftFromRun } from "../src/services/contentService.js";
+import {
+  getAgentRun,
+  insertAgentRun,
+  listDeliverablesByRun,
+  upsertDeliverable,
+} from "../src/repos/agentRunRepo.js";
 import { migrate } from "../src/db/migrate.js";
 import { gbpContentHttpRequestFingerprint } from "../src/domain/gbpContentRunIdentity.js";
 import { createAuthenticatedTestApp } from "./helpers/authTest.js";
@@ -27,6 +37,8 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     waitBeforeTriggerReturn?: () => Promise<void>;
   } = {}) {
     let triggerCount = 0;
+    let getRunCount = 0;
+    let downloadCount = 0;
     let lastAgentId = "";
     const inputs = new Map<string, Record<string, unknown>>();
     const client: CoreAiClient = {
@@ -49,6 +61,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
         return { run_id: runId, status: "RUNNING" };
       },
       async getRun(id): Promise<CoreAgentRunDetail> {
+        getRunCount += 1;
         const request = inputs.get(id) as {
           merchant: { id: string };
           location: { id: string };
@@ -82,11 +95,16 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
         };
       },
       async cancel() {},
-      async downloadArtifact() { throw new Error("GBP content has no attachments"); },
+      async downloadArtifact() {
+        downloadCount += 1;
+        throw new Error("GBP content has no attachments");
+      },
     };
     return {
       client,
       triggerCount: () => triggerCount,
+      getRunCount: () => getRunCount,
+      downloadCount: () => downloadCount,
       lastAgentId: () => lastAgentId,
     };
   }
@@ -366,6 +384,51 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(core.triggerCount()).toBe(1);
   });
 
+  it("rejects a strict-current alias that references a same-scope non-GBP Run", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "strict-wrong-stage");
+    const { app, db, task } = built;
+    const key = "strict-wrong-stage-run";
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(created.statusCode).toBe(202);
+    const original = await getAgentRun(db, created.json().id);
+    expect(original).not.toBeNull();
+    await insertAgentRun(db, {
+      ...original!,
+      id: "strict-wrong-stage-foreign-run",
+      stage: "KEYWORDS",
+      runType: "KEYWORD_RESEARCH",
+      inputMessage: "WRONG_STAGE_INPUT_MUST_NOT_LEAK",
+      creationIdempotencyKey: null,
+      requestFingerprint: "sha256:wrong-stage-generation",
+      httpRequestFingerprint: "sha256:wrong-stage-http",
+      businessInputFingerprint: null,
+    });
+    await db.exec(
+      `UPDATE seo_agent_run_requests
+          SET run_id = 'strict-wrong-stage-foreign-run', semantics_version = 'STRICT_CURRENT'
+        WHERE idempotency_key = $1`,
+      [key],
+    );
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json()).toEqual({
+      message: "GBP Post content Run requires reconciliation",
+      error_code: "CONTENT_RUN_RECONCILIATION_REQUIRED",
+    });
+    expect(replay.body).not.toContain("WRONG_STAGE_INPUT_MUST_NOT_LEAK");
+    expect(core.triggerCount()).toBe(1);
+  });
+
   it("fails closed when creation-key compatibility replay finds a wrong-location Run", async () => {
     const core = fakeCore();
     const built = await setupContentTask(core.client, "corrupt-creation-fallback");
@@ -554,6 +617,184 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(core.triggerCount()).toBe(1);
   });
 
+  it("rejects a reloaded Task whose scope differs from the route-authorized snapshot", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "authorized-scope-reload");
+    const { app, db, task } = built;
+    const foreignMerchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: "authorized-scope-reload-foreign",
+        idempotency_key: "authorized-scope-reload-foreign",
+      },
+    })).json();
+    const foreignLocation = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${foreignMerchant.id}/locations`,
+      payload: {
+        slug: "authorized-scope-reload-location",
+        timezone: "America/Chicago",
+        readiness_status: "READY",
+        external_identities: { google_business: "locations/authorized-scope-reload" },
+        missing_requirements: [],
+        idempotency_key: "authorized-scope-reload-location",
+      },
+    })).json();
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${foreignMerchant.id}/style-profile`,
+      payload: { voice: { tone: "foreign scope" } },
+    })).statusCode).toBe(201);
+    await db.exec(
+      `UPDATE seo_tasks SET merchant_id = $1, location_id = $2 WHERE id = $3`,
+      [foreignMerchant.id, foreignLocation.id, task.id],
+    );
+
+    await expect(triggerGbpPostContentRun(
+      { db, client: core.client },
+      {
+        stage: "GBP_POST_CONTENT",
+        taskId: task.id,
+        merchantId: built.merchant.id,
+        locationId: built.location.id,
+      },
+      "authorized-scope-reload-run",
+      "op-1",
+    )).rejects.toMatchObject({
+      status: 409,
+      code: "CONTENT_RUN_RECONCILIATION_REQUIRED",
+    });
+    expect(core.triggerCount()).toBe(0);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
+      [task.id],
+    )).toEqual({ count: "0" });
+  });
+
+  it("rejects a transaction-locked Task whose scope changed after route authorization", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "authorized-scope-lock");
+    const { app, db, task, merchant } = built;
+    const foreignMerchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: "authorized-scope-lock-foreign",
+        idempotency_key: "authorized-scope-lock-foreign",
+      },
+    })).json();
+    const foreignLocation = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${foreignMerchant.id}/locations`,
+      payload: {
+        slug: "authorized-scope-lock-location",
+        timezone: "America/Chicago",
+        readiness_status: "READY",
+        external_identities: { google_business: "locations/authorized-scope-lock" },
+        missing_requirements: [],
+        idempotency_key: "authorized-scope-lock-location",
+      },
+    })).json();
+    const held = await holdMerchantLock(db, merchant.id);
+    const allocation = app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "authorized-scope-lock-run" },
+    });
+    await waitForBlockedBy(db, held.blockerPid);
+    await db.exec(
+      `UPDATE seo_tasks SET merchant_id = $1, location_id = $2 WHERE id = $3`,
+      [foreignMerchant.id, foreignLocation.id, task.id],
+    );
+    held.release();
+    await held.transaction;
+
+    const rejected = await allocation;
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json()).toEqual({
+      message: "GBP Post content Run requires reconciliation",
+      error_code: "CONTENT_RUN_RECONCILIATION_REQUIRED",
+    });
+    expect(core.triggerCount()).toBe(0);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
+      [task.id],
+    )).toEqual({ count: "0" });
+  });
+
+  it("rejects a newly constructed Run whose location differs before insert", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "new-run-scope");
+    const { app, db, task, merchant, location } = built;
+    const wrongLocation = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/locations`,
+      payload: {
+        slug: "new-run-scope-wrong-location",
+        timezone: "America/Denver",
+        readiness_status: "READY",
+        external_identities: { google_business: "locations/new-run-scope-wrong" },
+        missing_requirements: [],
+        idempotency_key: "new-run-scope-wrong-location",
+      },
+    }));
+    expect(wrongLocation.statusCode).toBe(201);
+    const wrongLocationBody = wrongLocation.json();
+    const now = "2026-08-27T00:00:00.000Z";
+
+    await expect(allocateAgentRun({
+      db,
+      run: {
+        id: "new-run-scope-mismatch",
+        merchantId: merchant.id,
+        locationId: wrongLocationBody.id,
+        stage: "GBP_POST_CONTENT",
+        taskId: task.id,
+        runType: "GBP_POST_CONTENT",
+        goal: null,
+        status: "TRIGGERING",
+        coreRunId: null,
+        traceRef: null,
+        coreStatus: null,
+        inputMessage: "NEW_RUN_MISMATCH_MUST_NOT_PERSIST",
+        output: null,
+        error: null,
+        errorCode: null,
+        tokenUsage: {},
+        triggeredBy: "op-1",
+        triggeredAt: now,
+        lastPolledAt: null,
+        completedAt: null,
+        creationIdempotencyKey: "new-run-scope-mismatch-key",
+        requestFingerprint: "sha256:new-run-scope-generation",
+        httpRequestFingerprint: "sha256:new-run-scope-http",
+        businessInputFingerprint: "sha256:new-run-scope-business",
+        retryOfAgentRunId: null,
+        retryGeneration: 0,
+        retryReason: null,
+        createdBy: "op-1",
+        createdAt: now,
+        updatedAt: now,
+      },
+      httpRequestFingerprint: "sha256:new-run-scope-http",
+      expectedReplayScope: {
+        stage: "GBP_POST_CONTENT",
+        taskId: task.id,
+        merchantId: merchant.id,
+        locationId: location.id,
+      },
+    })).rejects.toMatchObject({
+      status: 409,
+      code: "CONTENT_RUN_RECONCILIATION_REQUIRED",
+    });
+    expect(core.triggerCount()).toBe(0);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE id = $1`,
+      ["new-run-scope-mismatch"],
+    )).toEqual({ count: "0" });
+  });
+
   it("rejects polled output ingestion when the persisted Run no longer matches its Task scope", async () => {
     const core = fakeCore();
     const built = await setupContentTask(core.client, "corrupt-ingestion-scope");
@@ -594,6 +835,117 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       method: "GET",
       url: `/api/seo-ops/tasks/${task.id}/drafts`,
     })).json().items).toEqual([]);
+  });
+
+  it("terminalizes a corrupt RUNNING GBP Run before Core polling and hides every task-linked read", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "pre-poll-corrupt-scope");
+    const { app, db, task, artifactsDir } = built;
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "pre-poll-corrupt-scope-run" },
+    });
+    expect(created.statusCode).toBe(202);
+    const foreignMerchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: "pre-poll-corrupt-foreign-merchant",
+        display_name: "Pre-poll Foreign Merchant",
+        idempotency_key: "pre-poll-corrupt-foreign-merchant",
+      },
+    })).json();
+    const foreignLocation = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${foreignMerchant.id}/locations`,
+      payload: {
+        slug: "pre-poll-corrupt-foreign-location",
+        timezone: "America/Chicago",
+        readiness_status: "READY",
+        external_identities: { google_business: "locations/pre-poll-foreign" },
+        missing_requirements: [],
+        idempotency_key: "pre-poll-corrupt-foreign-location",
+      },
+    })).json();
+    const seededPath = join(artifactsDir, "preexisting-hidden.txt");
+    writeFileSync(seededPath, "PREEXISTING_HIDDEN_BYTES", "utf8");
+    await upsertDeliverable(db, {
+      id: "pre-poll-corrupt-deliverable",
+      runId: created.json().id,
+      kind: "ATTACHMENT",
+      fileId: "preexisting-file",
+      fileName: "preexisting-hidden.txt",
+      contentType: "text/plain",
+      size: 24,
+      title: "Preexisting hidden artifact",
+      description: null,
+      sha256: null,
+      localPath: seededPath,
+      remoteUrl: "https://core-ai.example/foreign-preexisting",
+      downloadedAt: "2026-08-27T00:00:00.000Z",
+      downloadError: null,
+      createdAt: "2026-08-27T00:00:00.000Z",
+    });
+    await db.exec(
+      `UPDATE seo_agent_runs
+          SET merchant_id = $1, location_id = $2
+        WHERE id = $3`,
+      [foreignMerchant.id, foreignLocation.id, created.json().id],
+    );
+
+    await new AgentRunPoller({ db, client: core.client, artifactsDir }).pollOnce();
+
+    expect(core.getRunCount()).toBe(0);
+    expect(core.downloadCount()).toBe(0);
+    expect(await db.one<{
+      status: string;
+      error_code: string;
+      error: string;
+      output: string | null;
+    }>(
+      `SELECT status, error_code, error, output FROM seo_agent_runs WHERE id = $1`,
+      [created.json().id],
+    )).toEqual({
+      status: "FAILED",
+      error_code: "CONTENT_RUN_RECONCILIATION_REQUIRED",
+      error: "GBP Post content Run requires reconciliation",
+      output: null,
+    });
+    expect((await listDeliverablesByRun(db, created.json().id)).map((item) => item.id))
+      .toEqual(["pre-poll-corrupt-deliverable"]);
+
+    const taskMerchantList = await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/merchants/${built.merchant.id}/stage-runs`,
+    });
+    const corruptMerchantList = await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/merchants/${foreignMerchant.id}/stage-runs`,
+    });
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/agent-runs/${created.json().id}`,
+    });
+    const taskAudit = await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${task.id}/audit-references`,
+    });
+    const download = await app.inject({
+      method: "GET",
+      url: "/api/seo-ops/deliverables/pre-poll-corrupt-deliverable/download",
+    });
+
+    expect(taskMerchantList.statusCode).toBe(200);
+    expect(taskMerchantList.json()).toMatchObject({ items: [], total: 0 });
+    expect(corruptMerchantList.statusCode).toBe(200);
+    expect(corruptMerchantList.json()).toMatchObject({ items: [], total: 0 });
+    expect(taskAudit.statusCode).toBe(200);
+    expect(taskAudit.json().agent_runs).toEqual([]);
+    for (const response of [detail, download]) {
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ message: "resource not found" });
+    }
   });
 
   it("rejects publication claims at the strict output parser boundary", () => {

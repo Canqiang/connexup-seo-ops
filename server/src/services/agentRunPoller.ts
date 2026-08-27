@@ -8,6 +8,10 @@ import {
 } from "../repos/agentRunRepo.js";
 import type { AgentRun } from "../repos/agentRunTypes.js";
 import { applyTerminalTransition, recordDeliverables, type AgentRunIoDeps } from "./agentRunService.js";
+import {
+  hasValidTaskLinkedGbpContentScope,
+  isTaskLinkedGbpContentRun,
+} from "./agentRunScopeService.js";
 import { ingestGbpPostContentRunOutput } from "./gbpPostContentService.js";
 
 /** Injectable clock/scheduler so tests never sleep. */
@@ -74,7 +78,25 @@ export class AgentRunPoller {
     return (this.deps.now ? this.deps.now() : new Date()).toISOString();
   }
 
+  private async failCorruptGbpScope(run: AgentRun): Promise<void> {
+    const now = this.nowIso();
+    await transitionAgentRun(this.deps.db, run.id, {
+      status: "FAILED",
+      output: null,
+      error: "GBP Post content Run requires reconciliation",
+      errorCode: "CONTENT_RUN_RECONCILIATION_REQUIRED",
+      completedAt: now,
+      lastPolledAt: now,
+    }, [run.status]);
+  }
+
   private async processRun(run: AgentRun): Promise<void> {
+    if (isTaskLinkedGbpContentRun(run)
+      && !await hasValidTaskLinkedGbpContentScope(this.deps.db, run)) {
+      await this.failCorruptGbpScope(run);
+      return;
+    }
+
     if (run.status === "TRIGGERING") {
       const ageMs =
         (this.deps.now ? this.deps.now() : new Date()).getTime() -
@@ -116,6 +138,11 @@ export class AgentRunPoller {
     // The row may have gone terminal (cancel route) while the fetch was out.
     const fresh = await getAgentRun(this.deps.db, run.id);
     if (!fresh || fresh.status !== "RUNNING") return;
+    if (isTaskLinkedGbpContentRun(fresh)
+      && !await hasValidTaskLinkedGbpContentScope(this.deps.db, fresh)) {
+      await this.failCorruptGbpScope(fresh);
+      return;
+    }
 
     if ((CORE_RUN_TERMINAL_STATUSES as readonly string[]).includes(core.status)) {
       // Deliverables land first (upsert by deterministic id = idempotent); a

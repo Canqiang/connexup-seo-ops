@@ -12,6 +12,7 @@ import { getAgentRun, getDeliverable } from "../repos/agentRunRepo.js";
 import type { Location, Merchant } from "../repos/types.js";
 import type { Task } from "../repos/taskTypes.js";
 import type { AgentRun, RunDeliverable } from "../repos/agentRunTypes.js";
+import { hasValidTaskLinkedGbpContentScope } from "../services/agentRunScopeService.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -101,6 +102,7 @@ export async function requireRunAccess(
 ): Promise<AgentRun> {
   const run = await getAgentRun(db, runId);
   if (!run) hiddenResource();
+  if (!await hasValidTaskLinkedGbpContentScope(db, run)) hiddenResource();
   await requireMerchantAccess(db, actor, run.merchantId);
   return run;
 }

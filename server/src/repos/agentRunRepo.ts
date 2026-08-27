@@ -351,17 +351,23 @@ export async function listAgentRunsByTask(db: Db, taskId: string): Promise<Agent
  * authorization boundary beyond the task aggregate. */
 export async function listAgentRunsForTaskAudit(
   db: Db,
-  taskId: string,
-  merchantId: string,
+  scope: AgentRunTaskScope,
   linkedRunIds: readonly string[],
   offset: number,
   limit: number,
 ): Promise<{ items: AgentRun[]; total: number }> {
   const ids = [...new Set(linkedRunIds)];
-  const clauses = ids.length > 0
-    ? "(task_id = $2 OR id = ANY($3::text[]))"
-    : "task_id = $2";
-  const params = ids.length > 0 ? [merchantId, taskId, ids] : [merchantId, taskId];
+  const params = [scope.merchantId, scope.taskId, ids, scope.locationId];
+  const clauses = `
+    (task_id = $2 OR id = ANY($3::text[]))
+    AND (
+      NOT (stage = 'GBP_POST_CONTENT' OR run_type = 'GBP_POST_CONTENT')
+      OR (
+        stage = 'GBP_POST_CONTENT'
+        AND task_id = $2
+        AND location_id IS NOT DISTINCT FROM $4
+      )
+    )`;
   const count = await db.one<{ total: string }>(
     `SELECT COUNT(*) AS total FROM seo_agent_runs WHERE merchant_id = $1 AND ${clauses}`,
     params,

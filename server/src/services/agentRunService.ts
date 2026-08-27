@@ -26,6 +26,7 @@ import {
 import type { AgentRun, RunDeliverable } from "../repos/agentRunTypes.js";
 import { requireIdempotencyKey } from "./merchantService.js";
 import { allocateAgentRun } from "./agentRunAllocator.js";
+import { hasValidTaskLinkedGbpContentScope } from "./agentRunScopeService.js";
 import {
   buildStageRunMessage,
   excerptForPrompt,
@@ -504,11 +505,12 @@ export async function listStageRuns(
   if (!(await getMerchant(db, merchantId))) {
     throw notFound(`merchant ${merchantId} not found`);
   }
-  return paginate(
-    await listAgentRunsByMerchant(db, merchantId, params.stage),
-    params.offset,
-    params.limit,
-  );
+  const runs = await listAgentRunsByMerchant(db, merchantId, params.stage);
+  const visible: AgentRun[] = [];
+  for (const run of runs) {
+    if (await hasValidTaskLinkedGbpContentScope(db, run)) visible.push(run);
+  }
+  return paginate(visible, params.offset, params.limit);
 }
 
 export async function getAgentRunOr404(db: Db, id: string): Promise<AgentRun> {

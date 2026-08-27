@@ -350,7 +350,16 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     const task = await requireTaskAccess(ctx.db, actor, taskId);
     const { offset, limit } = auditReferencePageSchema.parse(request.query);
     const runs = await listAgentRunsForTaskAudit(
-      ctx.db, task.id, task.merchantId, task.agentRunLinks.map((link) => link.agentRunId), offset, limit,
+      ctx.db,
+      {
+        stage: "GBP_POST_CONTENT",
+        taskId: task.id,
+        merchantId: task.merchantId,
+        locationId: task.locationId,
+      },
+      task.agentRunLinks.map((link) => link.agentRunId),
+      offset,
+      limit,
     );
     const deliverablesByRun = await listDeliverablesByRunIds(ctx.db, runs.items.map((run) => run.id));
     const attempts = await listAttemptsByTaskPage(
@@ -490,7 +499,12 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
         dailyRunLimit: ctx.config.agentRunDailyLimit,
         log: app.log,
       },
-      { taskId: task.id, merchantId: task.merchantId, locationId: task.locationId },
+      {
+        stage: "GBP_POST_CONTENT",
+        taskId: task.id,
+        merchantId: task.merchantId,
+        locationId: task.locationId,
+      },
       body.idempotency_key,
       actor.userId,
       body.retry

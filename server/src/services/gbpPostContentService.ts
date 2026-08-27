@@ -6,6 +6,7 @@ import { gbpContentHttpRequestFingerprint } from "../domain/gbpContentRunIdentit
 import {
   agentRunScopeReconciliationRequired,
   assertAgentRunTaskScope,
+  assertTaskMatchesAgentRunScope,
   type AgentRunTaskScope,
 } from "../domain/agentRunScope.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
@@ -300,6 +301,7 @@ async function validateRetryPrior(
     throw badRequest("retry prior_run_id must identify a GBP Post content run for this task");
   }
   assertAgentRunTaskScope(prior, {
+    stage: "GBP_POST_CONTENT",
     taskId: task.id,
     merchantId: task.merchantId,
     locationId: task.locationId,
@@ -322,6 +324,10 @@ async function triggerOnce(
   actorId: string,
   retry?: GbpPostContentRetry,
 ): Promise<{ run: AgentRun; replayed: boolean }> {
+  const task = await getTask(deps.db, taskId);
+  if (!task) throw notFound(`task ${taskId} not found`);
+  assertTaskMatchesAgentRunScope(task, authorizedScope);
+
   const httpRequestFingerprint = gbpContentHttpRequestFingerprint(taskId, retry);
   const requestReplay = await resolveAgentRunRequestReplay(
     deps.db,
@@ -331,14 +337,13 @@ async function triggerOnce(
   );
   if (requestReplay) return { run: requestReplay, replayed: true };
 
-  const task = await getTask(deps.db, taskId);
-  if (!task) throw notFound(`task ${taskId} not found`);
   const base = await buildRun(deps, task, key, actorId, undefined, 0);
   const prior = retry
     ? await validateRetryPrior(deps.db, task, retry, base.businessFingerprint)
     : null;
   const retryGeneration = prior ? (prior.retryGeneration ?? 0) + 1 : 0;
   const built = await buildRun(deps, task, key, actorId, retry, retryGeneration);
+  assertAgentRunTaskScope(built.run, authorizedScope);
 
   const allocation = await allocateAgentRun({
     db: deps.db,
@@ -349,6 +354,7 @@ async function triggerOnce(
     validateBeforeInsert: async (tx) => {
       const current = await getTaskForUpdate(tx, taskId);
       if (!current) throw notFound(`task ${taskId} not found`);
+      assertTaskMatchesAgentRunScope(current, authorizedScope);
       if (current.taskRevision !== task.taskRevision
         || current.executionSpecHash !== task.executionSpecHash) {
         throw conflict("task revision changed while allocating GBP Post content", "STALE_STATE");
@@ -405,6 +411,7 @@ async function triggerOnce(
   if (!allocation.inserted) return { run: allocation.run, replayed: true };
 
   try {
+    assertAgentRunTaskScope(built.run, authorizedScope);
     const triggered = await deps.client.trigger(built.agentId, built.run.inputMessage);
     const adopted = await transitionAgentRun(deps.db, built.run.id, {
       coreRunId: triggered.run_id,
@@ -451,6 +458,7 @@ export async function ingestGbpPostContentRunOutput(
   const task = await getTask(db, run.taskId);
   if (!task) agentRunScopeReconciliationRequired();
   assertAgentRunTaskScope(run, {
+    stage: "GBP_POST_CONTENT",
     taskId: task.id,
     merchantId: task.merchantId,
     locationId: task.locationId,
