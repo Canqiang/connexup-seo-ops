@@ -164,3 +164,91 @@ SHA-256 src/features/tasks/TaskDecisionHero.tsx
 - The 10 MiB image ceiling is an internal safety policy. A later evidence-backed provider contract may justify changing it, which must receive new boundary tests.
 - Automated component/API tests cover layout reservation, loading/error fallback, URL exclusion, and access-controlled download. Full browser pixel/playback-style human acceptance remains outside this no-UAT implementation task.
 - CTA-to-live-provider mapping is deliberately not claimed here and remains a hard Task 11 execution gate.
+
+## Fix Round 1 — review findings closed (2026-08-27)
+
+Implementation commit: `dc64351a4370b24aac4d996bd53ede82eab139b8`
+
+### Scope and invariants
+
+- Keyed the entire Task route subtree by `taskId` and wrapped every Task-owned resource result with its request Task ID. A delayed or rejected cross-merchant navigation cannot render the previous Task title, body, CTA, image, artifacts, drafts, events, or audit references for even one retained route paint.
+- The approval hero now resolves the exact `execution_spec.content_draft` snapshot and checks version, draft SHA, body, CTA type, CTA URL, and media array. A newer draft is rendered separately as `CANDIDATE / NOT FINALIZED`; both compact and detail approval controls fail closed when no exact snapshot-backed draft is displayed.
+- One authoritative GBP validator now governs model-output copy/CTA policy, human GBP revisions, and GBP finalization. Human revisions require exactly one byte-verified, server-issued canonical `seo_ops.media_ref.v1` already owned by a GBP content Run for the same Task/merchant/location. Raw URLs/paths, missing/multiple media, rewritten references, cross-Task media, invalid CTA/URL, phone copy, missing bytes, changed bytes, bad signatures, size drift, and SHA drift are rejected without a draft revision.
+- Each stored GBP input message now contains immutable `dispatch_identity.expected_agent_id`. Terminal acceptance checks both `core.id === stored core_run_id` and `core.agent_id === stored expected_agent_id` before output parsing, download, deliverable persistence, or draft persistence. Missing or mismatched identity produces `CORE_RUN_IDENTITY_MISMATCH` and zero new artifact/draft.
+- Generic non-GBP draft revision behavior remains unchanged. No Task 11A schema, migration, or repository file was modified.
+
+### RED evidence
+
+Frontend command:
+
+```text
+npm test -- --run src/App.test.tsx -t "task navigation clears|task navigation error|GBP approval"
+Test Files  1 failed (1)
+Tests       3 failed | 1 passed | 36 skipped
+```
+
+The RED DOM retained the old Task subtree during delayed navigation and selected the newest candidate v2 as `当前稿件 v2`; the exact finalized-v1 heading and approval-blocked state were absent. The first delayed-navigation assertion also exposed an ambiguous generic status selector; it was narrowed to the explicit loading text before the GREEN proof.
+
+Backend command:
+
+```text
+cd server && npm test -- gbpPostContentAgent.test.ts -t "Core run id differs|Core agent id differs|stored dispatched agent identity|unsafe GBP human revisions|cross-Task media in a GBP human revision|local image bytes"
+Test Files  1 failed (1)
+Tests       5 failed | 1 passed | 41 skipped
+```
+
+Behavioral RED failures showed image-less human revision returning `201`, cross-Task media revision returning `201`, and finalization after local byte tampering returning `201`. The first identity-table fixture reused a non-unique setup suffix and failed before its intended assertion; the fixture was corrected to unique explicit suffixes, then the stored-identity and zero-persistence checks were proven in GREEN. This test-fixture failure is recorded rather than presented as product evidence.
+
+### GREEN evidence
+
+```text
+npm test -- --run src/App.test.tsx
+Test Files  1 passed (1)
+Tests       40 passed (40)
+
+cd server && npm test -- gbpPostContentAgent.test.ts
+Test Files  1 passed (1)
+Tests       48 passed (48)
+
+cd server && npm run typecheck
+exit 0
+
+cd server && npm run build
+exit 0
+
+npm run build
+exit 0; TypeScript project build and Vite production build completed
+
+git diff --check
+exit 0
+```
+
+Per the speed constraint, verification was limited to the affected Task 10B frontend/backend files plus required builds; no broad repository test suite or UAT was run.
+
+### Fix-round deterministic hashes
+
+```text
+SHA-256 server/src/services/contentService.ts
+61562635966a434e76efef494d92976ed8ad1b9ababf8309283352daa82dfaec
+
+SHA-256 server/src/services/gbpPostContentService.ts
+b16cdf0ad58da21fb25220351adbefa260a848fe3fe0e4931b8aa7cf4afd6e6a
+
+SHA-256 src/features/tasks/TaskDecisionHero.tsx
+127ba1f938c8b4efef01ca77a02e9fafac99095f6793eab14e569aafb9f8ad0f
+
+SHA-256 src/features/tasks/TaskPage.tsx
+f2ddb03212ea6735eb49ff7dd9c9cb2f258a067afab8d635717e9716e710899f
+
+SHA-256 src/App.test.tsx
+3958a9ea2021da9369ad8c9f089afbab8a47b481d2b0b1699721d4636fa6e685
+
+SHA-256 server/tests/gbpPostContentAgent.test.ts
+6925a01d2c14d1514e49beb40a6234dea45dc1eeb35eca16877b021e6238deb7
+```
+
+### Residual risks
+
+- No UAT, network, credentials, Core Agent mutation, FBR access, or GBP external write was performed. Live Core/provider identity and attachment behavior remain unproven here.
+- Frontend proof is component-level under jsdom. It proves route-key and request-key isolation plus exact identity selection, but not browser pixel acceptance.
+- Local image integrity is reread at human revision/finalization. Later filesystem corruption remains a preview/download stop condition; approval operators must still treat an unavailable image as a hard stop.
