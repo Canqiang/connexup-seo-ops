@@ -1,7 +1,7 @@
 import type { Db } from "../db/connection.js";
 import { listAgentRunsForSummary } from "../repos/agentRunRepo.js";
 import { listMerchants, listMerchantsForOperator } from "../repos/merchantRepo.js";
-import { listTasks } from "../repos/taskRepo.js";
+import { listTasks, listTasksByMerchantIds } from "../repos/taskRepo.js";
 import { listBatchViews } from "./proposalService.js";
 
 export type ActivitySeverity = "INFO" | "WARN" | "DANGER";
@@ -48,7 +48,8 @@ export async function activityFeed(
   const since = new Date(now.getTime() - options.hours * 3_600_000).toISOString();
   const items: ActivityItemWire[] = [];
 
-  for (const task of (await listTasks(db)).filter((t) => names.has(t.merchantId))) {
+  const scopedTasks = scopeAll ? await listTasks(db) : await listTasksByMerchantIds(db, [...names.keys()]);
+  for (const task of scopedTasks.filter((t) => names.has(t.merchantId))) {
     for (const event of task.events) {
       if (event.occurredAt < since) continue;
       const copy = describeTaskEvent(event.type);
@@ -72,7 +73,10 @@ export async function activityFeed(
     });
   }
 
-  for (const view of (await listBatchViews(db)).filter((v) => names.has(v.batch.merchantId))) {
+  const scopedBatches = scopeAll
+    ? await listBatchViews(db)
+    : (await Promise.all(merchants.map((m) => listBatchViews(db, m.id)))).flat();
+  for (const view of scopedBatches.filter((v) => names.has(v.batch.merchantId))) {
     if (view.batch.createdAt < since) continue;
     const pending = view.proposals.filter((p) => p.status === "PENDING" || p.status === "VALIDATION_FAILED").length;
     items.push({
