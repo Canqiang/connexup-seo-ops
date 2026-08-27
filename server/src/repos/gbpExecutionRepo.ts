@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Db } from "../db/connection.js";
 import {
   GbpCanonicalUtcInstantSchema,
+  GbpCoreApiUserIdSchema,
   GbpExecutionCommandSchema,
   GbpExecutionReceiptSchema,
   GbpReadbackDiffCodeSchema,
@@ -55,7 +56,7 @@ const BindingSchema = z.object({
   accountResource: SafeCoordinateSchema,
   locationResource: SafeCoordinateSchema,
   timezone: z.string().min(1).max(100).refine(isIanaTimezone),
-  coreApiUserId: UuidSchema,
+  coreApiUserId: GbpCoreApiUserIdSchema,
   coreApiUserExternalId: IdentifierSchema,
   writeSecretRef: GbpSecretRefSchema,
   readbackSecretRef: GbpSecretRefSchema,

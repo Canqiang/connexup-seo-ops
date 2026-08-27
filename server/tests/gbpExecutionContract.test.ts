@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GbpCoreApiUserIdSchema,
   GbpExecutionCommandSchema,
   GbpExecutionReceiptSchema,
   GbpReadbackSchema,
@@ -28,7 +29,7 @@ const validCommand = {
     approval_decision_id: "55555555-5555-4555-8555-555555555555",
   },
   core: {
-    api_user_id: "66666666-6666-4666-8666-666666666666",
+    api_user_id: "api:66666666-6666-4666-8666-666666666666",
     api_user_external_id: "merchant-api-user-9",
     write_secret_ref: "george-gbp-write",
     readback_secret_ref: "george-gbp-readback",
@@ -84,6 +85,18 @@ const validReceipt = {
 } as const;
 
 describe("GBP execution contracts", () => {
+  it("preserves the exact Core api:<uuid> identity and rejects aliases", () => {
+    expect(GbpCoreApiUserIdSchema.parse(validCommand.core.api_user_id)).toBe(
+      "api:66666666-6666-4666-8666-666666666666",
+    );
+    for (const rejected of [
+      "66666666-6666-4666-8666-666666666666",
+      "service:66666666-6666-4666-8666-666666666666",
+      "api:not-a-uuid",
+      "API:66666666-6666-4666-8666-666666666666",
+    ]) expect(() => GbpCoreApiUserIdSchema.parse(rejected)).toThrow();
+  });
+
   it("accepts only an exact CREATE_POST command", () => {
     expect(GbpExecutionCommandSchema.parse(validCommand)).toEqual(validCommand);
     expect(() => GbpExecutionCommandSchema.parse({

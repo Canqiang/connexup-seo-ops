@@ -106,3 +106,57 @@ c99e25ea8a671c80752a1bb68fa2671cd8156a2cf31891869ab15edf952a7ad7
 - This phase does not prove a live UAT write Agent/Skill/tool contract, provider idempotency semantics, exact GBP account/location authorization, or stable provider media identity.
 - Task 11D remains the sole exact persisted readback and Task `DONE` path. A receipt is intentionally insufficient.
 - Task 11E preflight and an explicitly selected George test location remain mandatory before any live mutation. Partner locations remain read-only.
+
+## Fix round 1 — exact Core API-user identity
+
+Independent review found that the first implementation modeled `/api/auth/me.user_id` as a bare UUID, while Core AI's local source establishes API-user IDs as the exact string `api:<uuid>`. The fix preserves that complete identity end to end; it does not strip, transform, or reconstruct the prefix.
+
+- One shared strict `GbpCoreApiUserIdSchema` now governs the immutable command, receipt, location binding repository, binding write API, and Core identity response.
+- Bare UUIDs, alternate prefixes, malformed UUIDs, and differently cased prefixes fail closed.
+- The worker continues to compare the frozen binding identity with `/api/auth/me` by exact string equality before writing the trigger marker.
+- Client boundary tests prove exact `api:<uuid>` acceptance and bare-UUID rejection.
+
+### RED
+
+```text
+npm test -- --run tests/gbpExecutionContract.test.ts tests/gbpExecutionRepo.test.ts tests/gbpExecutionService.test.ts tests/gbpExecutionWorker.test.ts
+Test Files  4 failed (4)
+Tests       42 failed | 13 passed (55)
+```
+
+Failures covered the missing shared schema plus the stale command/receipt, binding repository/API, Core client, and worker assumptions.
+
+### Shared-worktree GREEN
+
+```text
+npm test -- --run tests/gbpExecutionContract.test.ts tests/gbpExecutionRepo.test.ts tests/gbpExecutionService.test.ts tests/gbpExecutionWorker.test.ts
+Test Files  4 passed (4)
+Tests       55 passed (55)
+
+npm run typecheck
+exit 0
+```
+
+The shared tree also contained two unstaged manual-image tests owned by another task. An isolated worktree built from the staged snapshot verified the exact committed changes independently:
+
+```text
+Test Files  4 passed (4)
+Tests       53 passed (53)
+npm run typecheck
+exit 0
+```
+
+No UAT/network request, Core/FBR source mutation, live Core Run, or GBP provider write occurred in this fix round.
+
+### Fix-round deterministic hashes
+
+```text
+9dbf9f01b9a55948d1eda724ec77deab8e1693067346dd3bed4dcb18a5db09d5  server/src/domain/gbpExecutionContract.ts
+d5b82011fc560a4ec929f84a1ecf88533bb4a036fae32b6f87d6a77fd603f80d  server/src/repos/gbpExecutionRepo.ts
+e2be7232995dd28f406663528528861fc0ced1449c6bd61f32687b57e613a01e  server/src/services/gbpCoreAiClient.ts
+16036815f97c5b40f337dbe0d8a021bfc86f5acf09c25e469323c3504d658794  server/src/services/gbpExecutionService.ts
+308dd401588eaa7a898be26be05176daccd856132a99d6318be9bfdb2e6023d0  server/tests/gbpExecutionContract.test.ts
+3b1fd17fe41950af32241ff0ecbffae8ae3ed2c107317d6e51d04bb3b0c544a5  server/tests/gbpExecutionRepo.test.ts
+275b051d8d670b19bc812752ec189c8964f3a72f2bedd98702a5a5779cd3e883  server/tests/gbpExecutionService.test.ts
+0614d9420535933111d18bf7468bef74fec76ec1ed7ef9db128553037f4548bf  server/tests/gbpExecutionWorker.test.ts
+```

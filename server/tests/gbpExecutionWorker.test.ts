@@ -17,7 +17,11 @@ import { insertDraft } from "../src/repos/draftRepo.js";
 import { insertTask } from "../src/repos/taskRepo.js";
 import { draftSha256 } from "../src/services/contentService.js";
 import { resolveGbpCredential } from "../src/services/gbpCredentialResolver.js";
-import type { GbpCoreAiClient, GbpCoreRun } from "../src/services/gbpCoreAiClient.js";
+import {
+  createGbpCoreAiClient,
+  type GbpCoreAiClient,
+  type GbpCoreRun,
+} from "../src/services/gbpCoreAiClient.js";
 import { GbpExecutionWorker } from "../src/services/gbpExecutionWorker.js";
 import { createAuthenticatedTestApp, type AuthenticatedTestApp } from "./helpers/authTest.js";
 
@@ -29,7 +33,7 @@ const ids = {
   approval: "55555555-5555-4555-8555-555555555555",
   contentRun: "66666666-6666-4666-8666-666666666666",
   deliverable: "77777777-7777-4777-8777-777777777777",
-  apiUser: "88888888-8888-4888-8888-888888888888",
+  apiUser: "api:88888888-8888-4888-8888-888888888888",
   writeAgent: "99999999-9999-4999-8999-999999999999",
   readAgent: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   coreRun: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -302,6 +306,37 @@ describe("GBP mounted credential resolver", () => {
         message: "GBP credential unavailable",
       });
     }
+  });
+});
+
+describe("GBP Core identity contract", () => {
+  function identityClient(userId: string) {
+    const fetchImpl = (async () => new Response(JSON.stringify({
+      user_id: userId,
+      name: "George API user",
+      role: "API_USER",
+      permissions: ["agent.run"],
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as typeof fetch;
+    return createGbpCoreAiClient({
+      baseUrl: "https://core.example.test",
+      token: secretValue,
+      fetchImpl,
+    });
+  }
+
+  it("returns the exact api:<uuid> identity without normalization", async () => {
+    await expect(identityClient(ids.apiUser).getIdentity()).resolves.toMatchObject({
+      userId: ids.apiUser,
+    });
+  });
+
+  it("rejects a bare UUID identity from /api/auth/me", async () => {
+    await expect(identityClient(ids.apiUser.slice(4)).getIdentity()).rejects.toMatchObject({
+      phase: "IDENTITY",
+    });
   });
 });
 

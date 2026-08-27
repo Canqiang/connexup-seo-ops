@@ -45,7 +45,7 @@ const command = {
     approval_decision_id: "55555555-5555-4555-8555-555555555555",
   },
   core: {
-    api_user_id: "66666666-6666-4666-8666-666666666666",
+    api_user_id: "api:66666666-6666-4666-8666-666666666666",
     api_user_external_id: "merchant-api-user-9",
     write_secret_ref: "george-gbp-write",
     readback_secret_ref: "george-gbp-readback",

@@ -2,6 +2,10 @@ import { z } from "zod";
 import { canonicalize, sha256Hash } from "./hashing.js";
 
 const UuidSchema = z.string().uuid();
+export const GbpCoreApiUserIdSchema = z.string().refine(
+  (value) => value.startsWith("api:") && UuidSchema.safeParse(value.slice(4)).success,
+  "Core API user ID must use the exact api:<uuid> identity",
+);
 const Sha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 export const GbpCanonicalUtcInstantSchema = z.string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
@@ -76,7 +80,7 @@ const TaskSnapshotSchema = z.object({
 }).strict();
 
 const CoreSnapshotSchema = z.object({
-  api_user_id: UuidSchema,
+  api_user_id: GbpCoreApiUserIdSchema,
   api_user_external_id: SafeOpaqueSchema,
   write_secret_ref: GbpSecretRefSchema,
   readback_secret_ref: GbpSecretRefSchema,
@@ -207,7 +211,7 @@ export const GbpExecutionReceiptSchema = z.object({
   provider_idempotency_key: SafeOpaqueSchema,
   probe_ref: SafeOpaqueSchema,
   operation: CreatePostOperationSchema,
-  core_api_user_id: UuidSchema,
+  core_api_user_id: GbpCoreApiUserIdSchema,
   account_resource: SafeOpaqueSchema,
   location_resource: SafeOpaqueSchema,
   status: z.enum(["APPLIED", "ALREADY_APPLIED", "REJECTED_PRE_MUTATION", "UNKNOWN"]),

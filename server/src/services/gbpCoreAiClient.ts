@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { GbpCoreApiUserIdSchema } from "../domain/gbpExecutionContract.js";
 
 const UuidSchema = z.string().uuid();
 const IdentitySchema = z.object({
-  user_id: UuidSchema,
+  user_id: GbpCoreApiUserIdSchema,
   name: z.string().min(1).max(500),
   role: z.string().min(1).max(100),
   permissions: z.array(z.string().min(1).max(200)).min(1).max(500),

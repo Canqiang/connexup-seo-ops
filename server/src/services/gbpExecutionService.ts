@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Db } from "../db/connection.js";
 import {
   GbpCanonicalUtcInstantSchema,
+  GbpCoreApiUserIdSchema,
   GbpExecutionCommandSchema,
   GbpSecretRefSchema,
   hashGbpCommandBody,
@@ -43,7 +44,7 @@ const BindingWriteSchema = z.object({
   account_resource: SafeCoordinateSchema,
   location_resource: SafeCoordinateSchema,
   timezone: z.string().min(1).max(100),
-  core_api_user_id: UuidSchema,
+  core_api_user_id: GbpCoreApiUserIdSchema,
   core_api_user_external_id: SafeCoordinateSchema,
   write_secret_ref: GbpSecretRefSchema,
   readback_secret_ref: GbpSecretRefSchema,
