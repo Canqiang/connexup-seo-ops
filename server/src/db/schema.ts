@@ -58,6 +58,8 @@ export const SCHEMA_STATEMENTS: string[] = [
     UNIQUE(merchant_id, slug)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_locations_merchant ON seo_locations(merchant_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_locations_identity_scope
+     ON seo_locations(id, merchant_id)`,
 
   `CREATE TABLE IF NOT EXISTS seo_tasks (
     id TEXT PRIMARY KEY,
@@ -94,6 +96,8 @@ export const SCHEMA_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_tasks_merchant_status_due ON seo_tasks(merchant_id, status, due_at)`,
   `CREATE INDEX IF NOT EXISTS idx_tasks_owner_status_due ON seo_tasks(owner_id, status, due_at)`,
   `CREATE INDEX IF NOT EXISTS idx_tasks_merchant_updated ON seo_tasks(merchant_id, updated_at DESC)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_identity_scope
+     ON seo_tasks(id, merchant_id, location_id)`,
 
   /** 阶段运行：归属于（商户，地点，阶段），不挂在 task 上。task_id 仅作溯源
    * （Plan 转出的任务回指来源运行），永远可空。 */
@@ -334,6 +338,134 @@ export const SCHEMA_STATEMENTS: string[] = [
     UNIQUE(attempt_id, file_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_attempt_deliverables_attempt ON seo_execution_attempt_deliverables(attempt_id, created_at ASC, id ASC)`,
+
+  /** Dedicated GBP execution path. Immutable command/receipt payloads remain
+   * separate from mutable lifecycle state and generic execution attempts. */
+  `CREATE TABLE IF NOT EXISTS seo_gbp_location_bindings (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    location_id TEXT NOT NULL,
+    account_resource TEXT NOT NULL,
+    location_resource TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    core_api_user_id TEXT NOT NULL,
+    core_api_user_external_id TEXT NOT NULL,
+    write_secret_ref TEXT NOT NULL,
+    readback_secret_ref TEXT NOT NULL,
+    write_agent_id TEXT NOT NULL,
+    write_agent_published_ref TEXT NOT NULL,
+    readback_agent_id TEXT NOT NULL,
+    readback_agent_published_ref TEXT NOT NULL,
+    status TEXT NOT NULL CONSTRAINT seo_gbp_location_bindings_status_check
+      CHECK (status IN ('DISABLED', 'READY', 'BLOCKED')),
+    state_version INTEGER NOT NULL CHECK (state_version > 0),
+    updated_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(merchant_id, location_id),
+    UNIQUE(id, merchant_id, location_id),
+    FOREIGN KEY (location_id, merchant_id) REFERENCES seo_locations(id, merchant_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_gbp_bindings_status
+     ON seo_gbp_location_bindings(status, merchant_id, location_id)`,
+
+  `CREATE TABLE IF NOT EXISTS seo_gbp_commands (
+    id TEXT PRIMARY KEY,
+    instruction_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    location_id TEXT NOT NULL,
+    task_revision INTEGER NOT NULL CHECK (task_revision > 0),
+    execution_spec_sha256 TEXT NOT NULL,
+    approval_decision_id TEXT NOT NULL,
+    draft_id TEXT NOT NULL,
+    draft_version INTEGER NOT NULL CHECK (draft_version > 0),
+    draft_sha256 TEXT NOT NULL,
+    image_deliverable_id TEXT NOT NULL,
+    image_sha256 TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    binding_state_version INTEGER NOT NULL CHECK (binding_state_version > 0),
+    operation TEXT NOT NULL CONSTRAINT seo_gbp_commands_create_only_check
+      CHECK (operation = 'CREATE_POST'),
+    scheduled_for TEXT NOT NULL,
+    provider_idempotency_key TEXT NOT NULL UNIQUE,
+    probe_ref TEXT NOT NULL UNIQUE,
+    canonical_json TEXT NOT NULL,
+    command_sha256 TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, task_revision),
+    UNIQUE(id, merchant_id, location_id),
+    FOREIGN KEY (task_id, merchant_id, location_id)
+      REFERENCES seo_tasks(id, merchant_id, location_id),
+    FOREIGN KEY (binding_id, merchant_id, location_id)
+      REFERENCES seo_gbp_location_bindings(id, merchant_id, location_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_gbp_commands_location_created
+     ON seo_gbp_commands(merchant_id, location_id, created_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS seo_gbp_command_states (
+    command_id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL,
+    location_id TEXT NOT NULL,
+    status TEXT NOT NULL CONSTRAINT seo_gbp_command_states_status_check CHECK (status IN (
+      'SCHEDULED', 'CLAIMED', 'TRIGGERING', 'RUNNING', 'RECEIPT_ACCEPTED',
+      'READBACK_PENDING', 'READBACK_RUNNING', 'DONE', 'BLOCKED_PRE_SEND', 'OUTCOME_UNKNOWN'
+    )),
+    scheduled_for TEXT NOT NULL,
+    lease_owner TEXT,
+    lease_acquired_at TEXT,
+    lease_expires_at TEXT,
+    trigger_started_at TEXT,
+    core_run_id TEXT,
+    safe_error_code TEXT,
+    safe_error_message TEXT,
+    resolved_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CONSTRAINT seo_gbp_command_states_lease_tuple_check CHECK (
+      (lease_owner IS NULL AND lease_acquired_at IS NULL AND lease_expires_at IS NULL)
+      OR
+      (lease_owner IS NOT NULL AND lease_acquired_at IS NOT NULL
+       AND lease_expires_at IS NOT NULL AND lease_expires_at > lease_acquired_at)
+    ),
+    FOREIGN KEY (command_id, merchant_id, location_id)
+      REFERENCES seo_gbp_commands(id, merchant_id, location_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_gbp_command_states_due
+     ON seo_gbp_command_states(status, scheduled_for, lease_expires_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_gbp_command_states_unresolved_location
+     ON seo_gbp_command_states(merchant_id, location_id)
+     WHERE resolved_at IS NULL`,
+
+  `CREATE TABLE IF NOT EXISTS seo_gbp_receipts (
+    command_id TEXT PRIMARY KEY REFERENCES seo_gbp_commands(id),
+    instruction_id TEXT NOT NULL UNIQUE,
+    canonical_json TEXT NOT NULL,
+    receipt_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS seo_gbp_readback_attempts (
+    id TEXT PRIMARY KEY,
+    command_id TEXT NOT NULL REFERENCES seo_gbp_commands(id),
+    observation_json TEXT,
+    observation_sha256 TEXT,
+    diff_codes TEXT NOT NULL DEFAULT '[]',
+    safe_error_code TEXT,
+    created_at TEXT NOT NULL,
+    CONSTRAINT seo_gbp_readback_observation_tuple_check CHECK (
+      (observation_json IS NULL AND observation_sha256 IS NULL)
+      OR (observation_json IS NOT NULL AND observation_sha256 IS NOT NULL)
+    )
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_gbp_readback_attempts_command
+     ON seo_gbp_readback_attempts(command_id, created_at DESC, id DESC)`,
+
+  `ALTER TABLE seo_execution_attempts
+     ADD COLUMN IF NOT EXISTS gbp_command_id TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_attempts_gbp_command
+     ON seo_execution_attempts(gbp_command_id) WHERE gbp_command_id IS NOT NULL`,
 
   /** 幂等键唯一索引：并发同 key 双创建靠数据库兜底（23505 → 重试走 replay）。 */
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_idem_key ON seo_tasks(creation_idempotency_key) WHERE creation_idempotency_key IS NOT NULL`,
