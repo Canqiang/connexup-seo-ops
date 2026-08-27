@@ -298,6 +298,38 @@ describe("GBP Gate 2 command and binding", () => {
     expect((await listAttemptsByTask(built.db, ids.task, ids.merchant))[0]?.status).toBe("DISPATCHING");
   });
 
+  it("freezes an approved human revision that uses an operator-uploaded image", async () => {
+    await built.db.exec("UPDATE seo_run_deliverables SET kind='MANUAL' WHERE id=$1", [ids.deliverable]);
+    await built.db.exec(
+      `UPDATE seo_content_drafts
+          SET source='HUMAN_EDIT', agent_run_id=NULL, media_source_agent_run_id=$1
+        WHERE id=$2`,
+      [ids.run, ids.draft],
+    );
+    expect((await putReadyBinding(app)).statusCode).toBe(201);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${ids.task}/execution-confirmations`,
+      payload: {
+        expected_state_version: 2,
+        expected_task_revision: 2,
+        expected_execution_spec_hash: seeded.executionSpecHash,
+        scheduled_for: schedule,
+        idempotency_key: "gate2-human-uploaded-image",
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      status: "EXECUTION_CONFIRMED",
+      gbp_execution: {
+        approved: { image: { deliverable_id: ids.deliverable } },
+        command_state: { status: "SCHEDULED" },
+      },
+    });
+  });
+
   it("rejects mutable content fields and leaves zero command/attempt rows after draft drift", async () => {
     expect((await putReadyBinding(app)).statusCode).toBe(201);
     const mutable = await app.inject({

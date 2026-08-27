@@ -5,6 +5,7 @@ import type { AuthActor, IdentityType, SeoPermission, SeoUser } from "../../src/
 import { loadConfig, type ServerConfig } from "../../src/config.js";
 import type { Db } from "../../src/db/connection.js";
 import { buildApp, type AppDeps } from "../../src/index.js";
+import type { CoreAiAgentAdminClient } from "../../src/services/coreAiAgentAdminClient.js";
 import { upsertUser } from "../../src/repos/userRepo.js";
 import { insertSession } from "../../src/repos/sessionRepo.js";
 import { createSessionToken, sessionTokenHash } from "../../src/services/authService.js";
@@ -19,6 +20,42 @@ const ALL_PERMISSIONS: SeoPermission[] = [
   "seoops.capability.manage",
   "seoops.schedule.manage",
 ];
+
+function draftOnlyAgentAdmin(): CoreAiAgentAdminClient {
+  return {
+    pageLimit: 50,
+    async listAgentsPage() { return { agents: [], total: 0, page: 1, limit: 50 }; },
+    async getAgent(id) {
+      return {
+        id,
+        name: "[SEO Ops] GBP Post Content v4",
+        status: "PUBLISHED",
+        description: "Draft-only test Agent",
+        system_prompt: "Return one GBP draft and never publish.",
+        model: "test-model",
+        temperature: 0,
+        thinking_effort: null,
+        max_turns: 10,
+        timeout_seconds: 600,
+        enable_memory: false,
+        type: "AGENT",
+        tools: [{ id: "builtin:builtin-media-generation", type: "BUILTIN", source: "builtin" }],
+        skill_ids: [],
+        skills: [],
+        subagent_ids: [],
+        sub_agents: [],
+        dataset_config: [],
+        sandbox_config: null,
+        response_schema: JSON.stringify({
+          type: "object",
+          properties: { schema_version: { const: "seo_ops.gbp_post_draft.v2" } },
+        }),
+      };
+    },
+    async createAgent() { throw new Error("create Agent not expected in app tests"); },
+    async publishAgent() { throw new Error("publish Agent not expected in app tests"); },
+  };
+}
 
 export interface AuthenticatedTestApp {
   app: FastifyInstance;
@@ -69,12 +106,16 @@ export async function createAuthenticatedTestApp(options: {
   deps?: Omit<AppDeps, "db">;
 } = {}): Promise<AuthenticatedTestApp> {
   const testDb = await createTestDb();
+  const appDeps = { ...options.deps };
+  if (appDeps.coreAi && appDeps.coreAiAgentAdmin === undefined) {
+    appDeps.coreAiAgentAdmin = draftOnlyAgentAdmin();
+  }
   const { app, db } = await buildApp({
     ...loadConfig(),
     sessionSecret: "test-session-secret-must-have-at-least-32-characters",
     sessionCookieSecure: false,
     ...options.configOverrides,
-  }, { ...options.deps, db: testDb.db });
+  }, { ...appDeps, db: testDb.db });
   app.addHook("onClose", async () => testDb.teardown());
 
   const user = await createTestUser(db, {

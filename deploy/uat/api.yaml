@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seo-ops-api
+  labels: &labels
+    app.kubernetes.io/name: connexup-seo-ops
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels: *labels
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: ghcr.io/canqiang/connexup-seo-ops-server:uat
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: seo-ops-config }
+          env:
+            - { name: SEO_OPS_RUNTIME_ROLE, value: api }
+            - { name: SEO_OPS_GBP_EXECUTION_ENABLED, value: "false" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: seo-ops-uat-secrets, key: DATABASE_URL }
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef: { name: seo-ops-uat-secrets, key: SESSION_SECRET }
+            - name: CORE_AI_TOKEN
+              valueFrom:
+                secretKeyRef: { name: seo-ops-uat-secrets, key: CORE_AI_TOKEN }
+          ports:
+            - { name: http, containerPort: 8787 }
+          readinessProbe:
+            httpGet: { path: /health-check, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health-check, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: artifacts, mountPath: /app/server/data/artifacts }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim: { claimName: seo-ops-artifacts }
+        - name: tmp
+          emptyDir: {}

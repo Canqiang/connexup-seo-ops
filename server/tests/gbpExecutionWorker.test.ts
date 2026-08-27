@@ -401,6 +401,19 @@ describe("at-most-once GBP Core write worker", () => {
     expect(task?.status).toBe("EXECUTION_CONFIRMED");
   });
 
+  it("revalidates and dispatches an operator-uploaded image from the frozen content Run", async () => {
+    const f = await fixture();
+    await f.built.db.exec("UPDATE seo_run_deliverables SET kind='MANUAL' WHERE id=$1", [ids.deliverable]);
+    f.core.behavior.output = JSON.stringify(validReceipt(f.command));
+
+    await f.worker.runOneGbpExecution("worker-manual-image", new Date(now));
+
+    expect(f.core.triggerCalls).toBe(1);
+    expect(await getGbpCommandState(
+      f.built.db, f.command.id, ids.merchant, ids.location,
+    )).toMatchObject({ status: "READBACK_PENDING", safeErrorCode: null });
+  });
+
   it.each([
     ["Task", async (f: Awaited<ReturnType<typeof fixture>>) => {
       await f.built.db.exec("UPDATE seo_tasks SET execution_spec_hash=$1 WHERE id=$2", [`sha256:${"f".repeat(64)}`, ids.task]);

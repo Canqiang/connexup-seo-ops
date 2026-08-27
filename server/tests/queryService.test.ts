@@ -160,6 +160,28 @@ describe("portfolio", () => {
     expect(body.totals).toEqual({ tasks: 2, blocked: 0, ready_for_approval: 1, overdue: 0 });
   });
 
+  it("keeps synthetic pipeline merchants out of the operator portfolio without deleting them", async () => {
+    for (const [slug, tag] of [
+      ["uat-contract-store", "uat-contract"],
+      ["complete-chain-store", "complete-chain"],
+      ["real-agent-store", "real-agent"],
+    ]) {
+      expect((await app.inject({
+        method: "POST",
+        url: "/api/seo-ops/merchants",
+        payload: {
+          slug,
+          display_name: slug,
+          tags: ["uat", tag],
+          idempotency_key: `merchant-${slug}`,
+        },
+      })).statusCode).toBe(201);
+    }
+
+    const body = (await app.inject({ method: "GET", url: "/api/seo-ops/portfolio" })).json();
+    expect(body.merchants.map((item: { slug: string }) => item.slug)).toEqual(["acme"]);
+  });
+
   it("empty merchant list -> empty portfolio", async () => {
     const emptyApp = await makeApp();
     try {

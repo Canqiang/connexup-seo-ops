@@ -33,6 +33,9 @@ import type { CoreAiClient } from "./coreAiClient.js";
 import type { CoreAgentRunDetail } from "./coreAiClient.js";
 import { requireIdempotencyKey } from "./merchantService.js";
 import { allocateAgentRun, resolveAgentRunRequestReplay } from "./agentRunAllocator.js";
+import { assertRuntimeAcceptsNewWork } from "./runtimeControlService.js";
+import type { CoreAiAgentAdminClient } from "./coreAiAgentAdminClient.js";
+import { verifyGbpContentAgentBinding } from "./agentCapabilityPolicy.js";
 
 export const GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION = "seo_ops.gbp_post_request.v1";
 export const GBP_POST_CONTENT_OUTPUT_SCHEMA_VERSION = "seo_ops.gbp_post_draft.v2";
@@ -88,6 +91,8 @@ const PRE_GATE_CONTENT_STATUSES = new Set([
 export interface GbpPostContentDeps {
   db: Db;
   client: CoreAiClient;
+  /** Present in normal runtime; omitted only by narrow unit-test seams. */
+  agentAdmin?: CoreAiAgentAdminClient;
   dailyRunLimit?: number;
   log?: { warn(message: string): void };
 }
@@ -95,6 +100,7 @@ export interface GbpPostContentDeps {
 export interface GbpPostContentRetry {
   priorRunId: string;
   reason: string;
+  mode?: "RETRY" | "REGENERATE";
 }
 
 const DEFAULT_DAILY_RUN_LIMIT = 20;
@@ -198,6 +204,23 @@ function expectedDispatchedAgentId(run: AgentRun): string | null {
   }
 }
 
+function expectedDispatchedTaskVersion(run: AgentRun): {
+  taskRevision: number;
+  executionSpecHash: string;
+} | null {
+  try {
+    const message = JSON.parse(run.inputMessage) as Record<string, unknown>;
+    const taskRevision = message.task_revision;
+    const executionSpecHash = message.execution_spec_hash;
+    if (!Number.isSafeInteger(taskRevision) || typeof executionSpecHash !== "string" || executionSpecHash === "") {
+      return null;
+    }
+    return { taskRevision: taskRevision as number, executionSpecHash };
+  } catch {
+    return null;
+  }
+}
+
 function hasImageSignature(bytes: Uint8Array, contentType: string): boolean {
   if (contentType === "image/png") {
     const png = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -242,6 +265,15 @@ export async function acceptGbpPostContentRun(
   assertAgentRunTaskScope(run, {
     stage: "GBP_POST_CONTENT", taskId: task.id, merchantId: task.merchantId, locationId: task.locationId,
   });
+  const dispatchedTaskVersion = expectedDispatchedTaskVersion(run);
+  if (!dispatchedTaskVersion
+    || dispatchedTaskVersion.taskRevision !== task.taskRevision
+    || dispatchedTaskVersion.executionSpecHash !== task.executionSpecHash) {
+    throw new GbpPostImageError(
+      "TASK_REVISION_MISMATCH",
+      "GBP Post content result no longer matches the current Task revision",
+    );
+  }
   // Output and CTA validation is deliberately first: invalid model output must
   // never spend I/O on an untrusted attachment URL.
   const parsed = parseAndValidateRunOutput(run, core.output);
@@ -302,8 +334,37 @@ export async function acceptGbpPostContentRun(
     cta_type: parsed.cta_type,
     cta_url: parsed.cta_url,
     media: [mediaRef],
-  }, actor);
+  }, actor, dispatchedTaskVersion);
 }
+
+async function loadGenerationContext(deps: GbpPostContentDeps, task: Task) {
+  assertPreGateContentTask(task);
+  const [merchant, location, binding, styleProfile, executionBinding] = await Promise.all([
+    getMerchant(deps.db, task.merchantId),
+    getLocation(deps.db, task.locationId!),
+    getAgentBinding(deps.db, "GBP_POST"),
+    latestStyleProfile(deps.db, task.merchantId),
+    getAgentBinding(deps.db, "GBP_EXECUTION"),
+  ]);
+  if (!merchant) throw notFound(`merchant ${task.merchantId} not found`);
+  if (!location || location.merchantId !== task.merchantId) {
+    throw badRequest(`location ${task.locationId} does not belong to merchant ${task.merchantId}`);
+  }
+  if (!binding) throw conflict("GBP_POST content Agent is not bound", "AGENT_NOT_BOUND");
+  if (deps.agentAdmin) {
+    await verifyGbpContentAgentBinding(deps.agentAdmin, binding.agentId, binding.publishedRef);
+  }
+  if (executionBinding?.agentId === binding.agentId) {
+    throw conflict(
+      "GBP Post content and execution must use separate Core AI Agents",
+      "CONTENT_AGENT_WRITE_BOUNDARY_VIOLATION",
+    );
+  }
+  if (!styleProfile) throw conflict("GBP_POST content requires a versioned style profile", "STYLE_PROFILE_MISSING");
+  return { merchant, location, binding, styleProfile, spec: parseExecutionSpec(task) };
+}
+
+type GenerationContext = Awaited<ReturnType<typeof loadGenerationContext>>;
 
 async function buildRun(
   deps: GbpPostContentDeps,
@@ -312,21 +373,9 @@ async function buildRun(
   actorId: string,
   retry?: GbpPostContentRetry,
   retryGeneration = 0,
+  context?: GenerationContext,
 ) {
-  assertPreGateContentTask(task);
-  const [merchant, location, binding, styleProfile] = await Promise.all([
-    getMerchant(deps.db, task.merchantId),
-    getLocation(deps.db, task.locationId!),
-    getAgentBinding(deps.db, "GBP_POST"),
-    latestStyleProfile(deps.db, task.merchantId),
-  ]);
-  if (!merchant) throw notFound(`merchant ${task.merchantId} not found`);
-  if (!location || location.merchantId !== task.merchantId) {
-    throw badRequest(`location ${task.locationId} does not belong to merchant ${task.merchantId}`);
-  }
-  if (!binding) throw conflict("GBP_POST content Agent is not bound", "AGENT_NOT_BOUND");
-  if (!styleProfile) throw conflict("GBP_POST content requires a versioned style profile", "STYLE_PROFILE_MISSING");
-  const spec = parseExecutionSpec(task);
+  const { merchant, location, binding, styleProfile, spec } = context ?? await loadGenerationContext(deps, task);
   const versionRef = `${styleProfile.id}:v${styleProfile.version}`;
   const businessFingerprint = requestFingerprint({
     task_id: task.id,
@@ -340,11 +389,14 @@ async function buildRun(
     business_input_fingerprint: businessFingerprint,
     retry_of_agent_run_id: retry?.priorRunId ?? null,
     retry_generation: retryGeneration,
+    ...(retry?.mode === "REGENERATE" ? { regenerate: true } : {}),
   });
   const httpRequestFingerprint = gbpContentHttpRequestFingerprint(task.id, retry);
   const message = JSON.stringify({
     schema_version: GBP_POST_CONTENT_REQUEST_SCHEMA_VERSION,
     seo_ops_task_id: task.id,
+    task_revision: task.taskRevision,
+    execution_spec_hash: task.executionSpecHash,
     dispatch_identity: { expected_agent_id: binding.agentId },
     market: { country_code: "US", language: "en-US", search_engine: "GOOGLE" },
     merchant: { id: merchant.id, slug: merchant.slug, display_name: merchant.displayName },
@@ -370,6 +422,7 @@ async function buildRun(
       retry_context: {
         prior_run_id: retry.priorRunId,
         reason: retry.reason,
+        mode: retry.mode ?? "RETRY",
       },
     } : {}),
     execution_spec: spec,
@@ -485,6 +538,20 @@ async function validateRetryPrior(
       "CONTENT_RUN_RETRY_LINEAGE_MISMATCH",
     );
   }
+  if (retry.mode === "REGENERATE") {
+    if (prior.status !== "COMPLETED") {
+      throw conflict(
+        "regeneration requires the latest completed GBP Post content run",
+        "CONTENT_RUN_REGENERATION_REQUIRES_COMPLETED",
+      );
+    }
+    if (!await getDraftByAgentRunId(db, prior.id)) {
+      throw conflict(
+        "completed GBP Post content run has no persisted draft; manual reconciliation is required",
+        "CONTENT_RUN_RECONCILIATION_REQUIRED",
+      );
+    }
+  }
   return prior;
 }
 
@@ -509,12 +576,26 @@ async function triggerOnce(
   );
   if (requestReplay) return { run: requestReplay, replayed: true };
 
-  const base = await buildRun(deps, task, key, actorId, undefined, 0);
+  // Fail before loading agent policy or making any remote call. The locked
+  // allocation check below closes the race with a concurrent pause decision.
+  await assertRuntimeAcceptsNewWork(deps.db, task.merchantId);
+
+  const generationContext = await loadGenerationContext(deps, task);
+  const base = await buildRun(deps, task, key, actorId, undefined, 0, generationContext);
   const prior = retry
     ? await validateRetryPrior(deps.db, task, retry, base.businessFingerprint)
     : null;
   const retryGeneration = prior ? (prior.retryGeneration ?? 0) + 1 : 0;
-  const built = await buildRun(deps, task, key, actorId, retry, retryGeneration);
+  const built = await buildRun(deps, task, key, actorId, retry, retryGeneration, generationContext);
+  if (prior) {
+    const priorBusinessFingerprint = prior.businessInputFingerprint ?? prior.requestFingerprint;
+    if (built.businessFingerprint !== priorBusinessFingerprint) {
+      throw conflict(
+        "regenerated GBP Post content must retain the prior business input fingerprint",
+        "CONTENT_RUN_RETRY_LINEAGE_MISMATCH",
+      );
+    }
+  }
   assertAgentRunTaskScope(built.run, authorizedScope);
 
   const allocation = await allocateAgentRun({
@@ -524,6 +605,7 @@ async function triggerOnce(
     expectedReplayScope: authorizedScope,
     dailyRunLimit: deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT,
     validateBeforeInsert: async (tx) => {
+      await assertRuntimeAcceptsNewWork(tx, task.merchantId);
       const current = await getTaskForUpdate(tx, taskId);
       if (!current) throw notFound(`task ${taskId} not found`);
       assertTaskMatchesAgentRunScope(current, authorizedScope);
@@ -543,6 +625,7 @@ async function triggerOnce(
         if (latest) return (await replayOrRequireExplicitRetry(tx, latest)).run;
       } else if (latest) {
         if (latest.id === retry.priorRunId) {
+          if (retry.mode === "REGENERATE") return null;
           if (latest.status === "FAILED" || latest.status === "CANCELLED") {
             if (latest.errorCode === "TRIGGER_INTERRUPTED") {
               return (await replayOrRequireExplicitRetry(tx, latest)).run;

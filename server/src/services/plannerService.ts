@@ -11,7 +11,7 @@ import {
 import { getMerchant } from "../repos/merchantRepo.js";
 import { listLocationsByMerchant } from "../repos/locationRepo.js";
 import { latestQuestionnaireByMerchant } from "../repos/questionnaireRepo.js";
-import { getTask, listTasksByMerchant } from "../repos/taskRepo.js";
+import { findTaskByIdempotencyKey, getTask, listTasksByMerchant } from "../repos/taskRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import type { ExecutionAttempt } from "../repos/executionRepo.js";
 import {
@@ -146,6 +146,15 @@ export async function enqueuePlannerTaskIfBound(
   const merchant = await getMerchant(db, merchantId);
   if (!merchant) throw new Error(`merchant ${merchantId} not found for planner trigger`);
 
+  const idempotencyKey = plannerTaskIdempotencyKey(merchantId, trigger.key);
+  const existing = await findTaskByIdempotencyKey(db, idempotencyKey);
+  if (existing) {
+    if (existing.merchantId !== merchantId || existing.taskType !== "PLANNER") {
+      throw new Error(`planner trigger ${trigger.key} resolves to an invalid existing task`);
+    }
+    return { task: existing, replayed: true };
+  }
+
   const occurredAt = trigger.occurredAt ?? new Date().toISOString();
   const executionSpec = canonicalize(JSON.stringify({
     schema_version: PLANNER_TRIGGER_SCHEMA_VERSION,
@@ -169,7 +178,7 @@ export async function enqueuePlannerTaskIfBound(
         required_evidence_types: [],
         execution_mode: "READ_ONLY",
       },
-      idempotency_key: plannerTaskIdempotencyKey(merchantId, trigger.key),
+      idempotency_key: idempotencyKey,
     },
     actor,
   );

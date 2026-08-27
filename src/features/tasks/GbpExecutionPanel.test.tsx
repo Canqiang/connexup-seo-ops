@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { GbpExecutionWire, SeoTaskStatus } from "../../api/types";
 import { taskFixture } from "../../test/fixtures";
@@ -111,6 +111,26 @@ test("disables confirmation and names every missing exact binding field", async 
   expect(panel).toHaveTextContent("旧 GBP_WRITE / 全局 GBP_EXECUTION 不能替代精确地点绑定");
 });
 
+test("disables every compact publication action while the exact Gate 2 binding is incomplete", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => json({
+    task_id: task.id,
+    available: false,
+    binding: {
+      merchant_id: task.merchant_id,
+      location_id: task.location_id,
+      status: "MISSING",
+      state_version: 0,
+      ready_for_gate2: false,
+      missing_fields: ["write_agent_published_ref"],
+    },
+  })));
+
+  render(<GbpExecutionPanel canExecute compact onReadback={() => undefined} task={{ ...task, status: "APPROVED" }} />);
+  expect(await screen.findByRole("button", { name: /确认立即发布/ })).toBeDisabled();
+  expect(screen.getByLabelText("定时发布时间")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "确认定时发布" })).toBeDisabled();
+});
+
 test("distinguishes loading and read failure from a disabled Gate 2", async () => {
   vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
   const loading = render(<GbpExecutionPanel canExecute onReadback={() => undefined} task={task} />);
@@ -153,6 +173,56 @@ test("renders command state receipt and readback diff evidence", async () => {
     "OUTCOME_UNKNOWN", "state v7", "TRIGGER_AMBIGUOUS", "APPLIED",
     "mutation 1", "BODY_MISMATCH", "IMAGE_MISMATCH", "READBACK_MISMATCH",
   ]) expect(panel).toHaveTextContent(evidence);
+});
+
+test("offers hold, immediate, and scheduled publication only as explicit operator choices", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "POST") return json({ ...task, status: "EXECUTION_CONFIRMED", state_version: 4 });
+    return json(commandView());
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const onReadback = vi.fn();
+
+  render(<GbpExecutionPanel canExecute compact onReadback={onReadback} task={{ ...task, status: "APPROVED" }} />);
+
+  expect(await screen.findByRole("button", { name: /先不发布/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /确认立即发布/ })).toBeInTheDocument();
+  expect(screen.getByLabelText("定时发布时间")).toBeInTheDocument();
+  const clickedAt = Date.now();
+  fireEvent.click(screen.getByRole("button", { name: /确认立即发布/ }));
+
+  await waitFor(() => expect(onReadback).toHaveBeenCalled());
+  const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(post).toBeDefined();
+  const scheduledAt = Date.parse(JSON.parse(String(post?.[1]?.body)).scheduled_for);
+  expect(scheduledAt).toBeGreaterThanOrEqual(clickedAt);
+  expect(scheduledAt).toBeLessThanOrEqual(Date.now());
+});
+
+test("reuses the exact immediate-publication coordinate after an ambiguous request failure", async () => {
+  const postBodies: string[] = [];
+  let postCount = 0;
+  vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      postBodies.push(String(init.body));
+      postCount += 1;
+      return postCount === 1
+        ? json({ message: "request outcome unknown" }, 503)
+        : json({ ...task, status: "EXECUTION_CONFIRMED", state_version: 4 });
+    }
+    return json(commandView());
+  }));
+  const onReadback = vi.fn();
+
+  render(<GbpExecutionPanel canExecute compact onReadback={onReadback} task={{ ...task, status: "APPROVED" }} />);
+  const immediate = await screen.findByRole("button", { name: /确认立即发布/ });
+  fireEvent.click(immediate);
+  expect(await screen.findByRole("alert")).toHaveTextContent("request outcome unknown");
+  fireEvent.click(immediate);
+
+  await waitFor(() => expect(onReadback).toHaveBeenCalled());
+  expect(postBodies).toHaveLength(2);
+  expect(postBodies[1]).toBe(postBodies[0]);
 });
 
 test.each([

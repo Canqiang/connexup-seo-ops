@@ -17,6 +17,7 @@ const OffsetLocalInstantSchema = z.string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?[+-]\d{2}:\d{2}$/)
   .refine((value) => !Number.isNaN(Date.parse(value)), "invalid offset date-time");
 const SafeOpaqueSchema = z.string().min(1).max(500).regex(/^[^\s\u0000-\u001f\u007f]+$/);
+export const GbpDeliverableIdSchema = z.string().min(1).max(500).regex(/^[A-Za-z0-9._:-]+$/);
 export const GbpSecretRefSchema = z.string().min(1).max(63)
   .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/, "secret reference must be a short logical name");
 const HttpsUrlSchema = z.string().url().max(2_000).refine(
@@ -104,7 +105,7 @@ const FinalizedDraftSnapshotSchema = z.object({
   body: z.string().min(1).max(1_500),
   cta: CtaSchema,
   image: z.object({
-    deliverable_id: UuidSchema,
+    deliverable_id: GbpDeliverableIdSchema,
     sha256: Sha256Schema,
     alt_text: z.string().min(1).max(500),
   }).strict(),

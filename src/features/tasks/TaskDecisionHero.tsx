@@ -60,7 +60,9 @@ export function resolveTaskDraftDisplay(task: SeoTask, drafts: DraftWire[]) {
     && draft.cta_type === snapshot.cta_type
     && draft.cta_url === snapshot.cta_url
     && sameStrings(draft.media, snapshot.media)) : undefined;
-  const candidateDraft = [...drafts].reverse().find((draft) => !displayedDraft || draft.id !== displayedDraft.id);
+  // Only a revision created after the finalized snapshot is a real candidate.
+  // Older drafts belong in history and would duplicate the hero during a demo.
+  const candidateDraft = [...drafts].reverse().find((draft) => !displayedDraft || draft.version > displayedDraft.version);
   return {
     displayedDraft,
     candidateDraft,
@@ -83,8 +85,10 @@ export function TaskDecisionHero({ task, decision, displayedDraft, candidateDraf
   const [loadedMedia, setLoadedMedia] = useState<Set<string>>(() => new Set());
   // Task artifact API is newest-first (created_at DESC), unlike drafts.
   const latestArtifact = artifacts[0];
+  const workingDraft = !displayedDraft ? candidateDraft : undefined;
   const renderDraft = (draft: DraftWire, label: string, approvalTarget = false) => <><strong>{label} v{draft.version}</strong><p>{draft.body}</p>
     {(draft.media_previews ?? []).map((preview) => <div className="task-media-preview" key={preview.deliverable_id}>
+      <span className={`media-origin is-${(preview.origin ?? "AI_GENERATED").toLocaleLowerCase()}`}>{preview.origin === "OPERATOR_UPLOAD" ? "人工上传商户素材" : "AI 生成图"}</span>
       {failedMedia.has(preview.deliverable_id)
         ? <span className="task-media-fallback" role="status">图片预览暂不可用；批准前请刷新重试。</span>
         : <>{!loadedMedia.has(preview.deliverable_id)
@@ -105,16 +109,17 @@ export function TaskDecisionHero({ task, decision, displayedDraft, candidateDraf
             width="640"
           /></>}
     </div>)}
-    {draft.cta_type ? <small>CTA：{draft.cta_type}{draft.cta_url ? ` · ${draft.cta_url}` : ""}</small> : null}</>;
+    {draft.cta_type && draft.cta_type !== "NONE" ? <small>CTA：{draft.cta_type}{draft.cta_url ? ` · ${draft.cta_url}` : ""}</small> : null}</>;
   return <section aria-label="当前决策" className="task-decision-hero">
     <div className="task-decision-context"><span className="eyebrow"><span>{task.merchant_name}</span>{task.location_name ? <> · <span>{task.location_name}</span></> : null}</span><h1>{task.title}</h1></div>
     <div className="task-decision-main"><span className="eyebrow">CURRENT HUMAN DECISION</span><h2>{decision.heading}</h2><p>{decision.consequence}</p></div>
     <section aria-label="当前内容" className="task-current-content"><span className="eyebrow">当前内容 / 成品</span>
       {displayedDraft ? renderDraft(displayedDraft, task.task_type === "GBP_POST" ? "当前批准对象" : "当前稿件", task.task_type === "GBP_POST")
+        : workingDraft ? renderDraft(workingDraft, "当前草稿")
         : latestArtifact ? <><strong>当前产物</strong><p>{latestArtifact.title}</p><small>{latestArtifact.summary}</small></>
           : task.task_type === "GBP_POST" ? <p className="boundary-note">没有与当前定稿快照完全一致的可批准稿件。</p> : <pre>{task.execution_spec}</pre>}
     </section>
-    {candidateDraft ? <section aria-label="未定稿候选" className="task-current-content task-candidate-content">
+    {displayedDraft && candidateDraft ? <section aria-label="未定稿候选" className="task-current-content task-candidate-content">
       <span className="eyebrow">CANDIDATE / NOT FINALIZED</span>
       {renderDraft(candidateDraft, "未定稿候选")}
     </section> : null}

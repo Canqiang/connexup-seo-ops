@@ -31,6 +31,7 @@ import {
   ingestSpecialistRunOutput,
   isStructuredSpecialistTask,
 } from "./specialistAdapterService.js";
+import { effectiveRuntimePause } from "./runtimeControlService.js";
 
 /** 触发宽限：DISPATCHING 且无 core_run_id 超过此时长，视为触发中断。
  * 只读任务重触发无害；写入类无法排除「请求已到达」→ 结果不明（红线③）。 */
@@ -227,6 +228,10 @@ export class ExecutionWorker {
     if (frozen.length > 0 && !frozen.some((f) => f.id === attempt.id)) {
       return;
     }
+
+    // A pause parks only work that has not reached Core AI. Existing Runs
+    // still take the pollAttempt branch and are settled normally.
+    if ((await effectiveRuntimePause(db, task.merchantId)).paused) return;
 
     if (this.deps.mockMode) {
       // 冒烟模式：立即视为执行成功；写入类给一个可核验的 mock 引用。

@@ -138,6 +138,7 @@ export async function addAgentGeneratedDraftFromRun(
   agentRunId: string,
   input: Pick<AddDraftInput, "body" | "cta_type" | "cta_url" | "media">,
   actorId: string,
+  expectedTaskVersion: { taskRevision: number; executionSpecHash: string },
 ): Promise<{ draft: ContentDraft; replayed: boolean }> {
   validateDraftInput({ ...input, source: "AGENT_GENERATED" });
   return db.withTransaction(async (tx) => {
@@ -150,6 +151,13 @@ export async function addAgentGeneratedDraftFromRun(
     }
     if (!AGENT_DRAFT_ALLOWED_STATUSES.has(task.status)) {
       throw conflict(`cannot ingest Agent content in status ${task.status}`, "INVALID_TRANSITION");
+    }
+    if (task.taskRevision !== expectedTaskVersion.taskRevision
+      || task.executionSpecHash !== expectedTaskVersion.executionSpecHash) {
+      throw conflict(
+        "Agent content no longer matches the current Task revision",
+        "STALE_STATE",
+      );
     }
     const last = await latestDraft(tx, taskId);
     const draft = buildDraft(
@@ -204,6 +212,11 @@ export async function addDraftRevision(
   });
   return mutateTask(db, taskId, input.idempotency_key, fingerprint, input.expected_state_version,
     async (task, tx) => {
+      if (await findActiveGbpContentRunByTask(tx, {
+        stage: "GBP_POST_CONTENT", taskId: task.id, merchantId: task.merchantId, locationId: task.locationId,
+      })) {
+        throw conflict("cannot edit a GBP Post draft while content generation is active", "CONTENT_RUN_ACTIVE");
+      }
       if (!CONTENT_REVISION_ALLOWED_STATUSES.has(task.status)) {
         throw conflict(`cannot edit content in status ${task.status}`, "INVALID_TRANSITION");
       }
@@ -276,6 +289,7 @@ export interface DraftMediaPreview {
   sha256: string;
   download_path: string;
   alt_text: string;
+  origin: "AI_GENERATED" | "OPERATOR_UPLOAD";
 }
 
 interface CanonicalMediaRef {
@@ -344,13 +358,13 @@ async function validateGbpDraftForTask(
     || run.stage !== "GBP_POST_CONTENT"
     || run.merchantId !== task.merchantId
     || run.locationId !== task.locationId
-    || deliverable.kind !== "ATTACHMENT"
+    || (deliverable.kind !== "ATTACHMENT" && deliverable.kind !== "MANUAL")
     || deliverable.localPath === null
     || deliverable.sha256 !== ref.sha256
     || (deliverable.contentType !== "image/png" && deliverable.contentType !== "image/jpeg")) {
     throw new ApiDraftMediaError("draft media does not belong to this exact Task-linked GBP Run");
   }
-  if (draft.agentRunId == null) {
+  if (draft.agentRunId == null && deliverable.kind !== "MANUAL") {
     const generatedOwner = (await listDraftsByTask(db, task.id)).find((item) =>
       item.agentRunId === run.id && item.media.includes(draft.media[0]!),
     );
@@ -393,7 +407,7 @@ async function mediaPreviewForRef(
     || run.stage !== "GBP_POST_CONTENT"
     || run.merchantId !== task.merchantId
     || run.locationId !== task.locationId
-    || deliverable.kind !== "ATTACHMENT"
+    || (deliverable.kind !== "ATTACHMENT" && deliverable.kind !== "MANUAL")
     || deliverable.localPath === null
     || deliverable.sha256 !== ref.sha256
     || (deliverable.contentType !== "image/png" && deliverable.contentType !== "image/jpeg")) return null;
@@ -402,6 +416,7 @@ async function mediaPreviewForRef(
     sha256: ref.sha256,
     download_path: `/api/seo-ops/deliverables/${encodeURIComponent(deliverable.id)}/download`,
     alt_text: ref.alt_text,
+    origin: deliverable.kind === "MANUAL" ? "OPERATOR_UPLOAD" : "AI_GENERATED",
   };
 }
 

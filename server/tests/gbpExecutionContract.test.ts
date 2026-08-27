@@ -106,6 +106,14 @@ describe("GBP execution contracts", () => {
     expect(() => GbpExecutionCommandSchema.parse({ ...validCommand, raw_token: "never-store-this" })).toThrow();
   });
 
+  it("accepts the server-issued composite deliverable identity from a Core attachment", () => {
+    const deliverableId = "59efd664-da5a-4b6d-b14f-c360f2a9ab52-att-266875eb-3b0a-493c-945e-f6d51d9b2d78";
+    expect(GbpExecutionCommandSchema.parse({
+      ...validCommand,
+      draft: { ...validCommand.draft, image: { ...validCommand.draft.image, deliverable_id: deliverableId } },
+    }).draft.image.deliverable_id).toBe(deliverableId);
+  });
+
   it("canonicalizes parsed commands and hashes UTF-8 bytes deterministically", () => {
     const reordered = {
       ...structuredClone(validCommand),

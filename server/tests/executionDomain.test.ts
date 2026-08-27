@@ -74,6 +74,21 @@ async function activateGbpWrite(app: FastifyInstance, merchantId: string) {
   expect(res.json().status).toBe("ACTIVE");
 }
 
+async function activateWebsiteWrite(app: FastifyInstance, merchantId: string) {
+  const res = await app.inject({
+    method: "PUT",
+    url: `/api/seo-ops/merchants/${merchantId}/capabilities/WEBSITE_WRITE`,
+    payload: {
+      asset: "WEBSITE",
+      external_ref: "https://uws-bistro.example.test",
+      tech_connected: true,
+      merchant_authorized: true,
+    },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().status).toBe("ACTIVE");
+}
+
 async function bindAgent(app: FastifyInstance, key: string, agentId: string) {
   const res = await app.inject({
     method: "PUT",
@@ -83,9 +98,10 @@ async function bindAgent(app: FastifyInstance, key: string, agentId: string) {
   expect(res.statusCode).toBe(200);
 }
 
-/** 建 GBP_POST 写入任务并走完：草稿 → 定稿 → 门 1 批准 → APPROVED。 */
+/** 建通用网站写入任务并走完：草稿 → 定稿 → 门 1 批准 → APPROVED。
+ * 专用 GBP CREATE_POST 的冻结命令契约由 gbpExecutionService.test.ts 覆盖。 */
 async function approvedWriteTask(
-  app: FastifyInstance,
+  built: AuthenticatedTestApp,
   merchantId: string,
   locationId: string,
   key = "wt-1",
@@ -93,6 +109,7 @@ async function approvedWriteTask(
   requiredEvidenceTypes = ["CONTENT_DRAFT"],
   carryVerifiedEvidence = false,
 ) {
+  const { app } = built;
   const created = (
     await app.inject({
       method: "POST",
@@ -102,7 +119,7 @@ async function approvedWriteTask(
         location_id: locationId,
         definition: {
           title: "周三 Post",
-          task_type: "GBP_POST",
+          task_type: "WEBSITE_CONTENT",
           source: "CYCLE",
           priority: "MEDIUM",
           impact: "MEDIUM",
@@ -129,16 +146,16 @@ async function approvedWriteTask(
   ).json();
   expect(draft.version).toBe(1);
 
-  const finalized = (
-    await app.inject({
-      method: "POST",
-      url: `/api/seo-ops/tasks/${created.id}/drafts/1/finalize`,
-      payload: {
-        expected_state_version: created.state_version,
-        idempotency_key: `${key}-final`,
-      },
-    })
-  ).json();
+  const finalizedResponse = await app.inject({
+    method: "POST",
+    url: `/api/seo-ops/tasks/${created.id}/drafts/1/finalize`,
+    payload: {
+      expected_state_version: created.state_version,
+      idempotency_key: `${key}-final`,
+    },
+  });
+  expect(finalizedResponse.statusCode, finalizedResponse.body).toBe(201);
+  const finalized = finalizedResponse.json();
   expect(finalized.status).toBe(carryVerifiedEvidence ? "NEEDS_INPUT" : "READY_FOR_APPROVAL");
 
   const readyForApproval = carryVerifiedEvidence ? (
@@ -180,12 +197,14 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     app = built.app;
     ({ merchant, location } = await seedMerchant(app));
     await activateGbpWrite(app, merchant.id);
+    await activateWebsiteWrite(app, merchant.id);
     await bindAgent(app, "GBP_EXECUTION", "agent-gbp-exec");
+    await bindAgent(app, "WEBSITE_CONTENT", "agent-website-content");
   });
   afterEach(() => app.close());
 
   it("Ⓒ 全链路：批准 → 门 2 六项全过 → mock 执行 → PENDING_VERIFY → 核验 DONE", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id);
+    const task = await approvedWriteTask(built, merchant.id, location.id);
 
     const preview = (
       await app.inject({
@@ -244,13 +263,13 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("门 2 拒绝：能力 BLOCKED 时 preview 不可确认、confirm 409", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-2");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-2");
     // 商户撤销授权 → BLOCKED
     await app.inject({
       method: "PUT",
-      url: `/api/seo-ops/merchants/${merchant.id}/capabilities/GBP_WRITE`,
+      url: `/api/seo-ops/merchants/${merchant.id}/capabilities/WEBSITE_WRITE`,
       payload: {
-        asset: "GBP",
+        asset: "WEBSITE",
         tech_connected: true,
         merchant_authorized: false,
       },
@@ -275,8 +294,43 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(res.json().error_code).toBe("GATE2_CHECK_FAILED");
   });
 
+  it("merchant pause parks a new dispatch but resume lets the same attempt continue", async () => {
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-runtime-pause");
+    const paused = await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/runtime-controls",
+      payload: {
+        scope: "MERCHANT", merchant_id: merchant.id, paused: true,
+        reason: "Merchant is reviewing this week's operations",
+      },
+    });
+    expect(paused.statusCode).toBe(201);
+    const confirmed = await app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
+      payload: { expected_state_version: task.state_version, idempotency_key: "pause-confirm" },
+    });
+    expect(confirmed.statusCode).toBe(201);
+
+    await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
+    expect((await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}` })).json().status)
+      .toBe("DISPATCHING");
+
+    const resumed = await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/runtime-controls",
+      payload: {
+        scope: "MERCHANT", merchant_id: merchant.id, paused: false,
+        reason: "Merchant approved operations to resume",
+      },
+    });
+    expect(resumed.statusCode).toBe(201);
+    await app.inject({ method: "POST", url: "/api/seo-ops/admin/execution-tick" });
+    expect((await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}` })).json().status)
+      .toBe("PENDING_VERIFY");
+  });
+
   it("MANUAL is rejected by both execution preview and confirm, while explicit human completion records evidence without attempts", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-manual", "MANUAL");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-manual", "MANUAL");
 
     const preview = await app.inject({ method: "GET", url: `/api/seo-ops/tasks/${task.id}/execution-preview` });
     expect(preview.statusCode).toBe(409);
@@ -310,7 +364,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("draft revisions serialize task state and leave no orphan draft or evidence on losing requests", async () => {
-    const same = await approvedWriteTask(app, merchant.id, location.id, "wt-race-same");
+    const same = await approvedWriteTask(built, merchant.id, location.id, "wt-race-same");
     const samePayload = { body: "并发改稿内容", source: "HUMAN_EDIT", expected_state_version: same.state_version, idempotency_key: "same-key" };
     const [sameA, sameB] = await Promise.all([
       app.inject({ method: "POST", url: `/api/seo-ops/tasks/${same.id}/draft-revisions`, payload: samePayload }),
@@ -319,7 +373,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect([sameA.statusCode, sameB.statusCode].sort()).toEqual([200, 201]);
     expect(sameA.json().task_revision).toBe(sameB.json().task_revision);
 
-    const clash = await approvedWriteTask(app, merchant.id, location.id, "wt-race-clash");
+    const clash = await approvedWriteTask(built, merchant.id, location.id, "wt-race-clash");
     const [clashA, clashB] = await Promise.all([
       app.inject({ method: "POST", url: `/api/seo-ops/tasks/${clash.id}/draft-revisions`, payload: { body: "版本 A", source: "HUMAN_EDIT", expected_state_version: clash.state_version, idempotency_key: "shared-key" } }),
       app.inject({ method: "POST", url: `/api/seo-ops/tasks/${clash.id}/draft-revisions`, payload: { body: "版本 B", source: "HUMAN_EDIT", expected_state_version: clash.state_version, idempotency_key: "shared-key" } }),
@@ -327,7 +381,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect([clashA.statusCode, clashB.statusCode].sort()).toEqual([201, 409]);
     expect([clashA, clashB].find((result) => result.statusCode === 409)!.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
 
-    const stale = await approvedWriteTask(app, merchant.id, location.id, "wt-race-stale");
+    const stale = await approvedWriteTask(built, merchant.id, location.id, "wt-race-stale");
     const [staleA, staleB] = await Promise.all([
       app.inject({ method: "POST", url: `/api/seo-ops/tasks/${stale.id}/draft-revisions`, payload: { body: "版本 A", source: "HUMAN_EDIT", expected_state_version: stale.state_version, idempotency_key: "key-a" } }),
       app.inject({ method: "POST", url: `/api/seo-ops/tasks/${stale.id}/draft-revisions`, payload: { body: "版本 B", source: "HUMAN_EDIT", expected_state_version: stale.state_version, idempotency_key: "key-b" } }),
@@ -341,7 +395,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("legacy drafts and revision drafts share the task lock without a duplicate-version 500", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-cross-draft-lock");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-cross-draft-lock");
     const [legacy, revision] = await Promise.all([
       app.inject({ method: "POST", url: `/api/seo-ops/tasks/${task.id}/drafts`, payload: { body: "旧入口改稿", source: "HUMAN_EDIT" } }),
       app.inject({ method: "POST", url: `/api/seo-ops/tasks/${task.id}/draft-revisions`, payload: { body: "新入口改稿", source: "HUMAN_EDIT", expected_state_version: task.state_version, idempotency_key: "cross-endpoint-key" } }),
@@ -355,7 +409,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("legacy draft allocation waits for the Task aggregate lock", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-legacy-lock-wait");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-legacy-lock-wait");
     let releaseLock!: () => void;
     let locked!: () => void;
     const lockReady = new Promise<void>((resolve) => { locked = resolve; });
@@ -381,7 +435,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("audit references fail closed for a cross-merchant task-linked Agent Run", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-scope");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-audit-scope");
     const now = "2026-08-26T08:00:00.000Z";
     const foreignRun: AgentRun = {
       id: "foreign-task-linked-run", merchantId: "foreign-merchant", locationId: null,
@@ -404,7 +458,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("task audit and child reads exclude corrupt cross-merchant attempts, deliverables, and artifacts", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-child-scope");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-audit-child-scope");
     const now = "2026-08-26T08:00:00.000Z";
     const foreignAttempt: ExecutionAttempt = {
       id: "foreign-task-attempt", taskId: task.id, merchantId: "foreign-merchant", attemptNo: 99,
@@ -448,7 +502,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("audit references page task runs and attach deliverables through the bounded batch projection", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-page");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-audit-page");
     const base: Omit<AgentRun, "id" | "coreRunId" | "createdAt" | "updatedAt"> = {
       merchantId: merchant.id, locationId: location.id, stage: "KEYWORDS", taskId: task.id,
       runType: "KEYWORD_RESEARCH", goal: null, status: "COMPLETED", traceRef: null,
@@ -478,7 +532,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("audit reference pagination accepts decimal offsets beyond the old 10,000 ceiling", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-large-page");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-audit-large-page");
     for (const offset of [10_001, Number.MAX_SAFE_INTEGER]) {
       const response = await app.inject({
         method: "GET",
@@ -490,7 +544,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("audit reference pagination rejects negative, fractional, and non-finite offsets", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-invalid-page");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-audit-invalid-page");
     for (const offset of ["-1", "1.5", "NaN", "Infinity"]) {
       const response = await app.inject({
         method: "GET",
@@ -501,7 +555,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("audit reference pagination rejects non-decimal strings, unsafe integers, blanks, and arrays", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-audit-lexical-page");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-audit-lexical-page");
     const invalidQueries = [
       "offset=&limit=20",
       "offset=1e2&limit=20",
@@ -524,7 +578,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("terminal execution persists file identity and hash without persisting a presigned download URL", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-audit");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-execution-audit");
     const confirmed = await app.inject({
       method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
       payload: { expected_state_version: task.state_version, idempotency_key: "execution-audit-confirm" },
@@ -562,7 +616,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("terminal reference hashing skips artifacts whose declared size exceeds the worker byte cap", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-declared-oversize");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-execution-declared-oversize");
     const confirmed = await app.inject({
       method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
       payload: { expected_state_version: task.state_version, idempotency_key: "execution-declared-oversize" },
@@ -597,7 +651,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("terminal hashing shares one aggregate deadline and never logs artifact URLs or credentials", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-execution-hash-budget");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-execution-hash-budget");
     const confirmed = await app.inject({
       method: "POST", url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
       payload: { expected_state_version: task.state_version, idempotency_key: "execution-hash-budget" },
@@ -649,7 +703,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("approved content edit atomically creates a new revision and requires fresh approval", async () => {
-    const approved = await approvedWriteTask(app, merchant.id, location.id, "wt-content-edit");
+    const approved = await approvedWriteTask(built, merchant.id, location.id, "wt-content-edit");
 
     const edited = await app.inject({
       method: "POST",
@@ -687,7 +741,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
 
   it("draft revision explicitly carries forward only verified non-content evidence", async () => {
     const approved = await approvedWriteTask(
-      app, merchant.id, location.id, "wt-content-reuse", "AUTO_WRITE",
+      built, merchant.id, location.id, "wt-content-reuse", "AUTO_WRITE",
       ["CONTENT_DRAFT", "BEFORE_SCREENSHOT"], true,
     );
     const edited = await app.inject({
@@ -708,7 +762,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
         payload: {
           merchant_id: merchant.id, location_id: location.id,
           definition: {
-            title: "缺少截图的内容任务", task_type: "GBP_POST", source: "CYCLE", priority: "MEDIUM", impact: "MEDIUM",
+            title: "缺少截图的内容任务", task_type: "WEBSITE_CONTENT", source: "CYCLE", priority: "MEDIUM", impact: "MEDIUM",
             execution_spec: JSON.stringify({ locationName: "locations/gbp-123" }),
             required_evidence_types: ["CONTENT_DRAFT", "BEFORE_SCREENSHOT"], execution_mode: "AUTO_WRITE",
           }, idempotency_key: "wt-content-missing",
@@ -724,7 +778,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
   });
 
   it("OUTCOME_UNKNOWN 冻结商户执行链；查证「没发生」后任务回 APPROVED 并解冻", async () => {
-    const task = await approvedWriteTask(app, merchant.id, location.id, "wt-3");
+    const task = await approvedWriteTask(built, merchant.id, location.id, "wt-3");
     await app.inject({
       method: "POST",
       url: `/api/seo-ops/tasks/${task.id}/execution-confirmations`,
@@ -740,7 +794,7 @@ describe("执行域：双门 + mock 派发 + 核验", () => {
     expect(frozen.status).toBe("OUTCOME_UNKNOWN");
 
     // 同商户第二个任务：门 2 的在途/冻结面校验拦截
-    const other = await approvedWriteTask(app, merchant.id, location.id, "wt-4");
+    const other = await approvedWriteTask(built, merchant.id, location.id, "wt-4");
     const res = await app.inject({
       method: "POST",
       url: `/api/seo-ops/tasks/${other.id}/execution-confirmations`,

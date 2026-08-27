@@ -365,6 +365,7 @@ export interface DraftWire {
   cta_type: string | null; cta_url: string | null; media: string[];
   media_previews?: Array<{
     deliverable_id: string; sha256: string; download_path: string; alt_text: string;
+    origin?: "AI_GENERATED" | "OPERATOR_UPLOAD";
   }>;
   source: "AGENT_GENERATED" | "AGENT_REWRITE" | "HUMAN_EDIT";
   feedback: string | null; sha256: string; created_by: string | null; created_at: string;
@@ -407,4 +408,22 @@ export interface InboxSummaryWire {
 export interface SchedulerTickResult {
   created: Array<{ task_id: string; key: string; task_type: string; merchant_id: string }>;
   dispatched: number;
+}
+
+export interface RuntimeControlWire {
+  id: string;
+  scope: "GLOBAL" | "MERCHANT";
+  merchant_id: string | null;
+  paused: boolean;
+  reason: string;
+  changed_by: string;
+  created_at: string;
+}
+
+export interface RuntimeControlsView {
+  global: RuntimeControlWire | null;
+  merchant: RuntimeControlWire | null;
+  effective_paused: boolean;
+  effective_source: "GLOBAL" | "MERCHANT" | null;
+  effective_reason: string | null;
 }

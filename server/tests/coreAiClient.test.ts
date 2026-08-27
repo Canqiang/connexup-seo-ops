@@ -40,15 +40,48 @@ describe("Core AI artifact downloads", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("rejects a same-origin artifact response that attempts an off-origin redirect", async () => {
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.redirect === "error") throw new TypeError("redirect mode blocked redirect");
+  it("follows one HTTPS object-store redirect from the Core public artifact endpoint without forwarding auth", async () => {
+    const calls: Array<{ url: string; authorization: string | null; redirect: RequestRedirect | undefined }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization"),
+        redirect: init?.redirect,
+      });
+      if (calls.length === 1) return new Response(null, {
+        status: 307,
+        headers: { Location: "https://objects.example/presigned-image" },
+      });
       return response([9]);
     }) as unknown as typeof fetch;
     const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
 
+    await expect(client.downloadArtifact("/api/public/artifacts/safe-id/content"))
+      .resolves.toEqual(new Uint8Array([9]));
+    expect(calls).toEqual([
+      {
+        url: "https://core.internal.example/api/public/artifacts/safe-id/content",
+        authorization: `Bearer ${TEST_TOKEN}`,
+        redirect: "manual",
+      },
+      {
+        url: "https://objects.example/presigned-image",
+        authorization: null,
+        redirect: "error",
+      },
+    ]);
+  });
+
+  it("rejects off-origin redirects from any non-public Core path", async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, {
+      status: 307,
+      headers: { Location: "https://objects.example/presigned-image" },
+    })) as unknown as typeof fetch;
+    const client = createCoreAiClient({ baseUrl: BASE_URL, token: TEST_TOKEN, fetchImpl });
+
     await expect(client.downloadArtifact("/artifacts/redirect-to-storage"))
-      .rejects.toMatchObject({ status: 0, message: "artifact download failed" });
+      .rejects.toMatchObject({ status: 0, message: "artifact download redirect is not allowed" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("cancels an oversized Content-Length response before rejecting", async () => {

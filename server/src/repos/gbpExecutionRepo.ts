@@ -479,6 +479,16 @@ export async function claimNextGbpCommand(
         WHERE c.merchant_id=$1 AND c.location_id=$2
           AND s.merchant_id=c.merchant_id AND s.location_id=c.location_id
           AND s.resolved_at IS NULL AND s.trigger_started_at IS NULL
+          AND COALESCE((
+            SELECT rc.paused FROM seo_runtime_controls rc
+             WHERE rc.scope='GLOBAL' AND rc.merchant_id IS NULL
+             ORDER BY rc.created_at DESC, rc.id DESC LIMIT 1
+          ), FALSE)=FALSE
+          AND COALESCE((
+            SELECT rc.paused FROM seo_runtime_controls rc
+             WHERE rc.scope='MERCHANT' AND rc.merchant_id=c.merchant_id
+             ORDER BY rc.created_at DESC, rc.id DESC LIMIT 1
+          ), FALSE)=FALSE
           AND s.scheduled_for <= $3::timestamptz
           AND (s.status='SCHEDULED'
                OR (s.status='CLAIMED' AND s.lease_expires_at <= $3::timestamptz))

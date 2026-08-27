@@ -9,6 +9,7 @@ import { portfolioFixture, userFixture } from "../../test/fixtures";
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 let runtimeConfig: Record<string, unknown>;
 let authenticatedUser: typeof userFixture;
+let runtimeControls: Record<string, unknown>;
 
 beforeEach(() => {
   calls.length = 0;
@@ -16,6 +17,13 @@ beforeEach(() => {
     copilot_enabled: false,
     agent_run_enabled: true,
     agent_run_stages: ["KEYWORDS", "AUDIT", "RANKING_BASELINE", "PLAN", "REVIEW"],
+  };
+  runtimeControls = {
+    global: null,
+    merchant: null,
+    effective_paused: false,
+    effective_source: null,
+    effective_reason: null,
   };
   authenticatedUser = {
     ...userFixture,
@@ -37,6 +45,29 @@ beforeEach(() => {
       frozen_merchant_ids: ["only-bear"],
     });
     if (path === "/api/seo-ops/config") return json(runtimeConfig);
+    if (path === "/api/seo-ops/runtime-controls?merchant_id=only-bear" && !init?.method) {
+      return json(runtimeControls);
+    }
+    if (path === "/api/seo-ops/runtime-controls" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body));
+      const record = {
+        id: "runtime-control-1",
+        scope: body.scope,
+        merchant_id: body.merchant_id ?? null,
+        paused: body.paused,
+        reason: body.reason,
+        changed_by: "operator-1",
+        created_at: "2026-08-27T08:00:00Z",
+      };
+      runtimeControls = {
+        ...runtimeControls,
+        ...(body.scope === "GLOBAL" ? { global: record } : { merchant: record }),
+        effective_paused: body.paused,
+        effective_source: body.paused ? body.scope : null,
+        effective_reason: body.paused ? body.reason : null,
+      };
+      return json(record, 201);
+    }
     if (path === "/api/seo-ops/agent-bindings") return json({
       binding_keys: ["AUDIT"],
       items: [{
@@ -219,6 +250,36 @@ test("authorized runtime controls preserve the existing scheduler and worker mut
     expect.objectContaining({ path: "/api/seo-ops/admin/scheduler-tick", init: expect.objectContaining({ method: "POST" }) }),
     expect.objectContaining({ path: "/api/seo-ops/admin/execution-tick", init: expect.objectContaining({ method: "POST" }) }),
   ]));
+});
+
+test("authorized operators can pause new work only with an audited reason", async () => {
+  authenticatedUser = { ...authenticatedUser, permissions: [...authenticatedUser.permissions, "seoops.schedule.manage"] };
+  const user = userEvent.setup();
+  renderApp("/settings");
+
+  const system = await screen.findByRole("region", { name: "系统状态" });
+  const pause = within(system).getByRole("button", { name: "暂停全部新工作" });
+  expect(pause).toBeDisabled();
+  await user.type(within(system).getByLabelText("暂停或恢复原因"), "UAT incident review");
+  expect(pause).toBeEnabled();
+  await user.click(pause);
+
+  expect(calls).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      path: "/api/seo-ops/runtime-controls",
+      init: expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          scope: "GLOBAL",
+          merchant_id: null,
+          paused: true,
+          reason: "UAT incident review",
+        }),
+      }),
+    }),
+  ]));
+  expect(await within(system).findByText("全局已暂停")).toBeInTheDocument();
+  expect(within(system).getByText("UAT incident review")).toBeInTheDocument();
 });
 
 test("editing an Agent label preserves the existing published revision provenance", async () => {

@@ -440,6 +440,11 @@ export function createRevision(
     fingerprint,
     input.expected_state_version,
     async (task, tx) => {
+      if (await findActiveGbpContentRunByTask(tx, {
+        stage: "GBP_POST_CONTENT", taskId: task.id, merchantId: task.merchantId, locationId: task.locationId,
+      })) {
+        throw conflict("cannot revise a GBP Post task while content generation is active", "CONTENT_RUN_ACTIVE");
+      }
       if (!canCreateRevision(task.status)) {
         throw conflict(
           `cannot revise a task in status ${task.status} (revoke approval first)`,

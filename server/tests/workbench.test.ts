@@ -277,7 +277,7 @@ describe("workbench projection", () => {
     await built.db.exec(`
       CREATE VIEW seo_execution_attempts AS
       SELECT id, task_id, merchant_id, attempt_no, status, gate, agent_run_id, core_run_id,
-             probe_ref,
+             gbp_command_id, probe_ref,
              CASE WHEN merchant_id = '${merchantB.id}' THEN workbench_forbidden_attempt_read() ELSE error END AS error,
              started_at, trigger_started_at, resolved_at, resolved_by, resolution, resolution_note,
              created_at, updated_at

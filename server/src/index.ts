@@ -15,6 +15,10 @@ import { registerExecutionRoutes } from "./routes/executionRoutes.js";
 import { registerWorkbenchRoutes } from "./routes/workbenchRoutes.js";
 import { registerMerchantControlRoomRoutes } from "./routes/merchantControlRoomRoutes.js";
 import { createCoreAiClient, type CoreAiClient } from "./services/coreAiClient.js";
+import {
+  createCoreAiAgentAdminClient,
+  type CoreAiAgentAdminClient,
+} from "./services/coreAiAgentAdminClient.js";
 import { AgentRunPoller } from "./services/agentRunPoller.js";
 import { ExecutionWorker } from "./services/executionWorker.js";
 import { GbpExecutionWorker } from "./services/gbpExecutionWorker.js";
@@ -28,6 +32,8 @@ export interface AppContext {
   db: Db;
   /** Null when core-ai env is not fully configured (agent runs disabled). */
   coreAi: CoreAiClient | null;
+  /** Read-only Agent detail/admin API used to verify capability boundaries. */
+  coreAiAgentAdmin: CoreAiAgentAdminClient | null;
   /** Directory where completed run outputs are persisted as artifacts. */
   artifactsDir: string;
   /** 执行 worker（attempt 派发/结算）；mock 或 core-ai 配置齐时非 null。 */
@@ -41,6 +47,7 @@ export interface AppContext {
 /** Test seams: inject a fake client/poller/db, or pass null to force-disable. */
 export interface AppDeps {
   coreAi?: CoreAiClient | null;
+  coreAiAgentAdmin?: CoreAiAgentAdminClient | null;
   poller?: AgentRunPoller | null;
   artifactsDir?: string;
   /** Injected Db (e.g. an isolated test schema). When set, buildApp does not
@@ -58,7 +65,9 @@ export async function buildApp(
   config: ServerConfig;
   db: Db;
   poller: AgentRunPoller | null;
+  executionWorker: ExecutionWorker | null;
   gbpExecutionWorker: GbpExecutionWorker | null;
+  scheduler: CycleScheduler;
 }> {
   const ownsDb = !deps.db;
   const db = deps.db ?? createDb(config.databaseUrl);
@@ -77,6 +86,19 @@ export async function buildApp(
         : null;
   const artifactsDir =
     deps.artifactsDir ?? path.resolve(moduleDir, "../../data/artifacts");
+  // Injected Core AI clients are test/application seams. In normal runtime the
+  // independently bounded admin client is always built from server-only env.
+  const coreAiAgentAdmin = deps.coreAiAgentAdmin !== undefined
+    ? deps.coreAiAgentAdmin
+    : deps.coreAi !== undefined
+      ? null
+      : config.coreAiBaseUrl && config.coreAiToken
+        ? createCoreAiAgentAdminClient({
+            baseUrl: config.coreAiBaseUrl,
+            token: config.coreAiToken,
+            timeoutMs: config.agentRunHttpTimeoutMs,
+          })
+        : null;
 
   // 执行 worker：mock 模式（无外部副作用）或 core-ai 配置齐全时可用。
   const executionWorker =
@@ -110,7 +132,8 @@ export async function buildApp(
       : null;
 
   const ctx: AppContext = {
-    config, db, coreAi, artifactsDir, executionWorker, gbpExecutionWorker, scheduler,
+    config, db, coreAi, coreAiAgentAdmin, artifactsDir,
+    executionWorker, gbpExecutionWorker, scheduler,
   };
 
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
@@ -127,13 +150,6 @@ export async function buildApp(
   registerWorkbenchRoutes(app, ctx);
   registerMerchantControlRoomRoutes(app, ctx);
 
-  // 定时器不在测试环境下启动；手动 tick 端点始终可用。
-  if (process.env.NODE_ENV !== "test") {
-    executionWorker?.start();
-    gbpExecutionWorker?.start();
-    scheduler.start();
-  }
-
   let poller: AgentRunPoller | null = null;
   if (ctx.coreAi && deps.poller !== null) {
     poller =
@@ -145,8 +161,6 @@ export async function buildApp(
         intervalMs: config.agentRunPollIntervalMs,
         log: app.log,
       });
-    // Never started under vitest; boot pollOnce adopts leftover RUNNING rows.
-    if (process.env.NODE_ENV !== "test") poller.start();
   }
 
   app.addHook("onClose", async () => {
@@ -159,14 +173,5 @@ export async function buildApp(
     if (ownsDb) await db.close();
   });
 
-  return { app, config, db, poller, gbpExecutionWorker };
-}
-
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMain) {
-  const { app, config } = await buildApp();
-  app.listen({ port: config.port, host: config.host }).catch((error) => {
-    app.log.error(error);
-    process.exit(1);
-  });
+  return { app, config, db, poller, executionWorker, gbpExecutionWorker, scheduler };
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { CoreAgentRunDetail, CoreAiClient } from "../src/services/coreAiClient.js";
 import { parsePlannerOutput } from "../src/services/plannerService.js";
+import { schedulerTick } from "../src/services/schedulerService.js";
 import { createAuthenticatedTestApp } from "./helpers/authTest.js";
 
 /**
@@ -166,7 +167,7 @@ describe("Planner Agent bridge", () => {
       configOverrides: { mockExecution: true },
     });
     apps.push(built.app);
-    const { app } = built;
+    const { app, db } = built;
 
     // The merchant predates Planner enablement, matching an existing partner store.
     const merchant = (
@@ -187,7 +188,7 @@ describe("Planner Agent bridge", () => {
     });
     expect(binding.statusCode).toBe(200);
 
-    const now = new Date();
+    const now = new Date("2026-08-27T08:00:01.000Z");
     await app.inject({
       method: "PUT",
       url: `/api/seo-ops/merchants/${merchant.id}/cycle-config`,
@@ -201,9 +202,12 @@ describe("Planner Agent bridge", () => {
       },
     });
 
-    const first = (
-      await app.inject({ method: "POST", url: "/api/seo-ops/admin/scheduler-tick" })
-    ).json();
+    const schedulerErrors: unknown[] = [];
+    const first = await schedulerTick({
+      db,
+      now: () => now,
+      log: (_message, error) => schedulerErrors.push(error),
+    });
     expect(first.created).toHaveLength(1);
     expect(first.created[0]).toMatchObject({
       merchant_id: merchant.id,
@@ -232,10 +236,13 @@ describe("Planner Agent bridge", () => {
     expect(trigger.signals.map((signal: { task_type: string }) => signal.task_type).sort())
       .toEqual(["AUDIT", "GBP_POST", "KEYWORD_WEEKLY", "REVIEW"]);
 
-    const replay = (
-      await app.inject({ method: "POST", url: "/api/seo-ops/admin/scheduler-tick" })
-    ).json();
+    const replay = await schedulerTick({
+      db,
+      now: () => new Date("2026-08-27T23:59:59.000Z"),
+      log: (_message, error) => schedulerErrors.push(error),
+    });
     expect(replay.created).toHaveLength(0);
+    expect(schedulerErrors).toEqual([]);
   });
 
   it("replans after the merchant submits a questionnaire", async () => {

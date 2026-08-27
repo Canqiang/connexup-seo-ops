@@ -16,7 +16,8 @@
 # 1. 后端（8787）：单人免登录 + mock 执行（不打 core-ai，演示/开发用）
 cd server && npm install
 SEO_OPS_SINGLE_USER=true SEO_OPS_MOCK_EXECUTION=true \
-SESSION_SECRET=dev-secret-please-rotate-32-characters-min npm run dev
+# Export a generated 32+ character SESSION_SECRET in your shell first.
+npm run dev
 
 # 2. 种子样本世界（3 商户 + 建议批次 + Post 双门链路 + 跑一轮调度）
 cd server && npm run seed:demo
@@ -61,6 +62,15 @@ Task 状态或商户阶段推进。本地开发库的 `QUESTIONNAIRE` binding �
 以上 Agent 均已发布并通过 API 独立回读；本地开发库的六类 binding 也已回读确认。UAT API
 凭证只放服务端环境变量/Secret，不能写入仓库或发到浏览器。
 
+### GBP 内容 Agent 的强制能力边界
+
+`GBP_POST` binding 保存时，SEO Ops 不信任浏览器提交的 `published_ref`。API 会用服务端
+Core AI 凭证对精确 Agent ID 做独立 GET，并且只接受：`PUBLISHED + AGENT`、Memory 关闭、
+唯一工具为 `builtin:builtin-media-generation`、Skill/Subagent/Dataset/Sandbox 为空、输出契约为
+`seo_ops.gbp_post_draft.v2`。通过后只保存 `core-ai-agent-policy:v1:sha256:<sanitized hash>`，
+不保存完整 prompt 或凭证。生成前最多缓存 60 秒再次核对；缺坐标或能力漂移返回
+`CONTENT_AGENT_POLICY_UNVERIFIED`，不会分配 Run。GBP 内容 Agent 不得与写入 Agent 共用 ID。
+
 ### Keyword 方法与 FBR 边界
 
 `seo-ops-keyword-set` 是安全适配层，不重新发明关键词方法：
@@ -83,8 +93,23 @@ Task 状态或商户阶段推进。本地开发库的 `QUESTIONNAIRE` binding �
 | `SEO_OPS_MOCK_EXECUTION` | false | true = 执行派发不打 core-ai，本地立即成功（写入类给 `mock:` 引用）。 |
 | `SEO_OPS_SCHEDULER_INTERVAL_MS` | 60000 | 周期调度 tick 间隔。 |
 | `SEO_OPS_EXECUTION_POLL_INTERVAL_MS` | 10000 | 执行 worker 轮询间隔。 |
+| `SEO_OPS_RUNTIME_ROLE` | 本地 `all` | 生产必须是 `api` / `worker` / `scheduler` 之一；禁止 `all`。 |
+| `SEO_OPS_GBP_EXECUTION_ENABLED` | false | 仅在挂载逐地点凭据的 worker 中开启专用 GBP CREATE_POST。 |
+| `SEO_OPS_GBP_SECRET_DIR` | 空 | GBP 凭据只读挂载的绝对目录；不得进入仓库或浏览器。 |
 
 旧变量（DATABASE_URL / CORE_AI_* / SESSION_*）不变。`SEO_OPS_AUTH_DISABLED` 仍被拒绝。
+
+### UAT 运行拓扑
+
+UAT 使用同一 backend image 启动三个独立角色：API Pod 不启动后台循环；Worker Pod
+运行 Agent Run poller、通用执行 worker 与专用 GBP worker；Scheduler Pod 只负责周期生成与
+到期扫描，固定单副本。Frontend 与 API 通过同一 Ingress 分别承载 `/seo-ops/*` 与 `/api/*`。
+Agent/图片附件由 API 与 Worker 共享的持久卷保存；集群必须提供经审核的 RWX 存储，不能用
+各 Pod 独立的 `emptyDir` 冒充持久化回读。完整清单见 `deploy/uat/`。
+
+设置页“新工作暂停开关”提供全局与单商户两层控制，每次暂停/恢复必须填写原因并追加审计记录。
+暂停会阻止周期新建、派发、Worker 新领取和人工 Agent 新触发；已在运行或回读的工作不中断。
+排障时先暂停、观察运行账本收敛，再决定恢复，不能把暂停当成取消或失败证明。
 
 ## Core AI Agent 对账工具（本地管理面）
 

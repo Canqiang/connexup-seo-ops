@@ -26,6 +26,7 @@ import {
 import type { AgentRun, RunDeliverable } from "../repos/agentRunTypes.js";
 import { requireIdempotencyKey } from "./merchantService.js";
 import { allocateAgentRun } from "./agentRunAllocator.js";
+import { assertRuntimeAcceptsNewWork } from "./runtimeControlService.js";
 import { hasValidTaskLinkedGbpContentScope } from "./agentRunScopeService.js";
 import {
   buildStageRunMessage,
@@ -199,6 +200,7 @@ export async function triggerStageRun(
     run,
     httpRequestFingerprint: fingerprint,
     dailyRunLimit: deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT,
+    validateBeforeInsert: (tx) => assertRuntimeAcceptsNewWork(tx, merchantId),
   });
   if (!allocation.inserted) return { run: allocation.run, replayed: true };
 

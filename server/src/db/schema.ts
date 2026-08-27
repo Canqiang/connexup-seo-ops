@@ -588,6 +588,22 @@ export const SCHEMA_STATEMENTS: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_capabilities_merchant ON seo_capabilities(merchant_id)`,
 
+  /** Append-only operator pause ledger. Latest GLOBAL and MERCHANT rows are
+   * composed at read time; history is never overwritten. */
+  `CREATE TABLE IF NOT EXISTS seo_runtime_controls (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK (scope IN ('GLOBAL','MERCHANT')),
+    merchant_id TEXT REFERENCES seo_merchants(id),
+    paused BOOLEAN NOT NULL,
+    reason TEXT NOT NULL,
+    changed_by TEXT NOT NULL REFERENCES seo_users(id),
+    created_at TEXT NOT NULL,
+    CHECK ((scope='GLOBAL' AND merchant_id IS NULL)
+        OR (scope='MERCHANT' AND merchant_id IS NOT NULL))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_runtime_controls_scope_created
+     ON seo_runtime_controls(scope, merchant_id, created_at DESC, id DESC)`,
+
   /** 周期配置 = Ⓐ级预授权：scheduler 据此自动出任务（人批规则，不逐件批）。 */
   `CREATE TABLE IF NOT EXISTS seo_cycle_configs (
     merchant_id TEXT PRIMARY KEY,

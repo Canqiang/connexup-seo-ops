@@ -32,7 +32,7 @@ export function SettingsPage() {
       <GbpLocationBindingPanel canManage={canSchedule} locations={selectedMerchant?.locations ?? []} merchantId={merchantId || undefined} />
       <AgentBindingsPanel canManage={canSchedule} />
       <UserPermissionsPanel />
-      <SystemStatusPanel canSchedule={canSchedule} />
+      <SystemStatusPanel canSchedule={canSchedule} merchantId={merchantId || undefined} />
     </div>
   </>;
 }

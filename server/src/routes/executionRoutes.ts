@@ -86,10 +86,16 @@ import { stageRunView } from "../services/agentRunService.js";
 import { triggerGbpPostContentRun } from "../services/gbpPostContentService.js";
 import { decideArtifactAcceptance } from "../services/artifactAcceptanceService.js";
 import {
+  runtimeControlView,
+  setRuntimePause,
+} from "../services/runtimeControlService.js";
+import type { RuntimeControlRecord } from "../repos/runtimeControlRepo.js";
+import {
   getGbpExecution,
   putGbpLocationBinding,
 } from "../services/gbpExecutionService.js";
 import { getGbpLocationBinding } from "../repos/gbpExecutionRepo.js";
+import { inspectGbpContentAgent } from "../services/agentCapabilityPolicy.js";
 
 /** agent 绑定键 = 任务类型 + 执行专用键（GBP 写入由 GBP_EXECUTION agent 执行）。 */
 const BINDING_KEYS = [...TASK_TYPES, "GBP_EXECUTION"] as const;
@@ -186,6 +192,7 @@ const triggerContentRunSchema = z.object({
   retry: z.object({
     prior_run_id: z.string().trim().min(1).max(200),
     reason: z.string().trim().min(10).max(2000),
+    mode: z.enum(["RETRY", "REGENERATE"]).optional(),
   }).strict().optional(),
 }).strict();
 
@@ -230,6 +237,28 @@ const upsertBindingSchema = z.object({
 const styleProfileSchema = z.object({
   voice: z.record(z.unknown()),
 });
+
+const runtimeControlQuerySchema = z.object({
+  merchant_id: z.string().min(1).optional(),
+});
+const runtimeControlMutationSchema = z.object({
+  scope: z.enum(["GLOBAL", "MERCHANT"]),
+  merchant_id: z.string().min(1).nullable().optional(),
+  paused: z.boolean(),
+  reason: z.string().trim().min(1).max(500),
+}).strict();
+
+function runtimeControlWire(record: RuntimeControlRecord | null) {
+  return record ? {
+    id: record.id,
+    scope: record.scope,
+    merchant_id: record.merchantId,
+    paused: record.paused,
+    reason: record.reason,
+    changed_by: record.changedBy,
+    created_at: record.createdAt,
+  } : null;
+}
 
 async function taskNames(ctx: AppContext, task: Task): Promise<{
   merchantName: string;
@@ -544,6 +573,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       {
         db: ctx.db,
         client: ctx.coreAi,
+        ...(ctx.coreAiAgentAdmin ? { agentAdmin: ctx.coreAiAgentAdmin } : {}),
         dailyRunLimit: ctx.config.agentRunDailyLimit,
         log: app.log,
       },
@@ -556,7 +586,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       body.idempotency_key,
       actor.userId,
       body.retry
-        ? { priorRunId: body.retry.prior_run_id, reason: body.retry.reason }
+        ? { priorRunId: body.retry.prior_run_id, reason: body.retry.reason, mode: body.retry.mode }
         : undefined,
     );
     reply.status(replayed ? 200 : 202);
@@ -740,11 +770,22 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     }
     const body = upsertBindingSchema.parse(request.body);
     const now = new Date().toISOString();
+    let publishedRef = body.published_ref ?? null;
+    if (taskType === "GBP_POST") {
+      if (!ctx.coreAiAgentAdmin) {
+        throw new ApiError(
+          503,
+          "Core AI Agent policy readback is not configured",
+          "CONTENT_AGENT_POLICY_UNVERIFIED",
+        );
+      }
+      publishedRef = (await inspectGbpContentAgent(ctx.coreAiAgentAdmin, body.agent_id)).coordinate;
+    }
     const saved = await upsertAgentBinding(ctx.db, {
       taskType,
       agentId: body.agent_id,
       agentLabel: body.agent_label ?? null,
-      publishedRef: body.published_ref ?? null,
+      publishedRef,
       updatedBy: actor.userId,
       createdAt: now,
       updatedAt: now,
@@ -779,6 +820,39 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
   });
 
   // ---- 总览徽标 / 管理入口 ----
+
+  app.get("/api/seo-ops/runtime-controls", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const query = runtimeControlQuerySchema.parse(request.query);
+    const merchantId = query.merchant_id ?? null;
+    if (merchantId) await requireMerchantAccess(ctx.db, actor, merchantId);
+    const view = await runtimeControlView(ctx.db, merchantId);
+    return {
+      global: runtimeControlWire(view.global),
+      merchant: runtimeControlWire(view.merchant),
+      effective_paused: view.effective.paused,
+      effective_source: view.effective.source,
+      effective_reason: view.effective.reason,
+    };
+  });
+
+  app.post("/api/seo-ops/runtime-controls", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.schedule.manage");
+    const body = runtimeControlMutationSchema.parse(request.body);
+    const merchantId = body.merchant_id ?? null;
+    if (body.scope === "MERCHANT" && merchantId) {
+      await requireMerchantAccess(ctx.db, actor, merchantId);
+    }
+    const changed = await setRuntimePause(ctx.db, {
+      scope: body.scope,
+      merchantId,
+      paused: body.paused,
+      reason: body.reason,
+      actorId: actor.userId,
+    });
+    reply.status(201);
+    return runtimeControlWire(changed);
+  });
 
   app.get("/api/seo-ops/inbox-summary", async (request) => {
     const actor = requirePermission(request, "seoops.view");

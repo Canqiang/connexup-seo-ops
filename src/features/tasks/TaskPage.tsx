@@ -12,6 +12,8 @@ import { usePageTitle } from "../../hooks/usePageTitle";
 import { useResource } from "../../hooks/useResource";
 import { ApprovalPanel } from "./ApprovalPanel";
 import { DraftsPanel } from "./DraftsPanel";
+import { GbpWorkflowRail } from "./GbpWorkflowRail";
+import { MerchantKeywordRankingPanel } from "./MerchantKeywordRankingPanel";
 import { EvidenceForm } from "./EvidenceForm";
 import { EvidenceRail } from "./EvidenceRail";
 import { ExecutionPanel } from "./ExecutionPanel";
@@ -83,6 +85,13 @@ function TaskPageForId({ taskId }: { taskId: string }) {
   const eventResource = useResource((signal) => keyed(taskId, seoOpsApi.events(taskId, { limit: 100 }, signal)), [taskId]);
   const artifactResource = useResource((signal) => keyed(taskId, seoOpsApi.taskArtifacts(taskId, signal)), [taskId]);
   const draftResource = useResource((signal) => keyed(taskId, seoOpsApi.drafts(taskId, signal)), [taskId]);
+  const capabilityMerchantId = taskResource.data?.taskId === taskId ? taskResource.data.value.merchant_id : "";
+  const capabilityResource = useResource(
+    (signal) => capabilityMerchantId
+      ? seoOpsApi.capabilities(capabilityMerchantId, signal)
+      : Promise.resolve({ items: [] }),
+    [capabilityMerchantId],
+  );
   const [task, setTask] = useState<SeoTask>();
   const [showEvidence, setShowEvidence] = useState(false);
   const [showRevision, setShowRevision] = useState(false);
@@ -157,11 +166,19 @@ function TaskPageForId({ taskId }: { taskId: string }) {
   const canApprove = hasPermission(user?.permissions, "seoops.approve");
   const canExecute = hasPermission(user?.permissions, "seoops.execute");
   const canRevise = canManage && REVISABLE_STATUSES.has(task.status);
-  const decision = taskDecisionDescriptor(task, { canManage, canApprove, canExecute });
   const drafts = draftResource.data?.taskId === taskId ? draftResource.data.value.items : [];
   const artifacts = artifactResource.data?.taskId === taskId ? artifactResource.data.value.items : [];
   const events = eventResource.data?.taskId === taskId ? eventResource.data.value : undefined;
+  const hasEditableGbpDraft = task.task_type === "GBP_POST" && task.status === "NEEDS_INPUT" && drafts.length > 0;
+  const baseDecision = taskDecisionDescriptor(task, { canManage, canApprove, canExecute });
+  const decision = hasEditableGbpDraft ? {
+    ...baseDecision,
+    heading: "请确认并定稿当前图文",
+    consequence: "可以修改文案或换成商户素材；定稿后才进入人工批准。",
+    actionLabel: "继续修改与定稿",
+  } : baseDecision;
   const draftDisplay = resolveTaskDraftDisplay(task, drafts);
+  const directPublish = capabilityResource.data?.items.some((item) => item.capability === "GBP_WRITE" && item.status === "ACTIVE") ?? false;
   const approvalBlockedReason = task.task_type !== "GBP_POST" ? undefined
     : !draftDisplay.approvalIdentityValid
       ? "批准已阻止：当前显示内容与定稿快照不一致。"
@@ -170,7 +187,9 @@ function TaskPageForId({ taskId }: { taskId: string }) {
         : approvalMediaReadyKey !== draftDisplay.approvalPreviewKey
           ? "批准已阻止：当前定稿图片尚未成功加载。"
           : undefined;
-  const heroAction = !decision.actionLabel ? undefined : decision.actionKind === "APPROVE"
+  const heroAction = hasEditableGbpDraft
+    ? <button className="primary-button" onClick={() => document.getElementById("gbp-drafts-panel")?.scrollIntoView({ behavior: "smooth", block: "start" })} type="button">继续修改与定稿</button>
+    : !decision.actionLabel ? undefined : decision.actionKind === "APPROVE"
     ? <ApprovalPanel approvalBlockedReason={approvalBlockedReason} canApprove={canApprove} compact onReadback={readback} primaryLabel="批准当前版本" task={task} />
     : decision.actionKind === "MANUAL_COMPLETE"
       ? <ManualCompletionPanel onReadback={readback} task={task} />
@@ -191,6 +210,11 @@ function TaskPageForId({ taskId }: { taskId: string }) {
       onApprovalMediaReady={(key, ready) => setApprovalMediaReadyKey((current) => ready ? key : current === key ? undefined : current)}
       task={task}
     >{heroAction}</TaskDecisionHero>
+    {task.task_type === "GBP_POST" ? <GbpWorkflowRail directPublish={directPublish} hasDraft={drafts.length > 0} task={task} /> : null}
+    {task.task_type === "GBP_POST" ? <div className="gbp-operator-stack">
+      <DraftsPanel canReopen={canManage && canApprove} onReadback={readback} task={task} />
+      <MerchantKeywordRankingPanel merchantId={task.merchant_id} />
+    </div> : null}
     {showRevision ? <section className="data-panel inline-form"><TaskRevisionForm task={task} onClose={() => setShowRevision(false)} onReadback={readback} /></section> : null}
     {showEvidence ? <section className="data-panel inline-form"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE COMMAND</span><h2>附加当前版本证据</h2></div></div><EvidenceForm task={task} onReadback={readback} /></section> : null}
     <TechnicalDetails onToggle={setAuditOpen} open={auditOpen} task={task}>
@@ -210,12 +234,11 @@ function TaskPageForId({ taskId }: { taskId: string }) {
           canApprove={canApprove}
           onRefresh={artifactResource.reload}
         />
-        <DraftsPanel onReadback={readback} task={task} />
+        {task.task_type !== "GBP_POST" ? <DraftsPanel onReadback={readback} task={task} /> : null}
         <section className="data-panel"><div className="panel-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>事件时间线</h2></div><span className="result-count">{events?.total ?? "—"}</span></div>{eventResource.loading ? <div className="page-state" role="status">读取事件…</div> : <TaskTimeline events={events?.items ?? []} />}</section>
       </div><aside className="task-context">
         <ExecutionPanel audit={mode === "audit"} canExecute={canExecute} onReadback={readback} task={task} />
         <section className="data-panel evidence-panel"><div className="panel-heading"><div><span className="eyebrow">EVIDENCE SPINE</span><h2>证据脊柱</h2></div></div><EvidenceRail task={task} /></section>
-        <ApprovalPanel approvalBlockedReason={approvalBlockedReason} canApprove={canApprove} onReadback={readback} task={task} />
         <section className="link-panel"><div><MessageSquareText size={15} /><span><strong>{task.conversation_links.length}</strong> 对话链接</span></div><div><Bot size={15} /><span><strong>{task.agent_run_links.length}</strong> Agent Run 引用</span></div><p><ShieldCheck size={13} /> 这里只显示 ID 和状态摘要，不载入聊天正文或运行载荷。</p></section>
       </aside></div>
     </TechnicalDetails>

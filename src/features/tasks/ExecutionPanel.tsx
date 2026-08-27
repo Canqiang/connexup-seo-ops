@@ -34,7 +34,7 @@ export function ExecutionPanel({ task, onReadback, compact = false, audit = fals
       <div className="execution-body"><p className="quiet-copy">人工任务：完成后附加证据并走审批归档，无系统派发。</p></div></section>;
   }
   if (task.task_type === "GBP_POST" && mode === "AUTO_WRITE") {
-    return <GbpExecutionPanel canExecute={canExecute} onReadback={onReadback} task={task} />;
+    return <GbpExecutionPanel canExecute={canExecute} compact={compact} onReadback={onReadback} task={task} />;
   }
 
   /** 统一的失败处理：409 = 任务已被别人/worker 推进 → 拉最新回读并说人话。 */

@@ -5,6 +5,7 @@ import type { Db } from "../db/connection.js";
 import {
   GbpCanonicalUtcInstantSchema,
   GbpCoreApiUserIdSchema,
+  GbpDeliverableIdSchema,
   GbpExecutionCommandSchema,
   GbpSecretRefSchema,
   hashGbpCommandBody,
@@ -93,7 +94,7 @@ function parseMediaRef(raw: string): CanonicalMediaRef {
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (Object.keys(value).sort().join(",") !== "alt_text,deliverable_id,schema_version,sha256"
       || value.schema_version !== "seo_ops.media_ref.v1"
-      || typeof value.deliverable_id !== "string" || !UuidSchema.safeParse(value.deliverable_id).success
+      || typeof value.deliverable_id !== "string" || !GbpDeliverableIdSchema.safeParse(value.deliverable_id).success
       || typeof value.sha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.sha256)
       || typeof value.alt_text !== "string" || value.alt_text.trim() === "") throw new Error("shape");
     return value as unknown as CanonicalMediaRef;
@@ -233,7 +234,8 @@ async function loadExactDraftSnapshot(tx: Db, task: Task) {
   );
   if (!row || !sourceRunId || row.run_id !== sourceRunId || row.task_id !== task.id
     || row.merchant_id !== task.merchantId || row.location_id !== task.locationId
-    || row.stage !== "GBP_POST_CONTENT" || row.kind !== "ATTACHMENT"
+    || row.stage !== "GBP_POST_CONTENT"
+    || (row.kind !== "ATTACHMENT" && row.kind !== "MANUAL")
     || !["image/png", "image/jpeg"].includes(row.content_type ?? "")
     || row.sha256 !== media.sha256 || row.local_path === null || row.size === null) {
     throw conflict("finalized GBP image ownership changed after approval", "GBP_IMAGE_DRIFT");

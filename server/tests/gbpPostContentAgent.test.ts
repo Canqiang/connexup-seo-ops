@@ -1394,6 +1394,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       sha256: expectedImageSha,
       download_path: `/api/seo-ops/deliverables/${mediaRef.deliverable_id}/download`,
       alt_text: "Crispy chicken lunch served in Mineola.",
+      origin: "AI_GENERATED",
     }]);
     const deliverables = await listDeliverablesByRun(db, calls[0].json().id);
     expect(deliverables).toEqual([expect.objectContaining({
@@ -1451,6 +1452,80 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     });
     expect(activeConflict.statusCode).toBe(409);
     expect(core.triggerCount()).toBe(2);
+  });
+
+  it("creates one fresh generation from explicit completed-run lineage while preserving the prior draft", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "explicit-regeneration");
+    const { app, db, task, artifactsDir } = built;
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "explicit-regeneration-v1" },
+    });
+    expect(first.statusCode).toBe(202);
+
+    const premature = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "explicit-regeneration-before-v1-completes",
+        retry: {
+          prior_run_id: first.json().id,
+          reason: "A running generation must be resumed instead of branching a replacement.",
+          mode: "REGENERATE",
+        },
+      },
+    });
+    expect(premature.statusCode).toBe(409);
+    expect(premature.json().error_code).toBe("CONTENT_RUN_REGENERATION_REQUIRES_COMPLETED");
+    expect(core.triggerCount()).toBe(1);
+
+    await new AgentRunPoller({ db, client: core.client, artifactsDir }).pollOnce();
+
+    const payload = {
+      retry: {
+        prior_run_id: first.json().id,
+        reason: "Operator explicitly requested a new creative alternative while preserving v1.",
+        mode: "REGENERATE",
+      },
+    };
+    const regenerated = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { ...payload, idempotency_key: "explicit-regeneration-v2-a" },
+    });
+    expect(regenerated.statusCode).toBe(202);
+    expect(regenerated.json()).toMatchObject({
+      retry_of_agent_run_id: first.json().id,
+      retry_generation: 1,
+      retry_reason: payload.retry.reason,
+    });
+    expect(regenerated.json().id).not.toBe(first.json().id);
+
+    const concurrentReplay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { ...payload, idempotency_key: "explicit-regeneration-v2-b" },
+    });
+    expect(concurrentReplay.statusCode).toBe(200);
+    expect(concurrentReplay.json().id).toBe(regenerated.json().id);
+    expect(core.triggerCount()).toBe(2);
+
+    await new AgentRunPoller({ db, client: core.client, artifactsDir }).pollOnce();
+    const drafts = (await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items;
+    expect(drafts).toHaveLength(2);
+    expect(drafts.map((draft: { version: number; agent_run_id: string }) => ({
+      version: draft.version,
+      runId: draft.agent_run_id,
+    }))).toEqual([
+      { version: 1, runId: first.json().id },
+      { version: 2, runId: regenerated.json().id },
+    ]);
   });
 
   it("hides and rejects a canonical image reference owned by another Task and Run", async () => {
@@ -1584,6 +1659,61 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
         deliverable_id: expect.any(String),
         sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         download_path: expect.stringMatching(/^\/api\/seo-ops\/deliverables\/.+\/download$/),
+      }],
+    });
+  });
+
+  it("accepts an operator-uploaded image from the exact Task-linked content Run", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "human-uploaded-media");
+    const created = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/content-runs`,
+      payload: { idempotency_key: "human-uploaded-media-run" },
+    });
+    await new AgentRunPoller({ db: built.db, client: core.client, artifactsDir: built.artifactsDir }).pollOnce();
+    expect(await getAgentRun(built.db, created.json().id)).toMatchObject({ status: "COMPLETED" });
+
+    const uploaded = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/agent-runs/${created.json().id}/deliverables`,
+      payload: {
+        file_name: "operator-photo.png",
+        content_type: "image/png",
+        content_base64: Buffer.from(Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])).toString("base64"),
+      },
+    });
+    expect(uploaded.statusCode).toBe(201);
+    expect(uploaded.json()).toMatchObject({ kind: "MANUAL", downloaded: true });
+    const media = [JSON.stringify({
+      alt_text: "Choice Brooklyn lunch photo uploaded by the operator.",
+      deliverable_id: uploaded.json().id,
+      schema_version: "seo_ops.media_ref.v1",
+      sha256: uploaded.json().sha256,
+    })];
+
+    const revised = await built.app.inject({
+      method: "POST", url: `/api/seo-ops/tasks/${built.task.id}/draft-revisions`,
+      payload: {
+        body: "A human-adjusted post with an operator-selected photo.",
+        cta_type: "NONE",
+        media,
+        source: "HUMAN_EDIT",
+        expected_state_version: built.task.state_version,
+        idempotency_key: "human-uploaded-media-revision",
+      },
+    });
+    expect(revised.statusCode).toBe(201);
+    const drafts = (await built.app.inject({
+      method: "GET", url: `/api/seo-ops/tasks/${built.task.id}/drafts`,
+    })).json().items;
+    expect(drafts.at(-1)).toMatchObject({
+      source: "HUMAN_EDIT",
+      media_source_agent_run_id: created.json().id,
+      media,
+      media_previews: [{
+        deliverable_id: uploaded.json().id,
+        sha256: uploaded.json().sha256,
+        alt_text: "Choice Brooklyn lunch photo uploaded by the operator.",
+        origin: "OPERATOR_UPLOAD",
       }],
     });
   });
@@ -2506,6 +2636,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
       cancelledRetry.json().id,
       { body: "Completed retry draft.", media: [] },
       "system:test",
+      { taskRevision: task.task_revision, executionSpecHash: task.execution_spec_hash },
     );
     const completedReplay = await app.inject({
       method: "POST",

@@ -10,6 +10,7 @@ import {
   AUTO_AUTHORIZABLE_SOURCES,
   authorizeReadOnlyTask,
 } from "./readOnlyAuthorizationService.js";
+import { effectiveRuntimePause } from "./runtimeControlService.js";
 
 /** 周期驱动的Ⓐ级任务：由 scheduler 规则生成，周期配置即预授权 —— 不走 G1
  * 人工审批（用户决策：Audit/排名报告等只读任务全自动，不用人批）。写入类
@@ -133,20 +134,44 @@ export interface SchedulerTickResult {
   dispatched: number;
 }
 
+/** Deterministic occurrence coordinate for a deterministic cycle key. The
+ * scheduler may observe the same due set many times; wall-clock tick time must
+ * not change the idempotent Planner task body. */
+function cycleSpecOccurrenceAt(spec: CycleTaskSpec, now: Date): string {
+  const cycle = spec.spec.cycle;
+  const period = spec.spec.period;
+  if (cycle === "MONTHLY_REPORT" && typeof period === "string" && /^\d{4}-\d{2}$/.test(period)) {
+    return `${period}-01T00:00:00.000Z`;
+  }
+  const bucket = spec.spec.bucket;
+  const intervalDays = spec.spec.interval_days ?? spec.spec.window_days;
+  if (Number.isSafeInteger(bucket) && Number.isSafeInteger(intervalDays)
+    && (bucket as number) >= 0 && (intervalDays as number) > 0) {
+    return new Date((bucket as number) * (intervalDays as number) * 86_400_000).toISOString();
+  }
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+}
+
 export async function schedulerTick(deps: SchedulerDeps): Promise<SchedulerTickResult> {
   const { db } = deps;
   const actor = deps.systemActor ?? "system:scheduler";
   const now = deps.now ? deps.now() : new Date();
   const created: SchedulerTickResult["created"] = [];
 
+  if ((await effectiveRuntimePause(db)).paused) return { created, dispatched: 0 };
+
   const configs = (await listCycleConfigs(db)).filter((c) => c.enabled);
   for (const cfg of configs) {
+    if ((await effectiveRuntimePause(db, cfg.merchantId)).paused) continue;
     const merchant = await getMerchant(db, cfg.merchantId);
     if (!merchant) continue;
     const dueSpecs = dueCycleTasks(cfg, now);
     const plannerBinding = await getAgentBinding(db, "PLANNER");
     if (plannerBinding && dueSpecs.length > 0) {
       try {
+        const deterministicOccurredAt = dueSpecs
+          .map((spec) => cycleSpecOccurrenceAt(spec, now))
+          .sort()[0]!;
         const planner = await enqueuePlannerTaskIfBound(
           db,
           cfg.merchantId,
@@ -154,7 +179,7 @@ export async function schedulerTick(deps: SchedulerDeps): Promise<SchedulerTickR
             key: `cycle_due:${dueSpecs.map((spec) => spec.key).sort().join("|")}`,
             type: "CYCLE_DUE",
             reason: "周期任务到期",
-            occurredAt: now.toISOString(),
+            occurredAt: deterministicOccurredAt,
             signals: dueSpecs.map((spec) => ({
               candidate_key: spec.key,
               task_type: spec.taskType,
@@ -225,6 +250,7 @@ export async function schedulerTick(deps: SchedulerDeps): Promise<SchedulerTickR
   const approved = await listTasksByStatus(db, ["APPROVED"]);
   for (const task of approved) {
     if (task.executionMode !== "READ_ONLY" || !AUTO_AUTHORIZABLE_SOURCES.has(task.source)) continue;
+    if ((await effectiveRuntimePause(db, task.merchantId)).paused) continue;
     try {
       const binding = await getAgentBinding(db, dispatchBindingKey(task.taskType));
       if (!binding) {

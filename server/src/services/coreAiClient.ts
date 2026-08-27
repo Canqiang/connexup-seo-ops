@@ -159,11 +159,39 @@ export function createCoreAiClient(opts: {
           : AbortSignal.timeout(timeoutMs);
         response = await doFetch(target, {
           headers: { Authorization: `Bearer ${token}` },
-          redirect: "error",
+          redirect: "manual",
           signal: requestSignal,
         });
       } catch {
         throw new CoreAiError(0, "artifact download failed");
+      }
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        await response.body?.cancel().catch(() => undefined);
+        let redirected: URL;
+        try {
+          redirected = new URL(location ?? "", target);
+        } catch {
+          throw new CoreAiError(0, "artifact download redirect is invalid");
+        }
+        // Core's public attachment endpoint returns one short-lived object-store
+        // redirect. Follow it without the Core bearer token; all other redirect
+        // sources, non-HTTPS targets, embedded credentials and redirect chains
+        // remain fail closed.
+        if (!/^\/api\/public\/artifacts\/[^/]+\/content$/.test(target.pathname)
+          || redirected.protocol !== "https:"
+          || redirected.username !== ""
+          || redirected.password !== "") {
+          throw new CoreAiError(0, "artifact download redirect is not allowed");
+        }
+        try {
+          const requestSignal = options?.signal
+            ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)])
+            : AbortSignal.timeout(timeoutMs);
+          response = await doFetch(redirected, { redirect: "error", signal: requestSignal });
+        } catch {
+          throw new CoreAiError(0, "artifact download failed");
+        }
       }
       if (!response.ok) {
         throw new CoreAiError(response.status, `artifact download returned ${response.status}`);

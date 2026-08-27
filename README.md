@@ -12,7 +12,7 @@
 - 正式审批预览与批准/退回/撤销；审批不触发执行
 - 报告来源、新鲜度和哈希展示
 - 事实、相关、因果就绪度分级的复盘分析
-- 无工具、无技能、无记忆、无外部写入的上下文 Copilot
+- 受控的 Core AI specialist 运行、结构化产物验收与独立回读
 
 ## 服务拓扑与 Core AI 边界
 
@@ -29,7 +29,9 @@
 
 本服务仅在后端通过 `CORE_AI_BASE_URL` 与 `CORE_AI_TOKEN` 调用现有 Core AI API（例如受控阶段运行和工件读取）。`CORE_AI_TOKEN` 永不进入浏览器；此集成不要求、也不暗示修改 Core AI 服务，且不提供浏览器到 Core AI 的转发层。
 
-任何页面都没有可用的外部执行按钮。`APPROVED` 只是一条授权记录；实际执行、第三方写入与执行后回读属于独立阶段。
+GBP Post 支持生成、人工改稿/换商户实拍、定稿、门 1 审批，以及门 2 的“立即发布或定时发布”。审批本身不触发写入；只有门 2 再次绑定精确 Task revision/hash、图片、地点与凭据引用后，专用 Worker 才能执行 `CREATE_POST`，随后必须独立回读。`OUTCOME_UNKNOWN` 不会自动重试。
+
+`GBP_POST` 内容 Agent 绑定不是自由文本引用：后端会通过 Core AI 服务端凭据独立读取精确 Agent，确认其已发布、仅有内置图片生成工具且没有 Skill、Subagent、Dataset、Sandbox、Memory 或外部写工具，再保存脱敏配置哈希。生成前会重新验证该坐标；配置漂移时以 `CONTENT_AGENT_POLICY_UNVERIFIED` 关闭失败。内容 Agent 与 GBP 写入/回读 Agent 必须是不同身份。
 
 ## 本地开发前置（server）
 
@@ -87,3 +89,7 @@ curl --fail http://127.0.0.1:18080/seo-ops/healthz
 ```
 
 Nginx 以非 root 镜像在 8080 端口运行；`/seo-ops/*` 深链接回退到 SPA，`/seo-ops/healthz` 返回纯文本 `ok`。
+
+后端同一镜像按 `SEO_OPS_RUNTIME_ROLE` 分为三个生产进程：`api` 只监听 HTTP，`worker` 只运行 Agent/执行/GBP 后台循环，`scheduler` 只运行周期调度；生产环境禁止 `all`。UAT 清单和 Secret/PVC 前置见 `deploy/uat/README.md`。
+
+设置页的全局/单商户暂停控制会追加保存操作人、时间和原因。暂停只阻止新建、派发、领取和 Agent 触发；已进入 Core AI/GBP 回读的工作继续收敛，避免制造孤儿执行。恢复同样必须填写审计原因。

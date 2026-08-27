@@ -5,6 +5,7 @@ import type {
   CycleLedgerView, DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
   PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
+  RuntimeControlsView, RuntimeControlWire,
   SchedulerTickResult, SeoOpsPageRequest, SeoTask, SpecialistArtifactType, SpecialistArtifactWire,
   StageRunView, TaskAuditReferencesWire, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
 } from "./types";
@@ -136,7 +137,10 @@ export const seoOpsApi = {
   // ---- 内容稿 ----
   drafts: (taskId: string, signal?: AbortSignal) =>
     requestJson<{ items: DraftWire[] }>(`/api/seo-ops/tasks/${encodeURIComponent(taskId)}/drafts`, { signal }),
-  triggerGbpPostContent: (taskId: string, request: { idempotency_key: string }) =>
+  triggerGbpPostContent: (taskId: string, request: {
+    idempotency_key: string;
+    retry?: { prior_run_id: string; reason: string; mode?: "RETRY" | "REGENERATE" };
+  }) =>
     post<StageRunView>(`/api/seo-ops/tasks/${encodeURIComponent(taskId)}/content-runs`, request),
   addDraft: (taskId: string, request: {
     body: string; cta_type?: string; cta_url?: string; media?: string[];
@@ -180,6 +184,15 @@ export const seoOpsApi = {
     `/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/locations/${encodeURIComponent(locationId)}/gbp-execution-binding`,
     { method: "PUT", body: JSON.stringify(request) },
   ),
+
+  runtimeControls: (merchantId: string, signal?: AbortSignal) =>
+    requestJson<RuntimeControlsView>(
+      `/api/seo-ops/runtime-controls?merchant_id=${encodeURIComponent(merchantId)}`,
+      { signal },
+    ),
+  setRuntimeControl: (request: {
+    scope: "GLOBAL" | "MERCHANT"; merchant_id: string | null; paused: boolean; reason: string;
+  }) => post<RuntimeControlWire>("/api/seo-ops/runtime-controls", request),
 
   // ---- 管理入口（冒烟/演示） ----
   schedulerTick: () => post<SchedulerTickResult>("/api/seo-ops/admin/scheduler-tick", {}),
