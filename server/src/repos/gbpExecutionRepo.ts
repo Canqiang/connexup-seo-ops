@@ -4,10 +4,12 @@ import {
   GbpCanonicalUtcInstantSchema,
   GbpExecutionCommandSchema,
   GbpExecutionReceiptSchema,
+  GbpReadbackDiffCodeSchema,
   GbpReadbackSchema,
   GbpSafeErrorCodeSchema,
   GbpSecretRefSchema,
   canonicalGbpCommand,
+  compareExactGbpReadback,
   hashGbpCommand,
   hashGbpCommandBody,
   hashGbpCommandCta,
@@ -108,19 +110,6 @@ const LeasedTransitionBaseSchema = ScopeSchema.extend({
   leaseToken: UuidSchema,
   updatedAt: GbpCanonicalUtcInstantSchema,
 }).strict();
-
-const SafeDiffCodeSchema = z.enum([
-  "ACCOUNT_MISMATCH",
-  "LOCATION_MISMATCH",
-  "POST_MISMATCH",
-  "BODY_MISMATCH",
-  "CTA_MISMATCH",
-  "MEDIA_MISSING",
-  "MEDIA_EXTRA",
-  "MEDIA_MISMATCH",
-  "CORE_AGENT_MISMATCH",
-  "CORE_RUN_MISMATCH",
-]);
 
 function parseStrict<T>(schema: z.ZodType<T>, input: unknown, label: string): T {
   const parsed = schema.safeParse(input);
@@ -715,10 +704,7 @@ function canonicalReadback(readback: GbpReadbackV1): string {
 
 function assertReadbackMatchesCommand(readback: GbpReadbackV1, command: GbpCommandRecord): void {
   if (readback.instruction_id !== command.command.instruction_id
-    || readback.command_sha256 !== command.commandSha256
-    || readback.readback_agent_id !== command.command.core.readback_agent_id
-    || readback.account_resource !== command.command.gbp.account_resource
-    || readback.location_resource !== command.command.gbp.location_resource) {
+    || readback.command_sha256 !== command.commandSha256) {
     throw new Error("GBP readback does not match its immutable command");
   }
 }
@@ -726,7 +712,6 @@ function assertReadbackMatchesCommand(readback: GbpReadbackV1, command: GbpComma
 const ReadbackInputSchema = ScopeSchema.extend({
   id: IdentifierSchema,
   observation: z.unknown().nullable(),
-  diffCodes: z.array(SafeDiffCodeSchema).max(20),
   safeErrorCode: GbpSafeErrorCodeSchema.nullable(),
   createdAt: GbpCanonicalUtcInstantSchema,
 }).strict().superRefine((input, ctx) => {
@@ -739,12 +724,16 @@ export async function insertGbpReadbackAttempt(db: Db, rawInput: unknown): Promi
   const input = parseStrict(ReadbackInputSchema, rawInput, "GBP readback input");
   const command = await getGbpCommand(db, input.commandId, input.merchantId, input.locationId);
   if (!command) throw new Error("GBP readback scope mismatch");
+  const receipt = await getGbpReceipt(db, input.commandId, input.merchantId, input.locationId);
+  if (!receipt) throw new Error("GBP readback requires a valid receipt");
   let observation: GbpReadbackV1 | null = null;
   let observationJson: string | null = null;
   let observationSha256: string | null = null;
+  let diffCodes: z.infer<typeof GbpReadbackDiffCodeSchema>[] = [];
   if (input.observation !== null) {
     observation = parseStrict(GbpReadbackSchema, input.observation, "GBP readback payload");
     assertReadbackMatchesCommand(observation, command);
+    diffCodes = compareExactGbpReadback(command.command, receipt.receipt, observation);
     observationJson = canonicalReadback(observation);
     observationSha256 = sha256Hash(observationJson);
   }
@@ -753,18 +742,22 @@ export async function insertGbpReadbackAttempt(db: Db, rawInput: unknown): Promi
       (id,command_id,observation_json,observation_sha256,diff_codes,safe_error_code,created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [input.id, input.commandId, observationJson, observationSha256,
-      JSON.stringify(input.diffCodes), input.safeErrorCode, input.createdAt],
+      JSON.stringify(diffCodes), input.safeErrorCode, input.createdAt],
   );
   return {
     id: input.id, commandId: input.commandId, observation, observationSha256,
-    diffCodes: input.diffCodes, safeErrorCode: input.safeErrorCode, createdAt: input.createdAt,
+    diffCodes, safeErrorCode: input.safeErrorCode, createdAt: input.createdAt,
   };
 }
 
-function toReadback(row: ReadbackRow, command: GbpCommandRecord): GbpReadbackAttempt {
+function toReadback(
+  row: ReadbackRow,
+  command: GbpCommandRecord,
+  receipt: GbpReceiptRecord,
+): GbpReadbackAttempt {
   try {
     const rawCodes: unknown = JSON.parse(row.diff_codes);
-    const diffCodes = z.array(SafeDiffCodeSchema).max(20).parse(rawCodes);
+    const diffCodes = z.array(GbpReadbackDiffCodeSchema).max(20).parse(rawCodes);
     const safeErrorCode = row.safe_error_code === null
       ? null
       : GbpSafeErrorCodeSchema.parse(row.safe_error_code);
@@ -776,7 +769,9 @@ function toReadback(row: ReadbackRow, command: GbpCommandRecord): GbpReadbackAtt
         throw new Error("observation mismatch");
       }
       assertReadbackMatchesCommand(observation, command);
-    } else if (row.observation_sha256 !== null || safeErrorCode === null) {
+      const expectedDiffs = compareExactGbpReadback(command.command, receipt.receipt, observation);
+      if (JSON.stringify(diffCodes) !== JSON.stringify(expectedDiffs)) throw new Error("diff mismatch");
+    } else if (row.observation_sha256 !== null || safeErrorCode === null || diffCodes.length !== 0) {
       throw new Error("observation tuple mismatch");
     }
     return {
@@ -795,6 +790,8 @@ export async function listGbpReadbackAttempts(
   const scope = parseStrict(ScopeSchema, { commandId, merchantId, locationId }, "GBP readback scope");
   const command = await getGbpCommand(db, scope.commandId, scope.merchantId, scope.locationId);
   if (!command) return [];
+  const receipt = await getGbpReceipt(db, scope.commandId, scope.merchantId, scope.locationId);
+  if (!receipt) throw new Error("GBP readback receipt integrity check failed");
   const rows = await db.query<ReadbackRow>(
     `SELECT r.* FROM seo_gbp_readback_attempts r
        JOIN seo_gbp_commands c ON c.id=r.command_id
@@ -802,7 +799,7 @@ export async function listGbpReadbackAttempts(
       ORDER BY r.created_at DESC, r.id DESC`,
     [scope.commandId, scope.merchantId, scope.locationId],
   );
-  return rows.map((row) => toReadback(row, command));
+  return rows.map((row) => toReadback(row, command, receipt));
 }
 
 const CompleteReadbackSchema = LeasedTransitionBaseSchema.extend({
@@ -818,6 +815,8 @@ export async function completeGbpCommandFromExactReadback(
   return db.withTransaction(async (tx) => {
     const command = await getGbpCommand(tx, input.commandId, input.merchantId, input.locationId);
     if (!command) return null;
+    const receipt = await getGbpReceipt(tx, input.commandId, input.merchantId, input.locationId);
+    if (!receipt) return null;
     const readbackRow = await tx.one<ReadbackRow>(
       `SELECT r.* FROM seo_gbp_readback_attempts r
          JOIN seo_gbp_commands c ON c.id=r.command_id
@@ -827,8 +826,14 @@ export async function completeGbpCommandFromExactReadback(
       [input.readbackAttemptId, input.commandId, input.merchantId, input.locationId],
     );
     if (!readbackRow) return null;
-    const readback = toReadback(readbackRow, command);
-    if (readback.diffCodes.length !== 0 || readback.observation === null) return null;
+    const readback = toReadback(readbackRow, command, receipt);
+    if (readback.observation === null) return null;
+    const recomputedDiffs = compareExactGbpReadback(
+      command.command,
+      receipt.receipt,
+      readback.observation,
+    );
+    if (recomputedDiffs.length !== 0) return null;
     const row = await tx.one<StateRow>(
       `UPDATE seo_gbp_command_states s SET status='DONE', state_version=s.state_version+1,
          resolved_at=$7::timestamptz, safe_error_code=NULL,

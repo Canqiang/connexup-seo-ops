@@ -428,6 +428,7 @@ export const SCHEMA_STATEMENTS: string[] = [
         'READBACK_FAILED', 'READBACK_MISMATCH'
       )
     ),
+    safe_error_message TEXT,
     resolved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -444,6 +445,9 @@ export const SCHEMA_STATEMENTS: string[] = [
     ),
     CONSTRAINT seo_gbp_command_states_done_resolved_check CHECK (
       status <> 'DONE' OR resolved_at IS NOT NULL
+    ),
+    CONSTRAINT seo_gbp_command_states_safe_error_message_null_check CHECK (
+      safe_error_message IS NULL
     ),
     FOREIGN KEY (command_id, merchant_id, location_id)
       REFERENCES seo_gbp_commands(id, merchant_id, location_id)

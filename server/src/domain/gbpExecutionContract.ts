@@ -264,3 +264,67 @@ export const GbpReadbackSchema = z.object({
 }).strict();
 
 export type GbpReadbackV1 = z.infer<typeof GbpReadbackSchema>;
+
+export const GbpReadbackDiffCodeSchema = z.enum([
+  "ACCOUNT_MISMATCH",
+  "LOCATION_MISMATCH",
+  "POST_MISMATCH",
+  "BODY_MISMATCH",
+  "CTA_MISMATCH",
+  "MEDIA_MISSING",
+  "MEDIA_EXTRA",
+  "MEDIA_MISMATCH",
+  "CORE_AGENT_MISMATCH",
+]);
+
+export type GbpReadbackDiffCode = z.infer<typeof GbpReadbackDiffCodeSchema>;
+
+/** Compare only strict, parsed durable contracts and return codes in stable contract order. */
+export function compareExactGbpReadback(
+  commandInput: unknown,
+  receiptInput: unknown,
+  observationInput: unknown,
+): GbpReadbackDiffCode[] {
+  const command = GbpExecutionCommandSchema.parse(commandInput);
+  const receipt = GbpExecutionReceiptSchema.parse(receiptInput);
+  const observation = GbpReadbackSchema.parse(observationInput);
+  const validReceipt = (receipt.status === "APPLIED" || receipt.status === "ALREADY_APPLIED")
+    && receipt.provider_post_resource !== null
+    && receipt.instruction_id === command.instruction_id
+    && receipt.command_sha256 === hashGbpCommand(command)
+    && receipt.provider_idempotency_key === command.provider_idempotency_key
+    && receipt.probe_ref === command.probe_ref
+    && receipt.operation.kind === command.operation.kind
+    && receipt.core_api_user_id === command.core.api_user_id
+    && receipt.account_resource === command.gbp.account_resource
+    && receipt.location_resource === command.gbp.location_resource
+    && receipt.submitted.body_sha256 === hashGbpCommandBody(command)
+    && receipt.submitted.cta_sha256 === hashGbpCommandCta(command)
+    && receipt.submitted.media_sha256 === hashGbpCommandImage(command);
+  if (!validReceipt) throw new Error("Invalid GBP receipt for exact readback comparison");
+  if (observation.instruction_id !== command.instruction_id
+    || observation.command_sha256 !== hashGbpCommand(command)) {
+    throw new Error("Invalid GBP readback identity for exact comparison");
+  }
+
+  const diffs: GbpReadbackDiffCode[] = [];
+  if (observation.account_resource !== command.gbp.account_resource) diffs.push("ACCOUNT_MISMATCH");
+  if (observation.location_resource !== command.gbp.location_resource) diffs.push("LOCATION_MISMATCH");
+  if (observation.provider_post_resource !== receipt.provider_post_resource) diffs.push("POST_MISMATCH");
+  if (observation.body !== command.draft.body) diffs.push("BODY_MISMATCH");
+  if (canonicalize(JSON.stringify(observation.cta)) !== canonicalize(JSON.stringify(command.draft.cta))) {
+    diffs.push("CTA_MISMATCH");
+  }
+  if (observation.media.length === 0) {
+    diffs.push("MEDIA_MISSING");
+  } else {
+    if (observation.media.length > 1) diffs.push("MEDIA_EXTRA");
+    if (observation.media.some((media) => media.sha256 !== command.draft.image.sha256)) {
+      diffs.push("MEDIA_MISMATCH");
+    }
+  }
+  if (observation.readback_agent_id !== command.core.readback_agent_id) {
+    diffs.push("CORE_AGENT_MISMATCH");
+  }
+  return diffs;
+}

@@ -41,7 +41,7 @@ const COLUMN_MIGRATIONS: string[] = [
      ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz`,
   `ALTER TABLE seo_gbp_command_states ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 1`,
   `ALTER TABLE seo_gbp_command_states ADD COLUMN IF NOT EXISTS lease_token TEXT`,
-  `ALTER TABLE seo_gbp_command_states DROP COLUMN IF EXISTS safe_error_message`,
+  `ALTER TABLE seo_gbp_command_states ADD COLUMN IF NOT EXISTS safe_error_message TEXT`,
   `ALTER TABLE seo_gbp_command_states
      ALTER COLUMN scheduled_for TYPE TIMESTAMPTZ USING scheduled_for::timestamptz,
      ALTER COLUMN lease_acquired_at TYPE TIMESTAMPTZ USING lease_acquired_at::timestamptz,
@@ -54,6 +54,47 @@ const COLUMN_MIGRATIONS: string[] = [
      ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz`,
   `ALTER TABLE seo_gbp_readback_attempts
      ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz`,
+  `DROP TRIGGER IF EXISTS trg_seo_gbp_guard_command_state_update
+     ON seo_gbp_command_states`,
+  `UPDATE seo_gbp_command_states
+      SET safe_error_message = NULL
+    WHERE safe_error_message IS NOT NULL`,
+  `DO $$
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'seo_gbp_command_states'::regclass
+          AND conname = 'seo_gbp_command_states_safe_error_message_null_check'
+     ) THEN
+       ALTER TABLE seo_gbp_command_states
+         ADD CONSTRAINT seo_gbp_command_states_safe_error_message_null_check
+         CHECK (safe_error_message IS NULL) NOT VALID;
+     END IF;
+   END $$`,
+  `ALTER TABLE seo_gbp_command_states
+     VALIDATE CONSTRAINT seo_gbp_command_states_safe_error_message_null_check`,
+  `UPDATE seo_gbp_command_states
+      SET status = CASE
+            WHEN trigger_started_at IS NULL THEN 'SCHEDULED'
+            ELSE 'OUTCOME_UNKNOWN'
+          END,
+          state_version = state_version + 1,
+          lease_owner = NULL,
+          lease_token = NULL,
+          lease_acquired_at = NULL,
+          lease_expires_at = NULL,
+          safe_error_code = CASE
+            WHEN trigger_started_at IS NULL THEN 'CLAIM_LOST'
+            ELSE 'TRIGGER_AMBIGUOUS'
+          END,
+          resolved_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'CLAIMED'
+      AND NOT (
+        lease_owner IS NOT NULL AND lease_token IS NOT NULL
+        AND lease_acquired_at IS NOT NULL AND lease_expires_at IS NOT NULL
+        AND lease_expires_at > lease_acquired_at
+      )`,
   `ALTER TABLE seo_gbp_command_states
      DROP CONSTRAINT IF EXISTS seo_gbp_command_states_lease_tuple_check`,
   `ALTER TABLE seo_gbp_command_states
@@ -97,6 +138,19 @@ const COLUMN_MIGRATIONS: string[] = [
          'READBACK_FAILED', 'READBACK_MISMATCH'
        )
      )`,
+  `DO $$
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'seo_gbp_command_states'::regclass
+          AND tgname = 'trg_seo_gbp_guard_command_state_update'
+          AND NOT tgisinternal
+     ) THEN
+       CREATE TRIGGER trg_seo_gbp_guard_command_state_update
+       BEFORE UPDATE ON seo_gbp_command_states
+       FOR EACH ROW EXECUTE FUNCTION seo_gbp_guard_command_state_update();
+     END IF;
+   END $$`,
   `ALTER TABLE seo_content_drafts ADD COLUMN IF NOT EXISTS agent_run_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_drafts_agent_run
      ON seo_content_drafts(agent_run_id) WHERE agent_run_id IS NOT NULL`,

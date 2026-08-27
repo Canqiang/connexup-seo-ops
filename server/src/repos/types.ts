@@ -4,6 +4,7 @@ import type {
 import type {
   GbpExecutionCommandV1,
   GbpExecutionReceiptV1,
+  GbpReadbackDiffCode,
   GbpReadbackV1,
   GbpSafeErrorCode,
 } from "../domain/gbpExecutionContract.js";
@@ -123,7 +124,7 @@ export interface GbpReadbackAttempt {
   commandId: string;
   observation: GbpReadbackV1 | null;
   observationSha256: string | null;
-  diffCodes: string[];
-  safeErrorCode: string | null;
+  diffCodes: GbpReadbackDiffCode[];
+  safeErrorCode: GbpSafeErrorCode | null;
   createdAt: string;
 }

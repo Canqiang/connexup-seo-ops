@@ -179,13 +179,6 @@ describe("GBP persistence migration", () => {
       [ctx.schema],
     );
     expect(attemptColumns.map((row) => row.column_name)).toContain("gbp_command_id");
-    const unsafeColumns = await ctx.db.query<{ column_name: string }>(
-      `SELECT column_name FROM information_schema.columns
-       WHERE table_schema = $1 AND table_name = 'seo_gbp_command_states'
-         AND column_name IN ('safe_error_message', 'error', 'error_message')`,
-      [ctx.schema],
-    );
-    expect(unsafeColumns).toEqual([]);
     const timestampColumns = await ctx.db.query<{ table_name: string; column_name: string; data_type: string }>(
       `SELECT table_name, column_name, data_type FROM information_schema.columns
        WHERE table_schema = $1 AND table_name LIKE 'seo_gbp_%'
@@ -205,11 +198,28 @@ describe("GBP persistence migration", () => {
     )).rejects.toMatchObject({ code: "23503" });
 
     await seedCommand(ctx.db);
+    const unsafeColumns = await ctx.db.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'seo_gbp_command_states'
+         AND column_name IN ('safe_error_message', 'error', 'error_message')`,
+      [ctx.schema],
+    );
+    expect(unsafeColumns).toEqual([{ column_name: "safe_error_message" }]);
+    const legacyMessageConstraint = await ctx.db.one<{ is_validated: boolean }>(
+      `SELECT convalidated AS is_validated FROM pg_constraint
+        WHERE conrelid = 'seo_gbp_command_states'::regclass
+          AND conname = 'seo_gbp_command_states_safe_error_message_null_check'`,
+    );
+    expect(legacyMessageConstraint).toEqual({ is_validated: true });
     await expect(ctx.db.exec(
       `UPDATE seo_gbp_commands SET operation = 'UPDATE_POST' WHERE id = 'command-1'`,
     )).rejects.toMatchObject({ code: "23514" });
     await expect(ctx.db.exec(
       `UPDATE seo_gbp_command_states SET lease_owner = 'worker-only' WHERE command_id = 'command-1'`,
+    )).rejects.toBeTruthy();
+    await expect(ctx.db.exec(
+      `UPDATE seo_gbp_command_states SET safe_error_message = 'must-not-persist'
+        WHERE command_id = 'command-1'`,
     )).rejects.toBeTruthy();
 
     await expect(ctx.db.exec(
@@ -264,6 +274,82 @@ describe("GBP persistence migration", () => {
          FROM seo_gbp_commands WHERE id = 'command-2'`,
       [now],
     )).rejects.toMatchObject({ code: "23505" });
+  });
+
+  it("normalizes legacy incomplete active leases without dropping the deprecated error column", async () => {
+    for (const legacy of [
+      { triggerStartedAt: null, expectedStatus: "SCHEDULED", expectedCode: "CLAIM_LOST" },
+      {
+        triggerStartedAt: "2026-08-27T12:45:00.000Z",
+        expectedStatus: "OUTCOME_UNKNOWN",
+        expectedCode: "TRIGGER_AMBIGUOUS",
+      },
+    ] as const) {
+      const isolated = await createTestDb();
+      try {
+        await migrate(isolated.db);
+        await seedCommand(isolated.db);
+        await isolated.db.exec(
+          `DROP TRIGGER IF EXISTS trg_seo_gbp_guard_command_state_update
+             ON seo_gbp_command_states`,
+        );
+        await isolated.db.exec(
+          `ALTER TABLE seo_gbp_command_states ADD COLUMN IF NOT EXISTS safe_error_message TEXT`,
+        );
+        await isolated.db.exec(
+          `ALTER TABLE seo_gbp_command_states
+             DROP CONSTRAINT IF EXISTS seo_gbp_command_states_lease_tuple_check,
+             DROP CONSTRAINT IF EXISTS seo_gbp_command_states_safe_error_message_null_check`,
+        );
+        await isolated.db.exec(
+          `UPDATE seo_gbp_command_states
+              SET status='CLAIMED', state_version=2,
+                  lease_owner='legacy-worker', lease_token=NULL,
+                  lease_acquired_at='2026-08-27T12:40:00.000Z',
+                  lease_expires_at='2026-08-27T12:50:00.000Z',
+                  trigger_started_at=$1, safe_error_message='legacy raw provider failure'
+            WHERE command_id='command-1'`,
+          [legacy.triggerStartedAt],
+        );
+
+        await migrate(isolated.db);
+        const normalized = await isolated.db.one<{
+          status: string;
+          state_version: number;
+          lease_owner: string | null;
+          lease_token: string | null;
+          lease_acquired_at: Date | null;
+          lease_expires_at: Date | null;
+          safe_error_code: string | null;
+          safe_error_message: string | null;
+        }>(`SELECT status, state_version, lease_owner, lease_token,
+                  lease_acquired_at, lease_expires_at, safe_error_code, safe_error_message
+             FROM seo_gbp_command_states WHERE command_id='command-1'`);
+        expect(normalized).toEqual({
+          status: legacy.expectedStatus,
+          state_version: 3,
+          lease_owner: null,
+          lease_token: null,
+          lease_acquired_at: null,
+          lease_expires_at: null,
+          safe_error_code: legacy.expectedCode,
+          safe_error_message: null,
+        });
+
+        await migrate(isolated.db);
+        expect(await isolated.db.one(
+          `SELECT status, state_version, safe_error_code, safe_error_message
+             FROM seo_gbp_command_states WHERE command_id='command-1'`,
+        )).toEqual({
+          status: legacy.expectedStatus,
+          state_version: 3,
+          safe_error_code: legacy.expectedCode,
+          safe_error_message: null,
+        });
+      } finally {
+        await isolated.teardown();
+      }
+    }
   });
 });
 
@@ -544,22 +630,117 @@ describe("GBP execution repository", () => {
       cta: command.draft.cta,
       media: [{ provider_media_resource: "media/photo-1", sha256: command.draft.image.sha256 }],
     } as const;
+    await expect(insertGbpReadbackAttempt(ctx.db, {
+      id: "readback-caller-diffs",
+      commandId: "command-1",
+      merchantId: command.task.merchant_id,
+      locationId: command.task.location_id,
+      observation: { ...readback, account_resource: "accounts/caller-hidden-mismatch" },
+      diffCodes: [],
+      safeErrorCode: null,
+      createdAt: now,
+    })).rejects.toThrow(/Invalid GBP readback input/);
+
+    const unknown = (await getGbpCommandState(
+      ctx.db,
+      "command-1",
+      command.task.merchant_id,
+      command.task.location_id,
+    ))!;
+    const mismatches = [
+      {
+        id: "readback-account-mismatch",
+        expected: "ACCOUNT_MISMATCH",
+        observation: { ...readback, account_resource: "accounts/other" },
+      },
+      {
+        id: "readback-location-mismatch",
+        expected: "LOCATION_MISMATCH",
+        observation: { ...readback, location_resource: "locations/other" },
+      },
+      {
+        id: "readback-post-mismatch",
+        expected: "POST_MISMATCH",
+        observation: { ...readback, provider_post_resource: "localPosts/other" },
+      },
+      {
+        id: "readback-body-mismatch",
+        expected: "BODY_MISMATCH",
+        observation: { ...readback, body: "Different published body." },
+      },
+      {
+        id: "readback-cta-mismatch",
+        expected: "CTA_MISMATCH",
+        observation: {
+          ...readback,
+          cta: { type: "SHOP" as const, url: "https://example.test/shop" },
+        },
+      },
+      {
+        id: "readback-media-missing",
+        expected: "MEDIA_MISSING",
+        observation: { ...readback, media: [] },
+      },
+      {
+        id: "readback-media-extra",
+        expected: "MEDIA_EXTRA",
+        observation: {
+          ...readback,
+          media: [
+            ...readback.media,
+            { provider_media_resource: "media/photo-2", sha256: command.draft.image.sha256 },
+          ],
+        },
+      },
+      {
+        id: "readback-media-mismatch",
+        expected: "MEDIA_MISMATCH",
+        observation: {
+          ...readback,
+          media: [{ provider_media_resource: "media/photo-1", sha256: sha("d") }],
+        },
+      },
+    ] as const;
+    for (const mismatch of mismatches) {
+      const attempt = await insertGbpReadbackAttempt(ctx.db, {
+        id: mismatch.id,
+        commandId: "command-1",
+        merchantId: command.task.merchant_id,
+        locationId: command.task.location_id,
+        observation: mismatch.observation,
+        safeErrorCode: null,
+        createdAt: now,
+      });
+      expect(attempt.diffCodes).toEqual([mismatch.expected]);
+      expect(await completeGbpCommandFromExactReadback(ctx.db, {
+        commandId: "command-1",
+        merchantId: command.task.merchant_id,
+        locationId: command.task.location_id,
+        readbackAttemptId: mismatch.id,
+        expectedStateVersion: unknown.stateVersion,
+        leaseOwner: unknown.leaseOwner!,
+        leaseToken: unknown.leaseToken!,
+        resolvedAt: "2026-08-27T13:03:00.000Z",
+        updatedAt: "2026-08-27T13:03:00.000Z",
+      })).toBeNull();
+    }
+
     await insertGbpReadbackAttempt(ctx.db, {
       id: "readback-1",
       commandId: "command-1",
       merchantId: command.task.merchant_id,
       locationId: command.task.location_id,
       observation: readback,
-      diffCodes: [],
       safeErrorCode: null,
       createdAt: now,
     });
-    expect((await listGbpReadbackAttempts(
+    const persistedReadbacks = await listGbpReadbackAttempts(
       ctx.db,
       "command-1",
       command.task.merchant_id,
       command.task.location_id,
-    ))[0]).toMatchObject({
+    );
+    expect(persistedReadbacks.find((attempt) => attempt.id === "readback-1")).toMatchObject({
       observation: readback,
       diffCodes: [],
     });
@@ -569,12 +750,6 @@ describe("GBP execution repository", () => {
       "foreign-merchant",
       command.task.location_id,
     )).toEqual([]);
-    const unknown = (await getGbpCommandState(
-      ctx.db,
-      "command-1",
-      command.task.merchant_id,
-      command.task.location_id,
-    ))!;
     expect(await completeGbpCommandFromExactReadback(ctx.db, {
       commandId: "command-1",
       merchantId: "foreign-merchant",
