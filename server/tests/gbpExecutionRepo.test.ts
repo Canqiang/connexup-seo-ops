@@ -276,7 +276,7 @@ describe("GBP persistence migration", () => {
     )).rejects.toMatchObject({ code: "23505" });
   });
 
-  it("normalizes legacy incomplete active leases without dropping the deprecated error column", async () => {
+  it("normalizes legacy leases and completes triggered UNKNOWN only from exact readback", async () => {
     for (const legacy of [
       { triggerStartedAt: null, expectedStatus: "SCHEDULED", expectedCode: "CLAIM_LOST" },
       {
@@ -346,6 +346,104 @@ describe("GBP persistence migration", () => {
           safe_error_code: legacy.expectedCode,
           safe_error_message: null,
         });
+
+        if (legacy.triggerStartedAt !== null) {
+          const commandSha256 = hashGbpCommand(command);
+          const receipt = {
+            schema_version: "seo_ops.gbp_execution_receipt.v1",
+            instruction_id: command.instruction_id,
+            command_sha256: commandSha256,
+            provider_idempotency_key: command.provider_idempotency_key,
+            probe_ref: command.probe_ref,
+            operation: { kind: "CREATE_POST" },
+            core_api_user_id: command.core.api_user_id,
+            account_resource: command.gbp.account_resource,
+            location_resource: command.gbp.location_resource,
+            status: "APPLIED",
+            provider_mutation_count: 1,
+            provider_post_resource: "localPosts/legacy-recovered",
+            provider_request_id: "request-legacy-recovered",
+            applied_at: "2026-08-27T12:46:00.000Z",
+            submitted: {
+              body_sha256: hashGbpCommandBody(command),
+              cta_sha256: hashGbpCommandCta(command),
+              media_sha256: hashGbpCommandImage(command),
+            },
+          } as const;
+          await insertGbpReceipt(isolated.db, {
+            commandId: "command-1",
+            merchantId: command.task.merchant_id,
+            locationId: command.task.location_id,
+            receipt,
+            createdAt: "2026-08-27T12:46:00.000Z",
+          });
+          const exactObservation = {
+            schema_version: "seo_ops.gbp_readback.v1",
+            instruction_id: command.instruction_id,
+            command_sha256: commandSha256,
+            core_run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            readback_agent_id: command.core.readback_agent_id,
+            account_resource: command.gbp.account_resource,
+            location_resource: command.gbp.location_resource,
+            provider_post_resource: receipt.provider_post_resource,
+            observed_at: "2026-08-27T12:47:00.000Z",
+            body: command.draft.body,
+            cta: command.draft.cta,
+            media: [{
+              provider_media_resource: "media/legacy-recovered",
+              sha256: command.draft.image.sha256,
+            }],
+          } as const;
+          await insertGbpReadbackAttempt(isolated.db, {
+            id: "legacy-readback-mismatch",
+            commandId: "command-1",
+            merchantId: command.task.merchant_id,
+            locationId: command.task.location_id,
+            observation: { ...exactObservation, body: "Wrong legacy body" },
+            safeErrorCode: null,
+            createdAt: "2026-08-27T12:47:00.000Z",
+          });
+          await expect(completeGbpCommandFromExactReadback(isolated.db, {
+            commandId: "command-1",
+            merchantId: command.task.merchant_id,
+            locationId: command.task.location_id,
+            readbackAttemptId: "legacy-readback-mismatch",
+            expectedStateVersion: 3,
+            resolvedAt: "2026-08-27T12:48:00.000Z",
+            updatedAt: "2026-08-27T12:48:00.000Z",
+          })).resolves.toBeNull();
+          expect(await getGbpCommandState(
+            isolated.db,
+            "command-1",
+            command.task.merchant_id,
+            command.task.location_id,
+          )).toMatchObject({
+            status: "OUTCOME_UNKNOWN",
+            stateVersion: 3,
+            leaseOwner: null,
+            leaseToken: null,
+            triggerStartedAt: legacy.triggerStartedAt,
+          });
+
+          await insertGbpReadbackAttempt(isolated.db, {
+            id: "legacy-readback-exact",
+            commandId: "command-1",
+            merchantId: command.task.merchant_id,
+            locationId: command.task.location_id,
+            observation: exactObservation,
+            safeErrorCode: null,
+            createdAt: "2026-08-27T12:49:00.000Z",
+          });
+          await expect(completeGbpCommandFromExactReadback(isolated.db, {
+            commandId: "command-1",
+            merchantId: command.task.merchant_id,
+            locationId: command.task.location_id,
+            readbackAttemptId: "legacy-readback-exact",
+            expectedStateVersion: 3,
+            resolvedAt: "2026-08-27T12:50:00.000Z",
+            updatedAt: "2026-08-27T12:50:00.000Z",
+          })).resolves.toMatchObject({ status: "DONE", stateVersion: 4 });
+        }
       } finally {
         await isolated.teardown();
       }
@@ -718,8 +816,6 @@ describe("GBP execution repository", () => {
         locationId: command.task.location_id,
         readbackAttemptId: mismatch.id,
         expectedStateVersion: unknown.stateVersion,
-        leaseOwner: unknown.leaseOwner!,
-        leaseToken: unknown.leaseToken!,
         resolvedAt: "2026-08-27T13:03:00.000Z",
         updatedAt: "2026-08-27T13:03:00.000Z",
       })).toBeNull();
@@ -756,8 +852,6 @@ describe("GBP execution repository", () => {
       locationId: command.task.location_id,
       readbackAttemptId: "readback-1",
       expectedStateVersion: unknown.stateVersion,
-      leaseOwner: unknown.leaseOwner!,
-      leaseToken: unknown.leaseToken!,
       resolvedAt: "2026-08-27T13:03:00.000Z",
       updatedAt: "2026-08-27T13:03:00.000Z",
     })).toBeNull();
@@ -767,8 +861,6 @@ describe("GBP execution repository", () => {
       locationId: command.task.location_id,
       readbackAttemptId: "readback-1",
       expectedStateVersion: unknown.stateVersion,
-      leaseOwner: unknown.leaseOwner!,
-      leaseToken: unknown.leaseToken!,
       resolvedAt: "2026-08-27T13:03:00.000Z",
       updatedAt: "2026-08-27T13:03:00.000Z",
     });

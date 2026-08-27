@@ -802,9 +802,11 @@ export async function listGbpReadbackAttempts(
   return rows.map((row) => toReadback(row, command, receipt));
 }
 
-const CompleteReadbackSchema = LeasedTransitionBaseSchema.extend({
+const CompleteReadbackSchema = ScopeSchema.extend({
+  expectedStateVersion: z.number().int().positive(),
   readbackAttemptId: IdentifierSchema,
   resolvedAt: GbpCanonicalUtcInstantSchema,
+  updatedAt: GbpCanonicalUtcInstantSchema,
 }).strict();
 
 export async function completeGbpCommandFromExactReadback(
@@ -836,15 +838,16 @@ export async function completeGbpCommandFromExactReadback(
     if (recomputedDiffs.length !== 0) return null;
     const row = await tx.one<StateRow>(
       `UPDATE seo_gbp_command_states s SET status='DONE', state_version=s.state_version+1,
-         resolved_at=$7::timestamptz, safe_error_code=NULL,
+         resolved_at=$5::timestamptz, safe_error_code=NULL,
          lease_owner=NULL, lease_token=NULL, lease_acquired_at=NULL, lease_expires_at=NULL,
-         updated_at=$8::timestamptz
+         updated_at=$6::timestamptz
         FROM seo_gbp_commands c
        WHERE s.command_id=$1 AND c.id=s.command_id AND c.merchant_id=$2 AND c.location_id=$3
-         AND s.state_version=$4 AND s.lease_owner=$5 AND s.lease_token=$6
+         AND s.state_version=$4
          AND s.status IN ('READBACK_RUNNING','OUTCOME_UNKNOWN')
        RETURNING s.*`,
-      [...leasedWhereParams(input), input.resolvedAt, input.updatedAt],
+      [input.commandId, input.merchantId, input.locationId, input.expectedStateVersion,
+        input.resolvedAt, input.updatedAt],
     );
     return row ? toState(row) : null;
   });
