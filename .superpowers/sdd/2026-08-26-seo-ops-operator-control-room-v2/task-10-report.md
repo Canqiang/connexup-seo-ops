@@ -400,3 +400,54 @@ Results: frontend 24 files / 147 tests passed; root TypeScript/Vite production b
 - If `PUBLISH_INTENT` fails after create and pre-publish validation, the remote DRAFT may remain. The earlier complete `CREATE_OUTCOME` and validation outcome identify it, but the intentional no-PUT/no-DELETE contract means resolution is manual and remains `NO_DELETE_REMOTE_ROLLBACK`.
 - `fsync` relies on the host filesystem and operating system honoring their documented durability semantics. Existing directory-permission and TOCTOU limitations from Fix Round 2 remain unchanged.
 - Live Core AI visibility, owner/RBAC completeness, eventual consistency, and deployment behavior remain unproved because this task did not access UAT.
+
+---
+
+## Fix round 4 — legacy-compatible read-only reference snapshot (2026-08-27)
+
+Implementation commit: `b6f48b11b74d79d236ec47b8c83e09811cdc2767` (`fix(agent-reconcile): accept legacy reference snapshots`). This round changed only `server/src/services/coreAiAgentAdminClient.ts`, `server/tests/coreAiAgentAdminClient.test.ts`, and `docs/RUNBOOK-v2.md`.
+
+### Trigger and RED evidence
+
+An authenticated read-only dry-run performed outside this implementation task reported that the fixed reference detail uses `max_turns=40`, nullable `model`/`response_schema`, nullable `dataset_config`/`skill_ids`/`subagent_ids`, and exact `{id,type,source}` tools. No plan or UAT mutation was created by that diagnostic.
+
+The behavior-first regressions were then run locally without credentials or network access:
+
+```bash
+cd server
+npm test -- --run tests/coreAiAgentAdminClient.test.ts
+```
+
+Result before production changes: exit 1; 3 failed / 32 passed (35 total). Legacy-reference dry-run and apply-drift setup both failed at the desired-manifest `max_turns <= 20` rule with `Agent manifest max_turns is invalid`. The strict desired-manifest regression already rejected each of `max_turns=40`, `model=null`, and `response_schema=null` before any remote call.
+
+The first implementation run exposed that the old generic reference fixture omitted `source` from its tool object: 20 failed / 15 passed with `Reference Agent tool shape is invalid`. The fixture was corrected to mirror the authenticated detail shape; the dedicated missing-source negative test remains and fails closed.
+
+### Corrected compatibility boundary
+
+- `discoverReference` now uses a private `readOnlyReferenceSnapshot`; desired classification, created-DRAFT validation, published readback, and mutation payload construction continue using the strict `AgentManifest` normalizer.
+- The read-only reference type is structurally separate from `AgentManifest`: nullable model/schema/arrays cannot be passed to `createAgent`, and the snapshot has no create/publish entry point.
+- Reference numeric fields require finite/safe positive Core values where applicable, so legacy `max_turns=40` is accepted without relaxing the desired manifest maximum of 20.
+- Nullable string/array fields are normalized explicitly. Null arrays remain null rather than becoming `[]`, and every editable/mutation field receives an individual hash; null-to-array and numeric drift therefore change the complete reference coordinate.
+- Reference tools require the exact `{id,type,source}` key/type shape. Unknown remote fields and malformed known editable/executable fields fail closed without leaking values.
+- Unsupported executable fields are type-checked, normalized, and individually hashed. The combined editable hash still includes managed state, unsupported state, and system-default state, while the plan persists hashes rather than prompt contents.
+- Apply rediscovers the reference with the same independent normalizer. A `max_turns` change or `skill_ids: null -> []` change stops after the durable `JOURNAL_OPENED` record and before any POST.
+
+### GREEN verification evidence
+
+```bash
+cd server
+npm test -- --run tests/coreAiAgentAdminClient.test.ts
+npm run typecheck
+cd ..
+git diff --check
+```
+
+Results: focused Task 10A 1 file / 35 tests passed; server typecheck exited 0; diff check exited 0.
+
+### External boundary and residual risks
+
+- This implementation round made no UAT/network request, used or persisted no credential, and changed no Core AI/FBR repository, Agent manifest, Task 10B/11 file, GBP runtime, binding, or merchant state.
+- The legacy compatibility is intentionally fixed-reference-only. Any `[SEO Ops]` desired manifest with the same nullable fields or `max_turns=40` remains invalid.
+- Nullable scalar fields that are absent are normalized to null for compatibility; nullable arrays preserve the security-relevant null-versus-array distinction required by the reviewed coordinate.
+- Any future Core API reference field or tool-shape change fails closed and requires a reviewed compatibility update; this code does not infer a mutation payload from an unfamiliar reference response.
+- GET/reference hashes remain editable configuration/status evidence only, not published snapshot or runtime-equivalence proof.
