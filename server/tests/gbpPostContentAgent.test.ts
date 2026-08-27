@@ -284,6 +284,318 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     expect(core.triggerCount()).toBe(0);
   });
 
+  it("fails closed when a legacy-bound authorized Task alias references a foreign merchant Run", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "corrupt-alias-scope");
+    const { app, db, task } = built;
+    const foreignMerchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: "corrupt-alias-foreign-store",
+        display_name: "Foreign Store",
+        idempotency_key: "corrupt-alias-foreign-store",
+      },
+    })).json();
+    const foreignLocation = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${foreignMerchant.id}/locations`,
+      payload: {
+        slug: "corrupt-alias-foreign-location",
+        display_name: "Foreign Location",
+        timezone: "America/Chicago",
+        readiness_status: "READY",
+        external_identities: { google_business: "locations/foreign-secret" },
+        missing_requirements: [],
+        idempotency_key: "corrupt-alias-foreign-location",
+      },
+    })).json();
+    const key = "corrupt-alias-scope-run";
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(created.statusCode).toBe(202);
+
+    await db.exec(
+      `UPDATE seo_agent_runs
+          SET merchant_id = $1, location_id = $2,
+              input_message = 'FOREIGN_INPUT_MUST_NOT_LEAK'
+        WHERE id = $3`,
+      [foreignMerchant.id, foreignLocation.id, created.json().id],
+    );
+    await db.exec(
+      `UPDATE seo_agent_run_requests
+          SET merchant_id = $1, semantics_version = 'LEGACY_BOUND'
+        WHERE idempotency_key = $2`,
+      [foreignMerchant.id, key],
+    );
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+    expect(replay.body).not.toContain("FOREIGN_INPUT_MUST_NOT_LEAK");
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("returns reconciliation-required when an authorized request alias references a missing Run", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "missing-alias-run");
+    const { app, db, task } = built;
+    const key = "missing-alias-run-key";
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(created.statusCode).toBe(202);
+    await db.exec(`DELETE FROM seo_agent_runs WHERE id = $1`, [created.json().id]);
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("fails closed when creation-key compatibility replay finds a wrong-location Run", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "corrupt-creation-fallback");
+    const { app, db, task, merchant } = built;
+    const key = "corrupt-creation-fallback-run";
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(created.statusCode).toBe(202);
+    const wrongLocation = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/locations`,
+      payload: {
+        slug: "corrupt-creation-fallback-location",
+        timezone: "America/Phoenix",
+        readiness_status: "READY",
+        external_identities: {},
+        missing_requirements: [],
+        idempotency_key: "corrupt-creation-fallback-location",
+      },
+    })).json();
+    await db.exec(`DELETE FROM seo_agent_run_requests WHERE idempotency_key = $1`, [key]);
+    await db.exec(
+      `UPDATE seo_agent_runs
+          SET location_id = $1, input_message = 'FALLBACK_FOREIGN_INPUT_MUST_NOT_LEAK'
+        WHERE id = $2`,
+      [wrongLocation.id, created.json().id],
+    );
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: key },
+    });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+    expect(replay.body).not.toContain("FALLBACK_FOREIGN_INPUT_MUST_NOT_LEAK");
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  for (const corruption of ["merchant", "location"] as const) {
+    it(`rejects an explicit retry whose prior Run has a corrupt ${corruption} scope`, async () => {
+      const core = fakeCore({ failTriggerNumbers: [1] });
+      const built = await setupContentTask(core.client, `corrupt-retry-${corruption}`);
+      const { app, db, task, merchant } = built;
+      const first = await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+        payload: { idempotency_key: `corrupt-retry-${corruption}-first` },
+      });
+      expect(first.statusCode).toBe(502);
+      const prior = await db.one<{ id: string }>(
+        `SELECT id FROM seo_agent_runs WHERE task_id = $1`,
+        [task.id],
+      );
+      expect(prior).not.toBeNull();
+
+      if (corruption === "merchant") {
+        const foreignMerchant = (await app.inject({
+          method: "POST",
+          url: "/api/seo-ops/merchants",
+          payload: {
+            slug: "corrupt-retry-foreign-merchant",
+            idempotency_key: "corrupt-retry-foreign-merchant",
+          },
+        })).json();
+        await db.exec(
+          `UPDATE seo_agent_runs SET merchant_id = $1 WHERE id = $2`,
+          [foreignMerchant.id, prior!.id],
+        );
+      } else {
+        const wrongLocation = (await app.inject({
+          method: "POST",
+          url: `/api/seo-ops/merchants/${merchant.id}/locations`,
+          payload: {
+            slug: "corrupt-retry-wrong-location",
+            timezone: "America/Los_Angeles",
+            readiness_status: "READY",
+            external_identities: {},
+            missing_requirements: [],
+            idempotency_key: "corrupt-retry-wrong-location",
+          },
+        })).json();
+        await db.exec(
+          `UPDATE seo_agent_runs SET location_id = $1 WHERE id = $2`,
+          [wrongLocation.id, prior!.id],
+        );
+      }
+
+      const retry = await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+        payload: {
+          idempotency_key: `corrupt-retry-${corruption}-second`,
+          retry: {
+            prior_run_id: prior!.id,
+            reason: `The ${corruption} boundary must be validated before retry.`,
+          },
+        },
+      });
+      expect(retry.statusCode).toBe(409);
+      expect(retry.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+      expect(core.triggerCount()).toBe(1);
+      expect(await db.one<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
+        [task.id],
+      )).toEqual({ count: "1" });
+    });
+  }
+
+  it("fails closed when the latest business generation has a corrupt merchant scope", async () => {
+    const core = fakeCore({ failTriggerNumbers: [1] });
+    const built = await setupContentTask(core.client, "corrupt-latest-scope");
+    const { app, db, task } = built;
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "corrupt-latest-first" },
+    })).statusCode).toBe(502);
+    const foreignMerchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: "corrupt-latest-foreign-merchant",
+        idempotency_key: "corrupt-latest-foreign-merchant",
+      },
+    })).json();
+    await db.exec(
+      `UPDATE seo_agent_runs SET merchant_id = $1 WHERE task_id = $2`,
+      [foreignMerchant.id, task.id],
+    );
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "corrupt-latest-second" },
+    });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+    expect(core.triggerCount()).toBe(1);
+    expect(await db.one<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM seo_agent_runs WHERE task_id = $1`,
+      [task.id],
+    )).toEqual({ count: "1" });
+  });
+
+  it("fails closed when an active generation has a corrupt location scope", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "corrupt-active-scope");
+    const { app, db, task, merchant } = built;
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "corrupt-active-first" },
+    });
+    expect(created.statusCode).toBe(202);
+    const wrongLocation = (await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/merchants/${merchant.id}/locations`,
+      payload: {
+        slug: "corrupt-active-wrong-location",
+        timezone: "America/Denver",
+        readiness_status: "READY",
+        external_identities: {},
+        missing_requirements: [],
+        idempotency_key: "corrupt-active-wrong-location",
+      },
+    })).json();
+    await db.exec(
+      `UPDATE seo_agent_runs
+          SET location_id = $1, input_message = 'ACTIVE_FOREIGN_INPUT_MUST_NOT_LEAK'
+        WHERE id = $2`,
+      [wrongLocation.id, created.json().id],
+    );
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "corrupt-active-second" },
+    });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
+    expect(replay.body).not.toContain("ACTIVE_FOREIGN_INPUT_MUST_NOT_LEAK");
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("rejects polled output ingestion when the persisted Run no longer matches its Task scope", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "corrupt-ingestion-scope");
+    const { app, db, task } = built;
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: { idempotency_key: "corrupt-ingestion-run" },
+    });
+    expect(created.statusCode).toBe(202);
+    const foreignMerchant = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/merchants",
+      payload: {
+        slug: "corrupt-ingestion-foreign-merchant",
+        idempotency_key: "corrupt-ingestion-foreign-merchant",
+      },
+    })).json();
+    await db.exec(
+      `UPDATE seo_agent_runs SET merchant_id = $1 WHERE id = $2`,
+      [foreignMerchant.id, created.json().id],
+    );
+
+    await new AgentRunPoller({
+      db,
+      client: core.client,
+      artifactsDir: built.artifactsDir,
+    }).pollOnce();
+
+    expect(await db.one<{ status: string; error_code: string }>(
+      `SELECT status, error_code FROM seo_agent_runs WHERE id = $1`,
+      [created.json().id],
+    )).toEqual({
+      status: "FAILED",
+      error_code: "CONTENT_RUN_RECONCILIATION_REQUIRED",
+    });
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/seo-ops/tasks/${task.id}/drafts`,
+    })).json().items).toEqual([]);
+  });
+
   it("rejects publication claims at the strict output parser boundary", () => {
     const output = {
       schema_version: "seo_ops.gbp_post_draft.v1",
@@ -787,6 +1099,7 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
         WHERE idempotency_key = $1`,
       [key],
     );
+    await db.exec(`ALTER TABLE seo_agent_run_requests DROP COLUMN semantics_version`);
     await migrate(db);
 
     const expected = gbpContentHttpRequestFingerprint(task.id);
@@ -808,6 +1121,131 @@ describe("GBP Post Content Agent pre-Gate draft path", () => {
     });
     expect(replay.statusCode).toBe(200);
     expect(replay.json().id).toBe(first.json().id);
+    expect(core.triggerCount()).toBe(1);
+  });
+
+  it("preserves a pre-version creation key and two business-convergence aliases across two migrations", async () => {
+    const core = fakeCore();
+    const built = await setupContentTask(core.client, "legacy-multi-alias");
+    const { app, db, task } = built;
+    const keys = [
+      "legacy-multi-alias-creation",
+      "legacy-multi-alias-convergence-a",
+      "legacy-multi-alias-convergence-b",
+    ];
+    const responses = [];
+    for (const key of keys) {
+      responses.push(await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+        payload: { idempotency_key: key },
+      }));
+    }
+    expect(responses.map((response) => response.statusCode)).toEqual([202, 200, 200]);
+    const runId = responses[0].json().id;
+    expect(responses.map((response) => response.json().id)).toEqual([runId, runId, runId]);
+
+    await db.exec(`ALTER TABLE seo_agent_run_requests DROP COLUMN IF EXISTS semantics_version`);
+    await db.exec(
+      `UPDATE seo_agent_run_requests
+          SET http_request_fingerprint = 'sha256:pre-version:' || idempotency_key
+        WHERE run_id = $1`,
+      [runId],
+    );
+    await db.exec(
+      `UPDATE seo_agent_runs SET http_request_fingerprint = 'sha256:pre-version-run' WHERE id = $1`,
+      [runId],
+    );
+
+    await migrate(db);
+    await migrate(db);
+
+    expect(await db.query(
+      `SELECT idempotency_key, run_id, semantics_version
+         FROM seo_agent_run_requests
+        WHERE run_id = $1
+        ORDER BY idempotency_key`,
+      [runId],
+    )).toEqual([
+      {
+        idempotency_key: "legacy-multi-alias-convergence-a",
+        run_id: runId,
+        semantics_version: "LEGACY_BOUND",
+      },
+      {
+        idempotency_key: "legacy-multi-alias-convergence-b",
+        run_id: runId,
+        semantics_version: "LEGACY_BOUND",
+      },
+      {
+        idempotency_key: "legacy-multi-alias-creation",
+        run_id: runId,
+        semantics_version: "STRICT_CURRENT",
+      },
+    ]);
+
+    for (const key of keys) {
+      const replay = await app.inject({
+        method: "POST",
+        url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+        payload: { idempotency_key: key },
+      });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().id).toBe(runId);
+    }
+    const changedLegacyRequest = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${task.id}/content-runs`,
+      payload: {
+        idempotency_key: "legacy-multi-alias-convergence-a",
+        retry: {
+          prior_run_id: "a-different-run-must-never-rebind-this-alias",
+          reason: "Legacy-bound request semantics preserve the exact historic Run.",
+        },
+      },
+    });
+    expect(changedLegacyRequest.statusCode).toBe(200);
+    expect(changedLegacyRequest.json().id).toBe(runId);
+    expect(await db.one<{ run_id: string }>(
+      `SELECT run_id FROM seo_agent_run_requests WHERE idempotency_key = $1`,
+      ["legacy-multi-alias-convergence-a"],
+    )).toEqual({ run_id: runId });
+
+    const otherTask = (await app.inject({
+      method: "POST",
+      url: "/api/seo-ops/tasks",
+      payload: {
+        merchant_id: built.merchant.id,
+        location_id: built.location.id,
+        definition: {
+          title: "A different Task cannot claim a legacy alias",
+          task_type: "GBP_POST",
+          source: "CYCLE",
+          priority: "HIGH",
+          impact: "HIGH",
+          execution_spec: JSON.stringify({
+            occurrence_at: "2026-08-28T17:00:00.000-04:00",
+            post_type: "STANDARD",
+            primary_keyword_cluster: {
+              cluster_id: "legacy-other-task",
+              search_intent: "different Task identity",
+              keywords: ["different legacy task"],
+            },
+            evidence_references: ["artifact:keyword-set-v2"],
+          }),
+          required_evidence_types: ["CONTENT_DRAFT"],
+          execution_mode: "AUTO_WRITE",
+        },
+        idempotency_key: "legacy-multi-alias-other-task",
+      },
+    })).json();
+    const crossTaskReplay = await app.inject({
+      method: "POST",
+      url: `/api/seo-ops/tasks/${otherTask.id}/content-runs`,
+      payload: { idempotency_key: "legacy-multi-alias-convergence-a" },
+    });
+    expect(crossTaskReplay.statusCode).toBe(409);
+    expect(crossTaskReplay.json().error_code).toBe("CONTENT_RUN_RECONCILIATION_REQUIRED");
     expect(core.triggerCount()).toBe(1);
   });
 

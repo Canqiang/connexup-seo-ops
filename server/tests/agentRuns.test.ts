@@ -147,6 +147,30 @@ describe("stage-run routes", () => {
     expect(conflict.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
   });
 
+  it("never applies legacy-bound replay semantics to a generic Stage Run alias", async () => {
+    const { app, db } = await makeApp();
+    const { merchant } = await seedMerchant(app);
+    const url = `/api/seo-ops/merchants/${merchant.id}/stage-runs`;
+    expect((await app.inject({
+      method: "POST",
+      url,
+      payload: { stage: "KEYWORDS", idempotency_key: "generic-legacy-bound" },
+    })).statusCode).toBe(202);
+    await db.exec(
+      `UPDATE seo_agent_run_requests
+          SET semantics_version = 'LEGACY_BOUND'
+        WHERE idempotency_key = 'generic-legacy-bound'`,
+    );
+
+    const changed = await app.inject({
+      method: "POST",
+      url,
+      payload: { stage: "AUDIT", idempotency_key: "generic-legacy-bound" },
+    });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().error_code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
   it("503 CORE_AI_NOT_CONFIGURED and config flags without env", async () => {
     const { app } = await makeApp(null);
     const { merchant } = await seedMerchant(app);

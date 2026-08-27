@@ -478,7 +478,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
   app.post("/api/seo-ops/tasks/:taskId/content-runs", async (request, reply) => {
     const actor = requirePermission(request, "seoops.manage");
     const { taskId } = request.params as { taskId: string };
-    await requireTaskAccess(ctx.db, actor, taskId);
+    const task = await requireTaskAccess(ctx.db, actor, taskId);
     if (!ctx.coreAi) {
       throw new ApiError(503, "Core AI is not configured", "CORE_AI_DISABLED");
     }
@@ -490,7 +490,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
         dailyRunLimit: ctx.config.agentRunDailyLimit,
         log: app.log,
       },
-      taskId,
+      { taskId: task.id, merchantId: task.merchantId, locationId: task.locationId },
       body.idempotency_key,
       actor.userId,
       body.retry

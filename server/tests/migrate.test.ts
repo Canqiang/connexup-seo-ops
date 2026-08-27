@@ -3,6 +3,7 @@ import { migrate } from "../src/db/migrate.js";
 import { insertAgentRun } from "../src/repos/agentRunRepo.js";
 import type { AgentRun } from "../src/repos/agentRunTypes.js";
 import { createTestDb } from "./helpers/pgTest.js";
+import type { Db } from "../src/db/connection.js";
 
 const ctx = await createTestDb();
 afterAll(() => ctx.teardown());
@@ -42,6 +43,28 @@ function legacyGbpRun(overrides: Partial<AgentRun> & Pick<AgentRun, "id">): Agen
     updatedAt: now,
     ...overrides,
   };
+}
+
+async function insertTaskScope(
+  db: Db,
+  overrides: { id?: string; merchantId?: string; locationId?: string | null } = {},
+): Promise<void> {
+  const now = "2026-08-26T00:00:00.000Z";
+  await db.exec(
+    `INSERT INTO seo_tasks
+      (id, merchant_id, location_id, task_type, source, priority, impact,
+       status, evidence_state, task_revision, state_version, title,
+       execution_spec, execution_spec_hash, created_at, updated_at)
+     VALUES ($1, $2, $3, 'GBP_POST', 'CYCLE', 'HIGH', 'HIGH',
+             'DRAFT', 'MISSING', 1, 1, 'Legacy GBP Task', '{}',
+             'sha256:legacy-task-spec', $4, $4)`,
+    [
+      overrides.id ?? "legacy-gbp-task",
+      overrides.merchantId ?? "legacy-gbp-merchant",
+      overrides.locationId === undefined ? "legacy-gbp-location" : overrides.locationId,
+      now,
+    ],
+  );
 }
 
 describe("migrate on postgres", () => {
@@ -112,7 +135,8 @@ describe("migrate on postgres", () => {
       await migrate(legacy.db);
 
       expect(await legacy.db.one(
-        `SELECT idempotency_key, run_id, merchant_id, http_request_fingerprint
+        `SELECT idempotency_key, run_id, merchant_id, http_request_fingerprint,
+                semantics_version
            FROM seo_agent_run_requests
           WHERE idempotency_key = 'legacy-request-key'`,
       )).toEqual({
@@ -120,6 +144,7 @@ describe("migrate on postgres", () => {
         run_id: "legacy-run",
         merchant_id: "merchant-1",
         http_request_fingerprint: "sha256:legacy-http-request",
+        semantics_version: "STRICT_CURRENT",
       });
     } finally {
       await legacy.teardown();
@@ -161,6 +186,39 @@ describe("migrate on postgres", () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )`);
+      await legacy.db.exec(`CREATE TABLE seo_tasks (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL,
+        location_id TEXT,
+        task_type TEXT NOT NULL,
+        source TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        impact TEXT NOT NULL,
+        owner_id TEXT,
+        due_at TEXT,
+        status TEXT NOT NULL,
+        evidence_state TEXT NOT NULL,
+        task_revision INTEGER NOT NULL,
+        state_version INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        execution_spec TEXT NOT NULL,
+        execution_spec_hash TEXT NOT NULL,
+        required_evidence_types TEXT NOT NULL DEFAULT '[]',
+        revisions TEXT NOT NULL DEFAULT '[]',
+        evidence_refs TEXT NOT NULL DEFAULT '[]',
+        approval_decisions TEXT NOT NULL DEFAULT '[]',
+        events TEXT NOT NULL DEFAULT '[]',
+        conversation_links TEXT NOT NULL DEFAULT '[]',
+        agent_run_links TEXT NOT NULL DEFAULT '[]',
+        mutation_keys TEXT NOT NULL DEFAULT '{}',
+        depends_on_task_ids TEXT NOT NULL DEFAULT '[]',
+        creation_idempotency_key TEXT,
+        request_fingerprint TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      await insertTaskScope(legacy.db);
       const insertLegacy = async (
         id: string,
         parent: string | null,
@@ -228,6 +286,7 @@ describe("migrate on postgres", () => {
     const legacy = await createTestDb();
     try {
       await migrate(legacy.db);
+      await insertTaskScope(legacy.db);
       await insertAgentRun(legacy.db, legacyGbpRun({
         id: "legacy-gbp-missing-parent",
         retryOfAgentRunId: "absent-parent",
@@ -247,6 +306,7 @@ describe("migrate on postgres", () => {
     const legacy = await createTestDb();
     try {
       await migrate(legacy.db);
+      await insertTaskScope(legacy.db);
       await insertAgentRun(legacy.db, legacyGbpRun({
         id: "legacy-gbp-cycle-a",
         retryOfAgentRunId: "legacy-gbp-cycle-b",
@@ -259,6 +319,101 @@ describe("migrate on postgres", () => {
       }));
 
       await expect(migrate(legacy.db)).rejects.toThrow(/cycle.*legacy-gbp-cycle/i);
+    } finally {
+      await legacy.teardown();
+    }
+  });
+
+  it("fails migration closed when a GBP content Run references a missing Task", async () => {
+    const legacy = await createTestDb();
+    try {
+      await migrate(legacy.db);
+      await insertAgentRun(legacy.db, legacyGbpRun({ id: "legacy-gbp-missing-task" }));
+
+      await expect(migrate(legacy.db)).rejects.toThrow(/missing Task.*legacy-gbp-task/i);
+    } finally {
+      await legacy.teardown();
+    }
+  });
+
+  for (const mismatch of ["merchant", "location"] as const) {
+    it(`fails migration closed when a GBP content Run has a Task ${mismatch} mismatch`, async () => {
+      const legacy = await createTestDb();
+      try {
+        await migrate(legacy.db);
+        await insertTaskScope(legacy.db);
+        await insertAgentRun(legacy.db, legacyGbpRun({
+          id: `legacy-gbp-${mismatch}-mismatch`,
+          ...(mismatch === "merchant"
+            ? { merchantId: "foreign-merchant" }
+            : { locationId: "wrong-location" }),
+        }));
+
+        await expect(migrate(legacy.db)).rejects.toThrow(
+          new RegExp(`legacy-gbp-${mismatch}-mismatch.*${mismatch}.*reconciliation`, "i"),
+        );
+      } finally {
+        await legacy.teardown();
+      }
+    });
+  }
+
+  it("fails migration closed when a GBP retry parent has a foreign scope", async () => {
+    const legacy = await createTestDb();
+    try {
+      await migrate(legacy.db);
+      await insertTaskScope(legacy.db);
+      await insertAgentRun(legacy.db, legacyGbpRun({
+        id: "legacy-gbp-foreign-parent",
+        merchantId: "foreign-merchant",
+        locationId: "foreign-location",
+      }));
+      await insertAgentRun(legacy.db, legacyGbpRun({
+        id: "legacy-gbp-child-of-foreign-parent",
+        retryOfAgentRunId: "legacy-gbp-foreign-parent",
+        retryReason: "The parent must match the Task scope.",
+      }));
+
+      await expect(migrate(legacy.db)).rejects.toThrow(/foreign-parent.*reconciliation/i);
+    } finally {
+      await legacy.teardown();
+    }
+  });
+
+  it("rejects a pre-version creation alias bound to a different scope-valid Run without rebinding it", async () => {
+    const legacy = await createTestDb();
+    try {
+      await migrate(legacy.db);
+      await insertTaskScope(legacy.db);
+      const expectedRun = legacyGbpRun({
+        id: "legacy-gbp-creation-owner",
+        creationIdempotencyKey: "legacy-gbp-conflicting-creation-key",
+      });
+      const wronglyBoundRun = legacyGbpRun({
+        id: "legacy-gbp-wrongly-bound",
+        creationIdempotencyKey: "legacy-gbp-wrongly-bound-key",
+        requestFingerprint: "sha256:wrongly-bound-generation",
+      });
+      await insertAgentRun(legacy.db, expectedRun);
+      await insertAgentRun(legacy.db, wronglyBoundRun);
+      await legacy.db.exec(`ALTER TABLE seo_agent_run_requests DROP COLUMN semantics_version`);
+      await legacy.db.exec(
+        `INSERT INTO seo_agent_run_requests
+          (idempotency_key, run_id, merchant_id, http_request_fingerprint, created_at)
+         VALUES ($1, $2, $3, 'sha256:pre-version-alias', $4)`,
+        [
+          expectedRun.creationIdempotencyKey,
+          wronglyBoundRun.id,
+          expectedRun.merchantId,
+          expectedRun.createdAt,
+        ],
+      );
+
+      await expect(migrate(legacy.db)).rejects.toThrow(/creation.*different Run.*reconciliation/i);
+      expect(await legacy.db.one<{ run_id: string }>(
+        `SELECT run_id FROM seo_agent_run_requests WHERE idempotency_key = $1`,
+        [expectedRun.creationIdempotencyKey],
+      )).toEqual({ run_id: wronglyBoundRun.id });
     } finally {
       await legacy.teardown();
     }

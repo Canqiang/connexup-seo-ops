@@ -1,5 +1,6 @@
 import type { Db } from "../db/connection.js";
 import { CORE_RUN_TERMINAL_STATUSES } from "../domain/enums.js";
+import { ApiError } from "../errors.js";
 import {
   getAgentRun,
   listActiveAgentRuns,
@@ -124,13 +125,17 @@ export class AgentRunPoller {
         try {
           await ingestGbpPostContentRunOutput(this.deps.db, fresh, core.output);
         } catch (error) {
+          const errorCode = error instanceof ApiError
+            && error.code === "CONTENT_RUN_RECONCILIATION_REQUIRED"
+            ? error.code
+            : "OUTPUT_INVALID";
           await transitionAgentRun(this.deps.db, fresh.id, {
             status: "FAILED",
             coreStatus: core.status,
             traceRef: core.trace_id ?? fresh.traceRef,
             output: core.output ?? null,
             error: error instanceof Error ? error.message : "invalid GBP Post content output",
-            errorCode: "OUTPUT_INVALID",
+            errorCode,
             completedAt: core.completed_at ?? this.nowIso(),
             lastPolledAt: this.nowIso(),
           }, ["RUNNING"]);

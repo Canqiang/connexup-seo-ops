@@ -2,6 +2,15 @@ import type { Db } from "../db/connection.js";
 import { isUniqueViolation } from "../db/connection.js";
 import { ApiError, conflict, notFound } from "../errors.js";
 import {
+  agentRunScopeReconciliationRequired,
+  assertAgentRunTaskScope,
+  type AgentRunTaskScope,
+} from "../domain/agentRunScope.js";
+import {
+  CURRENT_AGENT_RUN_REQUEST_SEMANTICS,
+  LEGACY_BOUND_AGENT_RUN_REQUEST_SEMANTICS,
+} from "../domain/agentRunRequestSemantics.js";
+import {
   countAgentRunsByMerchantSince,
   findAgentRunByIdempotencyKey,
   findAgentRunRequestByIdempotencyKey,
@@ -27,24 +36,40 @@ export async function resolveAgentRunRequestReplay(
   db: Db,
   idempotencyKey: string,
   httpRequestFingerprint: string,
-  expected: { merchantId?: string; taskId?: string } = {},
+  expected: { merchantId?: string; taskId?: string; locationId?: string | null } = {},
 ): Promise<AgentRun | null> {
   const request = await findAgentRunRequestByIdempotencyKey(db, idempotencyKey);
   if (!request) return null;
-  if ((expected.merchantId !== undefined && request.merchantId !== expected.merchantId)
-    || request.httpRequestFingerprint !== httpRequestFingerprint) {
+  if (expected.merchantId !== undefined && request.merchantId !== expected.merchantId) {
+    agentRunScopeReconciliationRequired();
+  }
+  if (request.semanticsVersion !== CURRENT_AGENT_RUN_REQUEST_SEMANTICS
+    && request.semanticsVersion !== LEGACY_BOUND_AGENT_RUN_REQUEST_SEMANTICS) {
+    agentRunScopeReconciliationRequired();
+  }
+  const usesLegacyBoundGbpReplay = request.semanticsVersion
+    === LEGACY_BOUND_AGENT_RUN_REQUEST_SEMANTICS && expected.taskId !== undefined;
+  if (!usesLegacyBoundGbpReplay && request.httpRequestFingerprint !== httpRequestFingerprint) {
     throw conflict(
       "idempotency key already used with different Agent Run request semantics",
       "IDEMPOTENCY_CONFLICT",
     );
   }
   const run = await getAgentRun(db, request.runId);
-  if (!run) throw new Error(`Agent Run request ${idempotencyKey} references missing Run ${request.runId}`);
-  if (expected.taskId !== undefined && run.taskId !== expected.taskId) {
-    throw conflict(
-      "idempotency key already used for a different Agent Run route",
-      "IDEMPOTENCY_CONFLICT",
-    );
+  if (!run) agentRunScopeReconciliationRequired();
+  if (expected.taskId !== undefined) {
+    if (expected.merchantId === undefined || expected.locationId === undefined) {
+      throw new Error("task-linked Agent Run replay requires merchant and location scope");
+    }
+    assertAgentRunTaskScope(run, {
+      taskId: expected.taskId,
+      merchantId: expected.merchantId,
+      locationId: expected.locationId,
+    });
+    if (request.semanticsVersion === LEGACY_BOUND_AGENT_RUN_REQUEST_SEMANTICS
+      && run.stage !== "GBP_POST_CONTENT") {
+      agentRunScopeReconciliationRequired();
+    }
   }
   return run;
 }
@@ -60,6 +85,7 @@ async function persistRequestAlias(
     runId: run.id,
     merchantId: run.merchantId,
     httpRequestFingerprint,
+    semanticsVersion: CURRENT_AGENT_RUN_REQUEST_SEMANTICS,
     createdAt: new Date().toISOString(),
   });
 }
@@ -69,6 +95,7 @@ export interface AgentRunAllocationInput {
   run: AgentRun;
   httpRequestFingerprint: string;
   dailyRunLimit?: number;
+  expectedReplayScope?: AgentRunTaskScope;
   /** Called only after the merchant aggregate is locked.  It may converge a
    * business-equivalent request onto an existing generation before quota is
    * evaluated. */
@@ -95,13 +122,16 @@ export async function allocateAgentRun(
         tx,
         key,
         input.httpRequestFingerprint,
-        { merchantId: input.run.merchantId },
+        input.expectedReplayScope ?? { merchantId: input.run.merchantId },
       );
       if (requestReplay) return { run: requestReplay, inserted: false };
 
       // Compatibility for a Run created before the request ledger migration.
       const idempotent = await findAgentRunByIdempotencyKey(tx, key);
       if (idempotent) {
+        if (input.expectedReplayScope) {
+          assertAgentRunTaskScope(idempotent, input.expectedReplayScope);
+        }
         if (idempotent.merchantId !== input.run.merchantId
           || persistedHttpSemantics(idempotent) !== input.httpRequestFingerprint) {
           throw conflict(
@@ -117,6 +147,9 @@ export async function allocateAgentRun(
 
       const replay = await input.findBusinessReplay?.(tx);
       if (replay) {
+        if (input.expectedReplayScope) {
+          assertAgentRunTaskScope(replay, input.expectedReplayScope);
+        }
         await persistRequestAlias(tx, replay, key, input.httpRequestFingerprint);
         return { run: replay, inserted: false };
       }
@@ -144,7 +177,7 @@ export async function allocateAgentRun(
       input.db,
       key,
       input.httpRequestFingerprint,
-      { merchantId: input.run.merchantId },
+      input.expectedReplayScope ?? { merchantId: input.run.merchantId },
     );
     if (!replay) throw error;
     return { run: replay, inserted: false };

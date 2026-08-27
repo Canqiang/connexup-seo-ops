@@ -147,6 +147,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     run_id TEXT NOT NULL,
     merchant_id TEXT NOT NULL,
     http_request_fingerprint TEXT NOT NULL,
+    semantics_version TEXT NOT NULL DEFAULT 'STRICT_CURRENT',
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_agent_run_requests_run

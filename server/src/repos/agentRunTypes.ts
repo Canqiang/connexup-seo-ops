@@ -4,6 +4,7 @@ import type {
   DeliverableKind,
   StoredAgentRunStage,
 } from "../domain/enums.js";
+import type { AgentRunRequestSemantics } from "../domain/agentRunRequestSemantics.js";
 
 /** 阶段运行：归属于（商户，地点，阶段）。task_id 仅溯源用（Plan 转任务后
  * 回填），运行本身永不依赖任务存在。 */
@@ -47,6 +48,7 @@ export interface AgentRunRequest {
   runId: string;
   merchantId: string;
   httpRequestFingerprint: string;
+  semanticsVersion: AgentRunRequestSemantics;
   createdAt: string;
 }
 

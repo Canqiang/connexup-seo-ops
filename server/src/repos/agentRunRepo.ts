@@ -1,5 +1,7 @@
 import type { Db } from "../db/connection.js";
 import type { AgentRunStatus } from "../domain/enums.js";
+import { assertAgentRunTaskScope, type AgentRunTaskScope } from "../domain/agentRunScope.js";
+import type { AgentRunRequestSemantics } from "../domain/agentRunRequestSemantics.js";
 import type { AgentRun, AgentRunRequest, RunDeliverable } from "./agentRunTypes.js";
 
 interface AgentRunRow {
@@ -234,9 +236,11 @@ export async function findAgentRunRequestByIdempotencyKey(
     run_id: string;
     merchant_id: string;
     http_request_fingerprint: string;
+    semantics_version: AgentRunRequestSemantics;
     created_at: string;
   }>(
-    `SELECT idempotency_key, run_id, merchant_id, http_request_fingerprint, created_at
+    `SELECT idempotency_key, run_id, merchant_id, http_request_fingerprint,
+            semantics_version, created_at
        FROM seo_agent_run_requests WHERE idempotency_key = $1`,
     [key],
   );
@@ -245,6 +249,7 @@ export async function findAgentRunRequestByIdempotencyKey(
     runId: row.run_id,
     merchantId: row.merchant_id,
     httpRequestFingerprint: row.http_request_fingerprint,
+    semanticsVersion: row.semantics_version,
     createdAt: row.created_at,
   } : null;
 }
@@ -255,30 +260,34 @@ export async function insertAgentRunRequest(
 ): Promise<void> {
   await db.exec(
     `INSERT INTO seo_agent_run_requests
-      (idempotency_key, run_id, merchant_id, http_request_fingerprint, created_at)
-     VALUES ($1, $2, $3, $4, $5)`,
+      (idempotency_key, run_id, merchant_id, http_request_fingerprint,
+       semantics_version, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [request.idempotencyKey, request.runId, request.merchantId,
-      request.httpRequestFingerprint, request.createdAt],
+      request.httpRequestFingerprint, request.semanticsVersion, request.createdAt],
   );
 }
 
 export async function findAgentRunByTaskFingerprint(
   db: Db,
-  taskId: string,
+  scope: AgentRunTaskScope,
   fingerprint: string,
 ): Promise<AgentRun | null> {
   const row = await db.one<AgentRunRow>(
     `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
      WHERE task_id = $1 AND stage = 'GBP_POST_CONTENT' AND request_fingerprint = $2
      ORDER BY created_at DESC, id DESC LIMIT 1`,
-    [taskId, fingerprint],
+    [scope.taskId, fingerprint],
   );
-  return row ? toAgentRun(row) : null;
+  if (!row) return null;
+  const run = toAgentRun(row);
+  assertAgentRunTaskScope(run, scope);
+  return run;
 }
 
 export async function findLatestGbpContentRunByBusinessFingerprint(
   db: Db,
-  taskId: string,
+  scope: AgentRunTaskScope,
   fingerprint: string,
 ): Promise<AgentRun | null> {
   const row = await db.one<AgentRunRow>(
@@ -286,23 +295,29 @@ export async function findLatestGbpContentRunByBusinessFingerprint(
      WHERE task_id = $1 AND stage = 'GBP_POST_CONTENT'
        AND COALESCE(business_input_fingerprint, request_fingerprint) = $2
      ORDER BY created_at DESC, id DESC LIMIT 1`,
-    [taskId, fingerprint],
+    [scope.taskId, fingerprint],
   );
-  return row ? toAgentRun(row) : null;
+  if (!row) return null;
+  const run = toAgentRun(row);
+  assertAgentRunTaskScope(run, scope);
+  return run;
 }
 
 export async function findActiveGbpContentRunByTask(
   db: Db,
-  taskId: string,
+  scope: AgentRunTaskScope,
 ): Promise<AgentRun | null> {
   const row = await db.one<AgentRunRow>(
     `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
      WHERE task_id = $1 AND stage = 'GBP_POST_CONTENT'
        AND status IN ('TRIGGERING', 'RUNNING')
      ORDER BY created_at DESC, id DESC LIMIT 1`,
-    [taskId],
+    [scope.taskId],
   );
-  return row ? toAgentRun(row) : null;
+  if (!row) return null;
+  const run = toAgentRun(row);
+  assertAgentRunTaskScope(run, scope);
+  return run;
 }
 
 export async function listAgentRunsByMerchant(

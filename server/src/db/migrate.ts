@@ -1,6 +1,11 @@
 import type { Db } from "./connection.js";
 import { SCHEMA_STATEMENTS } from "./schema.js";
 import { gbpContentHttpRequestFingerprint } from "../domain/gbpContentRunIdentity.js";
+import {
+  CURRENT_AGENT_RUN_REQUEST_SEMANTICS,
+  LEGACY_BOUND_AGENT_RUN_REQUEST_SEMANTICS,
+  type AgentRunRequestSemantics,
+} from "../domain/agentRunRequestSemantics.js";
 
 /** 老库补列(PG 版:用 IF NOT EXISTS,天然幂等)。 */
 const COLUMN_MIGRATIONS: string[] = [
@@ -33,10 +38,12 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE seo_specialist_artifacts ADD COLUMN IF NOT EXISTS acceptance_decided_at TEXT`,
   `ALTER TABLE seo_specialist_artifacts ADD COLUMN IF NOT EXISTS acceptance_note TEXT`,
   `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS business_input_fingerprint TEXT`,
+  `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS location_id TEXT`,
   `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS retry_of_agent_run_id TEXT`,
   `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS http_request_fingerprint TEXT`,
   `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS retry_generation INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE seo_agent_runs ADD COLUMN IF NOT EXISTS retry_reason TEXT`,
+  `ALTER TABLE seo_agent_run_requests ADD COLUMN IF NOT EXISTS semantics_version TEXT`,
   `UPDATE seo_agent_runs
       SET http_request_fingerprint = request_fingerprint
     WHERE http_request_fingerprint IS NULL
@@ -51,9 +58,12 @@ const COLUMN_MIGRATIONS: string[] = [
 const IDENTITY_TYPE_CHECK = "seo_users_identity_type_check";
 const ARTIFACT_ACCEPTANCE_STATUS_CHECK = "seo_specialist_artifacts_acceptance_status_check";
 const ARTIFACT_ACCEPTANCE_DECISION_CHECK = "seo_specialist_artifacts_acceptance_decision_check";
+const AGENT_RUN_REQUEST_SEMANTICS_CHECK = "seo_agent_run_requests_semantics_version_check";
 
 interface LegacyGbpRunIdentityRow {
   id: string;
+  merchant_id: string;
+  location_id: string | null;
   task_id: string | null;
   retry_of_agent_run_id: string | null;
   retry_reason: string | null;
@@ -61,20 +71,47 @@ interface LegacyGbpRunIdentityRow {
 
 async function rebuildGbpRunIdentity(db: Db): Promise<void> {
   const rows = await db.query<LegacyGbpRunIdentityRow>(
-    `SELECT id, task_id, retry_of_agent_run_id, retry_reason
+    `SELECT id, merchant_id, location_id, task_id, retry_of_agent_run_id, retry_reason
        FROM seo_agent_runs
       WHERE stage = 'GBP_POST_CONTENT'`,
   );
+  const taskIds = [...new Set(rows.flatMap((row) => row.task_id ? [row.task_id] : []))];
+  const taskScopes = taskIds.length === 0
+    ? []
+    : await db.query<{ id: string; merchant_id: string; location_id: string | null }>(
+        `SELECT id, merchant_id, location_id FROM seo_tasks WHERE id = ANY($1::text[])`,
+        [taskIds],
+      );
+  const taskScopeById = new Map(taskScopes.map((task) => [task.id, task]));
   const byId = new Map(rows.map((row) => [row.id, row]));
   const generations = new Map<string, number>();
   const visiting = new Set<string>();
 
-  const generationFor = (row: LegacyGbpRunIdentityRow): number => {
-    const known = generations.get(row.id);
-    if (known !== undefined) return known;
+  for (const row of rows) {
     if (!row.task_id) {
       throw new Error(`GBP retry lineage reconciliation required: Run ${row.id} has no task_id`);
     }
+    const task = taskScopeById.get(row.task_id);
+    if (!task) {
+      throw new Error(
+        `GBP content migration missing Task ${row.task_id} for Run ${row.id}; reconciliation required`,
+      );
+    }
+    if (row.merchant_id !== task.merchant_id) {
+      throw new Error(
+        `GBP content Run ${row.id} merchant mismatch with Task ${task.id}; reconciliation required`,
+      );
+    }
+    if (row.location_id !== task.location_id) {
+      throw new Error(
+        `GBP content Run ${row.id} location mismatch with Task ${task.id}; reconciliation required`,
+      );
+    }
+  }
+
+  const generationFor = (row: LegacyGbpRunIdentityRow): number => {
+    const known = generations.get(row.id);
+    if (known !== undefined) return known;
     if (visiting.has(row.id)) {
       throw new Error(`GBP retry lineage cycle requires reconciliation at Run ${row.id}`);
     }
@@ -130,18 +167,129 @@ async function rebuildGbpRunIdentity(db: Db): Promise<void> {
 }
 
 async function rebuildAgentRunRequestLedger(db: Db): Promise<void> {
+  const creationOwners = await db.query<{
+    id: string;
+    creation_idempotency_key: string;
+  }>(
+    `SELECT id, creation_idempotency_key
+       FROM seo_agent_runs
+      WHERE creation_idempotency_key IS NOT NULL`,
+  );
+  const creationOwnerByKey = new Map(
+    creationOwners.map((run) => [run.creation_idempotency_key, run.id]),
+  );
   await db.exec(
     `INSERT INTO seo_agent_run_requests
-      (idempotency_key, run_id, merchant_id, http_request_fingerprint, created_at)
+      (idempotency_key, run_id, merchant_id, http_request_fingerprint,
+       semantics_version, created_at)
     SELECT creation_idempotency_key, id, merchant_id,
            COALESCE(http_request_fingerprint, request_fingerprint, 'legacy:unknown'),
+           $1,
            created_at
       FROM seo_agent_runs
      WHERE creation_idempotency_key IS NOT NULL
-    ON CONFLICT (idempotency_key) DO UPDATE
-      SET run_id = EXCLUDED.run_id,
-          merchant_id = EXCLUDED.merchant_id,
-          http_request_fingerprint = EXCLUDED.http_request_fingerprint`,
+    ON CONFLICT (idempotency_key) DO NOTHING`,
+    [CURRENT_AGENT_RUN_REQUEST_SEMANTICS],
+  );
+
+  const aliases = await db.query<{
+    idempotency_key: string;
+    run_id: string;
+    alias_merchant_id: string;
+    http_request_fingerprint: string;
+    semantics_version: AgentRunRequestSemantics | null;
+    run_merchant_id: string | null;
+    run_location_id: string | null;
+    stage: string | null;
+    task_id: string | null;
+    creation_idempotency_key: string | null;
+    run_http_request_fingerprint: string | null;
+    task_merchant_id: string | null;
+    task_location_id: string | null;
+  }>(
+    `SELECT q.idempotency_key, q.run_id,
+            q.merchant_id AS alias_merchant_id,
+            q.http_request_fingerprint, q.semantics_version,
+            r.merchant_id AS run_merchant_id, r.location_id AS run_location_id,
+            r.stage, r.task_id, r.creation_idempotency_key,
+            r.http_request_fingerprint AS run_http_request_fingerprint,
+            t.merchant_id AS task_merchant_id, t.location_id AS task_location_id
+       FROM seo_agent_run_requests q
+       LEFT JOIN seo_agent_runs r ON r.id = q.run_id
+       LEFT JOIN seo_tasks t ON t.id = r.task_id
+      ORDER BY q.idempotency_key`,
+  );
+  for (const alias of aliases) {
+    const creationOwner = creationOwnerByKey.get(alias.idempotency_key);
+    if (creationOwner && creationOwner !== alias.run_id) {
+      throw new Error(
+        `Agent Run creation alias ${alias.idempotency_key} is bound to a different Run; reconciliation required`,
+      );
+    }
+    if (!alias.run_merchant_id) {
+      throw new Error(
+        `Agent Run request ${alias.idempotency_key} references missing Run ${alias.run_id}; reconciliation required`,
+      );
+    }
+    if (alias.alias_merchant_id !== alias.run_merchant_id) {
+      throw new Error(
+        `Agent Run request ${alias.idempotency_key} merchant mismatch; reconciliation required`,
+      );
+    }
+    if (alias.stage === "GBP_POST_CONTENT") {
+      if (!alias.task_id || !alias.task_merchant_id) {
+        throw new Error(
+          `GBP Agent Run request ${alias.idempotency_key} references a missing Task; reconciliation required`,
+        );
+      }
+      if (alias.run_merchant_id !== alias.task_merchant_id
+        || alias.run_location_id !== alias.task_location_id) {
+        throw new Error(
+          `GBP Agent Run request ${alias.idempotency_key} has corrupt Task scope; reconciliation required`,
+        );
+      }
+    }
+    if (alias.semantics_version !== null) continue;
+    const isDerivableGbpCreationAlias = alias.stage === "GBP_POST_CONTENT"
+      && alias.idempotency_key === alias.creation_idempotency_key;
+    const semanticsVersion = alias.stage === "GBP_POST_CONTENT" && !isDerivableGbpCreationAlias
+      ? LEGACY_BOUND_AGENT_RUN_REQUEST_SEMANTICS
+      : CURRENT_AGENT_RUN_REQUEST_SEMANTICS;
+    await db.exec(
+      `UPDATE seo_agent_run_requests
+          SET semantics_version = $1,
+              http_request_fingerprint = CASE WHEN $2 THEN $3 ELSE http_request_fingerprint END
+        WHERE idempotency_key = $4 AND semantics_version IS NULL`,
+      [
+        semanticsVersion,
+        isDerivableGbpCreationAlias,
+        alias.run_http_request_fingerprint,
+        alias.idempotency_key,
+      ],
+    );
+  }
+}
+
+async function ensureAgentRunRequestSemanticsCheck(db: Db): Promise<void> {
+  await db.exec(
+    `ALTER TABLE seo_agent_run_requests
+       ALTER COLUMN semantics_version SET DEFAULT 'STRICT_CURRENT',
+       ALTER COLUMN semantics_version SET NOT NULL`,
+  );
+  const existing = await db.one<{ constraint_name: string }>(
+    `SELECT constraint_name
+       FROM information_schema.table_constraints
+      WHERE table_schema = current_schema()
+        AND table_name = 'seo_agent_run_requests'
+        AND constraint_name = $1
+        AND constraint_type = 'CHECK'`,
+    [AGENT_RUN_REQUEST_SEMANTICS_CHECK],
+  );
+  if (existing) return;
+  await db.exec(
+    `ALTER TABLE seo_agent_run_requests
+       ADD CONSTRAINT seo_agent_run_requests_semantics_version_check
+       CHECK (semantics_version IN ('STRICT_CURRENT', 'LEGACY_BOUND'))`,
   );
 }
 
@@ -236,6 +384,7 @@ export async function migrate(db: Db): Promise<void> {
     for (const statement of COLUMN_MIGRATIONS) await tx.exec(statement);
     await rebuildGbpRunIdentity(tx);
     await rebuildAgentRunRequestLedger(tx);
+    await ensureAgentRunRequestSemanticsCheck(tx);
     await ensureUserIdentityTypeCheck(tx);
     await ensureArtifactAcceptanceStatusCheck(tx);
     await ensureArtifactAcceptanceDecisionCheck(tx);

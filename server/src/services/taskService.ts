@@ -539,7 +539,11 @@ function appendEvidenceWithPolicy(
     fingerprint,
     input.expected_state_version,
     async (task, tx) => {
-      if (rejectActiveGbpRun && await findActiveGbpContentRunByTask(tx, taskId)) {
+      if (rejectActiveGbpRun && await findActiveGbpContentRunByTask(tx, {
+        taskId: task.id,
+        merchantId: task.merchantId,
+        locationId: task.locationId,
+      })) {
         throw conflict(
           "cannot finalize a GBP Post draft while content generation is active",
           "CONTENT_RUN_ACTIVE",
@@ -757,7 +761,11 @@ export function approvalDecision(
           "STALE_STATE",
         );
       }
-      if (action === "APPROVE" && await findActiveGbpContentRunByTask(tx, taskId)) {
+      if (action === "APPROVE" && await findActiveGbpContentRunByTask(tx, {
+        taskId: task.id,
+        merchantId: task.merchantId,
+        locationId: task.locationId,
+      })) {
         throw conflict(
           "cannot approve a GBP Post task while content generation is active",
           "CONTENT_RUN_ACTIVE",

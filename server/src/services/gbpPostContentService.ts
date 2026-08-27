@@ -3,6 +3,11 @@ import { z } from "zod";
 import type { Db } from "../db/connection.js";
 import { canonicalize, requestFingerprint } from "../domain/hashing.js";
 import { gbpContentHttpRequestFingerprint } from "../domain/gbpContentRunIdentity.js";
+import {
+  agentRunScopeReconciliationRequired,
+  assertAgentRunTaskScope,
+  type AgentRunTaskScope,
+} from "../domain/agentRunScope.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import {
   findActiveGbpContentRunByTask,
@@ -294,6 +299,11 @@ async function validateRetryPrior(
   if (!prior || prior.taskId !== task.id || prior.stage !== "GBP_POST_CONTENT") {
     throw badRequest("retry prior_run_id must identify a GBP Post content run for this task");
   }
+  assertAgentRunTaskScope(prior, {
+    taskId: task.id,
+    merchantId: task.merchantId,
+    locationId: task.locationId,
+  });
   const priorBusinessFingerprint = prior.businessInputFingerprint ?? prior.requestFingerprint;
   if (priorBusinessFingerprint !== businessFingerprint) {
     throw conflict(
@@ -307,6 +317,7 @@ async function validateRetryPrior(
 async function triggerOnce(
   deps: GbpPostContentDeps,
   taskId: string,
+  authorizedScope: AgentRunTaskScope,
   key: string,
   actorId: string,
   retry?: GbpPostContentRetry,
@@ -316,7 +327,7 @@ async function triggerOnce(
     deps.db,
     key,
     httpRequestFingerprint,
-    { taskId },
+    authorizedScope,
   );
   if (requestReplay) return { run: requestReplay, replayed: true };
 
@@ -333,6 +344,7 @@ async function triggerOnce(
     db: deps.db,
     run: built.run,
     httpRequestFingerprint: built.httpRequestFingerprint,
+    expectedReplayScope: authorizedScope,
     dailyRunLimit: deps.dailyRunLimit ?? DEFAULT_DAILY_RUN_LIMIT,
     validateBeforeInsert: async (tx) => {
       const current = await getTaskForUpdate(tx, taskId);
@@ -346,7 +358,7 @@ async function triggerOnce(
     findBusinessReplay: async (tx) => {
       const latest = await findLatestGbpContentRunByBusinessFingerprint(
         tx,
-        taskId,
+        authorizedScope,
         built.businessFingerprint,
       );
       if (!retry) {
@@ -385,7 +397,7 @@ async function triggerOnce(
         throw badRequest("retry prior_run_id does not belong to an existing generation chain");
       }
 
-      const active = await findActiveGbpContentRunByTask(tx, taskId);
+      const active = await findActiveGbpContentRunByTask(tx, authorizedScope);
       if (active) throwActiveFingerprintConflict(taskId);
       return null;
     },
@@ -418,13 +430,13 @@ async function triggerOnce(
 
 export async function triggerGbpPostContentRun(
   deps: GbpPostContentDeps,
-  taskId: string,
+  authorizedScope: AgentRunTaskScope,
   idempotencyKey: string,
   actorId: string,
   retry?: GbpPostContentRetry,
 ): Promise<{ run: AgentRun; replayed: boolean }> {
   const key = requireIdempotencyKey(idempotencyKey, "idempotency_key");
-  return triggerOnce(deps, taskId, key, actorId, retry);
+  return triggerOnce(deps, authorizedScope.taskId, authorizedScope, key, actorId, retry);
 }
 
 export async function ingestGbpPostContentRunOutput(
@@ -436,6 +448,13 @@ export async function ingestGbpPostContentRunOutput(
   if (!run.taskId || run.stage !== "GBP_POST_CONTENT") {
     throw new Error("GBP Post content output requires a task-linked content run");
   }
+  const task = await getTask(db, run.taskId);
+  if (!task) agentRunScopeReconciliationRequired();
+  assertAgentRunTaskScope(run, {
+    taskId: task.id,
+    merchantId: task.merchantId,
+    locationId: task.locationId,
+  });
   if (!output) throw new Error("GBP Post content run completed without output");
   const parsed = parseGbpPostDraftOutput(output);
   const request = JSON.parse(run.inputMessage) as {
