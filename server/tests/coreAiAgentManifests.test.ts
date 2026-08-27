@@ -68,8 +68,8 @@ const expectedRoster = {
     name: "[SEO Ops] Execution Plan v1",
     output: "seo_ops.execution_plan.v1",
   },
-  "seo-ops-gbp-post-content-v3.json": {
-    name: "[SEO Ops] GBP Post Content v3",
+  "seo-ops-gbp-post-content-v4.json": {
+    name: "[SEO Ops] GBP Post Content v4",
     output: "seo_ops.gbp_post_draft.v2",
   },
   "seo-ops-keyword-set-v2.json": {
@@ -234,7 +234,7 @@ describe("Core AI SEO Ops Agent manifests", () => {
     for (const file of Object.keys(expectedRoster) as Array<keyof typeof expectedRoster>) {
       const manifest = loadManifest(file);
       for (const tool of manifest.tools) {
-        if (file === "seo-ops-gbp-post-content-v3.json") {
+        if (file === "seo-ops-gbp-post-content-v4.json") {
           expect(tool).toEqual({
             id: "builtin:builtin-media-generation",
             type: "BUILTIN",
@@ -287,7 +287,7 @@ describe("Core AI SEO Ops Agent manifests", () => {
   });
 
   it("makes GBP content an exact US-English draft and never a publication claim", () => {
-    const post = loadManifest("seo-ops-gbp-post-content-v3.json");
+    const post = loadManifest("seo-ops-gbp-post-content-v4.json");
     expect(post.tools).toEqual([{
       id: "builtin:builtin-media-generation",
       type: "BUILTIN",
@@ -301,6 +301,9 @@ describe("Core AI SEO Ops Agent manifests", () => {
     expect(post.system_prompt).toContain("generate_image exactly once with n=1");
     expect(post.system_prompt).toMatch(/never (?:call|use).*video/i);
     expect(post.system_prompt).toContain("actual image is a Core Run attachment");
+    expect(post.system_prompt).toContain("merchant_id to input merchant.id");
+    expect(post.system_prompt).toContain("Use copy for the Post text, never body or headline");
+    expect(post.system_prompt).toContain("media_brief must be an object");
     expect(post.system_prompt).toMatch(/no phone number/i);
     expect(post.system_prompt).toContain("Never publish");
     expect(post.system_prompt).not.toMatch(/publication_(?:id|status|success)/i);
