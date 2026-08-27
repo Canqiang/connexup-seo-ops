@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, writeFile, symlink, open, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, readFile, writeFile, symlink, link, open, unlink, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +13,8 @@ const REFERENCE_ID = "00000000-0000-4000-8000-000000000001";
 const MANAGED_ID = "00000000-0000-4000-8000-000000000002";
 const CREATED_ID = "00000000-0000-4000-8000-000000000003";
 const SECOND_CREATED_ID = "00000000-0000-4000-8000-000000000004";
+const PLAN_DIRECTORY = "docs/evidence/core-ai-agent-plans";
+const JOURNAL_DIRECTORY = "docs/evidence/core-ai-agent-journals";
 
 type AgentManifest = {
   name: string; description: string; system_prompt: string; model: string; temperature: number;
@@ -71,6 +74,7 @@ class FakeCore {
   agents: RemoteAgent[];
   createIds: string[] = [CREATED_ID, SECOND_CREATED_ID];
   inconsistentTotalPage: number | null = null;
+  onRequest?: (method: string, url: URL) => void | Promise<void>;
   onCreate?: (agent: RemoteAgent) => void | Promise<void>;
   onPublish?: (agent: RemoteAgent) => void | Promise<void>;
 
@@ -81,6 +85,7 @@ class FakeCore {
     const method = init?.method ?? "GET";
     const parsedBody = typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined;
     this.calls.push({ method, url, ...(parsedBody === undefined ? {} : { body: parsedBody }) });
+    await this.onRequest?.(method, url);
 
     if (method === "GET" && url.pathname === "/api/agents") {
       const query = url.searchParams.get("query") ?? "";
@@ -130,7 +135,7 @@ class FakeCore {
 type DryRun = (input: {
   client: unknown; repositoryRoot: string; manifestRoot: string;
   selection: { kind: "ALL" } | { kind: "EXPLICIT"; paths: string[] };
-  planPath: string; referenceName?: string;
+  planPath: string;
 }) => Promise<any>;
 type Apply = (input: {
   client: unknown; repositoryRoot: string; manifestRoot: string;
@@ -155,7 +160,8 @@ async function makeRepository(entries: Array<{ file: string; value: unknown }> =
   const root = await mkdtemp(join(tmpdir(), "seo-ops-reconcile-"));
   const manifestRoot = resolve(root, "server/core-ai-agents");
   await mkdir(manifestRoot, { recursive: true });
-  await mkdir(resolve(root, "docs/evidence"), { recursive: true });
+  await mkdir(resolve(root, PLAN_DIRECTORY), { recursive: true });
+  await mkdir(resolve(root, JOURNAL_DIRECTORY), { recursive: true });
   const paths: string[] = [];
   for (const entry of entries) {
     const path = resolve(manifestRoot, entry.file);
@@ -164,9 +170,23 @@ async function makeRepository(entries: Array<{ file: string; value: unknown }> =
   }
   return {
     root, manifestRoot, paths,
-    planPath: resolve(root, "docs/evidence/plan.json"),
-    evidencePath: resolve(root, "docs/evidence/journal.jsonl"),
+    planPath: resolve(root, PLAN_DIRECTORY, "plan.json"),
+    evidencePath: resolve(root, JOURNAL_DIRECTORY, "journal.jsonl"),
   };
+}
+
+function canonical(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value: unknown): string {
+  return createHash("sha256").update(canonical(value)).digest("hex");
 }
 
 async function readJournal(path: string): Promise<Array<Record<string, unknown>>> {
@@ -175,6 +195,22 @@ async function readJournal(path: string): Promise<Array<Record<string, unknown>>
 }
 
 describe("complete paginated discovery and create-only classification", () => {
+  it("always discovers the fixed reference name even when a caller supplies an override-shaped property", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([
+      referenceAgent(),
+      referenceAgent({ id: "00000000-0000-4000-8000-000000000012", name: "Caller Chosen Reference" }),
+    ]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const plan = await dryRun({
+      client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath,
+      referenceName: "Caller Chosen Reference",
+    } as Parameters<DryRun>[0] & { referenceName: string });
+    expect(plan.reference).toMatchObject({ id: REFERENCE_ID, name: REFERENCE_NAME });
+    expect(fake.calls.some((call) => call.url.searchParams.get("query") === "Caller Chosen Reference")).toBe(false);
+  });
+
   it("finds one exact reference on a later fuzzy page and labels only editable-config evidence", async () => {
     const repo = await makeRepository();
     const fake = new FakeCore([
@@ -188,8 +224,11 @@ describe("complete paginated discovery and create-only classification", () => {
     });
     expect(plan.reference).toMatchObject({
       id: REFERENCE_ID, name: REFERENCE_NAME, label: "EDITABLE_REFERENCE_ONLY",
-      evidence_scope: "EDITABLE_CONFIG_AND_STATUS_ONLY",
+      evidence_scope: "EDITABLE_CONFIG_AND_STATUS_ONLY", owner_id: null,
+      unmanaged_executable_empty: true, unknown_fields_empty: true,
     });
+    expect(plan.reference.managed_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(plan.reference.executable_field_hashes).toMatchObject({ system_prompt_id: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(plan.selected).toMatchObject([{ path: "server/core-ai-agents/test-agent.json", action: "CREATE" }]);
     const referencePages = fake.calls.filter((call) => call.url.searchParams.get("query") === REFERENCE_NAME);
     expect(referencePages.map((call) => call.url.searchParams.get("page"))).toEqual(["1", "2"]);
@@ -254,10 +293,74 @@ describe("complete paginated discovery and create-only classification", () => {
       })).rejects.toThrow(/create-only|new version|unmanaged|executable/i);
       expect(fake.mutations()).toEqual([]);
     }
+
+    const unknownRepo = await makeRepository();
+    const unknownFake = new FakeCore([
+      referenceAgent(),
+      { ...remoteAgent(), SECRETLY_NAMED_REMOTE_FIELD: "opaque" } as RemoteAgent,
+    ]);
+    const error = await dryRun({
+      client: createClient(unknownFake), repositoryRoot: unknownRepo.root, manifestRoot: unknownRepo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: unknownRepo.paths }, planPath: unknownRepo.planPath,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).not.toContain("SECRETLY_NAMED_REMOTE_FIELD");
+  });
+
+  it("never classifies a matching DRAFT Agent as NO_CHANGE", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent(), remoteAgent({ status: "DRAFT", published_at: null })]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    await expect(dryRun({
+      client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath,
+    })).rejects.toThrow(/published|new version|create-only/i);
+    expect(fake.mutations()).toEqual([]);
   });
 });
 
 describe("reviewed plan scope and drift gates", () => {
+  it("rejects plan paths outside the fixed plan directory before any remote read", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    await expect(dryRun({
+      client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths },
+      planPath: resolve(repo.root, "docs/evidence/wrong-plan.json"),
+    })).rejects.toThrow(/plan directory|artifact directory/i);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("rejects hard-linked selected manifests before remote access", async () => {
+    const repo = await makeRepository();
+    const alias = resolve(repo.manifestRoot, "hardlink-alias.json");
+    await link(repo.paths[0]!, alias);
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    await expect(dryRun({
+      client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: [repo.paths[0]!, alias] }, planPath: repo.planPath,
+    })).rejects.toThrow(/hardlink|inode|identity/i);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("rejects a symlinked fixed artifact directory before remote access", async () => {
+    const repo = await makeRepository();
+    const configuredDirectory = resolve(repo.root, PLAN_DIRECTORY);
+    const actualDirectory = resolve(repo.root, "docs/evidence/actual-plan-directory");
+    await rmdir(configuredDirectory);
+    await mkdir(actualDirectory);
+    await symlink(actualDirectory, configuredDirectory);
+    const fake = new FakeCore([referenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    await expect(dryRun({
+      client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath,
+    })).rejects.toThrow(/symlink|artifact directory/i);
+    expect(fake.calls).toEqual([]);
+  });
+
   it("preflights every selected manifest before network use and rejects duplicates, symlinks, and invalid later files", async () => {
     const dryRun = exported<DryRun>("dryRunAgentReconciliation");
     const invalid = await makeRepository([
@@ -275,7 +378,8 @@ describe("reviewed plan scope and drift gates", () => {
     const link = resolve(duplicate.manifestRoot, "linked.json");
     await symlink(duplicate.paths[0]!, link);
     await expect(dryRun({ client: createClient(fake), repositoryRoot: duplicate.root, manifestRoot: duplicate.manifestRoot,
-      selection: { kind: "EXPLICIT", paths: [link] }, planPath: resolve(duplicate.root, "docs/evidence/link-plan.json") })).rejects.toThrow(/symlink/i);
+      selection: { kind: "EXPLICIT", paths: [link] },
+      planPath: resolve(duplicate.root, PLAN_DIRECTORY, "link-plan.json") })).rejects.toThrow(/symlink/i);
   });
 
   it("binds apply to manifest bytes, ALL scope, remote pre-state, and the reference coordinate", async () => {
@@ -344,7 +448,7 @@ describe("reviewed plan scope and drift gates", () => {
     await dryRun({ client: createClient(outsideFake), repositoryRoot: outsideRepo.root, manifestRoot: outsideRepo.manifestRoot,
       selection: { kind: "EXPLICIT", paths: outsideRepo.paths }, planPath: outsideRepo.planPath });
     await expect(apply({ client: createClient(outsideFake), repositoryRoot: outsideRepo.root, manifestRoot: outsideRepo.manifestRoot,
-      planPath: outsideRepo.planPath, evidencePath: resolve(outsideRepo.root, "../outside.jsonl") })).rejects.toThrow(/repository/i);
+      planPath: outsideRepo.planPath, evidencePath: resolve(outsideRepo.root, "../outside.jsonl") })).rejects.toThrow(/repository|artifact|directory/i);
     expect(outsideFake.mutations()).toEqual([]);
 
     const symlinkRepo = await makeRepository();
@@ -358,6 +462,53 @@ describe("reviewed plan scope and drift gates", () => {
       planPath: symlinkRepo.planPath, evidencePath: symlinkRepo.evidencePath })).rejects.toThrow(/symlink/i);
     expect(symlinkFake.mutations()).toEqual([]);
   });
+
+  it("binds reference field hashes and rejects reference status drift before POST", async () => {
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+
+    const tampered = await makeRepository();
+    const tamperedFake = new FakeCore([referenceAgent()]);
+    await dryRun({ client: createClient(tamperedFake), repositoryRoot: tampered.root, manifestRoot: tampered.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: tampered.paths }, planPath: tampered.planPath });
+    const plan = JSON.parse(await readFile(tampered.planPath, "utf8")) as Record<string, any>;
+    plan.reference.field_hashes.name = "a".repeat(64);
+    const { digest: _digest, ...withoutDigest } = plan;
+    plan.digest = sha256(withoutDigest);
+    await writeFile(tampered.planPath, JSON.stringify(plan));
+    await expect(apply({ client: createClient(tamperedFake), repositoryRoot: tampered.root, manifestRoot: tampered.manifestRoot,
+      planPath: tampered.planPath, evidencePath: tampered.evidencePath })).rejects.toThrow(/reference|coordinate/i);
+    expect(tamperedFake.mutations()).toEqual([]);
+
+    const statusDrift = await makeRepository();
+    const statusFake = new FakeCore([referenceAgent()]);
+    await dryRun({ client: createClient(statusFake), repositoryRoot: statusDrift.root, manifestRoot: statusDrift.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: statusDrift.paths }, planPath: statusDrift.planPath });
+    statusFake.agents[0]!.status = "DRAFT";
+    statusFake.agents[0]!.published_at = null;
+    await expect(apply({ client: createClient(statusFake), repositoryRoot: statusDrift.root, manifestRoot: statusDrift.manifestRoot,
+      planPath: statusDrift.planPath, evidencePath: statusDrift.evidencePath })).rejects.toThrow(/reference|drift/i);
+    expect(statusFake.mutations()).toEqual([]);
+  });
+
+  it("rejects evidence aliases and a pre-existing journal before remote revalidation", async () => {
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    for (const evidenceKind of ["manifest", "plan", "preexisting"] as const) {
+      const repo = await makeRepository();
+      const fake = new FakeCore([referenceAgent()]);
+      await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+      const evidencePath = evidenceKind === "manifest" ? repo.paths[0]!
+        : evidenceKind === "plan" ? repo.planPath : repo.evidencePath;
+      if (evidenceKind === "preexisting") await writeFile(evidencePath, "preexisting\n");
+      const readsBeforeApply = fake.calls.length;
+      await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath })).rejects.toThrow(/journal|evidence|artifact|exist|directory|alias/i);
+      expect(fake.calls).toHaveLength(readsBeforeApply);
+      expect(fake.mutations()).toEqual([]);
+    }
+  });
 });
 
 describe("durable apply journal and immutable create boundary", () => {
@@ -370,6 +521,13 @@ describe("durable apply journal and immutable create boundary", () => {
       selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
 
     let journalWasDurableBeforeCreate = false;
+    let journalWasDurableBeforeRemoteRevalidation = false;
+    fake.onRequest = async () => {
+      if (!journalWasDurableBeforeRemoteRevalidation) {
+        const records = await readJournal(repo.evidencePath);
+        journalWasDurableBeforeRemoteRevalidation = records[0]?.type === "JOURNAL_OPENED";
+      }
+    };
     fake.onCreate = async () => {
       const records = await readJournal(repo.evidencePath);
       journalWasDurableBeforeCreate = records.some((record) => record.type === "CREATE_INTENT");
@@ -386,11 +544,13 @@ describe("durable apply journal and immutable create boundary", () => {
     syncSpy.mockRestore();
 
     expect(journalWasDurableBeforeCreate).toBe(true);
+    expect(journalWasDurableBeforeRemoteRevalidation).toBe(true);
     expect(result).toMatchObject([{ action: "CREATE", agent_id: CREATED_ID, remote_rollback: "NO_DELETE_REMOTE_ROLLBACK" }]);
     expect(fake.mutations()).toEqual(["POST /api/agents", `POST /api/agents/${CREATED_ID}/publish`]);
     const records = await readJournal(repo.evidencePath);
     expect(records.map((record) => record.type)).toEqual([
-      "JOURNAL_OPENED", "CREATE_INTENT", "CREATE_OUTCOME", "PUBLISH_INTENT", "PUBLISH_OUTCOME", "READBACK_OUTCOME",
+      "JOURNAL_OPENED", "CREATE_INTENT", "CREATE_OUTCOME", "PREPUBLISH_VALIDATION_INTENT",
+      "PREPUBLISH_VALIDATION_OUTCOME", "PUBLISH_INTENT", "PUBLISH_OUTCOME", "READBACK_OUTCOME",
     ]);
     expect(records.at(-1)).toMatchObject({ evidence_scope: "EDITABLE_CONFIG_AND_STATUS_ONLY" });
     const persisted = `${await readFile(repo.planPath, "utf8")}\n${await readFile(repo.evidencePath, "utf8")}`;
@@ -437,6 +597,64 @@ describe("durable apply journal and immutable create boundary", () => {
     expect((await readJournal(repo.evidencePath)).map((record) => record.type)).toEqual([
       "JOURNAL_OPENED", "CREATE_INTENT", "CREATE_OUTCOME", "CREATE_REJECTED",
     ]);
+  });
+
+  it("validates the created ID as a new owned exact DRAFT before publish", async () => {
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    const scenarios: Array<{
+      name: string;
+      seed?: RemoteAgent[];
+      createdId?: string;
+      mutate?: (created: RemoteAgent) => void;
+    }> = [
+      {
+        name: "existing ID",
+        seed: [remoteAgent({ id: CREATED_ID, name: "Existing Other Agent", mine: true })],
+        createdId: CREATED_ID,
+      },
+      { name: "not owned", mutate: (created) => { created.mine = false; } },
+      { name: "wrong name", mutate: (created) => { created.name = "Wrong Created Name"; } },
+      { name: "wrong config", mutate: (created) => { created.description = "wrong created config"; } },
+      { name: "non-DRAFT", mutate: (created) => { created.status = "PUBLISHED"; } },
+      { name: "system default", mutate: (created) => { created.system_default = true; } },
+      { name: "ambiguous system default", mutate: (created) => { (created as Record<string, unknown>).system_default = null; } },
+    ];
+
+    for (const scenario of scenarios) {
+      const repo = await makeRepository();
+      const fake = new FakeCore([referenceAgent(), ...(scenario.seed ?? [])]);
+      if (scenario.createdId !== undefined) fake.createIds = [scenario.createdId];
+      fake.onCreate = scenario.mutate;
+      await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+      await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath: repo.evidencePath }), scenario.name).rejects.toThrow(/created|validation|publish|owned|draft/i);
+      expect(fake.mutations(), scenario.name).toEqual(["POST /api/agents"]);
+      expect((await readJournal(repo.evidencePath)).at(-1), scenario.name).toMatchObject({
+        type: "PREPUBLISH_VALIDATION_FAILED",
+        agent_id: scenario.createdId ?? CREATED_ID,
+      });
+    }
+  });
+
+  it("rejects an ID already present in the full principal roster even if POST rewrites it into a matching DRAFT", async () => {
+    const repo = await makeRepository();
+    const existing = remoteAgent({ id: CREATED_ID, name: "Existing Principal Agent", mine: true });
+    const fake = new FakeCore([referenceAgent(), existing]);
+    fake.createIds = [CREATED_ID];
+    fake.onCreate = (created) => {
+      Object.assign(existing, created);
+      fake.agents = fake.agents.filter((agent) => agent !== created);
+    };
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+    await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/created|existing|validation/i);
+    expect(fake.mutations()).toEqual(["POST /api/agents"]);
+    expect((await readJournal(repo.evidencePath)).at(-1)).toMatchObject({ type: "PREPUBLISH_VALIDATION_FAILED" });
   });
 
   it("has no PUT, DELETE, or executable rollback capability", () => {
@@ -539,5 +757,6 @@ describe("explicit CLI scope contract", () => {
       mode: "apply", planPath: "/repo/plan.json", evidencePath: "/repo/evidence.jsonl",
     });
     expect(() => parse(["--mode=dry-run", "--all", "--plan=/repo/plan.json", "--token=SECRET_VALUE"])).toThrow(/environment|credential/i);
+    expect(() => parse(["--mode=dry-run", "--all", "--plan=/repo/plan.json", "--reference=other"])).toThrow(/unknown/i);
   });
 });

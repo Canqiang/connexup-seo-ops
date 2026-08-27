@@ -95,33 +95,50 @@ Task 状态或商户阶段推进。本地开发库的 `QUESTIONNAIRE` binding �
 plan，不能重新声明 scope：
 
 ```bash
-cd server
-PLAN="$PWD/../docs/evidence/2026-08-27-core-ai-agent-plan.json"
-JOURNAL="$PWD/../docs/evidence/2026-08-27-core-ai-agent-journal.jsonl"
+REPO_ROOT="$(pwd)"
+PLAN_DIR="$REPO_ROOT/docs/evidence/core-ai-agent-plans"
+JOURNAL_DIR="$REPO_ROOT/docs/evidence/core-ai-agent-journals"
+mkdir -p -- "$PLAN_DIR" "$JOURNAL_DIR"
+PLAN="$PLAN_DIR/2026-08-27-core-ai-agent-plan.json"
+JOURNAL="$JOURNAL_DIR/2026-08-27-core-ai-agent-journal.jsonl"
+test ! -e "$PLAN" && test ! -e "$JOURNAL"
 
-npm run agents:reconcile -- --mode=dry-run --all --plan="$PLAN"
+npm --prefix server run agents:reconcile -- --mode=dry-run --all --plan="$PLAN"
 # 或：重复 --manifest=server/core-ai-agents/<file>.json 进行显式子集审核
 
 # 人工核对 PLAN 中的 ordered paths、manifest/action/reference hashes 与 overall digest 后：
-npm run agents:reconcile -- --mode=apply \
+npm --prefix server run agents:reconcile -- --mode=apply \
   --plan="$PLAN" --evidence="$JOURNAL"
 ```
 
 - 非 loopback URL 必须使用 HTTPS；redirect、跨 origin、非 JSON、超限响应均 fail closed。
 - `GooglePost每周图文助手` 只作为 `EDITABLE_REFERENCE_ONLY`：GET/export 是可编辑视图，不代表
-  已发布 runtime snapshot，也不构成 clone 证明；输出证据范围固定为 `EDITABLE_CONFIG_AND_STATUS_ONLY`。
+  已发布 runtime snapshot，也不构成 clone 证明；名称固定且没有 CLI/library override。plan 绑定完整安全
+  reference coordinate（状态、managed/executable field hashes、未管理字段空值摘要和 API 明确提供时的 owner ID），
+  输出证据范围固定为 `EDITABLE_CONFIG_AND_STATUS_ONLY`。API 未提供稳定 `owner_id` 时记录 null；不会把
+  display-name `created_by` 猜成 owner ID。
 - reference 与 desired name 都通过完整分页 global query 做 exact/unique 判断；既有 desired Agent 还必须在
   完整 `my=true&include_system_default=false` roster 中唯一对应。跨 owner、system-default 或重复同名一律停止。
-- 既有 `[SEO Ops]` Agent 只有完整 editable config 相同且所有未管理执行字段为空时可返回 `NO_CHANGE`；
+- 既有 `[SEO Ops]` Agent 只有状态精确为 `PUBLISHED`、完整 editable config 相同且所有未管理执行字段为空时
+  可返回 `NO_CHANGE`；
   任一漂移都要求新建更高版本名（例如 v2 → v3），工具没有 PUT existing Agent 能力。
 - apply 在任何 POST 前重新校验全部本地文件、ALL/explicit scope、reference coordinate 和远端 pre-state；
   任一文件、scope、reference 或 remote hash 漂移都会停止。
-- evidence journal 必须是仓库内绝对路径且父目录已存在；路径穿越和 symlink 会被拒绝。journal 在首个
-  mutation 前创建并 fsync，每次 create/publish intent 与 response/readback outcome 都逐条 append + fsync。
-- create 后只 publish 服务端返回的新 UUID，再按该 UUID 独立 GET；readback 会同时拒绝未管理执行字段。
+- plan 只能位于 `docs/evidence/core-ai-agent-plans/`，journal 只能位于独立的
+  `docs/evidence/core-ai-agent-journals/`；两者必须在 manifest root 外，且 canonical path 与所有 manifest
+  不同。symlink、hardlink inode alias、路径穿越和预先存在的 journal 都会被拒绝。journal 以 exclusive
+  create + no-follow 打开，在任何远端重验/POST 前 fsync；每次 create/validate/publish intent 与 outcome
+  都逐条 append + fsync。
+- create 后先按返回 UUID 独立 GET，并通过完整 `my=true&include_system_default=false` roster 与 global exact
+  discovery 证明它是当前主体新建的 exact-name、`DRAFT`、非 system-default、完整配置匹配且无未管理执行字段
+  的 Agent；验证失败只写 durable failure 并停止，不 publish、不 PUT、不 DELETE。验证通过后才 publish，
+  再独立 GET；readback 会再次拒绝未管理执行字段。
   它只证明 editable config/status，不证明 published runtime snapshot 等价。
 - 新 Agent 的远端恢复事实固定记录为 `NO_DELETE_REMOTE_ROLLBACK`。工具没有 PUT、DELETE 或可执行 rollback；
   reference UUID 也不能作为 create response 后的 publish/readback 坐标。
+- 工具要求运行平台提供 `O_NOFOLLOW`，否则 fail closed；同时在打开/写入前后复核 canonical path 与 `dev/ino`。
+  这些检查缩小但不能消除同一主机上拥有目录写权限的攻击者造成的 TOCTOU 竞争，因此 plan/journal 目录权限
+  仍必须仅授予执行对账的操作员。
 
 ## 六导航（账本视角）
 

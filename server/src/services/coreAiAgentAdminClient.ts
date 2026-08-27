@@ -16,13 +16,15 @@ import {
   resolve,
 } from "node:path";
 
-export const DEFAULT_REFERENCE_AGENT_NAME = "GooglePost每周图文助手";
+const FIXED_REFERENCE_AGENT_NAME = "GooglePost每周图文助手" as const;
 export const EDITABLE_REFERENCE_ONLY = "EDITABLE_REFERENCE_ONLY" as const;
 export const EDITABLE_CONFIG_AND_STATUS_ONLY = "EDITABLE_CONFIG_AND_STATUS_ONLY" as const;
 export const NO_DELETE_REMOTE_ROLLBACK = "NO_DELETE_REMOTE_ROLLBACK" as const;
 
 const PLAN_VERSION = "seo_ops.agent_reconciliation_plan.v1";
 const MANIFEST_VERSION = "seo_ops.core_ai_agent_manifest.v1";
+const PLAN_DIRECTORY = "docs/evidence/core-ai-agent-plans";
+const JOURNAL_DIRECTORY = "docs/evidence/core-ai-agent-journals";
 
 export interface AgentTool {
   id: string;
@@ -90,6 +92,7 @@ export class CoreAiAgentAdminError extends Error {
 interface PreparedManifest {
   path: string;
   absolutePath: string;
+  fileIdentity: string;
   manifest: AgentManifest;
   manifestHash: string;
 }
@@ -103,15 +106,20 @@ interface RemoteClassification {
 
 interface ReferenceCoordinate {
   id: string;
-  name: string;
+  name: typeof FIXED_REFERENCE_AGENT_NAME;
   status: string | null;
+  owner_id: string | null;
   updated_at: string | null;
   published_at: string | null;
   editable_hash: string;
-  coordinate_hash: string;
+  managed_hash: string;
   field_hashes: Record<string, string>;
+  executable_field_hashes: Record<string, string>;
+  unmanaged_executable_empty: boolean;
+  unknown_fields_empty: true;
   label: typeof EDITABLE_REFERENCE_ONLY;
   evidence_scope: typeof EDITABLE_CONFIG_AND_STATUS_ONLY;
+  coordinate_hash: string;
 }
 
 interface PlanEntry extends RemoteClassification {
@@ -191,7 +199,7 @@ function normalizeManifest(value: unknown, validateDesiredName = true): AgentMan
   if (validateDesiredName && !/^\[SEO Ops\] .+ v\d+$/.test(name)) {
     throw new CoreAiAgentAdminError("Desired Agent manifest name must be versioned and begin [SEO Ops]");
   }
-  if (validateDesiredName && name === DEFAULT_REFERENCE_AGENT_NAME) throw new CoreAiAgentAdminError("Reference Agent name is read-only");
+  if (validateDesiredName && name === FIXED_REFERENCE_AGENT_NAME) throw new CoreAiAgentAdminError("Reference Agent name is read-only");
   const temperature = value.temperature;
   if (temperature !== undefined && (typeof temperature !== "number" || temperature < 0 || temperature > 2)) {
     throw new CoreAiAgentAdminError("Agent manifest temperature is invalid");
@@ -487,45 +495,62 @@ function editableSnapshot(view: CoreAiAgentView, requireSafeUnsupported: boolean
   managed: AgentManifest;
   editableHash: string;
   fieldHashes: Record<string, string>;
+  executableFieldHashes: Record<string, string>;
+  unmanagedExecutableEmpty: boolean;
+  unknownFieldsEmpty: true;
 } {
   const known = new Set<string>([...MUTATION_FIELDS, ...UNSUPPORTED_EXECUTABLE_FIELDS, ...REMOTE_METADATA_FIELDS]);
   const unknown = Object.keys(view).filter((key) => !known.has(key));
-  if (unknown.length > 0) throw new CoreAiAgentAdminError(`Agent has unmanaged executable fields: ${unknown.join(", ")}`);
-  if (requireSafeUnsupported && !safeUnsupported(view)) {
+  if (unknown.length > 0) throw new CoreAiAgentAdminError("Agent has unknown unmanaged fields");
+  const unmanagedExecutableEmpty = safeUnsupported(view);
+  if (requireSafeUnsupported && !unmanagedExecutableEmpty) {
     throw new CoreAiAgentAdminError("Agent has unmanaged executable settings; create a new versioned manifest name");
   }
   const managed = normalizeRemoteManaged(view);
   const unsupported = Object.fromEntries(UNSUPPORTED_EXECUTABLE_FIELDS.map((field) => [field, view[field] ?? null]));
   const fieldHashes = Object.fromEntries(MUTATION_FIELDS.map((field) => [field, sha256(managed[field])])) as Record<string, string>;
+  const executableFieldHashes = Object.fromEntries(
+    UNSUPPORTED_EXECUTABLE_FIELDS.map((field) => [field, sha256(view[field] ?? null)]),
+  ) as Record<string, string>;
   return {
     managed,
     editableHash: sha256({ managed, unsupported, system_default: view.system_default ?? null }),
     fieldHashes,
+    executableFieldHashes,
+    unmanagedExecutableEmpty,
+    unknownFieldsEmpty: true,
   };
 }
 
-async function discoverReference(client: CoreAiAgentAdminClient, referenceName: string): Promise<ReferenceCoordinate> {
-  const listed = await collectAllAgents(client, { query: referenceName });
-  const exact = listed.filter((agent) => agent.name === referenceName);
+async function discoverReference(client: CoreAiAgentAdminClient): Promise<ReferenceCoordinate> {
+  const listed = await collectAllAgents(client, { query: FIXED_REFERENCE_AGENT_NAME });
+  const exact = listed.filter((agent) => agent.name === FIXED_REFERENCE_AGENT_NAME);
   if (exact.length !== 1) throw new CoreAiAgentAdminError(`Reference discovery requires exactly one exact-name Agent; found ${exact.length}`);
   const summary = exact[0]!;
   const detail = await client.getAgent(summary.id);
-  if (detail.id !== summary.id || detail.name !== referenceName) throw new CoreAiAgentAdminError("Reference detail does not match exact discovery");
+  if (detail.id !== summary.id || detail.name !== FIXED_REFERENCE_AGENT_NAME) {
+    throw new CoreAiAgentAdminError("Reference detail does not match fixed exact discovery");
+  }
   const snapshot = editableSnapshot(detail, false);
-  const coordinateBase = {
+  const coordinateBase: Omit<ReferenceCoordinate, "coordinate_hash"> = {
     id: detail.id,
-    name: detail.name,
+    name: FIXED_REFERENCE_AGENT_NAME,
     status: typeof detail.status === "string" ? detail.status : null,
+    owner_id: typeof detail.owner_id === "string" && detail.owner_id !== "" ? detail.owner_id : null,
     updated_at: typeof detail.updated_at === "string" ? detail.updated_at : null,
     published_at: typeof detail.published_at === "string" ? detail.published_at : null,
     editable_hash: snapshot.editableHash,
+    managed_hash: sha256(snapshot.managed),
+    field_hashes: snapshot.fieldHashes,
+    executable_field_hashes: snapshot.executableFieldHashes,
+    unmanaged_executable_empty: snapshot.unmanagedExecutableEmpty,
+    unknown_fields_empty: snapshot.unknownFieldsEmpty,
+    label: EDITABLE_REFERENCE_ONLY,
+    evidence_scope: EDITABLE_CONFIG_AND_STATUS_ONLY,
   };
   return {
     ...coordinateBase,
     coordinate_hash: sha256(coordinateBase),
-    field_hashes: snapshot.fieldHashes,
-    label: EDITABLE_REFERENCE_ONLY,
-    evidence_scope: EDITABLE_CONFIG_AND_STATUS_ONLY,
   };
 }
 
@@ -554,15 +579,21 @@ async function classifyDesired(
     throw new CoreAiAgentAdminError(`Desired Agent exact-name collision is not proven owned: ${prepared.manifest.name}`);
   }
   const detail = await client.getAgent(selected.id);
-  if (detail.id !== selected.id || detail.name !== prepared.manifest.name || detail.system_default === true) {
+  if (detail.id !== selected.id || detail.name !== prepared.manifest.name || detail.system_default !== false) {
     throw new CoreAiAgentAdminError("Desired Agent ownership/system/name detail is ambiguous");
+  }
+  if (detail.status !== "PUBLISHED") {
+    throw new CoreAiAgentAdminError("Existing Agent is not PUBLISHED; CREATE-ONLY requires a new versioned manifest name");
   }
   const snapshot = editableSnapshot(detail, true);
   if (sha256(snapshot.managed) !== prepared.manifestHash) {
     throw new CoreAiAgentAdminError(`Existing Agent drift is CREATE-ONLY; use a new versioned manifest name: ${prepared.manifest.name}`);
   }
   const remoteStateHash = sha256({
-    state: "EXISTING", id: detail.id, editable_hash: snapshot.editableHash, owned: true,
+    state: "EXISTING", id: detail.id, status: detail.status,
+    published_at: typeof detail.published_at === "string" ? detail.published_at : null,
+    system_default: detail.system_default ?? null,
+    editable_hash: snapshot.editableHash, owned: true,
   });
   return {
     action: "NO_CHANGE", remote_agent_id: detail.id, remote_state_hash: remoteStateHash,
@@ -604,6 +635,7 @@ async function selectedPaths(
   }
   if (new Set(candidates).size !== candidates.length) throw new CoreAiAgentAdminError("Duplicate manifest path selected");
   const normalizedCandidates: string[] = [];
+  const fileIdentities = new Set<string>();
   for (const candidate of candidates) {
     if (!candidate.endsWith(".json") || basename(candidate) === "manifest.schema.json") {
       throw new CoreAiAgentAdminError("Unknown manifest path selected");
@@ -611,8 +643,12 @@ async function selectedPaths(
     const stat = await lstat(candidate);
     if (stat.isSymbolicLink()) throw new CoreAiAgentAdminError("Manifest symlink is forbidden");
     if (!stat.isFile()) throw new CoreAiAgentAdminError("Manifest path must be a file");
+    if (stat.nlink !== 1) throw new CoreAiAgentAdminError("Manifest hardlink alias is forbidden");
     const actual = await realpath(candidate);
     if (!pathInside(checked.manifests, actual)) throw new CoreAiAgentAdminError("Manifest path must remain in manifest root");
+    const identity = `${stat.dev}:${stat.ino}`;
+    if (fileIdentities.has(identity)) throw new CoreAiAgentAdminError("Selected manifests share a hardlink inode identity");
+    fileIdentities.add(identity);
     normalizedCandidates.push(actual);
   }
   if (new Set(normalizedCandidates).size !== normalizedCandidates.length) throw new CoreAiAgentAdminError("Duplicate manifest path selected");
@@ -636,32 +672,110 @@ async function prepareManifests(
     const normalized = normalizeManifest(raw);
     if (names.has(normalized.name)) throw new CoreAiAgentAdminError(`Duplicate desired Agent name: ${normalized.name}`);
     names.add(normalized.name);
+    const stat = await lstat(absolutePath);
     prepared.push({
       path: relative(checked.repository, absolutePath), absolutePath,
+      fileIdentity: `${stat.dev}:${stat.ino}`,
       manifest: normalized, manifestHash: sha256(normalized),
     });
   }
   return prepared;
 }
 
-async function checkedTarget(
-  repositoryRoot: string,
-  targetPath: string,
-): Promise<{ repository: string; parent: string; existed: boolean }> {
-  if (!isAbsolute(targetPath)) throw new CoreAiAgentAdminError("Artifact path must be absolute");
-  const repository = await realpath(repositoryRoot);
-  const parent = await realpath(dirname(targetPath));
-  if (!pathInside(repository, parent)) throw new CoreAiAgentAdminError("Artifact path must remain inside repository");
+type ArtifactKind = "plan" | "journal";
+
+interface ArtifactTarget {
+  path: string;
+  parent: string;
+  existed: boolean;
+  fileIdentity: string | null;
+}
+
+function noFollowFlag(): number {
+  if (!Number.isInteger(constants.O_NOFOLLOW) || constants.O_NOFOLLOW === 0) {
+    throw new CoreAiAgentAdminError("O_NOFOLLOW is unavailable; refusing artifact access");
+  }
+  return constants.O_NOFOLLOW;
+}
+
+async function assertDirectoryHasNoSymlinkComponents(repository: string, relativeDirectory: string): Promise<void> {
+  let current = repository;
+  for (const component of relativeDirectory.split("/")) {
+    current = resolve(current, component);
+    const stat = await lstat(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new CoreAiAgentAdminError("Fixed artifact directory contains a symlink or non-directory component");
+    }
+  }
+}
+
+async function checkedArtifactTarget(input: {
+  repositoryRoot: string;
+  manifestRoot: string;
+  targetPath: string;
+  kind: ArtifactKind;
+  require: "EXISTING" | "NEW";
+}): Promise<ArtifactTarget> {
+  if (!isAbsolute(input.targetPath)) throw new CoreAiAgentAdminError(`${input.kind} artifact path must be absolute`);
+  const { repository, manifests } = await roots(input.repositoryRoot, input.manifestRoot);
+  const relativeDirectory = input.kind === "plan" ? PLAN_DIRECTORY : JOURNAL_DIRECTORY;
+  const otherRelativeDirectory = input.kind === "plan" ? JOURNAL_DIRECTORY : PLAN_DIRECTORY;
+  await assertDirectoryHasNoSymlinkComponents(repository, relativeDirectory);
+  await assertDirectoryHasNoSymlinkComponents(repository, otherRelativeDirectory);
+  const artifactDirectory = await realpath(resolve(repository, relativeDirectory));
+  const otherDirectory = await realpath(resolve(repository, otherRelativeDirectory));
+  if (!pathInside(repository, artifactDirectory) || artifactDirectory === otherDirectory
+    || pathInside(manifests, artifactDirectory) || pathInside(artifactDirectory, manifests)) {
+    throw new CoreAiAgentAdminError("Artifact directories must be fixed, distinct, and outside the manifest root");
+  }
+  const parent = await realpath(dirname(input.targetPath));
+  const targetPath = resolve(parent, basename(input.targetPath));
+  if (parent !== artifactDirectory || dirname(targetPath) !== artifactDirectory) {
+    throw new CoreAiAgentAdminError(`${input.kind} artifact path must remain in its fixed artifact directory`);
+  }
+  if (input.kind === "plan" ? !targetPath.endsWith(".json") : !targetPath.endsWith(".jsonl")) {
+    throw new CoreAiAgentAdminError(`${input.kind} artifact extension is invalid`);
+  }
   let existed = false;
+  let fileIdentity: string | null = null;
   try {
     const stat = await lstat(targetPath);
-    if (stat.isSymbolicLink()) throw new CoreAiAgentAdminError("Artifact symlink is forbidden");
+    if (stat.isSymbolicLink()) throw new CoreAiAgentAdminError(`${input.kind} artifact symlink is forbidden`);
+    if (!stat.isFile()) throw new CoreAiAgentAdminError(`${input.kind} artifact must be a regular file`);
+    if (stat.nlink !== 1) throw new CoreAiAgentAdminError(`${input.kind} artifact hardlink alias is forbidden`);
+    if (await realpath(targetPath) !== targetPath) throw new CoreAiAgentAdminError(`${input.kind} artifact canonical path mismatch`);
     existed = true;
+    fileIdentity = `${stat.dev}:${stat.ino}`;
   } catch (error) {
     if (error instanceof CoreAiAgentAdminError) throw error;
     if (!isRecord(error) || error.code !== "ENOENT") throw error;
   }
-  return { repository, parent, existed };
+  if (input.require === "NEW" && existed) throw new CoreAiAgentAdminError(`${input.kind} artifact must not already exist`);
+  if (input.require === "EXISTING" && !existed) throw new CoreAiAgentAdminError(`${input.kind} artifact does not exist`);
+  return { path: targetPath, parent, existed, fileIdentity };
+}
+
+async function verifyOpenedIdentity(handle: FileHandle, target: ArtifactTarget): Promise<string> {
+  const descriptorStat = await handle.stat();
+  const pathStat = await lstat(target.path);
+  if (pathStat.isSymbolicLink() || !pathStat.isFile()
+    || pathStat.nlink !== 1 || descriptorStat.nlink !== 1
+    || descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino
+    || await realpath(target.path) !== target.path) {
+    throw new CoreAiAgentAdminError("Artifact inode/canonical identity changed");
+  }
+  const identity = `${pathStat.dev}:${pathStat.ino}`;
+  if (target.fileIdentity !== null && target.fileIdentity !== identity) {
+    throw new CoreAiAgentAdminError("Artifact inode identity changed");
+  }
+  return identity;
+}
+
+function assertArtifactManifestIsolation(target: ArtifactTarget, prepared: PreparedManifest[]): void {
+  if (prepared.some((manifest) => manifest.absolutePath === target.path
+    || (target.fileIdentity !== null && manifest.fileIdentity === target.fileIdentity))) {
+    throw new CoreAiAgentAdminError("Artifact and manifest path/inode identities must be distinct");
+  }
 }
 
 async function syncDirectory(directoryPath: string): Promise<void> {
@@ -669,12 +783,13 @@ async function syncDirectory(directoryPath: string): Promise<void> {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
-async function writePlan(repositoryRoot: string, planPath: string, plan: ReconciliationPlan): Promise<void> {
-  const target = await checkedTarget(repositoryRoot, planPath);
-  const handle = await open(planPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+async function writePlan(target: ArtifactTarget, plan: ReconciliationPlan): Promise<void> {
+  const handle = await open(target.path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollowFlag(), 0o600);
   try {
+    await verifyOpenedIdentity(handle, target);
     await handle.writeFile(`${JSON.stringify(plan, null, 2)}\n`, "utf8");
     await handle.sync();
+    await verifyOpenedIdentity(handle, { ...target, fileIdentity: null });
   } finally { await handle.close(); }
   await syncDirectory(target.parent);
 }
@@ -689,10 +804,14 @@ export async function dryRunAgentReconciliation(input: {
   manifestRoot: string;
   selection: { kind: "ALL" } | { kind: "EXPLICIT"; paths: string[] };
   planPath: string;
-  referenceName?: string;
 }): Promise<ReconciliationPlan> {
+  const planTarget = await checkedArtifactTarget({
+    repositoryRoot: input.repositoryRoot, manifestRoot: input.manifestRoot,
+    targetPath: input.planPath, kind: "plan", require: "NEW",
+  });
   const prepared = await prepareManifests(input.repositoryRoot, input.manifestRoot, input.selection);
-  const reference = await discoverReference(input.client, input.referenceName ?? DEFAULT_REFERENCE_AGENT_NAME);
+  assertArtifactManifestIsolation(planTarget, prepared);
+  const reference = await discoverReference(input.client);
   const selected: PlanEntry[] = [];
   for (const manifest of prepared) {
     const classification = await classifyDesired(input.client, manifest);
@@ -709,7 +828,7 @@ export async function dryRunAgentReconciliation(input: {
     reference,
   };
   const plan: ReconciliationPlan = { ...withoutDigest, digest: planDigest(withoutDigest) };
-  await writePlan(input.repositoryRoot, input.planPath, plan);
+  await writePlan(planTarget, plan);
   return plan;
 }
 
@@ -725,20 +844,31 @@ function parsePlan(value: unknown): ReconciliationPlan {
     throw new CoreAiAgentAdminError("Reviewed plan shape is invalid");
   }
   if (!exactKeys(value.reference, [
-      "id", "name", "status", "updated_at", "published_at", "editable_hash", "coordinate_hash",
-      "field_hashes", "label", "evidence_scope",
+      "id", "name", "status", "owner_id", "updated_at", "published_at", "editable_hash", "managed_hash",
+      "field_hashes", "executable_field_hashes", "unmanaged_executable_empty", "unknown_fields_empty",
+      "label", "evidence_scope", "coordinate_hash",
     ])
-    || !uuid(value.reference.id) || typeof value.reference.name !== "string"
+    || !uuid(value.reference.id) || value.reference.name !== FIXED_REFERENCE_AGENT_NAME
     || !(value.reference.status === null || typeof value.reference.status === "string")
+    || !(value.reference.owner_id === null || typeof value.reference.owner_id === "string")
     || !(value.reference.updated_at === null || typeof value.reference.updated_at === "string")
     || !(value.reference.published_at === null || typeof value.reference.published_at === "string")
-    || !hash(value.reference.editable_hash) || !hash(value.reference.coordinate_hash)
+    || !hash(value.reference.editable_hash) || !hash(value.reference.managed_hash) || !hash(value.reference.coordinate_hash)
     || !isRecord(value.reference.field_hashes)
     || !exactKeys(value.reference.field_hashes, [...MUTATION_FIELDS])
     || Object.values(value.reference.field_hashes).some((fieldHash) => !hash(fieldHash))
+    || !isRecord(value.reference.executable_field_hashes)
+    || !exactKeys(value.reference.executable_field_hashes, [...UNSUPPORTED_EXECUTABLE_FIELDS])
+    || Object.values(value.reference.executable_field_hashes).some((fieldHash) => !hash(fieldHash))
+    || typeof value.reference.unmanaged_executable_empty !== "boolean"
+    || value.reference.unknown_fields_empty !== true
     || value.reference.label !== EDITABLE_REFERENCE_ONLY
     || value.reference.evidence_scope !== EDITABLE_CONFIG_AND_STATUS_ONLY) {
     throw new CoreAiAgentAdminError("Reviewed plan requires a reference coordinate");
+  }
+  const { coordinate_hash: coordinateHash, ...referenceRecord } = value.reference;
+  if (coordinateHash !== sha256(referenceRecord)) {
+    throw new CoreAiAgentAdminError("Reviewed plan reference coordinate hash mismatch");
   }
   if (value.schema_version !== PLAN_VERSION || typeof value.created_at !== "string"
     || !isRecord(value.scope) || !exactKeys(value.scope, ["kind"])
@@ -764,14 +894,27 @@ function parsePlan(value: unknown): ReconciliationPlan {
   return plan;
 }
 
-async function readPlan(repositoryRoot: string, planPath: string): Promise<ReconciliationPlan> {
-  await checkedTarget(repositoryRoot, planPath);
-  const stat = await lstat(planPath);
-  if (!stat.isFile() || stat.size > 1_048_576) throw new CoreAiAgentAdminError("Reviewed plan file is invalid");
+async function readPlan(
+  repositoryRoot: string,
+  manifestRoot: string,
+  planPath: string,
+): Promise<{ plan: ReconciliationPlan; target: ArtifactTarget }> {
+  const target = await checkedArtifactTarget({
+    repositoryRoot, manifestRoot, targetPath: planPath, kind: "plan", require: "EXISTING",
+  });
+  const handle = await open(target.path, constants.O_RDONLY | noFollowFlag());
   let value: unknown;
-  try { value = JSON.parse(await readFile(planPath, "utf8")) as unknown; }
-  catch { throw new CoreAiAgentAdminError("Reviewed plan JSON is invalid"); }
-  return parsePlan(value);
+  try {
+    await verifyOpenedIdentity(handle, target);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 1_048_576) throw new CoreAiAgentAdminError("Reviewed plan file is invalid");
+    value = JSON.parse(await handle.readFile("utf8")) as unknown;
+    await verifyOpenedIdentity(handle, target);
+  } catch (error) {
+    if (error instanceof CoreAiAgentAdminError) throw error;
+    throw new CoreAiAgentAdminError("Reviewed plan JSON is invalid");
+  } finally { await handle.close(); }
+  return { plan: parsePlan(value), target };
 }
 
 type JournalEvent =
@@ -781,6 +924,9 @@ type JournalEvent =
   | { type: "CREATE_OUTCOME"; sequence: number; manifest_path: string; name: string; agent_id: string }
   | { type: "CREATE_REJECTED"; sequence: number; manifest_path: string; name: string; agent_id: string; reason_code: "REFERENCE_UUID" }
   | { type: "CREATE_FAILED"; sequence: number; manifest_path: string; name: string; status: number; endpoint_path: string | null }
+  | { type: "PREPUBLISH_VALIDATION_INTENT"; sequence: number; manifest_path: string; name: string; agent_id: string }
+  | { type: "PREPUBLISH_VALIDATION_OUTCOME"; sequence: number; manifest_path: string; name: string; agent_id: string; status: "DRAFT"; editable_hash: string }
+  | { type: "PREPUBLISH_VALIDATION_FAILED"; sequence: number; manifest_path: string; name: string; agent_id: string; reason_code: "NOT_NEW_OWNED_EXACT_DRAFT" }
   | { type: "PUBLISH_INTENT"; sequence: number; manifest_path: string; name: string; agent_id: string }
   | { type: "PUBLISH_OUTCOME"; sequence: number; manifest_path: string; name: string; agent_id: string }
   | { type: "PUBLISH_FAILED"; sequence: number; manifest_path: string; name: string; agent_id: string; status: number; endpoint_path: string | null }
@@ -788,30 +934,56 @@ type JournalEvent =
   | { type: "READBACK_FAILED"; sequence: number; manifest_path: string; name: string; agent_id: string; reason_code: "MISMATCH_OR_UNMANAGED_EXECUTABLE" };
 
 class EvidenceJournal {
-  constructor(private readonly handle: FileHandle) {}
+  constructor(
+    private readonly handle: FileHandle,
+    private readonly target: ArtifactTarget,
+  ) {}
   async append(event: JournalEvent): Promise<void> {
+    await verifyOpenedIdentity(this.handle, this.target);
     await this.handle.write(`${JSON.stringify(event)}\n`);
     await this.handle.sync();
+    await verifyOpenedIdentity(this.handle, this.target);
   }
   async close(): Promise<void> { await this.handle.close(); }
 }
 
-async function openJournal(repositoryRoot: string, evidencePath: string, plan: ReconciliationPlan): Promise<EvidenceJournal> {
-  const target = await checkedTarget(repositoryRoot, evidencePath);
+async function openJournal(input: {
+  repositoryRoot: string;
+  manifestRoot: string;
+  evidencePath: string;
+  planTarget: ArtifactTarget;
+  prepared: PreparedManifest[];
+  plan: ReconciliationPlan;
+}): Promise<EvidenceJournal> {
+  const target = await checkedArtifactTarget({
+    repositoryRoot: input.repositoryRoot, manifestRoot: input.manifestRoot,
+    targetPath: input.evidencePath, kind: "journal", require: "NEW",
+  });
+  if (target.path === input.planTarget.path || target.parent === input.planTarget.parent) {
+    throw new CoreAiAgentAdminError("Plan and journal artifacts must be isolated");
+  }
+  assertArtifactManifestIsolation(target, input.prepared);
   const handle = await open(
-    evidencePath,
-    constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW,
+    target.path,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollowFlag(),
     0o600,
   );
-  const journal = new EvidenceJournal(handle);
-  await journal.append({
-    type: "JOURNAL_OPENED",
-    plan_digest: plan.digest,
-    reference_id: plan.reference.id,
-    selected_paths_hash: sha256(plan.selected.map((entry) => entry.path)),
-  });
-  if (!target.existed) await syncDirectory(target.parent);
-  return journal;
+  try {
+    const fileIdentity = await verifyOpenedIdentity(handle, target);
+    const durableTarget = { ...target, fileIdentity };
+    const journal = new EvidenceJournal(handle, durableTarget);
+    await journal.append({
+      type: "JOURNAL_OPENED",
+      plan_digest: input.plan.digest,
+      reference_id: input.plan.reference.id,
+      selected_paths_hash: sha256(input.plan.selected.map((entry) => entry.path)),
+    });
+    await syncDirectory(target.parent);
+    return journal;
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 function errorCoordinate(error: unknown): { status: number; endpoint_path: string | null } {
@@ -827,6 +999,37 @@ function sameClassification(planned: PlanEntry, current: RemoteClassification): 
     && planned.action_hash === current.action_hash;
 }
 
+async function validateCreatedDraft(input: {
+  client: CoreAiAgentAdminClient;
+  createdId: string;
+  prepared: PreparedManifest;
+  preexistingPrincipalIds: ReadonlySet<string>;
+}): Promise<{ editableHash: string }> {
+  if (input.preexistingPrincipalIds.has(input.createdId)) {
+    throw new CoreAiAgentAdminError("Create response reused an existing principal Agent ID");
+  }
+  const detail = await input.client.getAgent(input.createdId);
+  const global = await collectAllAgents(input.client, { query: input.prepared.manifest.name });
+  const globalExact = global.filter((agent) => agent.name === input.prepared.manifest.name);
+  const mine = await collectAllAgents(input.client, {
+    query: "",
+    my: true,
+    includeSystemDefault: false,
+  });
+  const myExact = mine.filter((agent) => agent.id === input.createdId && agent.name === input.prepared.manifest.name);
+  if (globalExact.length !== 1 || globalExact[0]!.id !== input.createdId
+    || myExact.length !== 1 || myExact[0]!.id !== input.createdId
+    || detail.id !== input.createdId || detail.name !== input.prepared.manifest.name
+    || detail.status !== "DRAFT" || detail.system_default !== false) {
+    throw new CoreAiAgentAdminError("Created Agent is not a new owned exact DRAFT");
+  }
+  const snapshot = editableSnapshot(detail, true);
+  if (sha256(snapshot.managed) !== input.prepared.manifestHash) {
+    throw new CoreAiAgentAdminError("Created Agent DRAFT editable configuration mismatch");
+  }
+  return { editableHash: snapshot.editableHash };
+}
+
 export async function applyAgentReconciliationPlan(input: {
   client: CoreAiAgentAdminClient;
   repositoryRoot: string;
@@ -840,11 +1043,12 @@ export async function applyAgentReconciliationPlan(input: {
   evidence_scope: typeof EDITABLE_CONFIG_AND_STATUS_ONLY;
   remote_rollback?: typeof NO_DELETE_REMOTE_ROLLBACK;
 }>> {
-  const plan = await readPlan(input.repositoryRoot, input.planPath);
+  const { plan, target: planTarget } = await readPlan(input.repositoryRoot, input.manifestRoot, input.planPath);
   const selection = plan.scope.kind === "ALL"
     ? { kind: "ALL" as const }
     : { kind: "EXPLICIT" as const, paths: plan.selected.map((entry) => entry.path) };
   const prepared = await prepareManifests(input.repositoryRoot, input.manifestRoot, selection);
+  assertArtifactManifestIsolation(planTarget, prepared);
   if (prepared.length !== plan.selected.length) throw new CoreAiAgentAdminError("Reviewed plan scope drift");
   for (let index = 0; index < prepared.length; index += 1) {
     const local = prepared[index]!;
@@ -854,10 +1058,17 @@ export async function applyAgentReconciliationPlan(input: {
     }
   }
 
-  const journal = await openJournal(input.repositoryRoot, input.evidencePath, plan);
+  const journal = await openJournal({
+    repositoryRoot: input.repositoryRoot,
+    manifestRoot: input.manifestRoot,
+    evidencePath: input.evidencePath,
+    planTarget,
+    prepared,
+    plan,
+  });
   try {
-    const reference = await discoverReference(input.client, plan.reference.name);
-    if (reference.id !== plan.reference.id || reference.coordinate_hash !== plan.reference.coordinate_hash) {
+    const reference = await discoverReference(input.client);
+    if (canonical(reference) !== canonical(plan.reference)) {
       throw new CoreAiAgentAdminError("Reviewed plan reference drift");
     }
     const current: RemoteClassification[] = [];
@@ -868,6 +1079,12 @@ export async function applyAgentReconciliationPlan(input: {
       }
       current.push(classification);
     }
+    const principalRoster = await collectAllAgents(input.client, {
+      query: "",
+      my: true,
+      includeSystemDefault: false,
+    });
+    const preexistingPrincipalIds = new Set(principalRoster.map((agent) => agent.id));
 
     const results: Array<{
       action: "CREATE" | "NO_CHANGE";
@@ -907,6 +1124,30 @@ export async function applyAgentReconciliationPlan(input: {
         throw new CoreAiAgentAdminError("Create response reused the mandatory reference Agent UUID");
       }
 
+      await journal.append({
+        type: "PREPUBLISH_VALIDATION_INTENT", sequence, manifest_path: local.path,
+        name: local.manifest.name, agent_id: created.id,
+      });
+      try {
+        const validated = await validateCreatedDraft({
+          client: input.client,
+          createdId: created.id,
+          prepared: local,
+          preexistingPrincipalIds,
+        });
+        await journal.append({
+          type: "PREPUBLISH_VALIDATION_OUTCOME", sequence, manifest_path: local.path,
+          name: local.manifest.name, agent_id: created.id, status: "DRAFT", editable_hash: validated.editableHash,
+        });
+        preexistingPrincipalIds.add(created.id);
+      } catch {
+        await journal.append({
+          type: "PREPUBLISH_VALIDATION_FAILED", sequence, manifest_path: local.path,
+          name: local.manifest.name, agent_id: created.id, reason_code: "NOT_NEW_OWNED_EXACT_DRAFT",
+        });
+        throw new CoreAiAgentAdminError("Created Agent pre-publish validation failed closed");
+      }
+
       await journal.append({ type: "PUBLISH_INTENT", sequence, manifest_path: local.path, name: local.manifest.name, agent_id: created.id });
       try {
         await input.client.publishAgent(created.id);
@@ -919,7 +1160,7 @@ export async function applyAgentReconciliationPlan(input: {
       try {
         const readback = await input.client.getAgent(created.id);
         if (readback.id !== created.id || readback.name !== local.manifest.name || readback.status !== "PUBLISHED"
-          || readback.system_default === true) {
+          || readback.system_default !== false) {
           throw new CoreAiAgentAdminError("Created Agent readback mismatch");
         }
         const snapshot = editableSnapshot(readback, true);
