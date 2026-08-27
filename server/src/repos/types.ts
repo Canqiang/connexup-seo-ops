@@ -5,6 +5,7 @@ import type {
   GbpExecutionCommandV1,
   GbpExecutionReceiptV1,
   GbpReadbackV1,
+  GbpSafeErrorCode,
 } from "../domain/gbpExecutionContract.js";
 
 /** Domain objects handed between repos and services (camelCase internally;
@@ -91,14 +92,15 @@ export interface GbpCommandState {
   merchantId: string;
   locationId: string;
   status: GbpCommandStateStatus;
+  stateVersion: number;
   scheduledFor: string;
   leaseOwner: string | null;
+  leaseToken: string | null;
   leaseAcquiredAt: string | null;
   leaseExpiresAt: string | null;
   triggerStartedAt: string | null;
   coreRunId: string | null;
-  safeErrorCode: string | null;
-  safeErrorMessage: string | null;
+  safeErrorCode: GbpSafeErrorCode | null;
   resolvedAt: string | null;
   createdAt: string;
   updatedAt: string;

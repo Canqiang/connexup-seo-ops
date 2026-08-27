@@ -3,8 +3,15 @@ import {
   GbpExecutionCommandSchema,
   GbpExecutionReceiptSchema,
   GbpReadbackSchema,
+  GbpSafeErrorCodeSchema,
   canonicalGbpCommand,
+  canonicalGbpCommandBody,
+  canonicalGbpCommandCta,
+  canonicalGbpCommandImage,
   hashGbpCommand,
+  hashGbpCommandBody,
+  hashGbpCommandCta,
+  hashGbpCommandImage,
 } from "../src/domain/gbpExecutionContract.js";
 
 const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
@@ -104,6 +111,60 @@ describe("GBP execution contracts", () => {
     expect(() => canonicalGbpCommand({ ...validCommand, unexpected: true })).toThrow();
   });
 
+  it("accepts only short logical secret names and typed safe error codes", () => {
+    for (const rejected of [
+      "coreai_token",
+      "Bearer-secret",
+      "../merchant-secret",
+      "merchant secret",
+      "a".repeat(64),
+    ]) {
+      expect(() => GbpExecutionCommandSchema.parse({
+        ...validCommand,
+        core: { ...validCommand.core, write_secret_ref: rejected },
+      })).toThrow();
+    }
+    expect(GbpSafeErrorCodeSchema.parse("TASK_DRIFT")).toBe("TASK_DRIFT");
+    expect(() => GbpSafeErrorCodeSchema.parse("token=secret-value")).toThrow();
+  });
+
+  it("requires canonical UTC Z scheduling and an equal local instant with the IANA offset", () => {
+    expect(() => GbpExecutionCommandSchema.parse({
+      ...validCommand,
+      scheduled_for: "2026-08-27T12:30:00.000+00:00",
+    })).toThrow();
+    expect(() => GbpExecutionCommandSchema.parse({
+      ...validCommand,
+      gbp: { ...validCommand.gbp, scheduled_for_local: "2026-08-27T12:30:00.000Z" },
+    })).toThrow();
+    expect(() => GbpExecutionCommandSchema.parse({
+      ...validCommand,
+      gbp: { ...validCommand.gbp, scheduled_for_local: "2026-08-27T09:30:00-04:00" },
+    })).toThrow();
+    expect(() => GbpExecutionCommandSchema.parse({
+      ...validCommand,
+      gbp: { ...validCommand.gbp, scheduled_for_local: "2026-08-27T12:30:00+00:00" },
+    })).toThrow();
+  });
+
+  it("derives canonical body, CTA, and image hashes only from a parsed command", () => {
+    expect(canonicalGbpCommandBody(validCommand)).toBe(
+      '{"body":"Fresh lunch specials are ready."}',
+    );
+    expect(canonicalGbpCommandCta(validCommand)).toBe(
+      '{"type":"ORDER","url":"https://example.test/order"}',
+    );
+    expect(canonicalGbpCommandImage(validCommand)).toBe(
+      `{"alt_text":"Lunch special with rice and vegetables","deliverable_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","sha256":"${sha("c")}"}`,
+    );
+    for (const digest of [
+      hashGbpCommandBody(validCommand),
+      hashGbpCommandCta(validCommand),
+      hashGbpCommandImage(validCommand),
+    ]) expect(digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(() => hashGbpCommandBody({ ...validCommand, leaked: "input" })).toThrow();
+  });
+
   it("keeps receipts strict and enforces the mutation/status invariant", () => {
     expect(GbpExecutionReceiptSchema.parse(validReceipt)).toEqual(validReceipt);
     expect(() => GbpExecutionReceiptSchema.parse({
@@ -121,6 +182,18 @@ describe("GBP execution contracts", () => {
       status: "ALREADY_APPLIED",
       provider_mutation_count: 1,
     })).toThrow();
+    expect(() => GbpExecutionReceiptSchema.parse({
+      ...validReceipt,
+      status: "REJECTED_PRE_MUTATION",
+      provider_mutation_count: 0,
+    })).toThrow();
+    expect(GbpExecutionReceiptSchema.parse({
+      ...validReceipt,
+      status: "REJECTED_PRE_MUTATION",
+      provider_mutation_count: 0,
+      provider_post_resource: null,
+      applied_at: null,
+    })).toMatchObject({ status: "REJECTED_PRE_MUTATION" });
   });
 
   it("keeps independent readback observations strict", () => {

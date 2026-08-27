@@ -360,8 +360,8 @@ export const SCHEMA_STATEMENTS: string[] = [
       CHECK (status IN ('DISABLED', 'READY', 'BLOCKED')),
     state_version INTEGER NOT NULL CHECK (state_version > 0),
     updated_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
     UNIQUE(merchant_id, location_id),
     UNIQUE(id, merchant_id, location_id),
     FOREIGN KEY (location_id, merchant_id) REFERENCES seo_locations(id, merchant_id)
@@ -387,13 +387,13 @@ export const SCHEMA_STATEMENTS: string[] = [
     binding_state_version INTEGER NOT NULL CHECK (binding_state_version > 0),
     operation TEXT NOT NULL CONSTRAINT seo_gbp_commands_create_only_check
       CHECK (operation = 'CREATE_POST'),
-    scheduled_for TEXT NOT NULL,
+    scheduled_for TIMESTAMPTZ NOT NULL,
     provider_idempotency_key TEXT NOT NULL UNIQUE,
     probe_ref TEXT NOT NULL UNIQUE,
     canonical_json TEXT NOT NULL,
     command_sha256 TEXT NOT NULL,
     created_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
     UNIQUE(task_id, task_revision),
     UNIQUE(id, merchant_id, location_id),
     FOREIGN KEY (task_id, merchant_id, location_id)
@@ -412,26 +412,99 @@ export const SCHEMA_STATEMENTS: string[] = [
       'SCHEDULED', 'CLAIMED', 'TRIGGERING', 'RUNNING', 'RECEIPT_ACCEPTED',
       'READBACK_PENDING', 'READBACK_RUNNING', 'DONE', 'BLOCKED_PRE_SEND', 'OUTCOME_UNKNOWN'
     )),
-    scheduled_for TEXT NOT NULL,
+    state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version > 0),
+    scheduled_for TIMESTAMPTZ NOT NULL,
     lease_owner TEXT,
-    lease_acquired_at TEXT,
-    lease_expires_at TEXT,
-    trigger_started_at TEXT,
+    lease_token TEXT,
+    lease_acquired_at TIMESTAMPTZ,
+    lease_expires_at TIMESTAMPTZ,
+    trigger_started_at TIMESTAMPTZ,
     core_run_id TEXT,
-    safe_error_code TEXT,
-    safe_error_message TEXT,
-    resolved_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    safe_error_code TEXT CONSTRAINT seo_gbp_command_states_safe_error_code_check CHECK (
+      safe_error_code IS NULL OR safe_error_code IN (
+        'TASK_DRIFT', 'BINDING_DRIFT', 'CLAIM_LOST', 'CONFIG_INVALID',
+        'TRIGGER_AMBIGUOUS', 'CORE_RUN_FAILED', 'CORE_RUN_TIMEOUT',
+        'CORE_RUN_CANCELLED', 'RECEIPT_INVALID', 'RECEIPT_MISMATCH',
+        'READBACK_FAILED', 'READBACK_MISMATCH'
+      )
+    ),
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT seo_gbp_command_states_lease_tuple_check CHECK (
-      (lease_owner IS NULL AND lease_acquired_at IS NULL AND lease_expires_at IS NULL)
+      (lease_owner IS NULL AND lease_token IS NULL
+       AND lease_acquired_at IS NULL AND lease_expires_at IS NULL)
       OR
-      (lease_owner IS NOT NULL AND lease_acquired_at IS NOT NULL
+      (lease_owner IS NOT NULL AND lease_token IS NOT NULL
+       AND lease_acquired_at IS NOT NULL
        AND lease_expires_at IS NOT NULL AND lease_expires_at > lease_acquired_at)
+    ),
+    CONSTRAINT seo_gbp_command_states_unknown_unresolved_check CHECK (
+      status <> 'OUTCOME_UNKNOWN' OR resolved_at IS NULL
+    ),
+    CONSTRAINT seo_gbp_command_states_done_resolved_check CHECK (
+      status <> 'DONE' OR resolved_at IS NOT NULL
     ),
     FOREIGN KEY (command_id, merchant_id, location_id)
       REFERENCES seo_gbp_commands(id, merchant_id, location_id)
   )`,
+  `CREATE OR REPLACE FUNCTION seo_gbp_guard_command_state_update()
+   RETURNS trigger AS $$
+   BEGIN
+     IF NEW.state_version <> OLD.state_version + 1 THEN
+       RAISE EXCEPTION 'illegal GBP command state version';
+     END IF;
+     IF OLD.trigger_started_at IS NOT NULL
+        AND NEW.trigger_started_at IS DISTINCT FROM OLD.trigger_started_at THEN
+       RAISE EXCEPTION 'GBP trigger marker is immutable';
+     END IF;
+     IF OLD.trigger_started_at IS NULL AND NEW.trigger_started_at IS NOT NULL
+        AND NOT (OLD.status = 'CLAIMED' AND NEW.status = 'TRIGGERING') THEN
+       RAISE EXCEPTION 'GBP trigger marker requires CLAIMED to TRIGGERING';
+     END IF;
+     IF OLD.resolved_at IS NOT NULL
+        AND NEW.resolved_at IS DISTINCT FROM OLD.resolved_at THEN
+       RAISE EXCEPTION 'GBP resolution marker is immutable';
+     END IF;
+     IF OLD.status = NEW.status AND OLD.status <> 'CLAIMED' THEN
+       RAISE EXCEPTION 'GBP state updates require an explicit transition';
+     END IF;
+     IF OLD.status = 'CLAIMED' AND NEW.status = 'CLAIMED' AND (
+       NEW.trigger_started_at IS DISTINCT FROM OLD.trigger_started_at OR
+       NEW.core_run_id IS DISTINCT FROM OLD.core_run_id OR
+       NEW.safe_error_code IS DISTINCT FROM OLD.safe_error_code OR
+       NEW.resolved_at IS DISTINCT FROM OLD.resolved_at
+     ) THEN
+       RAISE EXCEPTION 'GBP claim renewal may change only its lease tuple';
+     END IF;
+     IF OLD.status <> NEW.status AND NOT (
+       (OLD.status = 'SCHEDULED' AND NEW.status = 'CLAIMED') OR
+       (OLD.status = 'CLAIMED' AND NEW.status IN ('TRIGGERING', 'BLOCKED_PRE_SEND')) OR
+       (OLD.status = 'TRIGGERING' AND NEW.status IN ('RUNNING', 'OUTCOME_UNKNOWN')) OR
+       (OLD.status = 'RUNNING' AND NEW.status IN ('RECEIPT_ACCEPTED', 'OUTCOME_UNKNOWN')) OR
+       (OLD.status = 'RECEIPT_ACCEPTED' AND NEW.status = 'READBACK_PENDING') OR
+       (OLD.status = 'READBACK_PENDING' AND NEW.status = 'READBACK_RUNNING') OR
+       (OLD.status = 'READBACK_RUNNING' AND NEW.status IN ('READBACK_PENDING', 'DONE')) OR
+       (OLD.status = 'OUTCOME_UNKNOWN' AND NEW.status = 'DONE')
+     ) THEN
+       RAISE EXCEPTION 'illegal GBP command state transition';
+     END IF;
+     RETURN NEW;
+   END;
+   $$ LANGUAGE plpgsql`,
+  `DO $$
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'seo_gbp_command_states'::regclass
+          AND tgname = 'trg_seo_gbp_guard_command_state_update'
+          AND NOT tgisinternal
+     ) THEN
+       CREATE TRIGGER trg_seo_gbp_guard_command_state_update
+       BEFORE UPDATE ON seo_gbp_command_states
+       FOR EACH ROW EXECUTE FUNCTION seo_gbp_guard_command_state_update();
+     END IF;
+   END $$`,
   `CREATE INDEX IF NOT EXISTS idx_gbp_command_states_due
      ON seo_gbp_command_states(status, scheduled_for, lease_expires_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_gbp_command_states_unresolved_location
@@ -443,7 +516,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     instruction_id TEXT NOT NULL UNIQUE,
     canonical_json TEXT NOT NULL,
     receipt_sha256 TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TIMESTAMPTZ NOT NULL
   )`,
 
   `CREATE TABLE IF NOT EXISTS seo_gbp_readback_attempts (
@@ -452,8 +525,15 @@ export const SCHEMA_STATEMENTS: string[] = [
     observation_json TEXT,
     observation_sha256 TEXT,
     diff_codes TEXT NOT NULL DEFAULT '[]',
-    safe_error_code TEXT,
-    created_at TEXT NOT NULL,
+    safe_error_code TEXT CONSTRAINT seo_gbp_readback_safe_error_code_check CHECK (
+      safe_error_code IS NULL OR safe_error_code IN (
+        'TASK_DRIFT', 'BINDING_DRIFT', 'CLAIM_LOST', 'CONFIG_INVALID',
+        'TRIGGER_AMBIGUOUS', 'CORE_RUN_FAILED', 'CORE_RUN_TIMEOUT',
+        'CORE_RUN_CANCELLED', 'RECEIPT_INVALID', 'RECEIPT_MISMATCH',
+        'READBACK_FAILED', 'READBACK_MISMATCH'
+      )
+    ),
+    created_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT seo_gbp_readback_observation_tuple_check CHECK (
       (observation_json IS NULL AND observation_sha256 IS NULL)
       OR (observation_json IS NOT NULL AND observation_sha256 IS NOT NULL)
@@ -466,6 +546,18 @@ export const SCHEMA_STATEMENTS: string[] = [
      ADD COLUMN IF NOT EXISTS gbp_command_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_attempts_gbp_command
      ON seo_execution_attempts(gbp_command_id) WHERE gbp_command_id IS NOT NULL`,
+  `DO $$
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'seo_execution_attempts'::regclass
+          AND conname = 'seo_execution_attempts_gbp_command_fk'
+     ) THEN
+       ALTER TABLE seo_execution_attempts
+         ADD CONSTRAINT seo_execution_attempts_gbp_command_fk
+         FOREIGN KEY (gbp_command_id) REFERENCES seo_gbp_commands(id);
+     END IF;
+   END $$`,
 
   /** 幂等键唯一索引：并发同 key 双创建靠数据库兜底（23505 → 重试走 replay）。 */
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_idem_key ON seo_tasks(creation_idempotency_key) WHERE creation_idempotency_key IS NOT NULL`,

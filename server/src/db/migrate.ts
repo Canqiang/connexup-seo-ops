@@ -33,6 +33,70 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE seo_execution_attempts ADD COLUMN IF NOT EXISTS gbp_command_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_attempts_gbp_command
      ON seo_execution_attempts(gbp_command_id) WHERE gbp_command_id IS NOT NULL`,
+  `ALTER TABLE seo_gbp_location_bindings
+     ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz,
+     ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING updated_at::timestamptz`,
+  `ALTER TABLE seo_gbp_commands
+     ALTER COLUMN scheduled_for TYPE TIMESTAMPTZ USING scheduled_for::timestamptz,
+     ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz`,
+  `ALTER TABLE seo_gbp_command_states ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE seo_gbp_command_states ADD COLUMN IF NOT EXISTS lease_token TEXT`,
+  `ALTER TABLE seo_gbp_command_states DROP COLUMN IF EXISTS safe_error_message`,
+  `ALTER TABLE seo_gbp_command_states
+     ALTER COLUMN scheduled_for TYPE TIMESTAMPTZ USING scheduled_for::timestamptz,
+     ALTER COLUMN lease_acquired_at TYPE TIMESTAMPTZ USING lease_acquired_at::timestamptz,
+     ALTER COLUMN lease_expires_at TYPE TIMESTAMPTZ USING lease_expires_at::timestamptz,
+     ALTER COLUMN trigger_started_at TYPE TIMESTAMPTZ USING trigger_started_at::timestamptz,
+     ALTER COLUMN resolved_at TYPE TIMESTAMPTZ USING resolved_at::timestamptz,
+     ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz,
+     ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING updated_at::timestamptz`,
+  `ALTER TABLE seo_gbp_receipts
+     ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz`,
+  `ALTER TABLE seo_gbp_readback_attempts
+     ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz`,
+  `ALTER TABLE seo_gbp_command_states
+     DROP CONSTRAINT IF EXISTS seo_gbp_command_states_lease_tuple_check`,
+  `ALTER TABLE seo_gbp_command_states
+     ADD CONSTRAINT seo_gbp_command_states_lease_tuple_check CHECK (
+       (lease_owner IS NULL AND lease_token IS NULL
+        AND lease_acquired_at IS NULL AND lease_expires_at IS NULL)
+       OR
+       (lease_owner IS NOT NULL AND lease_token IS NOT NULL
+        AND lease_acquired_at IS NOT NULL AND lease_expires_at IS NOT NULL
+        AND lease_expires_at > lease_acquired_at)
+     )`,
+  `ALTER TABLE seo_gbp_command_states
+     DROP CONSTRAINT IF EXISTS seo_gbp_command_states_unknown_unresolved_check`,
+  `ALTER TABLE seo_gbp_command_states
+     ADD CONSTRAINT seo_gbp_command_states_unknown_unresolved_check
+     CHECK (status <> 'OUTCOME_UNKNOWN' OR resolved_at IS NULL)`,
+  `ALTER TABLE seo_gbp_command_states
+     DROP CONSTRAINT IF EXISTS seo_gbp_command_states_done_resolved_check`,
+  `ALTER TABLE seo_gbp_command_states
+     ADD CONSTRAINT seo_gbp_command_states_done_resolved_check
+     CHECK (status <> 'DONE' OR resolved_at IS NOT NULL)`,
+  `ALTER TABLE seo_gbp_command_states
+     DROP CONSTRAINT IF EXISTS seo_gbp_command_states_safe_error_code_check`,
+  `ALTER TABLE seo_gbp_command_states
+     ADD CONSTRAINT seo_gbp_command_states_safe_error_code_check CHECK (
+       safe_error_code IS NULL OR safe_error_code IN (
+         'TASK_DRIFT', 'BINDING_DRIFT', 'CLAIM_LOST', 'CONFIG_INVALID',
+         'TRIGGER_AMBIGUOUS', 'CORE_RUN_FAILED', 'CORE_RUN_TIMEOUT',
+         'CORE_RUN_CANCELLED', 'RECEIPT_INVALID', 'RECEIPT_MISMATCH',
+         'READBACK_FAILED', 'READBACK_MISMATCH'
+       )
+     )`,
+  `ALTER TABLE seo_gbp_readback_attempts
+     DROP CONSTRAINT IF EXISTS seo_gbp_readback_safe_error_code_check`,
+  `ALTER TABLE seo_gbp_readback_attempts
+     ADD CONSTRAINT seo_gbp_readback_safe_error_code_check CHECK (
+       safe_error_code IS NULL OR safe_error_code IN (
+         'TASK_DRIFT', 'BINDING_DRIFT', 'CLAIM_LOST', 'CONFIG_INVALID',
+         'TRIGGER_AMBIGUOUS', 'CORE_RUN_FAILED', 'CORE_RUN_TIMEOUT',
+         'CORE_RUN_CANCELLED', 'RECEIPT_INVALID', 'RECEIPT_MISMATCH',
+         'READBACK_FAILED', 'READBACK_MISMATCH'
+       )
+     )`,
   `ALTER TABLE seo_content_drafts ADD COLUMN IF NOT EXISTS agent_run_id TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_drafts_agent_run
      ON seo_content_drafts(agent_run_id) WHERE agent_run_id IS NOT NULL`,

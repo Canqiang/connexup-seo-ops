@@ -1,10 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { migrate } from "../src/db/migrate.js";
 import type { Db } from "../src/db/connection.js";
-import { hashGbpCommand } from "../src/domain/gbpExecutionContract.js";
+import {
+  hashGbpCommand,
+  hashGbpCommandBody,
+  hashGbpCommandCta,
+  hashGbpCommandImage,
+} from "../src/domain/gbpExecutionContract.js";
 import {
   claimNextGbpCommand,
+  completeGbpCommandFromExactReadback,
   getGbpCommand,
+  getGbpCommandState,
   getGbpLocationBinding,
   getGbpReceipt,
   insertGbpCommand,
@@ -12,6 +19,9 @@ import {
   insertGbpReadbackAttempt,
   insertGbpReceipt,
   listGbpReadbackAttempts,
+  markGbpCommandOutcomeUnknown,
+  markGbpCommandRunning,
+  markGbpCommandTriggering,
 } from "../src/repos/gbpExecutionRepo.js";
 import type { GbpLocationBinding } from "../src/repos/types.js";
 import { createTestDb } from "./helpers/pgTest.js";
@@ -68,6 +78,17 @@ const command = {
   probe_ref: "gbp-probe-11111111-rev7",
 } as const;
 
+const approvalDecision = {
+  id: command.task.approval_decision_id,
+  decision: "APPROVE",
+  taskRevision: command.task.task_revision,
+  executionSpecHash: command.task.execution_spec_sha256,
+  expectedStateVersion: 1,
+  resultingStateVersion: 2,
+  actorId: "operator-1",
+  decidedAt: "2026-08-27T11:59:00.000Z",
+};
+
 const binding: GbpLocationBinding = {
   id: "binding-1",
   merchantId: command.task.merchant_id,
@@ -108,11 +129,12 @@ async function insertScope(db: Db): Promise<void> {
     `INSERT INTO seo_tasks
       (id, merchant_id, location_id, task_type, source, priority, impact,
        status, evidence_state, task_revision, state_version, title,
-       execution_spec, execution_spec_hash, created_at, updated_at)
+       execution_spec, execution_spec_hash, approval_decisions, created_at, updated_at)
      VALUES ($1, $2, $3, 'GBP_POST', 'CYCLE', 'HIGH', 'HIGH', 'APPROVED',
-             'VERIFIED', $4, 1, 'GBP Post', '{}', $5, $6, $6)`,
+             'VERIFIED', $4, 1, 'GBP Post', '{}', $5, $6, $7, $7)`,
     [command.task.id, command.task.merchant_id, command.task.location_id,
-      command.task.task_revision, command.task.execution_spec_sha256, now],
+      command.task.task_revision, command.task.execution_spec_sha256,
+      JSON.stringify([approvalDecision]), now],
   );
 }
 
@@ -147,7 +169,7 @@ describe("GBP persistence migration", () => {
     const tokenColumns = await ctx.db.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
        WHERE table_schema = $1 AND table_name LIKE 'seo_gbp_%'
-         AND column_name ILIKE '%token%'`,
+         AND column_name ILIKE '%token%' AND column_name <> 'lease_token'`,
       [ctx.schema],
     );
     expect(tokenColumns).toEqual([]);
@@ -157,6 +179,30 @@ describe("GBP persistence migration", () => {
       [ctx.schema],
     );
     expect(attemptColumns.map((row) => row.column_name)).toContain("gbp_command_id");
+    const unsafeColumns = await ctx.db.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'seo_gbp_command_states'
+         AND column_name IN ('safe_error_message', 'error', 'error_message')`,
+      [ctx.schema],
+    );
+    expect(unsafeColumns).toEqual([]);
+    const timestampColumns = await ctx.db.query<{ table_name: string; column_name: string; data_type: string }>(
+      `SELECT table_name, column_name, data_type FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name LIKE 'seo_gbp_%'
+         AND (column_name LIKE '%_at' OR column_name IN ('scheduled_for', 'lease_expires_at'))`,
+      [ctx.schema],
+    );
+    expect(timestampColumns.length).toBeGreaterThan(10);
+    expect(timestampColumns.every((column) => column.data_type === "timestamp with time zone")).toBe(true);
+
+    await expect(ctx.db.exec(
+      `INSERT INTO seo_execution_attempts
+        (id, task_id, merchant_id, attempt_no, status, gate, probe_ref,
+         started_at, created_at, updated_at, gbp_command_id)
+       VALUES ('orphan-attempt', 'task-x', 'merchant-x', 1, 'DISPATCHING', 'G2',
+               'probe-x', $1, $1, $1, 'missing-gbp-command')`,
+      [now],
+    )).rejects.toMatchObject({ code: "23503" });
 
     await seedCommand(ctx.db);
     await expect(ctx.db.exec(
@@ -164,7 +210,7 @@ describe("GBP persistence migration", () => {
     )).rejects.toMatchObject({ code: "23514" });
     await expect(ctx.db.exec(
       `UPDATE seo_gbp_command_states SET lease_owner = 'worker-only' WHERE command_id = 'command-1'`,
-    )).rejects.toMatchObject({ code: "23514" });
+    )).rejects.toBeTruthy();
 
     await expect(ctx.db.exec(
       `INSERT INTO seo_gbp_commands
@@ -253,11 +299,12 @@ describe("GBP execution repository", () => {
       `INSERT INTO seo_tasks
         (id, merchant_id, location_id, task_type, source, priority, impact,
          status, evidence_state, task_revision, state_version, title,
-         execution_spec, execution_spec_hash, created_at, updated_at)
+         execution_spec, execution_spec_hash, approval_decisions, created_at, updated_at)
        VALUES ($1,$2,$3,'GBP_POST','CYCLE','HIGH','HIGH','APPROVED','VERIFIED',
-               $4,1,'Competing GBP Post','{}',$5,$6,$6)`,
+               $4,1,'Competing GBP Post','{}',$5,$6,$7,$7)`,
       [competing.task.id, competing.task.merchant_id, competing.task.location_id,
-        competing.task.task_revision, competing.task.execution_spec_sha256, now],
+        competing.task.task_revision, competing.task.execution_spec_sha256,
+        JSON.stringify([{ ...approvalDecision, taskRevision: competing.task.task_revision }]), now],
     );
     await expect(insertGbpCommand(ctx.db, {
       id: "command-competing",
@@ -273,14 +320,44 @@ describe("GBP execution repository", () => {
   });
 
   it("claims a due command once across competing workers using a complete lease tuple", async () => {
+    const rejectedNow = "Bearer secret-clock";
+    let rejectedClaim: unknown;
+    try {
+      await claimNextGbpCommand(ctx.db, {
+        merchantId: command.task.merchant_id,
+        locationId: command.task.location_id,
+        workerId: "worker-invalid",
+        leaseToken: "dddddddd-1111-4111-8111-111111111111",
+        now: rejectedNow,
+        leaseExpiresAt: "2026-08-27T13:05:00.000Z",
+      });
+    } catch (error) {
+      rejectedClaim = error;
+    }
+    expect(rejectedClaim).toBeTruthy();
+    expect(String(rejectedClaim)).not.toContain(rejectedNow);
+    await expect(claimNextGbpCommand(ctx.db, {
+      merchantId: command.task.merchant_id,
+      locationId: command.task.location_id,
+      workerId: "worker-invalid",
+      leaseToken: "dddddddd-1111-4111-8111-111111111111",
+      now: "2026-08-27T13:00:00.000Z",
+      leaseExpiresAt: "2026-08-27T13:00:00.000Z",
+    })).rejects.toThrow(/Invalid GBP claim input/);
     const [a, b] = await Promise.all([
       claimNextGbpCommand(ctx.db, {
+        merchantId: command.task.merchant_id,
+        locationId: command.task.location_id,
         workerId: "worker-a",
+        leaseToken: "aaaaaaaa-1111-4111-8111-111111111111",
         now: "2026-08-27T13:00:00.000Z",
         leaseExpiresAt: "2026-08-27T13:05:00.000Z",
       }),
       claimNextGbpCommand(ctx.db, {
+        merchantId: command.task.merchant_id,
+        locationId: command.task.location_id,
         workerId: "worker-b",
+        leaseToken: "bbbbbbbb-1111-4111-8111-111111111111",
         now: "2026-08-27T13:00:00.000Z",
         leaseExpiresAt: "2026-08-27T13:05:00.000Z",
       }),
@@ -291,8 +368,98 @@ describe("GBP execution repository", () => {
       status: "CLAIMED",
       leaseAcquiredAt: "2026-08-27T13:00:00.000Z",
       leaseExpiresAt: "2026-08-27T13:05:00.000Z",
+      stateVersion: 2,
     });
     expect(["worker-a", "worker-b"]).toContain(claims[0]?.state.leaseOwner);
+    expect([
+      "aaaaaaaa-1111-4111-8111-111111111111",
+      "bbbbbbbb-1111-4111-8111-111111111111",
+    ]).toContain(claims[0]?.state.leaseToken);
+    expect(await getGbpCommandState(
+      ctx.db,
+      "command-1",
+      "foreign-merchant",
+      command.task.location_id,
+    )).toBeNull();
+
+    const state = claims[0]!.state;
+    expect(await markGbpCommandTriggering(ctx.db, {
+      commandId: state.commandId,
+      merchantId: state.merchantId,
+      locationId: state.locationId,
+      expectedStateVersion: state.stateVersion,
+      leaseOwner: state.leaseOwner!,
+      leaseToken: "cccccccc-1111-4111-8111-111111111111",
+      triggerStartedAt: "2026-08-27T13:00:10.000Z",
+      updatedAt: "2026-08-27T13:00:10.000Z",
+    })).toBeNull();
+    const triggering = await markGbpCommandTriggering(ctx.db, {
+      commandId: state.commandId,
+      merchantId: state.merchantId,
+      locationId: state.locationId,
+      expectedStateVersion: state.stateVersion,
+      leaseOwner: state.leaseOwner!,
+      leaseToken: state.leaseToken!,
+      triggerStartedAt: "2026-08-27T13:00:10.000Z",
+      updatedAt: "2026-08-27T13:00:10.000Z",
+    });
+    expect(triggering).toMatchObject({ status: "TRIGGERING", stateVersion: 3 });
+    await expect(ctx.db.exec(
+      `UPDATE seo_gbp_command_states SET trigger_started_at = NULL WHERE command_id = 'command-1'`,
+    )).rejects.toBeTruthy();
+    await expect(ctx.db.exec(
+      `UPDATE seo_gbp_command_states SET status = 'SCHEDULED' WHERE command_id = 'command-1'`,
+    )).rejects.toBeTruthy();
+
+    const running = await markGbpCommandRunning(ctx.db, {
+      commandId: state.commandId,
+      merchantId: state.merchantId,
+      locationId: state.locationId,
+      expectedStateVersion: triggering!.stateVersion,
+      leaseOwner: state.leaseOwner!,
+      leaseToken: state.leaseToken!,
+      coreRunId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      updatedAt: "2026-08-27T13:00:20.000Z",
+    });
+    expect(running).toMatchObject({ status: "RUNNING", stateVersion: 4 });
+    const unknown = await markGbpCommandOutcomeUnknown(ctx.db, {
+      commandId: state.commandId,
+      merchantId: state.merchantId,
+      locationId: state.locationId,
+      expectedStateVersion: running!.stateVersion,
+      leaseOwner: state.leaseOwner!,
+      leaseToken: state.leaseToken!,
+      safeErrorCode: "TRIGGER_AMBIGUOUS",
+      updatedAt: "2026-08-27T13:00:30.000Z",
+    });
+    expect(unknown).toMatchObject({
+      status: "OUTCOME_UNKNOWN",
+      safeErrorCode: "TRIGGER_AMBIGUOUS",
+      resolvedAt: null,
+      stateVersion: 5,
+    });
+    await expect(ctx.db.exec(
+      `UPDATE seo_gbp_command_states SET resolved_at = $1 WHERE command_id = 'command-1'`,
+      ["2026-08-27T13:00:40.000Z"],
+    )).rejects.toBeTruthy();
+    const rejectedInput = "secret=do-not-echo";
+    let rejectedError: unknown;
+    try {
+      await markGbpCommandOutcomeUnknown(ctx.db, {
+        commandId: state.commandId,
+        merchantId: state.merchantId,
+        locationId: state.locationId,
+        expectedStateVersion: unknown!.stateVersion,
+        leaseOwner: state.leaseOwner!,
+        leaseToken: state.leaseToken!,
+        safeErrorCode: rejectedInput as never,
+        updatedAt: "2026-08-27T13:00:40.000Z",
+      });
+    } catch (error) {
+      rejectedError = error;
+    }
+    expect(rejectedError).toBeTruthy();
+    expect(String(rejectedError)).not.toContain(rejectedInput);
   });
 
   it("persists one strict immutable receipt and append-only strict readbacks", async () => {
@@ -313,11 +480,54 @@ describe("GBP execution repository", () => {
       provider_post_resource: "accounts/123456789/locations/987654321/localPosts/post-1",
       provider_request_id: "request-1",
       applied_at: "2026-08-27T13:01:00.000Z",
-      submitted: { body_sha256: sha("d"), cta_sha256: sha("e"), media_sha256: sha("c") },
+      submitted: {
+        body_sha256: hashGbpCommandBody(command),
+        cta_sha256: hashGbpCommandCta(command),
+        media_sha256: hashGbpCommandImage(command),
+      },
     } as const;
-    await insertGbpReceipt(ctx.db, { commandId: "command-1", receipt, createdAt: now });
-    expect((await getGbpReceipt(ctx.db, "command-1"))?.receipt).toEqual(receipt);
-    await expect(insertGbpReceipt(ctx.db, { commandId: "command-1", receipt, createdAt: now }))
+    await expect(insertGbpReceipt(ctx.db, {
+      commandId: "command-1",
+      merchantId: command.task.merchant_id,
+      locationId: command.task.location_id,
+      receipt: {
+        ...receipt,
+        submitted: { ...receipt.submitted, body_sha256: sha("0") },
+      },
+      createdAt: now,
+    })).rejects.toThrow(/receipt/i);
+    await insertGbpReceipt(ctx.db, {
+      commandId: "command-1",
+      merchantId: command.task.merchant_id,
+      locationId: command.task.location_id,
+      receipt,
+      createdAt: now,
+    });
+    expect((await getGbpReceipt(
+      ctx.db,
+      "command-1",
+      command.task.merchant_id,
+      command.task.location_id,
+    ))?.receipt).toEqual(receipt);
+    expect(await getGbpReceipt(
+      ctx.db,
+      "command-1",
+      "foreign-merchant",
+      command.task.location_id,
+    )).toBeNull();
+    expect((await getGbpCommandState(
+      ctx.db,
+      "command-1",
+      command.task.merchant_id,
+      command.task.location_id,
+    ))?.status).toBe("OUTCOME_UNKNOWN");
+    await expect(insertGbpReceipt(ctx.db, {
+      commandId: "command-1",
+      merchantId: command.task.merchant_id,
+      locationId: command.task.location_id,
+      receipt,
+      createdAt: now,
+    }))
       .rejects.toMatchObject({ code: "23505" });
 
     const readback = {
@@ -337,14 +547,128 @@ describe("GBP execution repository", () => {
     await insertGbpReadbackAttempt(ctx.db, {
       id: "readback-1",
       commandId: "command-1",
+      merchantId: command.task.merchant_id,
+      locationId: command.task.location_id,
       observation: readback,
       diffCodes: [],
       safeErrorCode: null,
       createdAt: now,
     });
-    expect((await listGbpReadbackAttempts(ctx.db, "command-1"))[0]).toMatchObject({
+    expect((await listGbpReadbackAttempts(
+      ctx.db,
+      "command-1",
+      command.task.merchant_id,
+      command.task.location_id,
+    ))[0]).toMatchObject({
       observation: readback,
       diffCodes: [],
     });
+    expect(await listGbpReadbackAttempts(
+      ctx.db,
+      "command-1",
+      "foreign-merchant",
+      command.task.location_id,
+    )).toEqual([]);
+    const unknown = (await getGbpCommandState(
+      ctx.db,
+      "command-1",
+      command.task.merchant_id,
+      command.task.location_id,
+    ))!;
+    expect(await completeGbpCommandFromExactReadback(ctx.db, {
+      commandId: "command-1",
+      merchantId: "foreign-merchant",
+      locationId: command.task.location_id,
+      readbackAttemptId: "readback-1",
+      expectedStateVersion: unknown.stateVersion,
+      leaseOwner: unknown.leaseOwner!,
+      leaseToken: unknown.leaseToken!,
+      resolvedAt: "2026-08-27T13:03:00.000Z",
+      updatedAt: "2026-08-27T13:03:00.000Z",
+    })).toBeNull();
+    const done = await completeGbpCommandFromExactReadback(ctx.db, {
+      commandId: "command-1",
+      merchantId: command.task.merchant_id,
+      locationId: command.task.location_id,
+      readbackAttemptId: "readback-1",
+      expectedStateVersion: unknown.stateVersion,
+      leaseOwner: unknown.leaseOwner!,
+      leaseToken: unknown.leaseToken!,
+      resolvedAt: "2026-08-27T13:03:00.000Z",
+      updatedAt: "2026-08-27T13:03:00.000Z",
+    });
+    expect(done).toMatchObject({ status: "DONE", stateVersion: unknown.stateVersion + 1 });
+    await migrate(ctx.db);
+    expect((await getGbpCommandState(
+      ctx.db,
+      "command-1",
+      command.task.merchant_id,
+      command.task.location_id,
+    ))?.status).toBe("DONE");
+  });
+
+  it("locks and re-reads the Task snapshot before command insertion", async () => {
+    const isolated = await createTestDb();
+    try {
+      await migrate(isolated.db);
+      await insertScope(isolated.db);
+      await insertGbpLocationBinding(isolated.db, binding);
+      let release!: () => void;
+      let locked!: () => void;
+      const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+      const lockedPromise = new Promise<void>((resolve) => { locked = resolve; });
+      const concurrentChange = isolated.db.withTransaction(async (tx) => {
+        await tx.exec(
+          `UPDATE seo_tasks SET task_revision = 8, execution_spec_hash = $1 WHERE id = $2`,
+          [sha("f"), command.task.id],
+        );
+        locked();
+        await releasePromise;
+      });
+      await lockedPromise;
+      const insertion = insertGbpCommand(isolated.db, {
+        id: "stale-command",
+        bindingId: binding.id,
+        bindingStateVersion: binding.stateVersion,
+        command,
+        createdBy: "operator-1",
+        createdAt: now,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      release();
+      await concurrentChange;
+      await expect(insertion).rejects.toThrow(/Task scope or revision mismatch/);
+      expect(await isolated.db.one(
+        `SELECT id FROM seo_gbp_commands WHERE id = 'stale-command'`,
+      )).toBeNull();
+    } finally {
+      await isolated.teardown();
+    }
+  });
+
+  it("rejects a command whose approval decision is absent from the locked Task snapshot", async () => {
+    const isolated = await createTestDb();
+    try {
+      await migrate(isolated.db);
+      await insertScope(isolated.db);
+      await insertGbpLocationBinding(isolated.db, binding);
+      await isolated.db.exec(
+        `UPDATE seo_tasks SET approval_decisions = '[]' WHERE id = $1`,
+        [command.task.id],
+      );
+      await expect(insertGbpCommand(isolated.db, {
+        id: "unapproved-command",
+        bindingId: binding.id,
+        bindingStateVersion: binding.stateVersion,
+        command,
+        createdBy: "operator-1",
+        createdAt: now,
+      })).rejects.toThrow(/approval snapshot mismatch/);
+      expect(await isolated.db.one(
+        `SELECT id FROM seo_gbp_commands WHERE id = 'unapproved-command'`,
+      )).toBeNull();
+    } finally {
+      await isolated.teardown();
+    }
   });
 });
