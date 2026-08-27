@@ -1,0 +1,114 @@
+# Task 10A — Safe Core AI Agent reconciler implementation report
+
+## Scope and external-state boundary
+
+- Implementation commit: `228d30d` (`feat(agents): add safe UAT reconciliation tooling`).
+- Changed only the Task 10A-owned client, script, tests, package script, and runbook before this report.
+- No Core AI, FBR Project, FBR Agent, Agent manifest, GBP runtime, merchant data, binding, or credential was modified.
+- No UAT/network request was made. The only command-interface smoke explicitly removed `CORE_AI_BASE_URL` and `CORE_AI_TOKEN` and stopped before client construction.
+- No DELETE method or request exists. A newly created Agent has no automated deletion rollback.
+
+## RED evidence
+
+Initial behavior-first suite:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts
+```
+
+Before production code: exit 1; 1 suite failed during collection because
+`../src/services/coreAiAgentAdminClient.js` did not exist. This was the expected missing-feature failure.
+
+The local read-only Core AI source-contract check then identified the real list envelope. The exact regression was changed to `{ agents, total }` and run before the parser fix:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts -t "requires one exact reference"
+```
+
+Before the fix: exit 1; 1 test failed / 10 skipped with `Core AI Agent list response is invalid`.
+
+Core AI also normalizes persisted empty lists to `null`. The real-view regression ran before remote normalization:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts -t "null list views"
+```
+
+Before the fix: exit 1; 1 test failed / 11 skipped because `tools: null` was rejected instead of matching desired `tools: []`.
+
+The bounded-response regression ran before streamed byte enforcement:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts -t "unknown-length JSON stream"
+```
+
+Before the fix: exit 1; 1 test failed / 12 skipped because the oversized unknown-length stream was fully consumed and not cancelled.
+
+## Implemented safety contract
+
+- HTTPS is mandatory except explicit localhost/127.0.0.1/IPv6-loopback test origins. Base URL credentials, query, fragment, and non-origin paths are rejected.
+- Endpoint paths are internally fixed and dynamic path segments are encoded. Fetch uses `redirect: "error"`, timeout abort, JSON content checks, declared and streamed byte limits, and sanitized status/path-only errors.
+- The bearer token is closed over by the client and used only in the Authorization header. Fetch error text and remote bodies are never copied into result/error/log/evidence output.
+- Mutation payloads are rebuilt from the explicit local manifest/Core AI request allowlist; `manifest_version`, local metadata, and unknown remote fields do not cross the boundary.
+- Desired names require `[SEO Ops]`; `GooglePost每周图文助手` is exact/unique-discovered and reported only as `EDITABLE_REFERENCE_ONLY`, with metadata and hashes rather than prompt text.
+- Dry-run uses reads only and emits `CREATE`, `UPDATE`, `NO_CHANGE`, changed field names, and hashes.
+- Apply uses the server-returned UUID for create, or an ownership-checked existing managed UUID for update; it then publishes and independently reads by ID. Any normalized field/status/name/ID mismatch aborts before later manifests.
+- Reference IDs are rejected at create-response, update, publish, and rollback target gates, including malicious response fixtures.
+- Rollback is ownership check + PUT + publish + independent GET. Evidence contains a managed coordinate and sanitized previous normalized fields/hashes, never a full prompt. New Agents explicitly have no DELETE rollback.
+- Evidence paths must be absolute, repository-contained, and free of traversal/symlink escape; evidence is opened append-only with no-follow semantics and sanitized before writing.
+
+## GREEN and full verification evidence
+
+Focused client regression:
+
+```bash
+npm --prefix server test -- --run tests/coreAiAgentAdminClient.test.ts tests/coreAiClient.test.ts
+```
+
+Result: 2 files / 21 tests passed (13 admin/reconciler tests and 8 existing Core AI client tests).
+
+Full backend:
+
+```bash
+npm --prefix server test
+```
+
+Result: 31 files / 327 tests passed.
+
+Full frontend:
+
+```bash
+npm run test:run
+```
+
+Result: 24 files / 147 tests passed. Output retained only the pre-existing jsdom `--localstorage-file` and unimplemented `window.scrollTo` warnings.
+
+Build, type, script, and diff gates:
+
+```bash
+npm --prefix server run typecheck
+npm --prefix server run build
+npm run build
+npx --prefix server tsc --noEmit --target ES2022 --module NodeNext \
+  --moduleResolution NodeNext --strict --skipLibCheck --types node \
+  server/scripts/reconcile-core-ai-agents.ts
+git diff --check
+```
+
+Result: all exit 0. Server TypeScript build passed; root TypeScript/Vite production build passed with 1865 modules transformed; script-only strict TypeScript check and diff check passed.
+
+No-network command-interface smoke:
+
+```bash
+env -u CORE_AI_BASE_URL -u CORE_AI_TOKEN \
+  npm --prefix server run agents:reconcile -- --mode=dry-run
+```
+
+Result: exit 1 before client/network use with `CORE_AI_BASE_URL and CORE_AI_TOKEN are required in the environment`, as expected.
+
+## Residual risks and deferred external proof
+
+- No UAT call, creation, update, publish, binding, or live readback was authorized in Task 10A; real API permission and deployment behavior remain unproved.
+- The locally inspected Core AI source currently populates Agent view `created_by` through a display-name resolver, while the required fail-closed gate compares `existing.created_by` to `/api/auth/me.user_id`. The client intentionally does not weaken that rule. If deployed UAT has the same representation, existing-Agent apply will stop before mutation until Core AI exposes an owner ID; create/readback remains separately usable. The reference summary records owner ID only when an explicit `owner_id` exists and otherwise records null.
+- Core AI GET/export is an editable definition view, not a guaranteed published runtime snapshot. Therefore reference hashes support inspection only and do not prove a clone of the published runtime.
+- Core AI update semantics do not clear some nullable fields when sent null. A differing remote nullable field will therefore fail the independent readback instead of being silently accepted.
+- A newly created Agent cannot be automatically rolled back without DELETE. The tool records that boundary and stops for manual handling.
