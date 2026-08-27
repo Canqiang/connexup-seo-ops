@@ -1,0 +1,16 @@
+/* 运行页：汇总条 + Run 账本 */
+.runs-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 20px; border: 1px solid var(--rule); background: var(--surface); }
+.runs-summary-cell { padding: 11px 13px; border-right: 1px solid var(--rule); }
+.runs-summary-cell:last-child { border-right: 0; }
+.runs-summary-cell span, .runs-summary-cell small { display: block; color: var(--ink-muted); font-size: 10px; line-height: 1.45; }
+.runs-summary-cell strong { display: block; margin: 3px 0; font: 20px/1 var(--font-data); }
+.runs-summary-cell small { font-size: 8px; }
+.runs-summary-cell.is-danger strong { color: var(--red); }
+.run-ledger-panel .filters { display: flex; align-items: end; gap: 12px; }
+.run-ledger-panel .checkbox-label { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; color: var(--ink-muted); }
+.run-ledger td small { display: block; color: var(--ink-muted); font-size: 8px; }
+.run-ledger code { font-size: 9px; }
+.status-pill.is-running, .status-pill.is-triggering { background: #e8f3f4; color: #174a55; }
+.status-pill.is-completed { background: #e6f4ee; color: #147a6c; }
+.status-pill.is-failed, .status-pill.is-cancelled { background: var(--red-soft); color: var(--red); }
+@media (max-width: 900px) { .runs-summary { grid-template-columns: repeat(2, 1fr); } .runs-summary-cell { border-bottom: 1px solid var(--rule); } }

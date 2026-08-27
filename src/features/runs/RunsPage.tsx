@@ -2,13 +2,18 @@ import { ArrowRight, RefreshCw, SearchCheck, ShieldAlert, Timer } from "lucide-r
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate, useOutletContext } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
-import type { SeoTaskStatus, TaskSummary } from "../../api/types";
+import type { AgentRunStatus, SeoTaskStatus, TaskSummary } from "../../api/types";
 import type { ViewMode } from "../../app/viewMode";
 import { executionModeLabel } from "../../app/statusCopy";
+import { safeHref } from "../../app/format";
 import { hasPermission } from "../../auth/permissions";
 import { useAuth } from "../../auth/AuthContext";
+import { useResource } from "../../hooks/useResource";
 import { usePageTitle } from "../../hooks/usePageTitle";
+import { useWorkspace } from "../../workspace/WorkspaceContext";
 import { OutcomeDialog } from "./OutcomeDialog";
+import { RunLedgerTable } from "./RunLedgerTable";
+import { RunsSummaryStrip } from "./RunsSummaryStrip";
 
 const QUEUE_PAGE_SIZE = 50;
 
@@ -30,15 +35,29 @@ function AuditRunsLedger() {
   const dispatching = usePagedInbox("DISPATCHING");
   const unknown = usePagedInbox("OUTCOME_UNKNOWN");
   const verify = usePagedInbox("PENDING_VERIFY");
-  const reloadAll = () => { awaiting.reload(); dispatching.reload(); unknown.reload(); verify.reload(); };
+  const workspace = useWorkspace();
+  const config = useResource((signal) => seoOpsApi.config(signal), []);
+  const [includeContent, setIncludeContent] = useState(false);
+  const [ledgerStatus, setLedgerStatus] = useState<AgentRunStatus | "">("");
+  const [ledgerOffset, setLedgerOffset] = useState(0);
+  const ledger = useResource((signal) => seoOpsApi.runsLedger({
+    merchant_id: workspace.merchantId, status: ledgerStatus || undefined,
+    include_content: includeContent ? "true" : "false", offset: ledgerOffset, limit: 25,
+  }, signal), [workspace.merchantId, ledgerStatus, includeContent, ledgerOffset]);
+  const reloadAll = () => { awaiting.reload(); dispatching.reload(); unknown.reload(); verify.reload(); ledger.reload(); };
 
   // 门 2 只针对写入/成品：Ⓐ级 APPROVED 由 scheduler 派发，不需要人。
   const gate2 = awaiting.items.filter((t) => t.execution_mode === "AUTO_WRITE" || t.execution_mode === "ARTIFACT");
 
   return <>
     <header className="page-heading"><div><span className="eyebrow">EXECUTION RUNTIME / 双门之后</span><h1>运行</h1><p>门 2 确认 → 派发在途 → 查证（冻结裁决）→ 核验归档。所有派发一次一个 attempt，禁止自动重试写入。</p></div>
-      <div className="heading-actions"><button className="icon-button" aria-label="刷新全部队列" onClick={reloadAll} type="button"><RefreshCw size={16} /></button></div>
+      <div className="heading-actions">
+        {safeHref(config.data?.core_ai_console_url) ? <a className="secondary-button" href={safeHref(config.data?.core_ai_console_url)!} rel="noreferrer" target="_blank">打开 Core AI 控制台 ↗</a> : null}
+        <button className="icon-button" aria-label="刷新全部队列" onClick={reloadAll} type="button"><RefreshCw size={16} /></button>
+      </div>
     </header>
+
+    <RunsSummaryStrip loading={ledger.loading && !ledger.data} summary={ledger.data?.summary} />
 
     <QueuePanel eyebrow="GATE 2" icon={<ShieldAlert size={15} />} title="待执行确认（门 2）"
       hint="已过门 1 的写入/成品任务。进任务页做六项校验后确认派发。"
@@ -73,6 +92,22 @@ function AuditRunsLedger() {
       empty="没有待核验的发布。"
       loadMore={verify.loadMore} loadMoreLabel="加载更多待核验" retry={verify.retry}
       onInspect={(t) => navigate(`/tasks/${t.id}`)} actionLabel="去核验" />
+
+    <section aria-label="运行记录" className="data-panel run-ledger-panel">
+      <div className="panel-heading"><div><span className="eyebrow">AGENT RUNS / CORE AI</span><h2>运行记录</h2><p className="quiet-copy">默认视图：阶段 + 执行 Run；内容重写默认隐藏（不占执行配额）。Run 完成 ≠ 任务完成。</p></div>
+        <div className="filters">
+          <label>状态<select onChange={(event) => { setLedgerStatus(event.target.value as AgentRunStatus | ""); setLedgerOffset(0); }} value={ledgerStatus}>
+            <option value="">全部</option><option value="TRIGGERING">排队</option><option value="RUNNING">进行中</option><option value="COMPLETED">已完成</option><option value="FAILED">失败</option><option value="CANCELLED">已取消</option>
+          </select></label>
+          <label className="checkbox-label"><input checked={includeContent} onChange={(event) => { setIncludeContent(event.target.checked); setLedgerOffset(0); }} type="checkbox" /> 显示内容生成 Run</label>
+        </div></div>
+      <RunLedgerTable error={ledger.error} items={ledger.data?.items ?? []} loading={ledger.loading} onRetry={ledger.reload} />
+      {ledger.data && ledger.data.total > ledger.data.limit ? <div className="pagination">
+        <button disabled={ledger.data.offset === 0} onClick={() => setLedgerOffset(Math.max(0, ledger.data!.offset - ledger.data!.limit))} type="button">上一页</button>
+        <span>显示 {ledger.data.offset + 1}–{Math.min(ledger.data.offset + ledger.data.limit, ledger.data.total)} / {ledger.data.total}</span>
+        <button disabled={ledger.data.offset + ledger.data.limit >= ledger.data.total} onClick={() => setLedgerOffset(ledger.data!.offset + ledger.data!.limit)} type="button">下一页</button>
+      </div> : null}
+    </section>
 
     {resolving ? <OutcomeDialog task={resolving} onClose={() => setResolving(undefined)} onDone={() => { setResolving(undefined); reloadAll(); }} /> : null}
   </>;

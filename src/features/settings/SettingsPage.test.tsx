@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
+import type { RunsLedgerView } from "../../api/types";
 import { AuthProvider } from "../../auth/AuthContext";
 import { portfolioFixture, userFixture } from "../../test/fixtures";
 
@@ -10,6 +11,7 @@ const calls: Array<{ path: string; init?: RequestInit }> = [];
 let runtimeConfig: Record<string, unknown>;
 let authenticatedUser: typeof userFixture;
 let runtimeControls: Record<string, unknown>;
+let ledgerData: RunsLedgerView;
 
 beforeEach(() => {
   calls.length = 0;
@@ -24,6 +26,10 @@ beforeEach(() => {
     effective_paused: false,
     effective_source: null,
     effective_reason: null,
+  };
+  ledgerData = {
+    summary: { in_flight: 0, queued: 0, completed_today: 0, failed_today: 0, content_runs_today: 0, token_total_today: 0, outcome_unknown: 0, frozen_merchant_ids: [], day_start: "2026-08-27T00:00:00.000Z" },
+    items: [], offset: 0, limit: 1, total: 0,
   };
   authenticatedUser = {
     ...userFixture,
@@ -45,6 +51,7 @@ beforeEach(() => {
       frozen_merchant_ids: ["only-bear"],
     });
     if (path === "/api/seo-ops/config") return json(runtimeConfig);
+    if (path.startsWith("/api/seo-ops/agent-runs")) return json(ledgerData);
     if (path === "/api/seo-ops/runtime-controls?merchant_id=only-bear" && !init?.method) {
       return json(runtimeControls);
     }
@@ -193,11 +200,17 @@ test("system status uses real configuration and queue signals while marking unsu
   expect(await within(system).findByText("已启用")).toBeInTheDocument();
   expect(within(system).getByText("结果待查")).toBeInTheDocument();
   expect(await within(system).findByText("1")).toBeInTheDocument();
-  for (const label of ["Scheduler 心跳", "Worker 心跳", "Run 容量", "Core AI 配额", "近期失败数"]) {
+  for (const label of ["Scheduler 心跳", "Worker 心跳", "Core AI 配额"]) {
     const field = within(system).getByLabelText(label);
     expect(field).toHaveTextContent("不可用");
     expect(field).toHaveTextContent("当前 API 未提供证据");
   }
+  const runCapacity = within(system).getByText("Run 容量").closest(".system-truth-card");
+  if (!runCapacity) throw new Error("Missing Run 容量 card");
+  expect(await within(runCapacity as HTMLElement).findByText("0 在途 · 0 排队")).toBeInTheDocument();
+  const recentFailures = within(system).getByText("近期失败数").closest(".system-truth-card");
+  if (!recentFailures) throw new Error("Missing 近期失败数 card");
+  expect(await within(recentFailures as HTMLElement).findByText("0")).toBeInTheDocument();
 });
 
 test("system status does not turn an omitted Agent Run signal into a disabled fact", async () => {

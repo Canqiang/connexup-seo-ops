@@ -108,6 +108,7 @@ export interface ManualDeliverableRequest {
 export interface RuntimeConfig {
   copilot_enabled: boolean; copilot_agent_id?: string;
   agent_run_enabled?: boolean; agent_run_stages?: AgentRunStage[];
+  core_ai_console_url?: string | null;
 }
 export interface AuthenticatedUser { user_id: string; name: string; role: string; permissions: string[] }
 export interface LocationSummary { id: string; display_name: string; readiness_status: LocationReadiness }
@@ -426,4 +427,24 @@ export interface RuntimeControlsView {
   effective_paused: boolean;
   effective_source: "GLOBAL" | "MERCHANT" | null;
   effective_reason: string | null;
+}
+
+export interface RunLedgerRow {
+  id: string; merchant_id: string; merchant_name: string; location_id: string | null;
+  task_id: string | null; stage: string; run_type: string; status: AgentRunStatus;
+  core_run_id: string | null; trace_ref: string | null; error_code: string | null;
+  triggered_by: string; triggered_at: string; completed_at: string | null;
+  duration_ms: number | null; token_total: number; deliverable_count: number;
+}
+export interface RunsLedgerView {
+  summary: {
+    in_flight: number; queued: number; completed_today: number; failed_today: number;
+    content_runs_today: number; token_total_today: number;
+    outcome_unknown: number; frozen_merchant_ids: string[]; day_start: string;
+  };
+  items: RunLedgerRow[]; offset: number; limit: number; total: number;
+}
+export interface RunsLedgerRequest {
+  merchant_id?: string; status?: AgentRunStatus; stage?: string; include_content?: "true" | "false";
+  offset?: number; limit?: number;
 }

@@ -5,7 +5,7 @@ import type {
   CycleLedgerView, DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
   PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
-  RuntimeControlsView, RuntimeControlWire,
+  RuntimeControlsView, RuntimeControlWire, RunsLedgerRequest, RunsLedgerView,
   SchedulerTickResult, SeoOpsPageRequest, SeoTask, SpecialistArtifactType, SpecialistArtifactWire,
   StageRunView, TaskAuditReferencesWire, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
 } from "./types";
@@ -40,6 +40,8 @@ export const seoOpsApi = {
   // 阶段运行：归属商户，不建任务。
   stageRuns: (merchantId: string, request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<StageRunView>>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/stage-runs${query(request)}`, { signal }),
+  runsLedger: (request: RunsLedgerRequest = {}, signal?: AbortSignal) =>
+    requestJson<RunsLedgerView>(`/api/seo-ops/agent-runs${query(request as SeoOpsPageRequest)}`, { signal }),
   stageRun: (id: string, signal?: AbortSignal) =>
     requestJson<StageRunView>(`/api/seo-ops/agent-runs/${encodeURIComponent(id)}`, { signal }),
   triggerStageRun: (merchantId: string, request: TriggerStageRunRequest) =>
