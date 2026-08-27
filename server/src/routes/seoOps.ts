@@ -56,6 +56,7 @@ import {
   listDeliverablesByRunIds,
 } from "../repos/agentRunRepo.js";
 import { getMerchant } from "../repos/merchantRepo.js";
+import { getAgentBinding } from "../repos/settingsRepo.js";
 import { getQuestionnaireByShareSlug } from "../repos/questionnaireRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import type { Task } from "../repos/taskTypes.js";
@@ -536,6 +537,30 @@ export function registerSeoOpsRoutes(
       return { status: questionnaire.status };
     },
   );
+
+  const plannerRequestSchema = z.object({
+    reason: z.string().trim().min(1).max(500),
+    idempotency_key: z.string().trim().min(1).max(200),
+  });
+
+  // 手动请求 Planner：只产生一个只读 PLANNER 任务，建议仍须人判定（红线①）。
+  app.post("/api/seo-ops/merchants/:merchantId/planner-requests", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
+    const { merchantId } = request.params as { merchantId: string };
+    await requireMerchantAccess(ctx.db, actor, merchantId);
+    const body = plannerRequestSchema.parse(request.body);
+    if (!(await getAgentBinding(ctx.db, "PLANNER"))) {
+      throw new ApiError(409, "PLANNER agent is not bound; bind it in settings first", "PLANNER_NOT_BOUND");
+    }
+    const result = await enqueuePlannerTaskIfBound(ctx.db, merchantId, {
+      key: `manual:${body.idempotency_key}`,
+      type: "MANUAL_REQUEST",
+      reason: body.reason,
+    }, actor.userId);
+    if (!result) throw new ApiError(409, "PLANNER agent is not bound", "PLANNER_NOT_BOUND");
+    reply.status(result.replayed ? 200 : 201);
+    return { task_id: result.task.id, replayed: result.replayed };
+  });
 
   // ---- 生命周期（阶段轨 + 异常，全部从证据链推导） ----
 
