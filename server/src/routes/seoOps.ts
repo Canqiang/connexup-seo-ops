@@ -69,6 +69,7 @@ import {
 import { enqueuePlannerTaskIfBound } from "../services/plannerService.js";
 import { runsLedger } from "../services/runsLedgerService.js";
 import { activityFeed } from "../services/activityFeedService.js";
+import { effectReviews } from "../services/effectReviewService.js";
 
 const createMerchantSchema = z.object({
   slug: z.string(),
@@ -233,6 +234,14 @@ export function registerSeoOpsRoutes(
   app.get("/api/seo-ops/reviews", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     return reviews(ctx.db, request.query as Record<string, unknown>, actor.userId, actor.scopeAll === true);
+  });
+
+  const effectReviewsQuerySchema = z.object({ merchant_id: z.string().min(1).optional(), now: z.string().datetime().optional() });
+  app.get("/api/seo-ops/effect-reviews", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const query = effectReviewsQuerySchema.parse(request.query);
+    if (query.merchant_id) await requireMerchantAccess(ctx.db, actor, query.merchant_id);
+    return effectReviews(ctx.db, actor.userId, actor.scopeAll === true, query.merchant_id, query.now ? new Date(query.now) : new Date());
   });
 
   app.get("/api/seo-ops/reports", async (request) => {
