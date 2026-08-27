@@ -137,6 +137,8 @@ export const seoOpsApi = {
   decideProposal: (proposalId: string, request: {
     action: "ADOPT" | "RETURN"; return_reason?: string; override_priority?: string; override_due_at?: string;
   }) => post<{ proposal: ProposalWire; task_id: string | null }>(`/api/seo-ops/proposals/${encodeURIComponent(proposalId)}/decision`, request),
+  requestPlanner: (merchantId: string, request: { reason: string; idempotency_key: string }) =>
+    post<{ task_id: string; replayed: boolean }>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/planner-requests`, request),
 
   // ---- 内容稿 ----
   drafts: (taskId: string, signal?: AbortSignal) =>
