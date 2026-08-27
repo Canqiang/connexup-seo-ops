@@ -57,8 +57,24 @@ function remoteAgent(overrides: Partial<RemoteAgent> = {}): RemoteAgent {
 function referenceAgent(overrides: Partial<RemoteAgent> = {}): RemoteAgent {
   return remoteAgent({
     id: REFERENCE_ID, name: REFERENCE_NAME,
-    system_prompt: "REFERENCE_PROMPT_SENTINEL_do_not_leak", mine: false, ...overrides,
+    system_prompt: "REFERENCE_PROMPT_SENTINEL_do_not_leak",
+    tools: [{ id: "tool-one", type: "MCP", source: "core" }],
+    mine: false, ...overrides,
   });
+}
+
+function legacyReferenceAgent(overrides: Record<string, unknown> = {}): RemoteAgent {
+  return {
+    ...referenceAgent(),
+    model: null,
+    max_turns: 40,
+    tools: [{ id: "legacy-tool", type: "MCP", source: "core" }],
+    skill_ids: null,
+    subagent_ids: null,
+    dataset_config: null,
+    response_schema: null,
+    ...overrides,
+  } as unknown as RemoteAgent;
 }
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -292,6 +308,60 @@ describe("complete paginated discovery and create-only classification", () => {
     expect(JSON.stringify(plan)).not.toContain("REFERENCE_PROMPT_SENTINEL");
   });
 
+  it("accepts the fixed legacy reference shape and hashes nullable fields without making a mutation payload", async () => {
+    const repo = await makeRepository();
+    const fake = new FakeCore([legacyReferenceAgent()]);
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+
+    const plan = await dryRun({
+      client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+      selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath,
+    });
+
+    expect(plan.reference.field_hashes).toMatchObject({
+      max_turns: sha256(40), model: sha256(null), response_schema: sha256(null),
+      skill_ids: sha256(null), subagent_ids: sha256(null), dataset_config: sha256(null),
+      tools: sha256([{ id: "legacy-tool", type: "MCP", source: "core" }]),
+    });
+    expect(plan.selected).toMatchObject([{ action: "CREATE", name: manifest.name }]);
+    expect(fake.mutations()).toEqual([]);
+  });
+
+  it("keeps strict desired validation for max_turns 40 and nullable model/schema", async () => {
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    for (const scenario of [
+      { label: "max_turns", override: { max_turns: 40 } },
+      { label: "model", override: { model: null } },
+      { label: "response_schema", override: { response_schema: null } },
+    ]) {
+      const repo = await makeRepository([{ file: `${scenario.label}.json`, value: {
+        manifest_version: "seo_ops.core_ai_agent_manifest.v1", ...manifest, ...scenario.override,
+      } }]);
+      const fake = new FakeCore([legacyReferenceAgent()]);
+      await expect(dryRun({
+        client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath,
+      }), scenario.label).rejects.toThrow(/manifest|max_turns|model|response_schema/i);
+      expect(fake.calls, scenario.label).toEqual([]);
+    }
+  });
+
+  it("rejects malformed legacy reference tools and unknown reference fields", async () => {
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    for (const reference of [
+      legacyReferenceAgent({ tools: [{ id: "legacy-tool", type: "MCP" }] }),
+      legacyReferenceAgent({ future_reference_setting: "opaque" }),
+    ]) {
+      const repo = await makeRepository();
+      const fake = new FakeCore([reference]);
+      await expect(dryRun({
+        client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath,
+      })).rejects.toThrow(/reference|tool|unknown|field/i);
+      expect(fake.mutations()).toEqual([]);
+    }
+  });
+
   it("fails closed for absent, duplicate-across-pages, and inconsistent-total reference discovery", async () => {
     const dryRun = exported<DryRun>("dryRunAgentReconciliation");
     for (const setup of [
@@ -376,6 +446,26 @@ describe("complete paginated discovery and create-only classification", () => {
 });
 
 describe("reviewed plan scope and drift gates", () => {
+  it("binds legacy reference numeric and null-vs-array state across apply revalidation", async () => {
+    const dryRun = exported<DryRun>("dryRunAgentReconciliation");
+    const apply = exported<Apply>("applyAgentReconciliationPlan");
+    for (const mutate of [
+      (reference: RemoteAgent) => { reference.max_turns = 41; },
+      (reference: RemoteAgent) => { reference.skill_ids = [] as string[]; },
+    ]) {
+      const repo = await makeRepository();
+      const reference = legacyReferenceAgent();
+      const fake = new FakeCore([reference]);
+      await dryRun({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        selection: { kind: "EXPLICIT", paths: repo.paths }, planPath: repo.planPath });
+      mutate(reference);
+      await expect(apply({ client: createClient(fake), repositoryRoot: repo.root, manifestRoot: repo.manifestRoot,
+        planPath: repo.planPath, evidencePath: repo.evidencePath })).rejects.toThrow(/reference|drift/i);
+      expect(fake.mutations()).toEqual([]);
+      expect((await readJournal(repo.evidencePath)).map((record) => record.type)).toEqual(["JOURNAL_OPENED"]);
+    }
+  });
+
   it("rejects plan paths outside the fixed plan directory before any remote read", async () => {
     const repo = await makeRepository();
     const fake = new FakeCore([referenceAgent()]);

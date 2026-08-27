@@ -259,6 +259,101 @@ function normalizeRemoteManaged(value: Record<string, unknown>): AgentManifest {
   return normalizeManifest(remote, false);
 }
 
+type ReferenceManagedSnapshot = {
+  name: string;
+  description: string;
+  system_prompt: string;
+  model: string | null;
+  temperature: number | null;
+  thinking_effort: string | null;
+  max_turns: number;
+  timeout_seconds: number;
+  enable_memory: boolean;
+  type: "AGENT";
+  tools: Array<{ id: string; type: string; source: string }>;
+  skill_ids: string[] | null;
+  subagent_ids: string[] | null;
+  dataset_config: unknown[] | null;
+  sandbox_config: Record<string, unknown> | null;
+  response_schema: string | null;
+};
+
+function referenceString(value: unknown, field: string, nullable = false): string | null {
+  if (nullable && (value === null || value === undefined)) return null;
+  if (typeof value !== "string") throw new CoreAiAgentAdminError(`Reference Agent ${field} type is invalid`);
+  return value;
+}
+
+function referenceStringArray(value: unknown, field: string): string[] | null {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new CoreAiAgentAdminError(`Reference Agent ${field} type is invalid`);
+  }
+  return [...value] as string[];
+}
+
+function referenceTools(value: unknown): ReferenceManagedSnapshot["tools"] {
+  if (!Array.isArray(value)) throw new CoreAiAgentAdminError("Reference Agent tools type is invalid");
+  return value.map((item) => {
+    if (!isRecord(item)) throw new CoreAiAgentAdminError("Reference Agent tool type is invalid");
+    const keys = Object.keys(item).sort();
+    if (keys.length !== 3 || keys[0] !== "id" || keys[1] !== "source" || keys[2] !== "type"
+      || typeof item.id !== "string" || typeof item.type !== "string" || typeof item.source !== "string") {
+      throw new CoreAiAgentAdminError("Reference Agent tool shape is invalid");
+    }
+    return { id: item.id, type: item.type, source: item.source };
+  });
+}
+
+function referenceManagedSnapshot(view: CoreAiAgentView): ReferenceManagedSnapshot {
+  const temperature = view.temperature;
+  if (temperature !== null && temperature !== undefined
+    && (typeof temperature !== "number" || !Number.isFinite(temperature) || temperature < 0)) {
+    throw new CoreAiAgentAdminError("Reference Agent temperature type is invalid");
+  }
+  if (!Number.isSafeInteger(view.max_turns) || (view.max_turns as number) <= 0) {
+    throw new CoreAiAgentAdminError("Reference Agent max_turns type is invalid");
+  }
+  if (!Number.isSafeInteger(view.timeout_seconds) || (view.timeout_seconds as number) <= 0) {
+    throw new CoreAiAgentAdminError("Reference Agent timeout_seconds type is invalid");
+  }
+  if (typeof view.enable_memory !== "boolean") {
+    throw new CoreAiAgentAdminError("Reference Agent enable_memory type is invalid");
+  }
+  if (view.type !== "AGENT") throw new CoreAiAgentAdminError("Reference Agent type is invalid");
+  if (view.thinking_effort !== null && view.thinking_effort !== undefined
+    && typeof view.thinking_effort !== "string") {
+    throw new CoreAiAgentAdminError("Reference Agent thinking_effort type is invalid");
+  }
+  if (view.dataset_config !== null && view.dataset_config !== undefined && !Array.isArray(view.dataset_config)) {
+    throw new CoreAiAgentAdminError("Reference Agent dataset_config type is invalid");
+  }
+  if (view.sandbox_config !== null && view.sandbox_config !== undefined && !isRecord(view.sandbox_config)) {
+    throw new CoreAiAgentAdminError("Reference Agent sandbox_config type is invalid");
+  }
+  return {
+    name: referenceString(view.name, "name")!,
+    description: referenceString(view.description, "description")!,
+    system_prompt: referenceString(view.system_prompt, "system_prompt")!,
+    model: referenceString(view.model, "model", true),
+    temperature: temperature === null || temperature === undefined ? null : temperature as number,
+    thinking_effort: view.thinking_effort === null || view.thinking_effort === undefined
+      ? null : view.thinking_effort as string,
+    max_turns: view.max_turns as number,
+    timeout_seconds: view.timeout_seconds as number,
+    enable_memory: view.enable_memory,
+    type: "AGENT",
+    tools: referenceTools(view.tools),
+    skill_ids: referenceStringArray(view.skill_ids, "skill_ids"),
+    subagent_ids: referenceStringArray(view.subagent_ids, "subagent_ids"),
+    dataset_config: view.dataset_config === null || view.dataset_config === undefined
+      ? null : [...view.dataset_config] as unknown[],
+    sandbox_config: view.sandbox_config === null || view.sandbox_config === undefined
+      ? null : { ...view.sandbox_config } as Record<string, unknown>,
+    response_schema: referenceString(view.response_schema, "response_schema", true),
+  };
+}
+
 function canonical(value: unknown): string {
   if (value === undefined) return "undefined";
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -522,6 +617,62 @@ function editableSnapshot(view: CoreAiAgentView, requireSafeUnsupported: boolean
   };
 }
 
+function readOnlyReferenceSnapshot(view: CoreAiAgentView): {
+  managed: ReferenceManagedSnapshot;
+  editableHash: string;
+  fieldHashes: Record<string, string>;
+  executableFieldHashes: Record<string, string>;
+  unmanagedExecutableEmpty: boolean;
+  unknownFieldsEmpty: true;
+} {
+  const known = new Set<string>([...MUTATION_FIELDS, ...UNSUPPORTED_EXECUTABLE_FIELDS, ...REMOTE_METADATA_FIELDS]);
+  if (Object.keys(view).some((key) => !known.has(key))) {
+    throw new CoreAiAgentAdminError("Reference Agent has unknown unmanaged fields");
+  }
+  const managed = referenceManagedSnapshot(view);
+  const systemPromptId = referenceString(view.system_prompt_id, "system_prompt_id", true);
+  const multiModalModel = referenceString(view.multi_modal_model, "multi_modal_model", true);
+  const inputTemplate = referenceString(view.input_template, "input_template", true);
+  if (view.prefer_caption_path !== null && view.prefer_caption_path !== undefined
+    && typeof view.prefer_caption_path !== "boolean") {
+    throw new CoreAiAgentAdminError("Reference Agent prefer_caption_path type is invalid");
+  }
+  if (view.variables !== null && view.variables !== undefined && !isRecord(view.variables)) {
+    throw new CoreAiAgentAdminError("Reference Agent variables type is invalid");
+  }
+  if (view.system_default !== null && view.system_default !== undefined
+    && typeof view.system_default !== "boolean") {
+    throw new CoreAiAgentAdminError("Reference Agent system_default type is invalid");
+  }
+  const unsupported = {
+    system_prompt_id: systemPromptId,
+    multi_modal_model: multiModalModel,
+    prefer_caption_path: view.prefer_caption_path === null || view.prefer_caption_path === undefined
+      ? null : view.prefer_caption_path,
+    input_template: inputTemplate,
+    variables: view.variables === null || view.variables === undefined ? null : { ...view.variables },
+  };
+  const unmanagedExecutableEmpty = safeUnsupported(unsupported);
+  const fieldHashes = Object.fromEntries(
+    MUTATION_FIELDS.map((field) => [field, sha256(managed[field])]),
+  ) as Record<string, string>;
+  const executableFieldHashes = Object.fromEntries(
+    UNSUPPORTED_EXECUTABLE_FIELDS.map((field) => [field, sha256(unsupported[field])]),
+  ) as Record<string, string>;
+  return {
+    managed,
+    editableHash: sha256({
+      managed,
+      unsupported,
+      system_default: view.system_default === undefined ? null : view.system_default,
+    }),
+    fieldHashes,
+    executableFieldHashes,
+    unmanagedExecutableEmpty,
+    unknownFieldsEmpty: true,
+  };
+}
+
 async function discoverReference(client: CoreAiAgentAdminClient): Promise<ReferenceCoordinate> {
   const listed = await collectAllAgents(client, { query: FIXED_REFERENCE_AGENT_NAME });
   const exact = listed.filter((agent) => agent.name === FIXED_REFERENCE_AGENT_NAME);
@@ -531,14 +682,18 @@ async function discoverReference(client: CoreAiAgentAdminClient): Promise<Refere
   if (detail.id !== summary.id || detail.name !== FIXED_REFERENCE_AGENT_NAME) {
     throw new CoreAiAgentAdminError("Reference detail does not match fixed exact discovery");
   }
-  const snapshot = editableSnapshot(detail, false);
+  const snapshot = readOnlyReferenceSnapshot(detail);
+  const status = referenceString(detail.status, "status", true);
+  const ownerId = referenceString(detail.owner_id, "owner_id", true);
+  const updatedAt = referenceString(detail.updated_at, "updated_at", true);
+  const publishedAt = referenceString(detail.published_at, "published_at", true);
   const coordinateBase: Omit<ReferenceCoordinate, "coordinate_hash"> = {
     id: detail.id,
     name: FIXED_REFERENCE_AGENT_NAME,
-    status: typeof detail.status === "string" ? detail.status : null,
-    owner_id: typeof detail.owner_id === "string" && detail.owner_id !== "" ? detail.owner_id : null,
-    updated_at: typeof detail.updated_at === "string" ? detail.updated_at : null,
-    published_at: typeof detail.published_at === "string" ? detail.published_at : null,
+    status,
+    owner_id: ownerId === "" ? null : ownerId,
+    updated_at: updatedAt,
+    published_at: publishedAt,
     editable_hash: snapshot.editableHash,
     managed_hash: sha256(snapshot.managed),
     field_hashes: snapshot.fieldHashes,

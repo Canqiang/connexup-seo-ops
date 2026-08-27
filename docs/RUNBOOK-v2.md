@@ -116,7 +116,9 @@ npm --prefix server run agents:reconcile -- --mode=apply \
   已发布 runtime snapshot，也不构成 clone 证明；名称固定且没有 CLI/library override。plan 绑定完整安全
   reference coordinate（状态、managed/executable field hashes、未管理字段空值摘要和 API 明确提供时的 owner ID），
   输出证据范围固定为 `EDITABLE_CONFIG_AND_STATUS_ONLY`。API 未提供稳定 `owner_id` 时记录 null；不会把
-  display-name `created_by` 猜成 owner ID。
+  display-name `created_by` 猜成 owner ID。固定 reference 采用独立只读 legacy snapshot：允许 Core detail
+  中已验证的 nullable model/schema/array 字段与正整数 `max_turns`（包括 40），保留并哈希 null-vs-array 差异；
+  该 snapshot 类型不能生成 mutation payload，也不用于 `[SEO Ops]` desired 校验，后者仍执行严格 manifest 规则。
 - reference 与 desired name 都通过完整分页 global query 做 exact/unique 判断；既有 desired Agent 还必须在
   完整 `my=true&include_system_default=false` roster 中唯一对应。跨 owner、system-default 或重复同名一律停止。
 - 既有 `[SEO Ops]` Agent 只有状态精确为 `PUBLISHED`、完整 editable config 相同且所有未管理执行字段为空时
