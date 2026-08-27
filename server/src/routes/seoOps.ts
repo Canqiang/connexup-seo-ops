@@ -67,6 +67,7 @@ import {
 } from "../domain/enums.js";
 import { enqueuePlannerTaskIfBound } from "../services/plannerService.js";
 import { runsLedger } from "../services/runsLedgerService.js";
+import { activityFeed } from "../services/activityFeedService.js";
 
 const createMerchantSchema = z.object({
   slug: z.string(),
@@ -236,6 +237,17 @@ export function registerSeoOpsRoutes(
   app.get("/api/seo-ops/reports", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     return reports(ctx.db, request.query as Record<string, unknown>, actor.userId, new Date(), actor.scopeAll === true);
+  });
+
+  const activityQuerySchema = z.object({
+    hours: z.coerce.number().int().min(1).max(168).default(24),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  });
+
+  app.get("/api/seo-ops/activity", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const query = activityQuerySchema.parse(request.query);
+    return activityFeed(ctx.db, actor.userId, actor.scopeAll === true, query);
   });
 
   app.get("/api/seo-ops/tasks/:taskId", async (request, reply) => {

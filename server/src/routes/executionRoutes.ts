@@ -884,6 +884,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       awaiting_execution: approved.filter((t) => t.executionMode !== "READ_ONLY").length,
       pending_verify: pendingVerify.length,
       outcome_unknown: unknown.length,
+      verification_overdue: pendingVerify.filter((t) => t.verifyDueAt && Date.parse(t.verifyDueAt) < Date.now()).length,
       frozen_merchant_ids: [...new Set(unknown.map((a) => a.merchantId))],
     };
   });
