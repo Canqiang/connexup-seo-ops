@@ -135,6 +135,9 @@ beforeEach(() => {
     if (path === "/api/seo-ops/merchants/only-bear/cycle-config") return json(null);
     if (path === "/api/seo-ops/capabilities") return json(capabilitiesData);
     if (path === "/api/seo-ops/cycle-configs") return json(cycleConfigsData);
+    if (path === "/api/seo-ops/merchants/only-bear/capabilities/GBP_WRITE" && init?.method === "PUT") {
+      return json({ message: "capability upsert failed" }, 500);
+    }
     if (path === "/api/seo-ops/merchants/only-bear/locations/mineola/gbp-execution-binding") return json({
       merchant_id: "only-bear",
       location_id: "mineola",
@@ -308,6 +311,20 @@ test("cadence overview summarises every merchant cycle before the per-merchant f
   renderApp("/settings");
   const overview = await screen.findByRole("region", { name: "周期总览" });
   expect(within(overview).getByRole("row", { name: /Only Bear/ })).toHaveTextContent("每周四 ×1");
+});
+
+test("a failed capability toggle keeps the matrix heading and error visible without unmounting the panel", async () => {
+  authenticatedUser = { ...authenticatedUser, permissions: [...authenticatedUser.permissions, "seoops.capability.manage"] };
+  const user = userEvent.setup();
+  renderApp("/settings");
+
+  const matrix = await screen.findByRole("region", { name: "能力矩阵" });
+  const checkbox = within(matrix).getByLabelText("Only Bear Chicken & Boba GBP 写入（Post / 资料修改） 技术连接");
+  await user.click(checkbox);
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("GBP_WRITE 保存失败");
+  expect(screen.getByRole("heading", { name: "能力矩阵" })).toBeInTheDocument();
 });
 
 test("authorized runtime controls preserve the existing scheduler and worker mutations", async () => {

@@ -1,5 +1,5 @@
 import { KeyRound } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { CapabilityWire } from "../../api/types";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import { formatDateOnly } from "../../app/format";
@@ -33,9 +33,20 @@ export function impactCopy(status: string, capability: string): string {
 /** The matrix is cross-merchant: every scoped merchant × every capability row
  * always renders, even where no capability record was ever persisted (shown
  * as MISSING). The section only registers under its "能力矩阵" accessible
- * name once both the merchant scope and the capability list have actually
- * loaded — mounting it earlier (with a still-empty merchant list) would let
- * consumers observe a region that has not yet settled. */
+ * name once both the merchant scope and the capability list have loaded for
+ * the very first time — mounting it earlier (with a still-empty merchant
+ * list) would let consumers observe a region that has not yet settled.
+ *
+ * That initial-load gate is a one-way latch (`hasLoadedOnce`), not a raw
+ * `loading` check: every toggle calls `resource.reload()` (in both the
+ * success and the failure branch) to refresh the row it just touched, which
+ * flips `resource.loading` back to `true` for the duration of the refetch.
+ * If the whole section unmounted on every such reload, it would take the
+ * panel heading, the `canManage` notice, and — worst of all — the
+ * `toggleError` alert it had just set with it, hiding the very failure the
+ * operator needs to see. Once the matrix has loaded once, only the
+ * rows/table region is replaced by a status placeholder during a reload;
+ * everything else (heading, notices, error banner) stays mounted. */
 export function CapabilityMatrixPanel({ canManage, merchantId }: { canManage: boolean; merchantId?: string }) {
   const workspace = useWorkspace();
   const resource = useResource((signal) => seoOpsApi.allCapabilities(signal), []);
@@ -44,7 +55,11 @@ export function CapabilityMatrixPanel({ canManage, merchantId }: { canManage: bo
   const [expanded, setExpanded] = useState<string>();
   const [noteDrafts, setNoteDrafts] = useState<Record<string, { note: string; external_ref: string }>>({});
 
-  if (workspace.loading || resource.loading) {
+  const dataReady = !workspace.loading && !resource.loading;
+  const hasLoadedOnceRef = useRef(false);
+  if (dataReady) hasLoadedOnceRef.current = true;
+
+  if (!hasLoadedOnceRef.current) {
     return <div className="page-state compact" role="status">读取能力矩阵…</div>;
   }
 
@@ -104,8 +119,9 @@ export function CapabilityMatrixPanel({ canManage, merchantId }: { canManage: bo
     {!canManage ? <p className="settings-readonly">当前账号可查看能力状态，但没有修改权限。</p> : null}
     {toggleError ? <p className="form-error" role="alert">{toggleError}</p> : null}
     {resource.error ? <div className="page-state compact is-error" role="alert">能力矩阵读取失败。<button onClick={resource.reload} type="button">重试</button></div> : null}
-    {!resource.error && !workspace.merchants.length ? <div className="settings-evidence-gap">没有可用商户范围，能力状态不可用。</div> : null}
-    {!resource.error && workspace.merchants.length ? <div className="table-wrap"><table><thead><tr>
+    {workspace.loading || resource.loading ? <div className="page-state compact" role="status">读取能力矩阵…</div> : null}
+    {!workspace.loading && !resource.loading && !resource.error && !workspace.merchants.length ? <div className="settings-evidence-gap">没有可用商户范围，能力状态不可用。</div> : null}
+    {!workspace.loading && !resource.loading && !resource.error && workspace.merchants.length ? <div className="table-wrap"><table><thead><tr>
       <th>商户 · 资产</th><th>能力</th><th>技术连接</th><th>商户授权</th><th>状态</th><th>最近核验</th><th>影响</th><th>备注</th>
     </tr></thead><tbody>
       {workspace.merchants.flatMap((merchant) => CAPABILITY_ROWS.map(({ capability, asset, label }) => {
