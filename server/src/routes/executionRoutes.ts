@@ -57,7 +57,7 @@ import {
 } from "../repos/agentRunRepo.js";
 import { countPendingProposals, getProposal } from "../repos/proposalRepo.js";
 import { getTask, listTasksByStatus } from "../repos/taskRepo.js";
-import { getMerchant, listMerchantsForOperator } from "../repos/merchantRepo.js";
+import { getMerchant, listMerchants, listMerchantsForOperator } from "../repos/merchantRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import {
@@ -720,6 +720,19 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       (c) => allowed === null || allowed.has(c.merchantId),
     );
     return { items: configs.map(cycleConfigView) };
+  });
+
+  app.get("/api/seo-ops/capabilities", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const merchants = actor.scopeAll
+      ? await listMerchants(ctx.db)
+      : await listMerchantsForOperator(ctx.db, actor.userId);
+    const names = new Map(merchants.map((m) => [m.id, m.displayName]));
+    return {
+      items: (await listCapabilities(ctx.db))
+        .filter((c) => names.has(c.merchantId))
+        .map((c) => ({ ...capabilityView(c), merchant_name: names.get(c.merchantId) })),
+    };
   });
 
   app.get("/api/seo-ops/agent-bindings", async (request) => {
