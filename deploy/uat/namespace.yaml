@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: connexup-seo-ops-uat
-  labels:
-    app.kubernetes.io/name: connexup-seo-ops
-    app.kubernetes.io/part-of: connexup-seo-ops
-    environment: uat
