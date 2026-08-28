@@ -57,7 +57,7 @@ import {
 } from "../repos/agentRunRepo.js";
 import { countPendingProposals, getProposal } from "../repos/proposalRepo.js";
 import { getTask, listTasksByStatus } from "../repos/taskRepo.js";
-import { getMerchant, listMerchantsForOperator } from "../repos/merchantRepo.js";
+import { getMerchant, listMerchants, listMerchantsForOperator } from "../repos/merchantRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import type { Task } from "../repos/taskTypes.js";
 import {
@@ -722,6 +722,19 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
     return { items: configs.map(cycleConfigView) };
   });
 
+  app.get("/api/seo-ops/capabilities", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const merchants = actor.scopeAll
+      ? await listMerchants(ctx.db)
+      : await listMerchantsForOperator(ctx.db, actor.userId);
+    const names = new Map(merchants.map((m) => [m.id, m.displayName]));
+    return {
+      items: (await listCapabilities(ctx.db))
+        .filter((c) => names.has(c.merchantId))
+        .map((c) => ({ ...capabilityView(c), merchant_name: names.get(c.merchantId) })),
+    };
+  });
+
   app.get("/api/seo-ops/agent-bindings", async (request) => {
     requirePermission(request, "seoops.view");
     return {
@@ -884,6 +897,7 @@ export function registerExecutionRoutes(app: FastifyInstance, ctx: AppContext): 
       awaiting_execution: approved.filter((t) => t.executionMode !== "READ_ONLY").length,
       pending_verify: pendingVerify.length,
       outcome_unknown: unknown.length,
+      verification_overdue: pendingVerify.filter((t) => t.verifyDueAt && Date.parse(t.verifyDueAt) < Date.now()).length,
       frozen_merchant_ids: [...new Set(unknown.map((a) => a.merchantId))],
     };
   });

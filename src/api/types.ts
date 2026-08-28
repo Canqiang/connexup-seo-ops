@@ -108,6 +108,7 @@ export interface ManualDeliverableRequest {
 export interface RuntimeConfig {
   copilot_enabled: boolean; copilot_agent_id?: string;
   agent_run_enabled?: boolean; agent_run_stages?: AgentRunStage[];
+  core_ai_console_url?: string | null;
 }
 export interface AuthenticatedUser { user_id: string; name: string; role: string; permissions: string[] }
 export interface LocationSummary { id: string; display_name: string; readiness_status: LocationReadiness }
@@ -198,6 +199,9 @@ export interface ReviewItem {
   goal?: string; baseline?: string; action?: string; observed_change?: string; competing_explanations: string[];
   conclusion_strength: string; follow_up_test?: string; evidence_ids: string[]; updated_at: string;
 }
+export interface EffectReviewItem { artifact_id: string; merchant_id: string; merchant_name: string; task_id: string; core_run_id: string; title: string; summary: string; conclusion_tier: string; conclusion: string; baseline: Record<string, unknown>; observed_change: Record<string, unknown>; action_bundle: Array<Record<string, unknown>>; confounders: string[]; limitations: string[]; planning_signals: Array<Record<string, unknown>>; acceptance_status: string; created_at: string; causal_identified: false }
+export interface ReviewWindow { merchant_id: string; merchant_name: string; review_window_days: number | null; last_review_at: string | null; next_window_at: string | null; status: "DUE" | "UPCOMING" | "UNSCHEDULED" }
+export interface EffectReviewsView { summary: { total: number; by_tier: Record<string, number>; due_count: number }; items: EffectReviewItem[]; windows: ReviewWindow[] }
 export interface ReportItem {
   report_id: string; source_type: "TASK_EVIDENCE" | "CORE_AI_ARTIFACT";
   merchant_id: string; merchant_name: string; location_id?: string; location_name?: string;
@@ -278,6 +282,12 @@ export interface CycleConfigWire {
   merchant_id: string; snapshot_day: number | null; post_weekday: number | null;
   post_per_week: number; review_window_days: number; audit_interval_days: number | null;
   enabled: boolean; updated_by: string | null; updated_at: string;
+}
+
+/** 风格档案：voice 编辑生成新版本，稿件按引用固定版本；档案更新不追溯已批准稿。 */
+export interface StyleProfileWire {
+  id: string; merchant_id: string; version: number; voice: Record<string, unknown>;
+  updated_by: string | null; created_at: string;
 }
 
 /** Merchant control-room projections retain the Task/proposal boundary all
@@ -402,8 +412,16 @@ export interface TaskAuditReferencesWire {
 
 export interface InboxSummaryWire {
   pending_proposals: number; ready_for_approval: number; awaiting_execution: number;
-  pending_verify: number; outcome_unknown: number; frozen_merchant_ids: string[];
+  pending_verify: number; outcome_unknown: number; verification_overdue: number;
+  frozen_merchant_ids: string[];
 }
+
+export type ActivitySeverity = "INFO" | "WARN" | "DANGER";
+export interface ActivityItem {
+  id: string; kind: "TASK_EVENT" | "AGENT_RUN" | "PROPOSAL_BATCH"; occurred_at: string;
+  merchant_id: string; merchant_name: string; title: string; detail: string | null; href: string; severity: ActivitySeverity;
+}
+export interface ActivityFeedView { items: ActivityItem[]; since: string }
 
 export interface SchedulerTickResult {
   created: Array<{ task_id: string; key: string; task_type: string; merchant_id: string }>;
@@ -426,4 +444,24 @@ export interface RuntimeControlsView {
   effective_paused: boolean;
   effective_source: "GLOBAL" | "MERCHANT" | null;
   effective_reason: string | null;
+}
+
+export interface RunLedgerRow {
+  id: string; merchant_id: string; merchant_name: string; location_id: string | null;
+  task_id: string | null; stage: string; run_type: string; status: AgentRunStatus;
+  core_run_id: string | null; trace_ref: string | null; error_code: string | null;
+  triggered_by: string; triggered_at: string; completed_at: string | null;
+  duration_ms: number | null; token_total: number; deliverable_count: number;
+}
+export interface RunsLedgerView {
+  summary: {
+    in_flight: number; queued: number; completed_today: number; failed_today: number;
+    content_runs_today: number; token_total_today: number;
+    outcome_unknown: number; frozen_merchant_ids: string[]; day_start: string;
+  };
+  items: RunLedgerRow[]; offset: number; limit: number; total: number;
+}
+export interface RunsLedgerRequest {
+  merchant_id?: string; status?: AgentRunStatus; stage?: string; include_content?: "true" | "false";
+  offset?: number; limit?: number;
 }

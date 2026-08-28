@@ -283,6 +283,17 @@ export async function listTasksByMerchant(db: Db, merchantId: string): Promise<T
   return rows.map(toTask);
 }
 
+/** Scoped projections (e.g. the activity feed) must read only the caller's
+ * merchants at the DB layer rather than loading every task system-wide. */
+export async function listTasksByMerchantIds(db: Db, merchantIds: readonly string[]): Promise<Task[]> {
+  if (merchantIds.length === 0) return [];
+  const rows = await db.query<TaskRow>(
+    `SELECT * FROM seo_tasks WHERE merchant_id = ANY($1::text[]) ORDER BY updated_at DESC`,
+    [[...merchantIds]],
+  );
+  return rows.map(toTask);
+}
+
 /** Accepted work only: proposal rows remain in proposalRepo until a human
  * adopts them.  Keeping this slim query separate protects the merchant view
  * from accidentally receiving execution specs or evidence payloads. */

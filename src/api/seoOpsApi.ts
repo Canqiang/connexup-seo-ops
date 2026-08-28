@@ -1,13 +1,13 @@
 import { requestJson } from "./client";
 import type {
-  AgentBindingWire, AppendEvidenceRequest, ApprovalDecisionRequest, ApprovalPreview, AttemptWire,
-  CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire, GbpExecutionWire, GbpLocationBindingWire,
+  ActivityFeedView, AgentBindingWire, AppendEvidenceRequest, ApprovalDecisionRequest, ApprovalPreview, AttemptWire,
+  CapabilityWire, CreateRevisionRequest, CreateTaskRequest, CycleConfigWire, EffectReviewsView, GbpExecutionWire, GbpLocationBindingWire,
   CycleLedgerView, DeliverableWire, DraftWire, ExecutionPreviewWire, InboxSummaryWire, LifecycleView, LocationView,
   ManualDeliverableRequest, MerchantOnboardingView, Page, PortfolioResponse, ProposalBatchWire, ProposalWire,
   PostProgramView, QuestionnaireItemWire, QuestionnaireStatus, QuestionnaireView, RankingOverviewView, ReportItem, ReviewItem, RuntimeConfig,
-  RuntimeControlsView, RuntimeControlWire,
+  RuntimeControlsView, RuntimeControlWire, RunsLedgerRequest, RunsLedgerView,
   SchedulerTickResult, SeoOpsPageRequest, SeoTask, SpecialistArtifactType, SpecialistArtifactWire,
-  StageRunView, TaskAuditReferencesWire, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
+  StageRunView, StyleProfileWire, TaskAuditReferencesWire, TaskEvent, TaskSummary, TriggerStageRunRequest, WorkbenchRequest, WorkbenchView
 } from "./types";
 
 function query(request: SeoOpsPageRequest = {}): string {
@@ -32,6 +32,8 @@ export const seoOpsApi = {
     requestJson<WorkbenchView>(`/api/seo-ops/workbench${query(request)}`, { signal }),
   reviews: (request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<ReviewItem>>(`/api/seo-ops/reviews${query(request)}`, { signal }),
+  effectReviews: (merchantId?: string, signal?: AbortSignal) =>
+    requestJson<EffectReviewsView>(`/api/seo-ops/effect-reviews${merchantId ? `?merchant_id=${encodeURIComponent(merchantId)}` : ""}`, { signal }),
   reports: (request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<ReportItem>>(`/api/seo-ops/reports${query(request)}`, { signal }),
   task: (id: string, signal?: AbortSignal) => requestJson<SeoTask>(`/api/seo-ops/tasks/${encodeURIComponent(id)}`, { signal }),
@@ -40,6 +42,8 @@ export const seoOpsApi = {
   // 阶段运行：归属商户，不建任务。
   stageRuns: (merchantId: string, request: SeoOpsPageRequest = {}, signal?: AbortSignal) =>
     requestJson<Page<StageRunView>>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/stage-runs${query(request)}`, { signal }),
+  runsLedger: (request: RunsLedgerRequest = {}, signal?: AbortSignal) =>
+    requestJson<RunsLedgerView>(`/api/seo-ops/agent-runs${query(request as SeoOpsPageRequest)}`, { signal }),
   stageRun: (id: string, signal?: AbortSignal) =>
     requestJson<StageRunView>(`/api/seo-ops/agent-runs/${encodeURIComponent(id)}`, { signal }),
   triggerStageRun: (merchantId: string, request: TriggerStageRunRequest) =>
@@ -58,6 +62,10 @@ export const seoOpsApi = {
     requestJson<CycleLedgerView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/cycle-ledger`, { signal }),
   postProgram: (merchantId: string, signal?: AbortSignal) =>
     requestJson<PostProgramView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/post-program`, { signal }),
+  styleProfile: (merchantId: string, signal?: AbortSignal) =>
+    requestJson<StyleProfileWire | null>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/style-profile`, { signal }),
+  saveStyleProfile: (merchantId: string, request: { voice: Record<string, unknown> }) =>
+    post<StyleProfileWire>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/style-profile`, request),
   createQuestionnaire: (merchantId: string, request: { website?: string; idempotency_key: string }) =>
     post<QuestionnaireView>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/questionnaires`, request),
   sendQuestionnaire: (questionnaireId: string) =>
@@ -83,6 +91,8 @@ export const seoOpsApi = {
   // ---- 执行域（门 2 / attempts / 查证 / 核验） ----
   inboxSummary: (signal?: AbortSignal) =>
     requestJson<InboxSummaryWire>("/api/seo-ops/inbox-summary", { signal }),
+  activity: (request: { hours?: number; limit?: number } = {}, signal?: AbortSignal) =>
+    requestJson<ActivityFeedView>(`/api/seo-ops/activity${query(request as SeoOpsPageRequest)}`, { signal }),
   executionPreview: (id: string, signal?: AbortSignal) =>
     requestJson<ExecutionPreviewWire>(`/api/seo-ops/tasks/${encodeURIComponent(id)}/execution-preview`, { signal }),
   confirmExecution: (id: string, request: {
@@ -133,6 +143,8 @@ export const seoOpsApi = {
   decideProposal: (proposalId: string, request: {
     action: "ADOPT" | "RETURN"; return_reason?: string; override_priority?: string; override_due_at?: string;
   }) => post<{ proposal: ProposalWire; task_id: string | null }>(`/api/seo-ops/proposals/${encodeURIComponent(proposalId)}/decision`, request),
+  requestPlanner: (merchantId: string, request: { reason: string; idempotency_key: string }) =>
+    post<{ task_id: string; replayed: boolean }>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/planner-requests`, request),
 
   // ---- 内容稿 ----
   drafts: (taskId: string, signal?: AbortSignal) =>
@@ -165,6 +177,10 @@ export const seoOpsApi = {
     snapshot_day: number | null; post_weekday: number | null; post_per_week: number;
     review_window_days: number; audit_interval_days: number | null; enabled: boolean;
   }) => requestJson<CycleConfigWire>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/cycle-config`, { method: "PUT", body: JSON.stringify(request) }),
+  allCapabilities: (signal?: AbortSignal) =>
+    requestJson<{ items: Array<CapabilityWire & { merchant_name: string }> }>("/api/seo-ops/capabilities", { signal }),
+  cycleConfigs: (signal?: AbortSignal) =>
+    requestJson<{ items: CycleConfigWire[] }>("/api/seo-ops/cycle-configs", { signal }),
   agentBindings: (signal?: AbortSignal) =>
     requestJson<{ items: AgentBindingWire[]; binding_keys: string[] }>("/api/seo-ops/agent-bindings", { signal }),
   upsertAgentBinding: (taskType: string, request: { agent_id: string; agent_label?: string | null; published_ref?: string | null }) =>

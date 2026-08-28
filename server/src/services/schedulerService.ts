@@ -118,7 +118,7 @@ export function dueCycleTasks(cfg: CycleConfig, now: Date): CycleTaskSpec[] {
     out.push({
       key: `cycle:${m}:REVIEW:${bucket}`,
       taskType: "REVIEW",
-      title: `评论巡检与回评草拟 #${bucket}`,
+      title: `效果复盘 #${bucket}`,
       executionMode: "READ_ONLY",
       requiredEvidenceTypes: [],
       spec: { cycle: "REVIEW_SWEEP", bucket, window_days: cfg.reviewWindowDays },

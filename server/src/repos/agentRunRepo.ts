@@ -410,6 +410,65 @@ export async function listActiveAgentRuns(db: Db): Promise<AgentRun[]> {
   return rows.map(toAgentRun);
 }
 
+export interface AgentRunPageFilter {
+  /** null = 全部商户（scopeAll）。 */
+  merchantIds: readonly string[] | null;
+  status?: string;
+  stage?: string;
+  includeContentRuns: boolean;
+  offset: number;
+  limit: number;
+}
+
+function runFilterClause(filter: Omit<AgentRunPageFilter, "offset" | "limit">, params: unknown[]): string {
+  const where: string[] = [];
+  if (filter.merchantIds !== null) {
+    params.push([...filter.merchantIds]);
+    where.push(`merchant_id = ANY($${params.length}::text[])`);
+  }
+  if (filter.status) { params.push(filter.status); where.push(`status = $${params.length}`); }
+  if (filter.stage) { params.push(filter.stage); where.push(`stage = $${params.length}`); }
+  if (!filter.includeContentRuns) where.push(`stage <> 'GBP_POST_CONTENT'`);
+  return where.length ? `WHERE ${where.join(" AND ")}` : "";
+}
+
+/** 跨商户 Run 账本分页（只读；不含 output 正文以外的任何裁决）。 */
+export async function listAgentRunsPage(
+  db: Db,
+  filter: AgentRunPageFilter,
+): Promise<{ items: AgentRun[]; total: number }> {
+  const params: unknown[] = [];
+  const clause = runFilterClause(filter, params);
+  const count = await db.one<{ total: string }>(
+    `SELECT COUNT(*) AS total FROM seo_agent_runs ${clause}`, params,
+  );
+  const rows = await db.query<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs ${clause}
+     ORDER BY created_at DESC, id DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, filter.limit, filter.offset],
+  );
+  return { items: rows.map(toAgentRun), total: Number(count?.total ?? 0) };
+}
+
+/** 汇总用：某时刻之后创建的 Run + 仍在途的 Run（不分页）。 */
+export async function listAgentRunsForSummary(
+  db: Db,
+  merchantIds: readonly string[] | null,
+  sinceIso: string,
+): Promise<AgentRun[]> {
+  const params: unknown[] = [sinceIso];
+  let scope = "";
+  if (merchantIds !== null) { params.push([...merchantIds]); scope = `AND merchant_id = ANY($2::text[])`; }
+  const rows = await db.query<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+     WHERE (created_at >= $1 OR status IN ('TRIGGERING','RUNNING')) ${scope}
+     ORDER BY created_at DESC, id DESC`,
+    params,
+  );
+  return rows.map(toAgentRun);
+}
+
 // ---------------------------------------------------------------------------
 // Deliverables
 

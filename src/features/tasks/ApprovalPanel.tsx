@@ -62,7 +62,7 @@ export function ApprovalPanel({
       ? <p className="boundary-note">当前账号只能查看，不能批准。</p>
       : null}
     {approvalBlockedReason ? <p className="boundary-note">{approvalBlockedReason}</p> : null}
-    {task.status === "APPROVED" ? <p className="boundary-note is-approved">已批准，等待自动发布。</p> : null}
+    {task.status === "APPROVED" ? <p className="boundary-note is-approved">已批准，等待发布。</p> : null}
     <p className="form-message" role="status">{message}</p>
   </>;
 

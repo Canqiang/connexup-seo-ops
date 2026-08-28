@@ -1,78 +1,91 @@
-import { AlertTriangle, ArrowRight, CheckCheck, GitPullRequestArrow, Inbox, SearchCheck, ShieldQuestion } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { AlertTriangle, ArrowRight } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
+import { formatDateTime } from "../../app/format";
 import { usePageTitle } from "../../hooks/usePageTitle";
 import { useResource } from "../../hooks/useResource";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
-import { STAGE_LABELS } from "../merchant/lifecycleCopy";
+import { formatTokens } from "../runs/RunsSummaryStrip";
+import { groupExceptions, waitingLabel } from "./exceptionGroups";
 
-/** 总览：一屏看清今天要人出手的四类事——判定建议、门 1 审批、门 2 执行确认、
- * 查证/核验。Ⓐ级自动运行不在这里刷存在感，只有出事（结果待查）才浮上来。 */
+/** 总览（管理审计）：先处理挡在路上的事——结果查证、商家等待、建议判定、审批与核验。
+ * 异常清单直接复用 workbench 投影（同一批人工决策点），只是按设计稿五组重新归类。 */
 export function OverviewPage() {
   const navigate = useNavigate();
   usePageTitle("总览");
   const workspace = useWorkspace();
   const summary = useResource((signal) => seoOpsApi.inboxSummary(signal), []);
-  const merchants = workspace.merchants;
+  const actions = useResource((signal) => seoOpsApi.workbench({ limit: 100 }, signal), []);
+  const activity = useResource((signal) => seoOpsApi.activity({ hours: 24, limit: 20 }, signal), []);
+  const runs = useResource((signal) => seoOpsApi.runsLedger({ limit: 1 }, signal), []);
   const s = summary.data;
-  const frozenNames = (s?.frozen_merchant_ids ?? [])
-    .map((id) => merchants.find((m) => m.id === id)?.display_name ?? id);
-
-  const queues = [
-    {
-      key: "proposals", icon: GitPullRequestArrow, label: "待判定建议", count: s?.pending_proposals ?? 0,
-      hint: "Planner / Plan 拆解产出的建议，采纳成任务或退回", to: "/inbox?tab=proposals",
-    },
-    {
-      key: "approval", icon: Inbox, label: "待审批（门 1）", count: s?.ready_for_approval ?? 0,
-      hint: "批的是任务修订版的执行定义（rev + hash）", to: "/inbox?status=READY_FOR_APPROVAL",
-    },
-    {
-      key: "execute", icon: CheckCheck, label: "待执行确认（门 2）", count: s?.awaiting_execution ?? 0,
-      hint: "已批准的写入/成品任务，六项服务端校验后派发", to: "/runs",
-    },
-    {
-      key: "verify", icon: SearchCheck, label: "待核验", count: s?.pending_verify ?? 0,
-      hint: "已发布 ≠ 已生效：7 天内确认变更公开可见", to: "/runs",
-    },
+  const grouped = groupExceptions(actions.data?.items ?? []);
+  const frozenNames = (s?.frozen_merchant_ids ?? []).map((id) => workspace.merchants.find((m) => m.id === id)?.display_name ?? id);
+  const cells = [
+    { label: "待判定建议", value: s?.pending_proposals, to: "/inbox?tab=proposals&view=audit" },
+    { label: "待审批 · 门 1", value: s?.ready_for_approval, to: "/inbox?status=READY_FOR_APPROVAL&view=audit" },
+    { label: "待执行确认 · 门 2", value: s?.awaiting_execution, to: "/runs?view=audit" },
+    { label: "结果待查", value: s?.outcome_unknown, to: "/runs?view=audit", danger: true, title: "全部未决 attempt，含 GBP 专用回读；异常清单只列可人工查证的部分。" },
+    { label: "核验逾期", value: s?.verification_overdue, to: "/inbox?status=PENDING_VERIFY&view=audit" },
+    { label: "今日 Agent Run", value: runs.data ? runs.data.summary.completed_today + runs.data.summary.failed_today : undefined, to: "/runs?view=audit" },
   ];
+  const total = actions.data?.total ?? 0;
+  const merchantsInvolved = new Set((actions.data?.items ?? []).map((i) => i.merchant_id)).size;
+  const truncated = actions.data && actions.data.total > actions.data.items.length;
 
   return <>
-    <header className="page-heading"><div><span className="eyebrow">PORTFOLIO LEDGER / 管理审计</span><h1>总览</h1><p>{merchants.length} 个商户在管 · 这里保留组合账本与审计视角。</p></div>
-      <div className="heading-actions">{summary.data ? null : <span className="quiet-copy">正在读取队列徽标…</span>}</div>
+    <header className="page-heading"><div><span className="eyebrow">PORTFOLIO · {new Date().toLocaleDateString("zh-CN")} · {workspace.merchants.length} 家商户</span><h1>总览</h1><p>先处理挡在路上的事：结果查证、商家等待、建议判定、审批与核验。其余商户在轨运行。</p></div>
+      <div className="heading-actions"><button className="secondary-button" onClick={() => { summary.reload(); actions.reload(); activity.reload(); runs.reload(); }} type="button">刷新</button><button className="primary-button" onClick={() => navigate("/merchants?view=audit")} type="button">＋ 新商户</button></div>
     </header>
 
-    {(s?.outcome_unknown ?? 0) > 0 ? <section className="frozen-banner" role="alert">
-      <AlertTriangle size={16} />
-      <div><strong>{s?.outcome_unknown} 个执行结果待查</strong><p>涉及商户：{frozenNames.join("、")} —— 查证完成前，这些商户的执行链全部冻结（红线③：结果不确定不重试）。</p></div>
-      <button className="danger-button" onClick={() => navigate("/runs")} type="button">去查证 <ArrowRight size={13} /></button>
-    </section> : null}
-
-    <div className="queue-grid">
-      {queues.map(({ key, icon: Icon, label, count, hint, to }) => (
-        <button className={`queue-card${count > 0 ? " has-items" : ""}`} key={key} onClick={() => navigate(to)} type="button">
-          <span className="queue-icon"><Icon size={17} /></span>
-          <strong className="queue-count">{summary.loading ? "—" : count}</strong>
-          <span className="queue-label">{label}</span>
-          <p>{hint}</p>
-        </button>
-      ))}
-    </div>
-
-    <section className="data-panel">
-      <div className="panel-heading"><div><span className="eyebrow">MERCHANT PORTFOLIO</span><h2>商户面</h2></div>
-        <button className="text-button" onClick={() => navigate("/merchants")} type="button">全部商户 <ArrowRight size={12} /></button></div>
-      <div className="table-wrap"><table><thead><tr><th>商户</th><th>阶段</th><th>健康</th><th>任务</th><th>待审批</th><th>阻塞</th><th /></tr></thead><tbody>
-        {merchants.slice(0, 8).map((m) => <tr key={m.id}>
-          <td><button className="table-link" onClick={() => navigate(`/merchants/${m.id}`)} type="button"><strong>{m.display_name}</strong><small>{m.location_count} 地点</small></button></td>
-          <td>{m.stage ? STAGE_LABELS[m.stage] ?? m.stage : "—"}</td>
-          <td><span className={`status-pill is-${m.health.toLocaleLowerCase()}`}>{m.health}</span></td>
-          <td>{m.task_count}</td><td>{m.ready_for_approval_count}</td><td>{m.blocked_count}</td>
-          <td><button aria-label={`打开 ${m.display_name}`} className="row-arrow" onClick={() => navigate(`/merchants/${m.id}`)} type="button"><ArrowRight size={15} /></button></td>
-        </tr>)}
-      </tbody></table>
-        {!merchants.length ? <div className="empty-state"><ShieldQuestion size={18} /><h2>还没有商户</h2><p>在「商户」页新建第一个商户开始接入。</p></div> : null}
-      </div>
+    <section aria-label="待处理汇总" className="overview-summary">
+      <div className="overview-summary-lead"><span>待处理事项</span><strong>{actions.loading ? "—" : total}</strong><small>涉及 {merchantsInvolved} 家 / 共 {workspace.merchants.length} 家</small></div>
+      {cells.map((cell) => <button className={`overview-summary-cell${cell.danger && (cell.value ?? 0) > 0 ? " is-danger" : ""}`} key={cell.label} onClick={() => navigate(cell.to)} title={cell.title} type="button"><span>{cell.label}</span><strong>{cell.value ?? "—"}</strong></button>)}
     </section>
+
+    {(s?.outcome_unknown ?? 0) > 0 ? <section className="frozen-banner" role="alert"><AlertTriangle size={16} /><div><strong>{s?.outcome_unknown} 个执行结果待查</strong><p>涉及商户：{frozenNames.join("、")} —— 查证完成前，这些商户的执行链全部冻结（结果不确定不重试）。</p></div><button className="danger-button" onClick={() => navigate("/runs?view=audit")} type="button">去查证 <ArrowRight size={13} /></button></section> : null}
+
+    <div className="overview-grid">
+      <section aria-label="异常清单" className="data-panel overview-exceptions">
+        <div className="panel-heading"><div><span className="eyebrow">EXCEPTION LEDGER</span><h2>异常清单</h2><p className="quiet-copy">{total} 项待处理 · 组内按卡住时长排序</p>
+          {truncated ? <p className="quiet-copy">仅显示前 {actions.data!.items.length} 项 · 共 {actions.data!.total} 项，其余在「<Link to="/inbox?view=audit">任务</Link>」页处理</p> : null}
+        </div></div>
+        {actions.loading ? <div className="page-state" role="status">读取待处理事项…</div> : null}
+        {actions.error ? <div className="page-state is-error" role="alert">异常清单读取失败。<button onClick={actions.reload} type="button">重试</button></div> : null}
+        {!actions.loading && !actions.error && !total ? <div className="empty-state slim"><p>今天没有需要人工处理的事项。</p></div> : null}
+        {grouped.map(({ group, items }) => <section className={`exception-group is-${group.key.toLowerCase()}`} key={group.key}>
+          <header><span className="exception-badge">{group.badge}</span><h3>{group.label}</h3><small>{group.hint}</small><em>{items.length}</em></header>
+          {items.map((item) => <article aria-label={`${item.merchant_name} ${group.label} ${item.title}`} className="exception-row" key={item.id}>
+            <div className="exception-copy"><strong>{item.merchant_name}{item.location_name ? <small> · {item.location_name}</small> : null}</strong><p>{item.title} — {item.reason}</p></div>
+            <time dateTime={item.waiting_since}>{waitingLabel(item.waiting_since)}</time>
+            <button className="action-primary" onClick={() => navigate(item.primary_action.href)} type="button">{item.primary_action.label}</button>
+          </article>)}
+        </section>)}
+      </section>
+
+      <div className="overview-side">
+        <section aria-label="今日信号" className="data-panel overview-signals">
+          <div className="panel-heading"><div><span className="eyebrow">SCHEDULER · EVENT ROUTER</span><h2>今日信号</h2></div></div>
+          {activity.loading ? <div className="page-state compact" role="status">读取信号…</div> : null}
+          {activity.error ? <div className="page-state compact is-error" role="alert">信号读取失败。</div> : null}
+          <ol className="signal-list">{(activity.data?.items ?? []).map((item) => <li className={`is-${item.severity.toLowerCase()}`} key={item.id}>
+            <time dateTime={item.occurred_at}>{formatDateTime(item.occurred_at)}</time>
+            <div><strong>{item.title}</strong><span>{item.merchant_name}{item.detail ? <> · <Link to={item.href}>{item.detail}</Link></> : <> · <Link to={item.href}>查看</Link></>}</span></div>
+          </li>)}</ol>
+          {activity.data && !activity.data.items.length ? <p className="quiet-copy">过去 24 小时没有信号。</p> : null}
+        </section>
+
+        <section aria-label="Run 容量" className="data-panel overview-capacity">
+          <div className="panel-heading"><div><span className="eyebrow">CORE AI SERVER</span><h2>Run 容量</h2></div></div>
+          <dl className="identity-ledger">
+            <div><dt>在途 / 排队</dt><dd>{runs.data ? `${runs.data.summary.in_flight} / ${runs.data.summary.queued}` : "—"}</dd></div>
+            <div><dt>今日完成 / 失败</dt><dd>{runs.data ? `${runs.data.summary.completed_today} / ${runs.data.summary.failed_today}` : "—"}</dd></div>
+            <div><dt>今日 Token</dt><dd>{runs.data ? formatTokens(runs.data.summary.token_total_today) : "—"}</dd></div>
+            <div><dt>并发 / 配额</dt><dd>配额未接入 · 当前 API 未提供</dd></div>
+          </dl>
+          <Link className="text-button" to="/runs?view=audit">查看完整运行账本 <ArrowRight size={12} /></Link>
+        </section>
+      </div>
+    </div>
   </>;
 }

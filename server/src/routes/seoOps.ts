@@ -56,6 +56,7 @@ import {
   listDeliverablesByRunIds,
 } from "../repos/agentRunRepo.js";
 import { getMerchant } from "../repos/merchantRepo.js";
+import { getAgentBinding } from "../repos/settingsRepo.js";
 import { getQuestionnaireByShareSlug } from "../repos/questionnaireRepo.js";
 import { getLocation } from "../repos/locationRepo.js";
 import type { Task } from "../repos/taskTypes.js";
@@ -66,6 +67,9 @@ import {
   LOCATION_READINESSES,
 } from "../domain/enums.js";
 import { enqueuePlannerTaskIfBound } from "../services/plannerService.js";
+import { runsLedger } from "../services/runsLedgerService.js";
+import { activityFeed } from "../services/activityFeedService.js";
+import { effectReviews } from "../services/effectReviewService.js";
 
 const createMerchantSchema = z.object({
   slug: z.string(),
@@ -213,6 +217,7 @@ export function registerSeoOpsRoutes(
       copilot_enabled: false,
       agent_run_enabled: ctx.coreAi !== null && ctx.config.agentRunAgentId !== null,
       agent_run_stages: AGENT_RUN_STAGES,
+      core_ai_console_url: ctx.config.coreAiConsoleUrl ?? null,
     };
   });
 
@@ -231,9 +236,28 @@ export function registerSeoOpsRoutes(
     return reviews(ctx.db, request.query as Record<string, unknown>, actor.userId, actor.scopeAll === true);
   });
 
+  const effectReviewsQuerySchema = z.object({ merchant_id: z.string().min(1).optional(), now: z.string().datetime().optional() });
+  app.get("/api/seo-ops/effect-reviews", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const query = effectReviewsQuerySchema.parse(request.query);
+    if (query.merchant_id) await requireMerchantAccess(ctx.db, actor, query.merchant_id);
+    return effectReviews(ctx.db, actor.userId, actor.scopeAll === true, query.merchant_id, query.now ? new Date(query.now) : new Date());
+  });
+
   app.get("/api/seo-ops/reports", async (request) => {
     const actor = requirePermission(request, "seoops.view");
     return reports(ctx.db, request.query as Record<string, unknown>, actor.userId, new Date(), actor.scopeAll === true);
+  });
+
+  const activityQuerySchema = z.object({
+    hours: z.coerce.number().int().min(1).max(168).default(24),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  });
+
+  app.get("/api/seo-ops/activity", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const query = activityQuerySchema.parse(request.query);
+    return activityFeed(ctx.db, actor.userId, actor.scopeAll === true, query);
   });
 
   app.get("/api/seo-ops/tasks/:taskId", async (request, reply) => {
@@ -302,6 +326,28 @@ export function registerSeoOpsRoutes(
         stageRunView(run, deliverablesByRun.get(run.id) ?? []),
       ),
     };
+  });
+
+  const agentRunsQuerySchema = z.object({
+    merchant_id: z.string().min(1).optional(),
+    status: z.enum(["TRIGGERING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]).optional(),
+    stage: z.string().min(1).max(40).optional(),
+    include_content: z.enum(["true", "false"]).optional(),
+    /** 测试注入用；生产不传。 */
+    now: z.string().datetime().optional(),
+  });
+
+  // 跨商户 Run 账本（只读）：Run 完成 ≠ Task 完成，这里不改任何任务状态。
+  app.get("/api/seo-ops/agent-runs", async (request) => {
+    const actor = requirePermission(request, "seoops.view");
+    const query = agentRunsQuerySchema.parse(request.query);
+    const { offset, limit } = parsePageParams(request.query as Record<string, unknown>);
+    if (query.merchant_id) await requireMerchantAccess(ctx.db, actor, query.merchant_id);
+    return runsLedger(ctx.db, {
+      actorUserId: actor.userId, scopeAll: actor.scopeAll === true,
+      merchantId: query.merchant_id, status: query.status, stage: query.stage,
+      includeContentRuns: query.include_content === "true", offset, limit,
+    }, query.now ? new Date(query.now) : new Date());
   });
 
   app.get("/api/seo-ops/agent-runs/:runId", async (request) => {
@@ -500,6 +546,30 @@ export function registerSeoOpsRoutes(
       return { status: questionnaire.status };
     },
   );
+
+  const plannerRequestSchema = z.object({
+    reason: z.string().trim().min(1).max(500),
+    idempotency_key: z.string().trim().min(1).max(200),
+  });
+
+  // 手动请求 Planner：只产生一个只读 PLANNER 任务，建议仍须人判定（红线①）。
+  app.post("/api/seo-ops/merchants/:merchantId/planner-requests", async (request, reply) => {
+    const actor = requirePermission(request, "seoops.manage");
+    const { merchantId } = request.params as { merchantId: string };
+    await requireMerchantAccess(ctx.db, actor, merchantId);
+    const body = plannerRequestSchema.parse(request.body);
+    if (!(await getAgentBinding(ctx.db, "PLANNER"))) {
+      throw new ApiError(409, "PLANNER agent is not bound; bind it in settings first", "PLANNER_NOT_BOUND");
+    }
+    const result = await enqueuePlannerTaskIfBound(ctx.db, merchantId, {
+      key: `manual:${body.idempotency_key}`,
+      type: "MANUAL_REQUEST",
+      reason: body.reason,
+    }, actor.userId);
+    if (!result) throw new ApiError(409, "PLANNER agent is not bound", "PLANNER_NOT_BOUND");
+    reply.status(result.replayed ? 200 : 201);
+    return { task_id: result.task.id, replayed: result.replayed };
+  });
 
   // ---- 生命周期（阶段轨 + 异常，全部从证据链推导） ----
 

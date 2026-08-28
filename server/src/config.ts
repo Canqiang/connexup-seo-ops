@@ -50,6 +50,8 @@ export interface ServerConfig {
   sessionTtlHours: number;
   sessionCookieSecure: boolean;
   coreAiBaseUrl: string | null;
+  /** 人类可访问的 Core AI 控制台 URL（与 coreAiBaseUrl 这个 API host 不同）；未设置时前端隐藏「打开 Core AI 控制台」链接。 */
+  coreAiConsoleUrl: string | null;
   coreAiToken: string | null;
   copilotAgentId: string | null;
   /** Agent the operator agent-run panel drives (unified local SEO agent). */
@@ -113,6 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     sessionTtlHours: sessionTtlHours(env.SESSION_TTL_HOURS),
     sessionCookieSecure: sessionCookieSecure(env.SESSION_COOKIE_SECURE, env.NODE_ENV),
     coreAiBaseUrl,
+    coreAiConsoleUrl: env.CORE_AI_CONSOLE_URL?.trim() || null,
     coreAiToken: env.CORE_AI_TOKEN?.trim() || null,
     copilotAgentId: env.COPILOT_AGENT_ID?.trim() || null,
     agentRunAgentId: env.AGENT_RUN_AGENT_ID?.trim() || null,

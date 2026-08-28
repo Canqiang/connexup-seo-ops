@@ -3,16 +3,54 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
+import type { CapabilityWire, CycleConfigWire, MerchantSummary, PortfolioResponse, RunsLedgerView } from "../../api/types";
 import { AuthProvider } from "../../auth/AuthContext";
 import { portfolioFixture, userFixture } from "../../test/fixtures";
+
+const kekeFoodMerchant: MerchantSummary = {
+  id: "keke-food", slug: "keke-food", display_name: "Keke Food Kitchen",
+  operator_user_ids: ["user-1"], operators: [{ id: "user-1", name: "Xander" }], owner_ids: ["user-1"],
+  locations: [], location_count: 0, task_count: 0, ready_for_approval_count: 0, blocked_count: 0, overdue_count: 0,
+  health: "STABLE",
+};
 
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 let runtimeConfig: Record<string, unknown>;
 let authenticatedUser: typeof userFixture;
 let runtimeControls: Record<string, unknown>;
+let ledgerData: RunsLedgerView;
+let portfolioData: PortfolioResponse;
+let capabilitiesData: { items: Array<CapabilityWire & { merchant_name: string }> };
+let cycleConfigsData: { items: CycleConfigWire[] };
 
 beforeEach(() => {
   calls.length = 0;
+  portfolioData = { ...portfolioFixture, merchants: [...portfolioFixture.merchants, kekeFoodMerchant] };
+  capabilitiesData = {
+    items: [
+      {
+        id: "cap-only-bear-gbp-write", merchant_id: "only-bear", merchant_name: "Only Bear Chicken & Boba",
+        asset: "GBP", capability: "GBP_WRITE", external_ref: null, tech_connected: true, merchant_authorized: true,
+        status: "ACTIVE", verified_at: "2026-08-20T00:00:00Z", verified_by: "user-1", note: null,
+        updated_at: "2026-08-20T00:00:00Z",
+      },
+      {
+        id: "cap-keke-food-gbp-write", merchant_id: "keke-food", merchant_name: "Keke Food Kitchen",
+        asset: "GBP", capability: "GBP_WRITE", external_ref: null, tech_connected: true, merchant_authorized: false,
+        status: "BLOCKED", verified_at: null, verified_by: null, note: "待商家授权",
+        updated_at: "2026-08-20T00:00:00Z",
+      },
+    ],
+  };
+  cycleConfigsData = {
+    items: [
+      {
+        merchant_id: "only-bear", snapshot_day: 1, post_weekday: 4, post_per_week: 1,
+        review_window_days: 7, audit_interval_days: 30, enabled: true,
+        updated_by: "user-1", updated_at: "2026-08-20T00:00:00Z",
+      },
+    ],
+  };
   runtimeConfig = {
     copilot_enabled: false,
     agent_run_enabled: true,
@@ -25,6 +63,10 @@ beforeEach(() => {
     effective_source: null,
     effective_reason: null,
   };
+  ledgerData = {
+    summary: { in_flight: 0, queued: 0, completed_today: 0, failed_today: 0, content_runs_today: 0, token_total_today: 0, outcome_unknown: 0, frozen_merchant_ids: [], day_start: "2026-08-27T00:00:00.000Z" },
+    items: [], offset: 0, limit: 1, total: 0,
+  };
   authenticatedUser = {
     ...userFixture,
     name: "George Operator",
@@ -35,16 +77,18 @@ beforeEach(() => {
     const path = String(input);
     calls.push({ path, init });
     if (path === "/api/auth/me") return json(authenticatedUser);
-    if (path === "/api/seo-ops/portfolio") return json(portfolioFixture);
+    if (path === "/api/seo-ops/portfolio") return json(portfolioData);
     if (path === "/api/seo-ops/inbox-summary") return json({
       pending_proposals: 3,
       ready_for_approval: 2,
       awaiting_execution: 1,
       pending_verify: 4,
       outcome_unknown: 1,
+      verification_overdue: 0,
       frozen_merchant_ids: ["only-bear"],
     });
     if (path === "/api/seo-ops/config") return json(runtimeConfig);
+    if (path.startsWith("/api/seo-ops/agent-runs")) return json(ledgerData);
     if (path === "/api/seo-ops/runtime-controls?merchant_id=only-bear" && !init?.method) {
       return json(runtimeControls);
     }
@@ -89,6 +133,11 @@ beforeEach(() => {
     });
     if (path === "/api/seo-ops/merchants/only-bear/capabilities") return json({ items: [] });
     if (path === "/api/seo-ops/merchants/only-bear/cycle-config") return json(null);
+    if (path === "/api/seo-ops/capabilities") return json(capabilitiesData);
+    if (path === "/api/seo-ops/cycle-configs") return json(cycleConfigsData);
+    if (path === "/api/seo-ops/merchants/only-bear/capabilities/GBP_WRITE" && init?.method === "PUT") {
+      return json({ message: "capability upsert failed" }, 500);
+    }
     if (path === "/api/seo-ops/merchants/only-bear/locations/mineola/gbp-execution-binding") return json({
       merchant_id: "only-bear",
       location_id: "mineola",
@@ -109,6 +158,11 @@ beforeEach(() => {
       missing_fields: ["account_resource", "location_resource", "write_agent_published_ref", "readback_agent_published_ref"],
       updated_by: null,
       updated_at: null,
+    });
+    if (path.startsWith("/api/seo-ops/effect-reviews")) return json({
+      summary: { total: 0, by_tier: {}, due_count: 0 },
+      items: [],
+      windows: [],
     });
     if (path.startsWith("/api/seo-ops/reviews")) return json({
       items: [{
@@ -154,7 +208,8 @@ test("settings separates the five operator governance sections and reads existin
     "/api/seo-ops/config",
     "/api/seo-ops/inbox-summary",
     "/api/seo-ops/agent-bindings",
-    "/api/seo-ops/merchants/only-bear/capabilities",
+    "/api/seo-ops/capabilities",
+    "/api/seo-ops/cycle-configs",
     "/api/seo-ops/merchants/only-bear/cycle-config",
   ]));
 });
@@ -193,11 +248,17 @@ test("system status uses real configuration and queue signals while marking unsu
   expect(await within(system).findByText("已启用")).toBeInTheDocument();
   expect(within(system).getByText("结果待查")).toBeInTheDocument();
   expect(await within(system).findByText("1")).toBeInTheDocument();
-  for (const label of ["Scheduler 心跳", "Worker 心跳", "Run 容量", "Core AI 配额", "近期失败数"]) {
+  for (const label of ["Scheduler 心跳", "Worker 心跳", "Core AI 配额"]) {
     const field = within(system).getByLabelText(label);
     expect(field).toHaveTextContent("不可用");
     expect(field).toHaveTextContent("当前 API 未提供证据");
   }
+  const runCapacity = within(system).getByText("Run 容量").closest(".system-truth-card");
+  if (!runCapacity) throw new Error("Missing Run 容量 card");
+  expect(await within(runCapacity as HTMLElement).findByText("0 在途 · 0 排队")).toBeInTheDocument();
+  const recentFailures = within(system).getByText("近期失败数").closest(".system-truth-card");
+  if (!recentFailures) throw new Error("Missing 近期失败数 card");
+  expect(await within(recentFailures as HTMLElement).findByText("0")).toBeInTheDocument();
 });
 
 test("system status does not turn an omitted Agent Run signal into a disabled fact", async () => {
@@ -232,10 +293,38 @@ test("manual runtime controls require the exact scheduler management permission"
 test("merchant governance edits use their exact capability and scheduler permission codes", async () => {
   renderApp("/settings");
 
-  expect(await screen.findByLabelText("GBP 写入（Post / 资料修改） 技术接入")).toBeDisabled();
-  expect(screen.getByLabelText("GBP 写入（Post / 资料修改） 商户授权")).toBeDisabled();
+  expect(await screen.findByLabelText("Only Bear Chicken & Boba GBP 写入（Post / 资料修改） 技术连接")).toBeDisabled();
+  expect(screen.getByLabelText("Only Bear Chicken & Boba GBP 写入（Post / 资料修改） 商户授权")).toBeDisabled();
   expect(screen.getByLabelText("AUDIT Agent ID")).toBeDisabled();
   expect(await screen.findByLabelText("启用自动周期")).toBeDisabled();
+});
+
+test("capability matrix lists every scoped merchant × capability with impact copy and inline toggles", async () => {
+  renderApp("/settings");
+  const matrix = await screen.findByRole("region", { name: "能力矩阵" });
+  expect(within(matrix).getByRole("row", { name: /Only Bear.*GBP_WRITE/ })).toHaveTextContent("可进双门执行（仍需门 1+2）");
+  expect(within(matrix).getByRole("row", { name: /Keke Food.*GBP_WRITE/ })).toHaveTextContent("GBP 写入类建议一律校验失败");
+  expect(within(matrix).getByRole("row", { name: /Only Bear.*XHS_PUBLISH/ })).toHaveTextContent("MISSING");
+});
+
+test("cadence overview summarises every merchant cycle before the per-merchant form", async () => {
+  renderApp("/settings");
+  const overview = await screen.findByRole("region", { name: "周期总览" });
+  expect(within(overview).getByRole("row", { name: /Only Bear/ })).toHaveTextContent("每周四 ×1");
+});
+
+test("a failed capability toggle keeps the matrix heading and error visible without unmounting the panel", async () => {
+  authenticatedUser = { ...authenticatedUser, permissions: [...authenticatedUser.permissions, "seoops.capability.manage"] };
+  const user = userEvent.setup();
+  renderApp("/settings");
+
+  const matrix = await screen.findByRole("region", { name: "能力矩阵" });
+  const checkbox = within(matrix).getByLabelText("Only Bear Chicken & Boba GBP 写入（Post / 资料修改） 技术连接");
+  await user.click(checkbox);
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("GBP_WRITE 保存失败");
+  expect(screen.getByRole("heading", { name: "能力矩阵" })).toBeInTheDocument();
 });
 
 test("authorized runtime controls preserve the existing scheduler and worker mutations", async () => {
@@ -335,20 +424,13 @@ test("the full Runs ledger is audit-only while its explicit audit URL remains ro
 test("review keeps backend association truth and presents the decision sequence in order", async () => {
   renderApp("/reviews");
 
-  const card = await screen.findByRole("article", { name: "提升午餐搜索可见度" });
+  const section = await screen.findByRole("region", { name: "任务级证据分级" });
+  const card = await within(section).findByRole("article", { name: "提升午餐搜索可见度" });
   expect(within(card).getByText("关联观察，不代表因果")).toBeInTheDocument();
   expect(within(card).getByText("CORRELATIONAL")).toBeInTheDocument();
   expect(within(card).queryByText("CAUSAL_READY")).not.toBeInTheDocument();
   expect(within(card).queryByText(/证明.*导致|已证实.*导致/)).not.toBeInTheDocument();
-  expect(within(card).getAllByRole("term").map((node) => node.textContent)).toEqual([
-    "基线",
-    "动作组合",
-    "观察变化",
-    "混杂因素",
-    "结论",
-    "下一轮计划输入",
-  ]);
-  expect(within(card).getByRole("link", { name: "查看任务与技术证据" })).toHaveAttribute("href", "/tasks/task-review-1");
+  expect(within(card).getByRole("link", { name: "查看任务" })).toHaveAttribute("href", "/tasks/task-review-1");
 });
 
 function renderApp(route: string) {
