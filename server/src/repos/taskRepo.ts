@@ -283,13 +283,27 @@ export async function listTasksByMerchant(db: Db, merchantId: string): Promise<T
   return rows.map(toTask);
 }
 
-/** Scoped projections (e.g. the activity feed) must read only the caller's
- * merchants at the DB layer rather than loading every task system-wide. */
-export async function listTasksByMerchantIds(db: Db, merchantIds: readonly string[]): Promise<Task[]> {
-  if (merchantIds.length === 0) return [];
+/** 事件的 occurredAt 可能晚于任务的 updated_at：多条执行路径在事务外先取 now
+ * 当 updated_at，buildEvent 在事务内才读时钟（见 executionService 的
+ * settleAttempt* / markVerified 等）。因此按 updated_at 取数必须留出余量，
+ * 精确的窗口过滤由调用方按 event.occurredAt 完成。一小时远超任何事务时长。 */
+const EVENT_CLOCK_SKEW_MS = 60 * 60 * 1000;
+
+/** 活动流用：只取窗口内可能有事件的任务（带 skew 余量的安全超集）。
+ * merchantIds 为 null = 全范围（scopeAll）；空数组 = 无可见商户，返回 []。 */
+export async function listTasksWithEventsSince(
+  db: Db,
+  sinceIso: string,
+  merchantIds: readonly string[] | null,
+): Promise<Task[]> {
+  if (merchantIds !== null && merchantIds.length === 0) return [];
+  const bound = new Date(Date.parse(sinceIso) - EVENT_CLOCK_SKEW_MS).toISOString();
+  const params: unknown[] = [bound];
+  let scope = "";
+  if (merchantIds !== null) { params.push([...merchantIds]); scope = `AND merchant_id = ANY($2::text[])`; }
   const rows = await db.query<TaskRow>(
-    `SELECT * FROM seo_tasks WHERE merchant_id = ANY($1::text[]) ORDER BY updated_at DESC`,
-    [[...merchantIds]],
+    `SELECT * FROM seo_tasks WHERE updated_at >= $1 ${scope} ORDER BY updated_at DESC`,
+    params,
   );
   return rows.map(toTask);
 }

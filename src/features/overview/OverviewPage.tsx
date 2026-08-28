@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
-import { formatDateTime } from "../../app/format";
+import { formatDateTime, localTzOffsetMinutes } from "../../app/format";
 import { usePageTitle } from "../../hooks/usePageTitle";
 import { useResource } from "../../hooks/useResource";
 import { useWorkspace } from "../../workspace/WorkspaceContext";
@@ -17,7 +17,7 @@ export function OverviewPage() {
   const summary = useResource((signal) => seoOpsApi.inboxSummary(signal), []);
   const actions = useResource((signal) => seoOpsApi.workbench({ limit: 100 }, signal), []);
   const activity = useResource((signal) => seoOpsApi.activity({ hours: 24, limit: 20 }, signal), []);
-  const runs = useResource((signal) => seoOpsApi.runsLedger({ limit: 1 }, signal), []);
+  const runs = useResource((signal) => seoOpsApi.runsLedger({ limit: 1, tz_offset_minutes: localTzOffsetMinutes() }, signal), []);
   const s = summary.data;
   const grouped = groupExceptions(actions.data?.items ?? []);
   const frozenNames = (s?.frozen_merchant_ids ?? []).map((id) => workspace.merchants.find((m) => m.id === id)?.display_name ?? id);

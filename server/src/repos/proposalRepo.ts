@@ -440,3 +440,47 @@ export async function listWorkbenchProposals(
     createdAt: row.created_at,
   }));
 }
+
+/** 活动流用的批次摘要：一条 SQL 出「窗口内创建的批次 + 条目计数」，
+ * 取代逐批次查 proposals 的 N+1。 */
+export interface BatchActivityRow {
+  id: string;
+  merchantId: string;
+  triggerReason: string | null;
+  createdAt: string;
+  proposalCount: number;
+  pendingCount: number;
+}
+
+export async function listBatchActivitySince(
+  db: Db,
+  sinceIso: string,
+  merchantIds: readonly string[] | null,
+): Promise<BatchActivityRow[]> {
+  if (merchantIds !== null && merchantIds.length === 0) return [];
+  const params: unknown[] = [sinceIso];
+  let scope = "";
+  if (merchantIds !== null) { params.push([...merchantIds]); scope = `AND b.merchant_id = ANY($2::text[])`; }
+  const rows = await db.query<{
+    id: string; merchant_id: string; trigger_reason: string | null; created_at: string;
+    proposal_count: string; pending_count: string;
+  }>(
+    `SELECT b.id, b.merchant_id, b.trigger_reason, b.created_at,
+            COUNT(p.id) AS proposal_count,
+            COUNT(p.id) FILTER (WHERE p.status IN ('PENDING','VALIDATION_FAILED')) AS pending_count
+       FROM seo_proposal_batches b
+       LEFT JOIN seo_proposals p ON p.batch_id = b.id
+      WHERE b.created_at >= $1 ${scope}
+      GROUP BY b.id, b.merchant_id, b.trigger_reason, b.created_at
+      ORDER BY b.created_at DESC, b.id DESC`,
+    params,
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    merchantId: row.merchant_id,
+    triggerReason: row.trigger_reason,
+    createdAt: row.created_at,
+    proposalCount: Number(row.proposal_count),
+    pendingCount: Number(row.pending_count),
+  }));
+}

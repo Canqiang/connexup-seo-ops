@@ -463,5 +463,5 @@ export interface RunsLedgerView {
 }
 export interface RunsLedgerRequest {
   merchant_id?: string; status?: AgentRunStatus; stage?: string; include_content?: "true" | "false";
-  offset?: number; limit?: number;
+  offset?: number; limit?: number; tz_offset_minutes?: number;
 }

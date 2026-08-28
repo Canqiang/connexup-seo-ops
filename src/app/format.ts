@@ -30,3 +30,8 @@ export function safeHref(value?: string | null): string | null {
 export function publicFormUrl(shareSlug: string): string {
   return `${window.location.origin}/seo-ops/q/${shareSlug}`;
 }
+
+/** 运营者本地时区相对 UTC 的分钟偏移（UTC+8 → 480）。 */
+export function localTzOffsetMinutes(): number {
+  return -new Date().getTimezoneOffset();
+}

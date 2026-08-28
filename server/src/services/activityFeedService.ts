@@ -1,8 +1,8 @@
 import type { Db } from "../db/connection.js";
-import { listAgentRunsForSummary } from "../repos/agentRunRepo.js";
+import { listRunsCompletedSince } from "../repos/agentRunRepo.js";
 import { listMerchants, listMerchantsForOperator } from "../repos/merchantRepo.js";
-import { listTasks, listTasksByMerchantIds } from "../repos/taskRepo.js";
-import { listBatchViews } from "./proposalService.js";
+import { listBatchActivitySince } from "../repos/proposalRepo.js";
+import { listTasksWithEventsSince } from "../repos/taskRepo.js";
 
 export type ActivitySeverity = "INFO" | "WARN" | "DANGER";
 export interface ActivityItemWire {
@@ -48,7 +48,7 @@ export async function activityFeed(
   const since = new Date(now.getTime() - options.hours * 3_600_000).toISOString();
   const items: ActivityItemWire[] = [];
 
-  const scopedTasks = scopeAll ? await listTasks(db) : await listTasksByMerchantIds(db, [...names.keys()]);
+  const scopedTasks = await listTasksWithEventsSince(db, since, scopeAll ? null : [...names.keys()]);
   for (const task of scopedTasks.filter((t) => names.has(t.merchantId))) {
     for (const event of task.events) {
       if (event.occurredAt < since) continue;
@@ -61,9 +61,9 @@ export async function activityFeed(
     }
   }
 
-  for (const run of await listAgentRunsForSummary(db, scopeAll ? null : [...names.keys()], since)) {
-    if (!run.completedAt || run.completedAt < since || !names.has(run.merchantId)) continue;
-    if (run.status !== "COMPLETED" && run.status !== "FAILED") continue;
+  for (const run of await listRunsCompletedSince(db, scopeAll ? null : [...names.keys()], since)) {
+    if (!names.has(run.merchantId)) continue;
+    if (run.completedAt === null) continue;
     items.push({
       id: `run:${run.id}`, kind: "AGENT_RUN", occurred_at: run.completedAt,
       merchant_id: run.merchantId, merchant_name: names.get(run.merchantId)!,
@@ -73,17 +73,13 @@ export async function activityFeed(
     });
   }
 
-  const scopedBatches = scopeAll
-    ? await listBatchViews(db)
-    : (await Promise.all(merchants.map((m) => listBatchViews(db, m.id)))).flat();
-  for (const view of scopedBatches.filter((v) => names.has(v.batch.merchantId))) {
-    if (view.batch.createdAt < since) continue;
-    const pending = view.proposals.filter((p) => p.status === "PENDING" || p.status === "VALIDATION_FAILED").length;
+  const scopedBatches = await listBatchActivitySince(db, since, scopeAll ? null : [...names.keys()]);
+  for (const batch of scopedBatches.filter((b) => names.has(b.merchantId))) {
     items.push({
-      id: `batch:${view.batch.id}`, kind: "PROPOSAL_BATCH", occurred_at: view.batch.createdAt,
-      merchant_id: view.batch.merchantId, merchant_name: names.get(view.batch.merchantId)!,
-      title: `Planner 建议 ${view.proposals.length} 条${pending ? `（${pending} 条待判定）` : "（已判定）"}`,
-      detail: view.batch.triggerReason, href: `/inbox?tab=proposals&merchant_id=${view.batch.merchantId}`,
+      id: `batch:${batch.id}`, kind: "PROPOSAL_BATCH", occurred_at: batch.createdAt,
+      merchant_id: batch.merchantId, merchant_name: names.get(batch.merchantId)!,
+      title: `Planner 建议 ${batch.proposalCount} 条${batch.pendingCount ? `（${batch.pendingCount} 条待判定）` : "（已判定）"}`,
+      detail: batch.triggerReason, href: `/inbox?tab=proposals&merchant_id=${batch.merchantId}`,
       severity: "INFO",
     });
   }

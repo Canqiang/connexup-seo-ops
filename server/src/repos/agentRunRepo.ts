@@ -462,8 +462,27 @@ export async function listAgentRunsForSummary(
   if (merchantIds !== null) { params.push([...merchantIds]); scope = `AND merchant_id = ANY($2::text[])`; }
   const rows = await db.query<AgentRunRow>(
     `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
-     WHERE (created_at >= $1 OR status IN ('TRIGGERING','RUNNING')) ${scope}
+     WHERE (created_at >= $1 OR completed_at >= $1 OR status IN ('TRIGGERING','RUNNING')) ${scope}
      ORDER BY created_at DESC, id DESC`,
+    params,
+  );
+  return rows.map(toAgentRun);
+}
+
+/** 活动流只关心「窗口内到达终态」的 Run：按 completed_at 取数，
+ * 与按 created_at 取数不同——跨窗口的长 Run 不能漏。 */
+export async function listRunsCompletedSince(
+  db: Db,
+  merchantIds: readonly string[] | null,
+  sinceIso: string,
+): Promise<AgentRun[]> {
+  const params: unknown[] = [sinceIso];
+  let scope = "";
+  if (merchantIds !== null) { params.push([...merchantIds]); scope = `AND merchant_id = ANY($2::text[])`; }
+  const rows = await db.query<AgentRunRow>(
+    `SELECT ${RUN_COLUMNS} FROM seo_agent_runs
+     WHERE completed_at >= $1 AND status IN ('COMPLETED','FAILED') ${scope}
+     ORDER BY completed_at DESC, id DESC`,
     params,
   );
   return rows.map(toAgentRun);

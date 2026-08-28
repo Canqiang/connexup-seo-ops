@@ -335,6 +335,8 @@ export function registerSeoOpsRoutes(
     include_content: z.enum(["true", "false"]).optional(),
     /** 测试注入用；生产不传。 */
     now: z.string().datetime().optional(),
+    /** 运营者本地时区偏移分钟数（UTC+8 → 480）；用于「今日」统计的日边界。 */
+    tz_offset_minutes: z.coerce.number().int().min(-840).max(840).optional(),
   });
 
   // 跨商户 Run 账本（只读）：Run 完成 ≠ Task 完成，这里不改任何任务状态。
@@ -347,6 +349,7 @@ export function registerSeoOpsRoutes(
       actorUserId: actor.userId, scopeAll: actor.scopeAll === true,
       merchantId: query.merchant_id, status: query.status, stage: query.stage,
       includeContentRuns: query.include_content === "true", offset, limit,
+      tzOffsetMinutes: query.tz_offset_minutes ?? 0,
     }, query.now ? new Date(query.now) : new Date());
   });
 

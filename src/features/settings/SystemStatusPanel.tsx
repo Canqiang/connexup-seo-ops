@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import type { RuntimeControlsView } from "../../api/types";
+import { localTzOffsetMinutes } from "../../app/format";
 import { useResource } from "../../hooks/useResource";
 
 const UNSUPPORTED_FIELDS = ["Scheduler 心跳", "Worker 心跳", "Core AI 配额"];
@@ -23,7 +24,7 @@ function ControlMeta({ control }: { control: RuntimeControlsView["global"] }) {
 export function SystemStatusPanel({ canSchedule, merchantId }: { canSchedule: boolean; merchantId?: string }) {
   const config = useResource((signal) => seoOpsApi.config(signal), []);
   const inbox = useResource((signal) => seoOpsApi.inboxSummary(signal), []);
-  const runs = useResource((signal) => seoOpsApi.runsLedger({ limit: 1 }, signal), []);
+  const runs = useResource((signal) => seoOpsApi.runsLedger({ limit: 1, tz_offset_minutes: localTzOffsetMinutes() }, signal), []);
   const controls = useResource(
     (signal) => merchantId ? seoOpsApi.runtimeControls(merchantId, signal) : Promise.resolve(EMPTY_RUNTIME_CONTROLS),
     [merchantId],

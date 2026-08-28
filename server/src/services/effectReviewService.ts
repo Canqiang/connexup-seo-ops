@@ -56,7 +56,9 @@ export async function effectReviews(db: Db, actorUserId: string, scopeAll: boole
     items.push(...artifacts.map((a) => wire(a, merchant.displayName)));
     const last = artifacts[0]?.createdAt ?? null;
     const windowDays = configs.get(merchant.id)?.reviewWindowDays ?? null;
-    const next = last && windowDays ? new Date(Date.parse(last) + windowDays * 86_400_000).toISOString() : null;
+    // 首轮复盘的参考起点是商户接入时刻；之后每轮从上次复盘起算。
+    const anchor = last ?? merchant.createdAt;
+    const next = windowDays ? new Date(Date.parse(anchor) + windowDays * 86_400_000).toISOString() : null;
     windows.push({
       merchant_id: merchant.id, merchant_name: merchant.displayName, review_window_days: windowDays,
       last_review_at: last, next_window_at: next,

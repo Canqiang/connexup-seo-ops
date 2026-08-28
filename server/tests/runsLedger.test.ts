@@ -65,6 +65,47 @@ describe("runs ledger", () => {
     });
   });
 
+  it("completed_today counts a run created yesterday (UTC) but completed today", async () => {
+    await insertAgentRun(built.db, run(merchantId, {
+      id: "run-crossed-midnight",
+      createdAt: "2026-08-26T23:50:00.000Z", triggeredAt: "2026-08-26T23:50:00.000Z",
+      completedAt: "2026-08-27T00:10:00.000Z",
+    }));
+
+    const response = await app.inject({ method: "GET", url: `/api/seo-ops/agent-runs?limit=10&now=${encodeURIComponent(NOW.toISOString())}` });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json();
+    expect(body.items.find((r: { id: string }) => r.id === "run-crossed-midnight")).toBeDefined();
+    // run-done + run-crossed-midnight; run-failed-old is a week old, run-content is excluded by stage.
+    expect(body.summary.completed_today).toBe(2);
+  });
+
+  it("tz_offset_minutes shifts the day boundary in both directions for the same run", async () => {
+    // now = 2026-08-27T06:00:00Z is early in the UTC day (14:00 local at UTC+8).
+    // UTC midnight (offset 0)   = 2026-08-27T00:00:00Z
+    // UTC+8 local midnight      = 2026-08-26T16:00:00Z (expressed as a UTC instant)
+    // A run completed at 2026-08-26T18:00:00Z falls after the UTC+8 local midnight but before
+    // the UTC midnight — it must count as completed_today under tz_offset_minutes=480 and must
+    // NOT count under tz_offset_minutes=0, proving the boundary actually shifts both ways.
+    const nowTz = "2026-08-27T06:00:00.000Z";
+    await insertAgentRun(built.db, run(merchantId, {
+      id: "run-tz", createdAt: "2026-08-26T18:00:00.000Z", triggeredAt: "2026-08-26T18:00:00.000Z",
+      completedAt: "2026-08-26T18:00:00.000Z",
+    }));
+
+    const utc = (await app.inject({
+      method: "GET", url: `/api/seo-ops/agent-runs?now=${encodeURIComponent(nowTz)}&tz_offset_minutes=0`,
+    })).json();
+    expect(utc.summary.day_start).toBe("2026-08-27T00:00:00.000Z");
+    expect(utc.summary.completed_today).toBe(1); // run-done only; run-tz falls in the prior UTC day
+
+    const local = (await app.inject({
+      method: "GET", url: `/api/seo-ops/agent-runs?now=${encodeURIComponent(nowTz)}&tz_offset_minutes=480`,
+    })).json();
+    expect(local.summary.day_start).toBe("2026-08-26T16:00:00.000Z");
+    expect(local.summary.completed_today).toBe(2); // run-done + run-tz, now inside the UTC+8 local day
+  });
+
   it("include_content=true reveals GBP content runs and status filter narrows", async () => {
     const all = (await app.inject({ method: "GET", url: "/api/seo-ops/agent-runs?include_content=true" })).json();
     expect(all.total).toBe(4);

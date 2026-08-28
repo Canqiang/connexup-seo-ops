@@ -24,7 +24,7 @@ export interface RunsLedgerWire {
 
 export interface RunsLedgerQuery {
   actorUserId: string; scopeAll: boolean; merchantId?: string; status?: string; stage?: string;
-  includeContentRuns: boolean; offset: number; limit: number;
+  includeContentRuns: boolean; offset: number; limit: number; tzOffsetMinutes: number;
 }
 
 /** Core AI 的 token_usage 字段不统一：有 total 用 total，否则把数值字段相加。 */
@@ -34,8 +34,17 @@ export function tokenTotal(usage: Record<string, number>): number {
   return Object.values(usage).reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
 }
 
-function utcDayStart(now: Date): string {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+/** 运营者本地时区的当日零点，表示为 UTC 时刻。offsetMinutes = UTC+X 的分钟数
+ * （前端传 -new Date().getTimezoneOffset()）；0 = UTC，保持旧行为。 */
+function localDayStart(now: Date, offsetMinutes: number): string {
+  const local = now.getTime() + offsetMinutes * 60_000;
+  const localMidnight = Math.floor(local / 86_400_000) * 86_400_000;
+  return new Date(localMidnight - offsetMinutes * 60_000).toISOString();
+}
+
+/** 一个 Run 归属的「日」：终态按完成时刻，未终态按创建时刻。 */
+function dayAnchor(run: AgentRun): string {
+  return run.completedAt ?? run.createdAt;
 }
 
 function durationMs(run: AgentRun): number | null {
@@ -57,9 +66,9 @@ export async function runsLedger(db: Db, query: RunsLedgerQuery, now: Date = new
   });
   const deliverables = await listDeliverablesByRunIds(db, page.items.map((run) => run.id));
 
-  const dayStart = utcDayStart(now);
+  const dayStart = localDayStart(now, query.tzOffsetMinutes);
   const recent = await listAgentRunsForSummary(db, query.scopeAll ? null : scopedIds, dayStart);
-  const today = recent.filter((run) => run.createdAt >= dayStart);
+  const today = recent.filter((run) => dayAnchor(run) >= dayStart);
   const unknown = (await listOpenUnknownAttempts(db)).filter((a) => query.scopeAll || names.has(a.merchantId));
 
   return {

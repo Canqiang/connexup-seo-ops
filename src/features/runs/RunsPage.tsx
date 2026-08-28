@@ -5,7 +5,7 @@ import { seoOpsApi } from "../../api/seoOpsApi";
 import type { AgentRunStatus, SeoTaskStatus, TaskSummary } from "../../api/types";
 import type { ViewMode } from "../../app/viewMode";
 import { executionModeLabel } from "../../app/statusCopy";
-import { safeHref } from "../../app/format";
+import { localTzOffsetMinutes, safeHref } from "../../app/format";
 import { hasPermission } from "../../auth/permissions";
 import { useAuth } from "../../auth/AuthContext";
 import { useResource } from "../../hooks/useResource";
@@ -43,6 +43,7 @@ function AuditRunsLedger() {
   const ledger = useResource((signal) => seoOpsApi.runsLedger({
     merchant_id: workspace.merchantId, status: ledgerStatus || undefined,
     include_content: includeContent ? "true" : "false", offset: ledgerOffset, limit: 25,
+    tz_offset_minutes: localTzOffsetMinutes(),
   }, signal), [workspace.merchantId, ledgerStatus, includeContent, ledgerOffset]);
   const reloadAll = () => { awaiting.reload(); dispatching.reload(); unknown.reload(); verify.reload(); ledger.reload(); };
 

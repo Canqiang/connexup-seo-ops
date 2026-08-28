@@ -51,4 +51,43 @@ describe("effect reviews projection", () => {
     expect(item).toMatchObject({ conclusion_tier: "INSUFFICIENT_EVIDENCE" });
     expect(body.summary.by_tier).not.toHaveProperty("CAUSAL");
   });
+
+  it("a never-reviewed merchant older than its window is DUE and counted in due_count", async () => {
+    const dueId = (await app.inject({
+      method: "POST", url: "/api/seo-ops/merchants",
+      payload: { slug: "review-due", display_name: "Review Due", operator_user_ids: [built.actor.userId], idempotency_key: "review-due" },
+    })).json().id;
+    await app.inject({
+      method: "PUT", url: `/api/seo-ops/merchants/${dueId}/cycle-config`,
+      payload: { snapshot_day: 5, post_weekday: 4, post_per_week: 1, review_window_days: 30, audit_interval_days: null, enabled: true },
+    });
+    // Onboarded well over 30 days before "now" — first review window has elapsed with zero artifacts.
+    await built.db.exec("UPDATE seo_merchants SET created_at = $1 WHERE id = $2", ["2026-01-01T00:00:00.000Z", dueId]);
+
+    const response = await app.inject({ method: "GET", url: "/api/seo-ops/effect-reviews?now=2026-08-27T00:00:00.000Z" });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json();
+    const window = body.windows.find((w: { merchant_id: string }) => w.merchant_id === dueId);
+    expect(window).toMatchObject({ status: "DUE", last_review_at: null });
+    // "Review A" (from beforeEach) is UPCOMING (reviewed, next window in the future) — only review-due is DUE.
+    expect(body.summary.due_count).toBe(1);
+  });
+
+  it("a merchant created today with a 30-day window is still UPCOMING (not everything becomes DUE)", async () => {
+    const freshId = (await app.inject({
+      method: "POST", url: "/api/seo-ops/merchants",
+      payload: { slug: "review-fresh", display_name: "Review Fresh", operator_user_ids: [built.actor.userId], idempotency_key: "review-fresh" },
+    })).json().id;
+    await app.inject({
+      method: "PUT", url: `/api/seo-ops/merchants/${freshId}/cycle-config`,
+      payload: { snapshot_day: 5, post_weekday: 4, post_per_week: 1, review_window_days: 30, audit_interval_days: null, enabled: true },
+    });
+    await built.db.exec("UPDATE seo_merchants SET created_at = $1 WHERE id = $2", ["2026-08-27T00:00:00.000Z", freshId]);
+
+    const response = await app.inject({ method: "GET", url: "/api/seo-ops/effect-reviews?now=2026-08-27T00:00:00.000Z" });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json();
+    const window = body.windows.find((w: { merchant_id: string }) => w.merchant_id === freshId);
+    expect(window).toMatchObject({ status: "UPCOMING", last_review_at: null });
+  });
 });

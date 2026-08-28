@@ -94,6 +94,65 @@ describe("activity feed", () => {
     expect(items.find((i) => i.id === "run:run-live")).toBeUndefined();
   });
 
+  it("keeps a Run whose lifetime straddles the window — created before it, completed inside it", async () => {
+    const createdLongAgo = new Date(Date.now() - 30 * 3_600_000).toISOString();
+    const completedRecently = new Date(Date.now() - 1 * 3_600_000).toISOString();
+    await insertAgentRun(built.db, agentRunFixture(merchantId, {
+      id: "run-straddling", status: "COMPLETED",
+      createdAt: createdLongAgo, triggeredAt: createdLongAgo, completedAt: completedRecently,
+    }));
+
+    const response = await app.inject({ method: "GET", url: "/api/seo-ops/activity?hours=24&limit=20" });
+    expect(response.statusCode, response.body).toBe(200);
+    const items = response.json().items as Array<Record<string, unknown>>;
+    const straddling = items.find((i) => i.id === "run:run-straddling");
+    expect(straddling).toMatchObject({ kind: "AGENT_RUN" });
+  });
+
+  it("does not return a task whose only events predate the window", async () => {
+    const task = (await app.inject({
+      method: "POST", url: "/api/seo-ops/tasks",
+      payload: { merchant_id: merchantId, idempotency_key: "feed-old-events-task", definition: {
+        title: "过期事件任务", task_type: "GBP_UPDATE", source: "OPERATOR", priority: "HIGH", impact: "MEDIUM",
+        execution_mode: "MANUAL", execution_spec: "{}", required_evidence_types: [] } },
+    })).json();
+
+    const row = await built.db.one<{ events: string }>("SELECT events FROM seo_tasks WHERE id = $1", [task.id]);
+    const oldTimestamp = new Date(Date.now() - 30 * 3_600_000).toISOString();
+    const oldEvents = (JSON.parse(row!.events) as Array<Record<string, unknown>>)
+      .map((event) => ({ ...event, occurredAt: oldTimestamp }));
+    await built.db.exec(
+      "UPDATE seo_tasks SET updated_at = $1, events = $2 WHERE id = $3",
+      [oldTimestamp, JSON.stringify(oldEvents), task.id],
+    );
+
+    const response = await app.inject({ method: "GET", url: "/api/seo-ops/activity?hours=24&limit=50" });
+    expect(response.statusCode, response.body).toBe(200);
+    const items = response.json().items as Array<Record<string, unknown>>;
+    expect(items.find((i) => i.kind === "TASK_EVENT" && i.href === `/tasks/${task.id}`)).toBeUndefined();
+  });
+
+  it("keeps a task event inside the window even when its task's updated_at sits just before the window — the clock-skew guard", async () => {
+    const task = (await app.inject({
+      method: "POST", url: "/api/seo-ops/tasks",
+      payload: { merchant_id: merchantId, idempotency_key: "feed-skew-task", definition: {
+        title: "时钟偏移回归用例", task_type: "GBP_UPDATE", source: "OPERATOR", priority: "HIGH", impact: "MEDIUM",
+        execution_mode: "MANUAL", execution_spec: "{}", required_evidence_types: [] } },
+    })).json();
+
+    // since = now - 24h below. Push updated_at to just before that boundary while leaving the
+    // TASK_CREATED event's occurredAt (stamped at creation, well inside the window) untouched —
+    // this is the regression test for the corrected invariant: occurredAt can be LATER than
+    // updated_at, so a bare `updated_at >= since` bound would wrongly drop this task's event.
+    const justBeforeWindow = new Date(Date.now() - 24 * 3_600_000 - 5 * 60_000).toISOString();
+    await built.db.exec("UPDATE seo_tasks SET updated_at = $1 WHERE id = $2", [justBeforeWindow, task.id]);
+
+    const response = await app.inject({ method: "GET", url: "/api/seo-ops/activity?hours=24&limit=50" });
+    expect(response.statusCode, response.body).toBe(200);
+    const items = response.json().items as Array<Record<string, unknown>>;
+    expect(items.find((i) => i.kind === "TASK_EVENT" && i.href === `/tasks/${task.id}`)).toBeDefined();
+  });
+
   it("inbox-summary reports verification_overdue", async () => {
     const summary = (await app.inject({ method: "GET", url: "/api/seo-ops/inbox-summary" })).json();
     expect(summary).toHaveProperty("verification_overdue", 0);
