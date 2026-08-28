@@ -198,7 +198,7 @@ Verbatim from the plan's "明确不做（留给后续）" section (`docs/superpo
 
 ## 终审后修正
 
-全分支终审发现 0 Critical / 7 Important（多为跨任务口径不一致），一次性修正如下（commit `PENDING_SHA`）：
+全分支终审发现 0 Critical / 7 Important（多为跨任务口径不一致），一次性修正如下（commit `d78e47e`）：
 
 1. Overview 待处理总数改用后端 `workbench.total`（原按渲染分组求和，超过分页上限即漏计）；超页时在异常清单标题下加一行截断提示并链接到「任务」页。
 2. `groupExceptions` 改为穷举映射 `GROUP_BY_TYPE: Record<HumanActionType, ExceptionGroupKey>`，编译期强制覆盖每个 `HumanActionType`，防止新增类型悄悄漏出分组。
