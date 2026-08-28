@@ -1,6 +1,13 @@
 import { expect, test } from "vitest";
-import type { HumanActionWire } from "../../api/types";
-import { groupExceptions, waitingLabel } from "./exceptionGroups";
+import type { HumanActionType, HumanActionWire } from "../../api/types";
+import { GROUP_BY_TYPE, groupExceptions, waitingLabel } from "./exceptionGroups";
+
+const ALL_ACTION_TYPES: HumanActionType[] = [
+  "PROPOSAL_DECISION", "GATE_1_APPROVAL", "GATE_2_CONFIRM",
+  "OUTCOME_RECONCILIATION", "VERIFICATION_OVERDUE", "CONFIRMED_FAILURE",
+  "QUESTIONNAIRE_FOLLOWUP", "AUTHORIZATION_FOLLOWUP", "CONTENT_CONFIRMATION",
+  "REPORT_DELIVERY", "ARTIFACT_ACCEPTANCE",
+];
 
 const base = (over: Partial<HumanActionWire>): HumanActionWire => ({
   id: "x", group: "EXCEPTION", type: "OUTCOME_RECONCILIATION", merchant_id: "m", merchant_name: "M", location_name: null,
@@ -16,6 +23,13 @@ test("groups by design categories and orders longest-waiting first", () => {
   ]);
   expect(grouped.map((g) => g.group.key)).toEqual(["UNKNOWN", "APPROVAL"]);
   expect(grouped[1]!.items.map((i) => i.id)).toEqual(["b", "a"]);
+});
+
+test("every HumanActionType resolves to an exception group", () => {
+  for (const type of ALL_ACTION_TYPES) {
+    expect(GROUP_BY_TYPE[type]).toBeDefined();
+  }
+  expect(Object.keys(GROUP_BY_TYPE).sort()).toEqual([...ALL_ACTION_TYPES].sort());
 });
 
 test("waitingLabel renders hours under two days and days beyond", () => {

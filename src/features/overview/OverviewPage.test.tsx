@@ -91,6 +91,23 @@ test("overview renders today's signals and run capacity from backend projections
   expect(within(capacity).getByText(/未接入/)).toBeInTheDocument();
 });
 
+test("overview reports the backend total and flags truncation when the page is capped", async () => {
+  workbenchData = {
+    summary: { gatekeeping: 1, exception: 1, merchant_contact: 0, total: 137 },
+    items: workbenchData.items,
+    offset: 0, limit: 100, total: 137,
+  };
+  renderApp("/?view=audit");
+
+  const strip = await screen.findByRole("region", { name: "待处理汇总" });
+  await waitFor(() => {
+    expect(within(strip).getByText("待处理事项").nextElementSibling).toHaveTextContent("137");
+  });
+  const ledger = screen.getByRole("region", { name: "异常清单" });
+  expect(within(ledger).getByText(/仅显示前 2 项 · 共 137 项，其余在「/)).toBeInTheDocument();
+  expect(within(ledger).getByRole("link", { name: "任务" })).toHaveAttribute("href", "/inbox?view=audit");
+});
+
 function renderApp(route: string) {
   return render(<MemoryRouter initialEntries={[route]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
 }

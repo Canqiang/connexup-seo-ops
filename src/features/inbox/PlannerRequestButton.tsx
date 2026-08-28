@@ -6,12 +6,15 @@ import type { MerchantSummary } from "../../api/types";
 /** 手动请求 Planner：只创建一个只读 PLANNER 任务；建议出来后仍要人判定。 */
 export function PlannerRequestButton({ merchantId, merchants, onDone }: { merchantId?: string; merchants?: MerchantSummary[]; onDone?: () => void }) {
   const [open, setOpen] = useState(false);
-  const [target, setTarget] = useState(merchantId ?? merchants?.[0]?.id ?? "");
+  const [target, setTarget] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>();
+  // 组合渲染态：portfolio 常在挂载后才解析出商户列表，useState 初值只会取一次，
+  // 所以目标改用渲染时求值——用户一旦显式选中（target 非空）就保持粘性，不再被默认值覆盖。
+  const effectiveTarget = merchantId ?? (target || merchants?.[0]?.id) ?? "";
   const submit = async () => {
-    const id = merchantId ?? target;
+    const id = effectiveTarget;
     if (!id || !reason.trim()) return;
     setBusy(true); setMessage(undefined);
     try {
@@ -25,9 +28,9 @@ export function PlannerRequestButton({ merchantId, merchants, onDone }: { mercha
   return <div className="planner-request">
     <button className="secondary-button" onClick={() => setOpen((v) => !v)} type="button">手动请求 Planner</button>
     {open ? <div className="planner-request-form">
-      {!merchantId && merchants ? <label>商户<select onChange={(e) => setTarget(e.target.value)} value={target}>{merchants.map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}</select></label> : null}
+      {!merchantId && merchants ? <label>商户<select onChange={(e) => setTarget(e.target.value)} value={effectiveTarget}>{merchants.map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}</select></label> : null}
       <label>请求原因<input onChange={(e) => setReason(e.target.value)} placeholder="例：复盘后刷新任务图" value={reason} /></label>
-      <button className="primary-button" disabled={busy || !reason.trim() || !(merchantId ?? target)} onClick={() => void submit()} type="button">{busy ? "发送中…" : "发送请求"}</button>
+      <button className="primary-button" disabled={busy || !reason.trim() || !effectiveTarget} onClick={() => void submit()} type="button">{busy ? "发送中…" : "发送请求"}</button>
     </div> : null}
     {message ? <p className="form-message" role="status">{message}</p> : null}
   </div>;

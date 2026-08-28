@@ -71,7 +71,7 @@ test("view-only operators can inspect outcome-unknown truth but cannot open the 
   const user = userEvent.setup();
   renderApp();
 
-  const queue = await queueNamed("结果待查");
+  const queue = await queueNamed("结果待查 · 任务");
   expect(within(queue).getByText("当前账号可查看结果待查，但没有查证权限。")).toBeInTheDocument();
   const reconcile = await within(queue).findByRole("button", { name: /查证/ });
   expect(reconcile).toBeDisabled();

@@ -59,7 +59,7 @@ Full verbatim command output and the route-render smoke-check table are recorded
 **Shipped:**
 - `GET /api/seo-ops/activity?hours=24&limit=20` — server/src/routes/seoOps.ts:257, backed by `server/src/services/activityFeedService.ts` (new): merges Task audit events, completed/failed Agent Runs, and proposal batches into one time-ordered, plain-language feed (`describeTaskEvent` maps event types to copy + severity; unknown types degrade to their raw name instead of throwing).
 - `server/src/routes/executionRoutes.ts` — inbox-summary now includes `verification_overdue`.
-- `src/features/overview/exceptionGroups.ts` (new) — groups the exception ledger into the five design categories (结果不确定 / 待审批与确认 / 核验逾期 / 冻结商户 / 其余).
+- `src/features/overview/exceptionGroups.ts` (new) — groups the exception ledger into the five design categories (结果不确定 / 等待商家 / 建议待判定 / 待审批与确认 / 核验与复查).
 - `src/features/overview/OverviewPage.tsx` — leads with the grouped exception ledger, a "待处理汇总" strip, a "今日信号" activity feed section, and a "Run 容量" panel that explicitly labels concurrency/quota as 未接入 (Core AI provides no quota API).
 - `src/styles/overview.css` (new).
 
@@ -76,7 +76,7 @@ Full verbatim command output and the route-render smoke-check table are recorded
 **Shipped:**
 - `POST /api/seo-ops/merchants/:merchantId/planner-requests` — server/src/routes/seoOps.ts:556, reuses `enqueuePlannerTaskIfBound`; returns `201 { task_id, replayed: false }` on first call, `200 { …, replayed: true }` on idempotent replay, `409 PLANNER_NOT_BOUND` when no Planner agent is bound.
 - `src/features/inbox/AdoptDialog.tsx` (new) — adopt-with-edits dialog (override priority / due date) for a proposal.
-- `src/features/inbox/PlannerRequestButton.tsx` (new) — manual "请求 Planner 复排" trigger with idempotency key and replay handling.
+- `src/features/inbox/PlannerRequestButton.tsx` (new) — manual "手动请求 Planner" trigger with idempotency key and replay handling (the merchant page's equivalent trigger is labelled "请求 Planner 刷新任务图").
 - `src/features/inbox/ProposalsTab.tsx` — batch adoption flow wired to both.
 
 **Tests:** `server/tests/plannerRequest.test.ts` (refuses when unbound, creates one pre-authorised task and replays on the same key), `src/features/inbox/ProposalsTab.test.tsx` (batch rendering, adoption, adopt-with-edits, planner-request button).
@@ -193,3 +193,20 @@ Verbatim from the plan's "明确不做（留给后续）" section (`docs/superpo
 - 操作员视角的「内容快审 连过」「分组催办话术」（压测稿）：需要新的批量接口与外发模板，另立计划。
 - 运营期「节奏条」页头：需要「首轮复盘完成」的持久化标记，另立计划。
 - 并发/配额数字：Core AI 未提供配额接口，页面明示「未接入」。
+
+---
+
+## 终审后修正
+
+全分支终审发现 0 Critical / 7 Important（多为跨任务口径不一致），一次性修正如下（commit `PENDING_SHA`）：
+
+1. Overview 待处理总数改用后端 `workbench.total`（原按渲染分组求和，超过分页上限即漏计）；超页时在异常清单标题下加一行截断提示并链接到「任务」页。
+2. `groupExceptions` 改为穷举映射 `GROUP_BY_TYPE: Record<HumanActionType, ExceptionGroupKey>`，编译期强制覆盖每个 `HumanActionType`，防止新增类型悄悄漏出分组。
+3. 「结果待查」在三处口径不同（全部未决 attempt / workbench 可处理子集 / 任务状态）——不合并数字，只补齐措辞：`RunsSummaryStrip` 提示语、`/runs` 的 `QueuePanel` 标题与提示、`exceptionGroups` 的 UNKNOWN 分组提示、Overview 汇总格的 `title` 提示。
+4. Gate D 到窗队列的口径改为「参考值」——调度器按固定 epoch 桶触发，与 `last_review_at + review_window_days` 的推算窗口不保证重合，措辞不再暗示两者一致。
+5. `effectReviewService` 的 `conclusion_tier` 改为白名单 `INSUFFICIENT_EVIDENCE | DESCRIPTIVE | ASSOCIATIONAL`，任何越权声称（如 `CAUSAL`）一律降级为 `INSUFFICIENT_EVIDENCE`；`ReviewsPage` 的分布统计改用 `tierLabel()` 渲染，不再直出原始 key。
+6. `VoiceProfileEditor` 新增 `loading` prop：初始 GET 未回时不再误判「尚无风格档案」，且禁用「编辑（记版本）」，避免用空表单覆盖尚未加载出的字段。
+7. `core_ai_console_url` 不再复用 `CORE_AI_BASE_URL`（API host）；新增独立的 `CORE_AI_CONSOLE_URL` 配置项（未设置时前端隐藏链接，`safeHref` 已校验）。
+8. 三处收尾：`PlannerRequestButton` 的目标商户改为渲染时求值，修复 portfolio 异步解析后按钮保持禁用且无提示的问题；`ProposalsTab` 的 `planner_run_id` 与 `snapshot_note` 改为独立渲染；`capabilities.test.ts` 补一条与 `runsLedger.test.ts` 对齐的商户范围隔离测试。
+
+本节以及上文两处措辞纠正（异常分组五类名称、Planner 按钮标签）均在同一提交内完成。

@@ -25,12 +25,13 @@ export function OverviewPage() {
     { label: "待判定建议", value: s?.pending_proposals, to: "/inbox?tab=proposals&view=audit" },
     { label: "待审批 · 门 1", value: s?.ready_for_approval, to: "/inbox?status=READY_FOR_APPROVAL&view=audit" },
     { label: "待执行确认 · 门 2", value: s?.awaiting_execution, to: "/runs?view=audit" },
-    { label: "结果待查", value: s?.outcome_unknown, to: "/runs?view=audit", danger: true },
+    { label: "结果待查", value: s?.outcome_unknown, to: "/runs?view=audit", danger: true, title: "全部未决 attempt，含 GBP 专用回读；异常清单只列可人工查证的部分。" },
     { label: "核验逾期", value: s?.verification_overdue, to: "/inbox?status=PENDING_VERIFY&view=audit" },
     { label: "今日 Agent Run", value: runs.data ? runs.data.summary.completed_today + runs.data.summary.failed_today : undefined, to: "/runs?view=audit" },
   ];
-  const total = grouped.reduce((n, g) => n + g.items.length, 0);
+  const total = actions.data?.total ?? 0;
   const merchantsInvolved = new Set((actions.data?.items ?? []).map((i) => i.merchant_id)).size;
+  const truncated = actions.data && actions.data.total > actions.data.items.length;
 
   return <>
     <header className="page-heading"><div><span className="eyebrow">PORTFOLIO · {new Date().toLocaleDateString("zh-CN")} · {workspace.merchants.length} 家商户</span><h1>总览</h1><p>先处理挡在路上的事：结果查证、商家等待、建议判定、审批与核验。其余商户在轨运行。</p></div>
@@ -39,14 +40,16 @@ export function OverviewPage() {
 
     <section aria-label="待处理汇总" className="overview-summary">
       <div className="overview-summary-lead"><span>待处理事项</span><strong>{actions.loading ? "—" : total}</strong><small>涉及 {merchantsInvolved} 家 / 共 {workspace.merchants.length} 家</small></div>
-      {cells.map((cell) => <button className={`overview-summary-cell${cell.danger && (cell.value ?? 0) > 0 ? " is-danger" : ""}`} key={cell.label} onClick={() => navigate(cell.to)} type="button"><span>{cell.label}</span><strong>{cell.value ?? "—"}</strong></button>)}
+      {cells.map((cell) => <button className={`overview-summary-cell${cell.danger && (cell.value ?? 0) > 0 ? " is-danger" : ""}`} key={cell.label} onClick={() => navigate(cell.to)} title={cell.title} type="button"><span>{cell.label}</span><strong>{cell.value ?? "—"}</strong></button>)}
     </section>
 
     {(s?.outcome_unknown ?? 0) > 0 ? <section className="frozen-banner" role="alert"><AlertTriangle size={16} /><div><strong>{s?.outcome_unknown} 个执行结果待查</strong><p>涉及商户：{frozenNames.join("、")} —— 查证完成前，这些商户的执行链全部冻结（结果不确定不重试）。</p></div><button className="danger-button" onClick={() => navigate("/runs?view=audit")} type="button">去查证 <ArrowRight size={13} /></button></section> : null}
 
     <div className="overview-grid">
       <section aria-label="异常清单" className="data-panel overview-exceptions">
-        <div className="panel-heading"><div><span className="eyebrow">EXCEPTION LEDGER</span><h2>异常清单</h2><p className="quiet-copy">{total} 项待处理 · 组内按卡住时长排序</p></div></div>
+        <div className="panel-heading"><div><span className="eyebrow">EXCEPTION LEDGER</span><h2>异常清单</h2><p className="quiet-copy">{total} 项待处理 · 组内按卡住时长排序</p>
+          {truncated ? <p className="quiet-copy">仅显示前 {actions.data!.items.length} 项 · 共 {actions.data!.total} 项，其余在「<Link to="/inbox?view=audit">任务</Link>」页处理</p> : null}
+        </div></div>
         {actions.loading ? <div className="page-state" role="status">读取待处理事项…</div> : null}
         {actions.error ? <div className="page-state is-error" role="alert">异常清单读取失败。<button onClick={actions.reload} type="button">重试</button></div> : null}
         {!actions.loading && !actions.error && !total ? <div className="empty-state slim"><p>今天没有需要人工处理的事项。</p></div> : null}

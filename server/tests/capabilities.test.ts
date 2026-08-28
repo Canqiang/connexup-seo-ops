@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { createAuthenticatedTestApp, type AuthenticatedTestApp } from "./helpers/authTest.js";
+import { createAuthenticatedTestApp, createTestUser, PASSWORD, type AuthenticatedTestApp } from "./helpers/authTest.js";
 
 describe("cross-merchant capabilities", () => {
   let built: AuthenticatedTestApp;
@@ -38,5 +38,24 @@ describe("cross-merchant capabilities", () => {
       status: "MISSING",
       note: "账号待连接",
     });
+  });
+
+  it("scopes to the operator's merchants", async () => {
+    const outsider = await createTestUser(built.db, { permissions: ["seoops.view"] });
+    const login = await built.rawInject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: outsider.email, password: PASSWORD },
+    });
+    const setCookie = login.headers["set-cookie"];
+    const cookieValue = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+    if (!cookieValue) throw new Error("expected login response to include Set-Cookie");
+    const cookie = cookieValue.split(";", 1)[0]!;
+    const body = (await built.rawInject({
+      method: "GET",
+      url: "/api/seo-ops/capabilities",
+      headers: { cookie },
+    })).json();
+    expect(body.items).toEqual([]);
   });
 });

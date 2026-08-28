@@ -217,7 +217,7 @@ export function registerSeoOpsRoutes(
       copilot_enabled: false,
       agent_run_enabled: ctx.coreAi !== null && ctx.config.agentRunAgentId !== null,
       agent_run_stages: AGENT_RUN_STAGES,
-      core_ai_console_url: ctx.config.coreAiBaseUrl ?? null,
+      core_ai_console_url: ctx.config.coreAiConsoleUrl ?? null,
     };
   });
 

@@ -21,13 +21,13 @@ export function ReviewsPage() {
   const effect = useResource((signal) => seoOpsApi.effectReviews(merchantId, signal), [merchantId]);
   const tasks = useResource((signal) => seoOpsApi.reviews({ merchant_id: merchantId, limit: 50 }, signal), [merchantId]);
   const s = effect.data?.summary;
-  const tiers = s ? Object.entries(s.by_tier).map(([tier, n]) => `${tier} ×${n}`).join(" · ") : "—";
+  const tiers = s ? Object.entries(s.by_tier).map(([tier, n]) => `${tierLabel(tier)} ×${n}`).join(" · ") : "—";
   return <>
     <header className="page-heading"><div><span className="eyebrow">OUTCOME REVIEW · 跨商户</span><h1>复盘</h1><p>动作之后发生了什么。单店结论上限 ASSOCIATIONAL（关联），不宣称因果；跨店聚合仅作模式探索，不进客户报告。</p></div><span className="scope-chip"><FlaskConical size={14} /> {workspace.merchants.find((m) => m.id === merchantId)?.display_name ?? "全部商户"}</span></header>
 
     <section aria-label="复盘汇总" className="runs-summary">
       <div className="runs-summary-cell"><span>已完成复盘</span><strong>{s?.total ?? "—"}</strong><small>快照冻结 · 可同快照重放</small></div>
-      <div className={`runs-summary-cell${s?.due_count ? " is-danger" : ""}`}><span>到窗口待复盘</span><strong>{s?.due_count ?? "—"}</strong><small>Gate D · 窗口未到不复盘</small></div>
+      <div className={`runs-summary-cell${s?.due_count ? " is-danger" : ""}`}><span>到窗口待复盘</span><strong>{s?.due_count ?? "—"}</strong><small>Gate D · 参考值</small></div>
       <div className="runs-summary-cell"><span>结论分布</span><strong>{s ? Object.values(s.by_tier).reduce((a, b) => a + b, 0) : "—"}</strong><small>{tiers}</small></div>
       <div className="runs-summary-cell"><span>证据上限</span><strong>ASSOC.</strong><small>无对照组 · causalIdentified = false</small></div>
     </section>
@@ -37,7 +37,7 @@ export function ReviewsPage() {
     <div className="review-list">{effect.data?.items.map((item) => <ReviewCard item={item} key={item.artifact_id} />)}</div>
     {effect.data && !effect.data.items.length ? <div className="empty-state slim"><p>还没有复盘产物。到达复盘窗口后由 REVIEW 任务自动出稿，结论上限 ASSOCIATIONAL。</p></div> : null}
 
-    <section aria-label="到窗口队列" className="data-panel"><div className="panel-heading"><div><span className="eyebrow">GATE D</span><h2>到窗口队列</h2><p className="quiet-copy">窗口未到不复盘 · 窗口 = 上次复盘 + 复盘窗口天数</p></div></div>
+    <section aria-label="到窗口队列" className="data-panel"><div className="panel-heading"><div><span className="eyebrow">GATE D</span><h2>到窗口队列</h2><p className="quiet-copy">参考窗口 = 上次复盘 + 复盘窗口天数；实际触发由调度器按周期桶决定，可能提前或延后。</p></div></div>
       <div className="table-wrap"><table><thead><tr><th>商户</th><th>上次复盘</th><th>下次窗口</th><th>状态</th></tr></thead><tbody>
         {(effect.data?.windows ?? []).map((w) => <tr key={w.merchant_id}><td>{w.merchant_name}</td><td>{formatDateOnly(w.last_review_at)}</td><td>{w.next_window_at ? formatDateOnly(w.next_window_at) : w.review_window_days ? "待首轮复盘" : "未配置窗口"}</td><td><span className={`status-pill ${w.status === "DUE" ? "is-attention" : "is-stable"}`}>{w.status === "DUE" ? "已到期" : w.status === "UPCOMING" ? "将到期" : "未排期"}</span></td></tr>)}
       </tbody></table></div></section>

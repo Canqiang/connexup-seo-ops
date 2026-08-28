@@ -75,8 +75,8 @@ function AuditRunsLedger() {
       loadMore={dispatching.loadMore} loadMoreLabel="加载更多派发在途" retry={dispatching.retry}
       onInspect={(t) => navigate(`/tasks/${t.id}`)} actionLabel="查看" />
 
-    <QueuePanel eyebrow="OUTCOME UNKNOWN / 冻结源" icon={<ShieldAlert size={15} />} title="结果待查"
-      hint="动作发生没有无法确认（超时/网络裂缝/取消）。查证是二选一裁决，完成前该商户执行链冻结。"
+    <QueuePanel eyebrow="OUTCOME UNKNOWN / 冻结源" icon={<ShieldAlert size={15} />} title="结果待查 · 任务"
+      hint="按任务统计（上方汇总按 attempt）。动作发生没有无法确认（超时/网络裂缝/取消）。查证是二选一裁决，完成前该商户执行链冻结。"
       items={unknown.items} loading={unknown.loading}
       error={unknown.error} hasMore={unknown.hasMore} loaded={unknown.loaded} total={unknown.total}
       empty="没有待查证的执行。" danger

@@ -51,11 +51,13 @@ const kekePostProgram: PostProgramView = {
 };
 
 let styleProfileData: StyleProfileWire | null = kekeStyleProfile;
+let styleProfileResponder: (() => Response | Promise<Response>) | undefined;
 
 beforeEach(() => {
   calls.length = 0;
   failedPaths.clear();
   styleProfileData = kekeStyleProfile;
+  styleProfileResponder = undefined;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
@@ -78,6 +80,7 @@ beforeEach(() => {
         styleProfileData = { ...kekeStyleProfile, version: 3, voice: body.voice };
         return json(styleProfileData, 201);
       }
+      if (styleProfileResponder) return styleProfileResponder();
       return json(styleProfileData);
     }
     return new Response(null, { status: 404 });
@@ -130,6 +133,21 @@ test("voice profile fetch failure surfaces an alert instead of the empty state",
   const region = await screen.findByRole("region", { name: "风格档案" });
   expect(await within(region).findByRole("alert")).toHaveTextContent("风格档案读取失败");
   expect(within(region).queryByText(/尚无风格档案/)).not.toBeInTheDocument();
+});
+
+test("voice profile shows a loading state and disables 编辑 while the initial GET is pending", async () => {
+  let resolvePending!: (response: Response) => void;
+  const pending = new Promise<Response>((resolve) => { resolvePending = resolve; });
+  styleProfileResponder = () => pending;
+  renderApp("/merchants/keke/post-plan?view=operator");
+
+  const region = await screen.findByRole("region", { name: "风格档案" });
+  expect(within(region).getByText("读取风格档案…")).toBeInTheDocument();
+  expect(within(region).getByRole("button", { name: "编辑（记版本）" })).toBeDisabled();
+  expect(within(region).queryByText(/尚无风格档案/)).not.toBeInTheDocument();
+
+  resolvePending(json(kekeStyleProfile));
+  expect(await within(region).findByRole("button", { name: "编辑（记版本）" })).toBeEnabled();
 });
 
 function renderApp(route: string) {

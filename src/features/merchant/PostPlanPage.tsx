@@ -47,7 +47,7 @@ export function PostPlanPage() {
         <p className="quiet-copy">表现分级为周环比关联信号；「处置」是 Planner 建议，判定采纳后才创建任务。</p>
       </section>
 
-      <VoiceProfileEditor canManage={canManage} error={profile.error} merchantId={merchantId} onRetry={profile.reload} onSaved={profile.reload} profile={profile.data ?? null} />
+      <VoiceProfileEditor canManage={canManage} error={profile.error} loading={profile.loading} merchantId={merchantId} onRetry={profile.reload} onSaved={profile.reload} profile={profile.data ?? null} />
 
       <section aria-label="本周档期" className="data-panel"><div className="panel-heading"><div><span className="eyebrow">THIS WEEK</span><h2>本周档期</h2><p className="quiet-copy">采纳后即任务 · 双门与查证同 Task 页</p></div></div>
         {ledger.error ? <div className="page-state compact is-error" role="alert">本周档期读取失败。<button onClick={ledger.reload} type="button">重试</button></div> : slots.length ? <ul className="program-list">{slots.map((s) => <li key={s.task_id}><strong>{s.title}</strong><span>{s.due_at ? formatDateOnly(s.due_at) : "未定时"} · {taskStatusLabel(s.status)}</span>{s.task_id ? <Link className="text-button" to={`/tasks/${s.task_id}`}>打开任务</Link> : null}</li>)}</ul> : <p className="quiet-copy">本周期没有 GBP Post 任务。</p>}

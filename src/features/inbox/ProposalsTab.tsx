@@ -64,7 +64,11 @@ export function ProposalsTab({ merchantId }: { merchantId?: string }) {
     {open.map((batch) => <section className="batch-card" key={batch.id}>
       <header><div><strong>{batch.merchant_name ?? batch.merchant_id}</strong>
         <small>{originLabel(batch.origin)} · {batch.trigger_reason ?? "无触发说明"} · {formatDateTime(batch.created_at)}</small>
-        {batch.snapshot_note ? <p className="quiet-copy">读取快照：{batch.snapshot_note}{batch.planner_run_id ? <> · Planner run <code>{batch.planner_run_id}</code></> : null}</p> : null}</div>
+        {batch.snapshot_note || batch.planner_run_id ? <p className="quiet-copy">
+          {batch.snapshot_note ? <>读取快照：{batch.snapshot_note}</> : null}
+          {batch.snapshot_note && batch.planner_run_id ? " · " : null}
+          {batch.planner_run_id ? <>Planner run <code>{batch.planner_run_id}</code></> : null}
+        </p> : null}</div>
         <span className="result-count">{batch.proposals.filter((p) => p.status === "PENDING" || p.status === "VALIDATION_FAILED").length} 条待判定</span></header>
       <div className="table-wrap"><table><thead><tr><th /><th>#</th><th>建议</th><th>类型 / 模式</th><th>executor</th><th>due</th><th>优先级</th><th>校验</th><th>判定</th></tr></thead><tbody>
         {batch.proposals.map((p) => <tr aria-label={`#${p.seq} ${p.title}`} className={p.status === "VALIDATION_FAILED" ? "is-invalid-row" : undefined} key={p.id}>

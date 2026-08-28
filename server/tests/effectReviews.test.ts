@@ -35,4 +35,20 @@ describe("effect reviews projection", () => {
     expect(body.items[0]).toMatchObject({ merchant_name: "Review A", conclusion_tier: "ASSOCIATIONAL", confounders: ["竞对 1 家同期降权", "无对照组"], task_id: taskId, causal_identified: false });
     expect(body.windows[0]).toMatchObject({ merchant_name: "Review A", review_window_days: 30, last_review_at: "2026-08-06T09:00:00.000Z", next_window_at: "2026-09-05T09:00:00.000Z", status: "UPCOMING" });
   });
+
+  it("caps a conclusion_tier claiming CAUSAL down to INSUFFICIENT_EVIDENCE", async () => {
+    await insertSpecialistArtifact(built.db, {
+      id: "art-review-2", taskId, merchantId, artifactType: "EFFECT_REVIEW", schemaVersion: "seo_ops.effect_review.v1",
+      title: "Review A · 第 3 轮", summary: "越权声称因果", coreRunId: "core-review-2", createdBy: null, createdAt: "2026-08-20T09:00:00.000Z",
+      payload: { schema_version: "seo_ops.effect_review.v1", merchant_id: merchantId, title: "Review A · 第 3 轮", summary: "越权声称因果",
+        baseline: { solv_mean: 26.2 }, action_bundle: [], observed_change: { solv_mean: 30.1 }, confounders: [], conclusion_tier: "CAUSAL",
+        conclusion: "声称因果（应被拒绝并降级）", planning_signals: [], limitations: [] },
+    });
+    const response = await app.inject({ method: "GET", url: "/api/seo-ops/effect-reviews?now=2026-08-27T00:00:00.000Z" });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json();
+    const item = body.items.find((i: { artifact_id: string }) => i.artifact_id === "art-review-2");
+    expect(item).toMatchObject({ conclusion_tier: "INSUFFICIENT_EVIDENCE" });
+    expect(body.summary.by_tier).not.toHaveProperty("CAUSAL");
+  });
 });

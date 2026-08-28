@@ -25,12 +25,18 @@ function strings(value: unknown): string[] { return Array.isArray(value) ? value
 function records(value: unknown): Array<Record<string, unknown>> { return Array.isArray(value) ? value.filter((v): v is Record<string, unknown> => Boolean(v) && typeof v === "object") : []; }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 
+const ALLOWED_CONCLUSION_TIERS = new Set(["INSUFFICIENT_EVIDENCE", "DESCRIPTIVE", "ASSOCIATIONAL"]);
+/** 单店复盘结论硬上限 ASSOCIATIONAL：任何产物声称更高等级（如 CAUSAL）一律降级为无法定论，绝不放行。 */
+function conclusionTier(value: unknown): string {
+  return typeof value === "string" && ALLOWED_CONCLUSION_TIERS.has(value) ? value : "INSUFFICIENT_EVIDENCE";
+}
+
 function wire(a: SpecialistArtifact, merchantName: string): EffectReviewWire {
   const p = a.payload;
   return {
     artifact_id: a.id, merchant_id: a.merchantId, merchant_name: merchantName, task_id: a.taskId, core_run_id: a.coreRunId,
     title: a.title, summary: a.summary,
-    conclusion_tier: typeof p.conclusion_tier === "string" ? p.conclusion_tier : "INSUFFICIENT_EVIDENCE",
+    conclusion_tier: conclusionTier(p.conclusion_tier),
     conclusion: typeof p.conclusion === "string" ? p.conclusion : a.summary,
     baseline: record(p.baseline), observed_change: record(p.observed_change),
     action_bundle: records(p.action_bundle), confounders: strings(p.confounders), limitations: strings(p.limitations),
