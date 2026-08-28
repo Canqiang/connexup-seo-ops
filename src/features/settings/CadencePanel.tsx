@@ -3,15 +3,54 @@ import { useEffect, useState } from "react";
 import type { CycleConfigWire } from "../../api/types";
 import { seoOpsApi } from "../../api/seoOpsApi";
 import { useResource } from "../../hooks/useResource";
+import { useWorkspace } from "../../workspace/WorkspaceContext";
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
 export function CadencePanel({ canManage, merchantId }: { canManage: boolean; merchantId?: string }) {
-  if (!merchantId) return <section aria-labelledby="cadence-heading" className="settings-section data-panel">
+  return <section aria-labelledby="cadence-heading" className="settings-section data-panel">
     <PanelHeading />
-    <div className="settings-evidence-gap">没有可用商户范围，周期配置不可用。</div>
+    <CadenceOverview />
+    {!merchantId
+      ? <div className="settings-evidence-gap">没有可用商户范围，周期配置不可用。</div>
+      : <CadenceResource canManage={canManage} merchantId={merchantId} />}
   </section>;
-  return <CadenceResource canManage={canManage} merchantId={merchantId} />;
+}
+
+/** Nested read-only region above the per-merchant form. It only registers
+ * under its "周期总览" accessible name once both the merchant scope and the
+ * cycle-config list have loaded, so a caller reading the region never
+ * observes it half-settled. */
+function CadenceOverview() {
+  const workspace = useWorkspace();
+  const resource = useResource((signal) => seoOpsApi.cycleConfigs(signal), []);
+
+  if (workspace.loading || resource.loading) {
+    return <div className="page-state compact" role="status">读取周期总览…</div>;
+  }
+
+  const byMerchant = new Map<string, CycleConfigWire>((resource.data?.items ?? []).map((cfg) => [cfg.merchant_id, cfg]));
+
+  return <section aria-label="周期总览" className="cadence-overview">
+    {resource.error ? <div className="page-state compact is-error" role="alert">周期总览读取失败。<button onClick={resource.reload} type="button">重试</button></div> : null}
+    {!resource.error && !workspace.merchants.length ? <div className="settings-evidence-gap">没有可用商户范围，周期总览不可用。</div> : null}
+    {!resource.error && workspace.merchants.length ? <div className="table-wrap"><table><thead><tr>
+      <th>商户</th><th>月度快照</th><th>Post 节奏</th><th>复盘窗口</th><th>审计间隔</th><th>启用</th>
+    </tr></thead><tbody>
+      {workspace.merchants.map((merchant) => {
+        const cfg = byMerchant.get(merchant.id);
+        const postRhythm = cfg?.post_weekday != null ? `每${WEEKDAYS[cfg.post_weekday]} ×${cfg.post_per_week}` : "暂停";
+        return <tr aria-label={merchant.display_name} key={merchant.id}>
+          <td>{merchant.display_name}</td>
+          <td>{cfg?.snapshot_day != null ? `每月 ${cfg.snapshot_day} 日` : "关闭"}</td>
+          <td>{postRhythm}</td>
+          <td>{cfg ? `${cfg.review_window_days} 天` : "—"}</td>
+          <td>{cfg?.audit_interval_days != null ? `${cfg.audit_interval_days} 天` : "关闭"}</td>
+          <td><span className={`status-pill ${cfg?.enabled ? "is-stable" : "is-blocked"}`}>{cfg?.enabled ? "启用" : "未启用"}</span></td>
+        </tr>;
+      })}
+    </tbody></table></div> : null}
+  </section>;
 }
 
 function CadenceResource({ canManage, merchantId }: { canManage: boolean; merchantId: string }) {
@@ -57,8 +96,7 @@ function CadenceResource({ canManage, merchantId }: { canManage: boolean; mercha
   };
 
   const numberOrNull = (value: string): number | null => value === "" ? null : Number(value);
-  return <section aria-labelledby="cadence-heading" className="settings-section data-panel">
-    <PanelHeading />
+  return <>
     {!canManage ? <p className="settings-readonly">当前账号可查看周期，但没有修改权限。</p> : null}
     {resource.error ? <div className="page-state compact is-error" role="alert">周期配置读取失败。<button onClick={resource.reload} type="button">重试</button></div> : null}
     {resource.loading || !form ? <div className="page-state compact" role="status">读取周期配置…</div> : null}
@@ -73,7 +111,7 @@ function CadenceResource({ canManage, merchantId }: { canManage: boolean; mercha
         <div className="cycle-actions"><button className="primary-button" disabled={!canManage || saving} onClick={() => void save()} type="button">{saving ? "保存中…" : "保存周期"}</button>{message ? <span className="quiet-copy">{message}</span> : null}</div>
       </div>
     </> : null}
-  </section>;
+  </>;
 }
 
 function PanelHeading() {

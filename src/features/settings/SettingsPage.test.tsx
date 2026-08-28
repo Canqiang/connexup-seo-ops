@@ -3,18 +3,54 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../../App";
-import type { RunsLedgerView } from "../../api/types";
+import type { CapabilityWire, CycleConfigWire, MerchantSummary, PortfolioResponse, RunsLedgerView } from "../../api/types";
 import { AuthProvider } from "../../auth/AuthContext";
 import { portfolioFixture, userFixture } from "../../test/fixtures";
+
+const kekeFoodMerchant: MerchantSummary = {
+  id: "keke-food", slug: "keke-food", display_name: "Keke Food Kitchen",
+  operator_user_ids: ["user-1"], operators: [{ id: "user-1", name: "Xander" }], owner_ids: ["user-1"],
+  locations: [], location_count: 0, task_count: 0, ready_for_approval_count: 0, blocked_count: 0, overdue_count: 0,
+  health: "STABLE",
+};
 
 const calls: Array<{ path: string; init?: RequestInit }> = [];
 let runtimeConfig: Record<string, unknown>;
 let authenticatedUser: typeof userFixture;
 let runtimeControls: Record<string, unknown>;
 let ledgerData: RunsLedgerView;
+let portfolioData: PortfolioResponse;
+let capabilitiesData: { items: Array<CapabilityWire & { merchant_name: string }> };
+let cycleConfigsData: { items: CycleConfigWire[] };
 
 beforeEach(() => {
   calls.length = 0;
+  portfolioData = { ...portfolioFixture, merchants: [...portfolioFixture.merchants, kekeFoodMerchant] };
+  capabilitiesData = {
+    items: [
+      {
+        id: "cap-only-bear-gbp-write", merchant_id: "only-bear", merchant_name: "Only Bear Chicken & Boba",
+        asset: "GBP", capability: "GBP_WRITE", external_ref: null, tech_connected: true, merchant_authorized: true,
+        status: "ACTIVE", verified_at: "2026-08-20T00:00:00Z", verified_by: "user-1", note: null,
+        updated_at: "2026-08-20T00:00:00Z",
+      },
+      {
+        id: "cap-keke-food-gbp-write", merchant_id: "keke-food", merchant_name: "Keke Food Kitchen",
+        asset: "GBP", capability: "GBP_WRITE", external_ref: null, tech_connected: true, merchant_authorized: false,
+        status: "BLOCKED", verified_at: null, verified_by: null, note: "待商家授权",
+        updated_at: "2026-08-20T00:00:00Z",
+      },
+    ],
+  };
+  cycleConfigsData = {
+    items: [
+      {
+        merchant_id: "only-bear", snapshot_day: 1, post_weekday: 4, post_per_week: 1,
+        review_window_days: 7, audit_interval_days: 30, enabled: true,
+        updated_by: "user-1", updated_at: "2026-08-20T00:00:00Z",
+      },
+    ],
+  };
   runtimeConfig = {
     copilot_enabled: false,
     agent_run_enabled: true,
@@ -41,7 +77,7 @@ beforeEach(() => {
     const path = String(input);
     calls.push({ path, init });
     if (path === "/api/auth/me") return json(authenticatedUser);
-    if (path === "/api/seo-ops/portfolio") return json(portfolioFixture);
+    if (path === "/api/seo-ops/portfolio") return json(portfolioData);
     if (path === "/api/seo-ops/inbox-summary") return json({
       pending_proposals: 3,
       ready_for_approval: 2,
@@ -97,6 +133,8 @@ beforeEach(() => {
     });
     if (path === "/api/seo-ops/merchants/only-bear/capabilities") return json({ items: [] });
     if (path === "/api/seo-ops/merchants/only-bear/cycle-config") return json(null);
+    if (path === "/api/seo-ops/capabilities") return json(capabilitiesData);
+    if (path === "/api/seo-ops/cycle-configs") return json(cycleConfigsData);
     if (path === "/api/seo-ops/merchants/only-bear/locations/mineola/gbp-execution-binding") return json({
       merchant_id: "only-bear",
       location_id: "mineola",
@@ -167,7 +205,8 @@ test("settings separates the five operator governance sections and reads existin
     "/api/seo-ops/config",
     "/api/seo-ops/inbox-summary",
     "/api/seo-ops/agent-bindings",
-    "/api/seo-ops/merchants/only-bear/capabilities",
+    "/api/seo-ops/capabilities",
+    "/api/seo-ops/cycle-configs",
     "/api/seo-ops/merchants/only-bear/cycle-config",
   ]));
 });
@@ -251,10 +290,24 @@ test("manual runtime controls require the exact scheduler management permission"
 test("merchant governance edits use their exact capability and scheduler permission codes", async () => {
   renderApp("/settings");
 
-  expect(await screen.findByLabelText("GBP 写入（Post / 资料修改） 技术接入")).toBeDisabled();
-  expect(screen.getByLabelText("GBP 写入（Post / 资料修改） 商户授权")).toBeDisabled();
+  expect(await screen.findByLabelText("Only Bear Chicken & Boba GBP 写入（Post / 资料修改） 技术连接")).toBeDisabled();
+  expect(screen.getByLabelText("Only Bear Chicken & Boba GBP 写入（Post / 资料修改） 商户授权")).toBeDisabled();
   expect(screen.getByLabelText("AUDIT Agent ID")).toBeDisabled();
   expect(await screen.findByLabelText("启用自动周期")).toBeDisabled();
+});
+
+test("capability matrix lists every scoped merchant × capability with impact copy and inline toggles", async () => {
+  renderApp("/settings");
+  const matrix = await screen.findByRole("region", { name: "能力矩阵" });
+  expect(within(matrix).getByRole("row", { name: /Only Bear.*GBP_WRITE/ })).toHaveTextContent("可进双门执行（仍需门 1+2）");
+  expect(within(matrix).getByRole("row", { name: /Keke Food.*GBP_WRITE/ })).toHaveTextContent("GBP 写入类建议一律校验失败");
+  expect(within(matrix).getByRole("row", { name: /Only Bear.*XHS_PUBLISH/ })).toHaveTextContent("MISSING");
+});
+
+test("cadence overview summarises every merchant cycle before the per-merchant form", async () => {
+  renderApp("/settings");
+  const overview = await screen.findByRole("region", { name: "周期总览" });
+  expect(within(overview).getByRole("row", { name: /Only Bear/ })).toHaveTextContent("每周四 ×1");
 });
 
 test("authorized runtime controls preserve the existing scheduler and worker mutations", async () => {

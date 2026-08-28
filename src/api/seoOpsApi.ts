@@ -177,6 +177,10 @@ export const seoOpsApi = {
     snapshot_day: number | null; post_weekday: number | null; post_per_week: number;
     review_window_days: number; audit_interval_days: number | null; enabled: boolean;
   }) => requestJson<CycleConfigWire>(`/api/seo-ops/merchants/${encodeURIComponent(merchantId)}/cycle-config`, { method: "PUT", body: JSON.stringify(request) }),
+  allCapabilities: (signal?: AbortSignal) =>
+    requestJson<{ items: Array<CapabilityWire & { merchant_name: string }> }>("/api/seo-ops/capabilities", { signal }),
+  cycleConfigs: (signal?: AbortSignal) =>
+    requestJson<{ items: CycleConfigWire[] }>("/api/seo-ops/cycle-configs", { signal }),
   agentBindings: (signal?: AbortSignal) =>
     requestJson<{ items: AgentBindingWire[]; binding_keys: string[] }>("/api/seo-ops/agent-bindings", { signal }),
   upsertAgentBinding: (taskType: string, request: { agent_id: string; agent_label?: string | null; published_ref?: string | null }) =>

@@ -15,6 +15,15 @@
 .cycle-authority { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 11px 16px 0; color: var(--ink-muted); font: 11px var(--font-data); }
 .cycle-authority .cycle-enable { margin-right: auto; font-family: var(--font-body); }
 .cycle-grid { margin: 0 !important; background: var(--surface); }
+
+.settings-section tbody tr.is-selected { background: #fff8ed; box-shadow: inset 3px 0 #c77b1d; }
+.capability-impact { max-width: 220px; color: var(--ink-muted); font-size: 11px; line-height: 1.45; }
+.capability-note-toggle { padding: 0; border: 0; background: none; color: var(--cyan); font-size: 11px; text-align: left; text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+.capability-note-toggle:disabled { color: var(--ink-muted); text-decoration: none; cursor: default; }
+.capability-note-editor { display: flex; flex-direction: column; gap: 6px; min-width: 180px; }
+.capability-note-actions { display: flex; gap: 6px; }
+.cadence-overview { border-bottom: 1px solid var(--rule); background: #f7fafb; }
+.cadence-overview .table-wrap table { min-width: 640px; }
 .identity-ledger { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(220px, 1fr) minmax(150px, .8fr) minmax(300px, 2fr); margin: 0; }
 .identity-ledger > div { min-width: 0; padding: 13px 15px; border-right: 1px solid var(--rule); }
 .identity-ledger > div:last-child { border-right: 0; }
