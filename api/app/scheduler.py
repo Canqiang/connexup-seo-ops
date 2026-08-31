@@ -30,7 +30,17 @@ def poll_runs_once(client) -> None:
             status = core["status"]
             if status not in TERMINAL_STATUSES:
                 continue
-            finished_at = core.get("completed_at") or now_iso()
+            # Validate completed_at timestamp; fall back to now_iso() on invalid format
+            completed_at = core.get("completed_at")
+            if completed_at:
+                try:
+                    datetime.fromisoformat(completed_at)
+                    finished_at = completed_at
+                except ValueError:
+                    logger.warning("poll run %s has malformed completed_at %r, using now", run["id"], completed_at)
+                    finished_at = now_iso()
+            else:
+                finished_at = now_iso()
             if status == "COMPLETED":
                 report = core.get("output") or None
                 conn.execute(
@@ -58,17 +68,20 @@ def auto_scan_once(client, agent_id: str) -> None:
         ).fetchall()
         now = datetime.now(timezone.utc)
         for merchant in merchants:
-            if has_running_run(conn, merchant["id"]):
-                continue
-            last = conn.execute(
-                "SELECT finished_at, created_at FROM runs WHERE merchant_id = ? ORDER BY id DESC LIMIT 1",
-                (merchant["id"],),
-            ).fetchone()
-            if last is not None:
-                anchor = datetime.fromisoformat(last["finished_at"] or last["created_at"])
-                if now - anchor < timedelta(days=merchant["auto_run_interval_days"]):
+            try:
+                if has_running_run(conn, merchant["id"]):
                     continue
-            start_run(conn, client, agent_id, merchant, "auto")
+                last = conn.execute(
+                    "SELECT finished_at, created_at FROM runs WHERE merchant_id = ? ORDER BY id DESC LIMIT 1",
+                    (merchant["id"],),
+                ).fetchone()
+                if last is not None:
+                    anchor = datetime.fromisoformat(last["finished_at"] or last["created_at"])
+                    if now - anchor < timedelta(days=merchant["auto_run_interval_days"]):
+                        continue
+                start_run(conn, client, agent_id, merchant, "auto")
+            except Exception:
+                logger.exception("auto_scan merchant %s failed, continuing", merchant["id"])
     finally:
         conn.close()
 

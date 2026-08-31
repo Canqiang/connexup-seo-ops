@@ -143,3 +143,57 @@ def test_auto_scan_skips_merchant_with_running_run(client):
     auto_scan_once(fake, "agent-t")
 
     assert len(fake.triggered) == before
+
+
+def test_poll_handles_malformed_completed_at_timestamp(client):
+    from app.scheduler import poll_runs_once
+
+    fake = FakeCoreAi()
+    m, run = make_merchant_with_run(client, fake)
+    fake.runs[run["coreai_run_id"]] = {"status": "COMPLETED", "output": REPORT_WITH_PLAN, "completed_at": "not-a-date"}
+
+    poll_runs_once(fake)
+
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "succeeded"
+    assert detail["finished_at"] is not None
+    # Verify finished_at is a valid ISO string
+    from datetime import datetime
+    datetime.fromisoformat(detail["finished_at"])
+
+
+def test_auto_scan_continues_after_corrupt_merchant_timestamp(client):
+    from app.db import connect
+    from app.scheduler import auto_scan_once
+
+    fake = FakeCoreAi()
+    bad = client.post("/api/merchants", json={"name": "bad"}).json()
+    client.patch(f"/api/merchants/{bad['id']}", json={"auto_run_interval_days": 7})
+    good = client.post("/api/merchants", json={"name": "good"}).json()
+    client.patch(f"/api/merchants/{good['id']}", json={"auto_run_interval_days": 7})
+
+    conn = connect()
+    try:
+        # Insert a run with corrupt finished_at for bad merchant
+        conn.execute(
+            "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
+            " VALUES (?, 'bad-run', 'succeeded', 'manual', ?, ?)",
+            (bad["id"], iso_days_ago(8.1), "corrupt-timestamp"),
+        )
+        # Insert a valid run for good merchant
+        conn.execute(
+            "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
+            " VALUES (?, 'good-run', 'succeeded', 'manual', ?, ?)",
+            (good["id"], iso_days_ago(8.1), iso_days_ago(8)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    auto_scan_once(fake, "agent-t")
+
+    # good merchant should have been triggered despite bad merchant's corrupt timestamp
+    assert len(fake.triggered) == 1
+    runs = client.get(f"/api/merchants/{good['id']}/runs").json()
+    assert runs[0]["trigger_kind"] == "auto"
+    assert runs[0]["status"] == "running"
