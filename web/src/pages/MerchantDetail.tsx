@@ -21,7 +21,9 @@ export default function MerchantDetail() {
   const [error, setError] = useState('')
 
   const load = useCallback(() => {
-    api.getMerchant(merchantId).then(setMerchant).catch(e => setError((e as Error).message))
+    api.getMerchant(merchantId)
+      .then(m => { setMerchant(m); setError('') })
+      .catch(e => setError((e as Error).message))
     api.listTasks(merchantId).then(setTasks).catch(e => setError((e as Error).message))
   }, [merchantId])
 
