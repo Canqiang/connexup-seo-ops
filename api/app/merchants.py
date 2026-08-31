@@ -19,6 +19,7 @@ class MerchantPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1)
     status: Literal["active", "archived"] | None = None
     notes: str | None = None
+    auto_run_interval_days: int | None = Field(default=None, ge=1)
 
 
 def now_iso() -> str:
