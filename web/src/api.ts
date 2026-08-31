@@ -3,6 +3,7 @@ export type Merchant = {
   name: string
   status: 'active' | 'archived'
   notes: string | null
+  auto_run_interval_days: number | null
   created_at: string
 }
 
@@ -16,6 +17,8 @@ export type Task = {
   rationale: string | null
   status: TaskStatus
   evidence_note: string | null
+  source_run_id: number | null
+  source_key: string | null
   created_at: string
   completed_at: string | null
 }
@@ -31,13 +34,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
+export type RunStatus = 'running' | 'succeeded' | 'failed'
+
+export type Run = {
+  id: number
+  merchant_id: number
+  coreai_run_id: string | null
+  status: RunStatus
+  trigger_kind: 'manual' | 'auto'
+  report_text?: string | null
+  error: string | null
+  created_at: string
+  finished_at: string | null
+}
+
 export const api = {
   listMerchants: (status?: 'active' | 'archived') =>
     request<Merchant[]>(`/api/merchants${status ? `?status=${status}` : ''}`),
   createMerchant: (body: { name: string; notes?: string }) =>
     request<Merchant>('/api/merchants', { method: 'POST', body: JSON.stringify(body) }),
   getMerchant: (id: number) => request<Merchant>(`/api/merchants/${id}`),
-  patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes'>>) =>
+  patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   listTasks: (merchantId: number) => request<Task[]>(`/api/merchants/${merchantId}/tasks`),
   createTask: (merchantId: number, body: { title: string; description?: string; rationale?: string }) =>
@@ -45,4 +62,7 @@ export const api = {
   getTask: (id: number) => request<Task>(`/api/tasks/${id}`),
   patchTask: (id: number, body: Partial<Pick<Task, 'title' | 'description' | 'rationale' | 'evidence_note' | 'status'>>) =>
     request<Task>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listRuns: (merchantId: number) => request<Run[]>(`/api/merchants/${merchantId}/runs`),
+  createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),
+  getRun: (id: number) => request<Run>(`/api/runs/${id}`),
 }
