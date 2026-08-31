@@ -43,6 +43,17 @@ def test_patch_merchant_rejects_bad_status(client):
     assert client.patch(f"/api/merchants/{m['id']}", json={"status": "frozen"}).status_code == 422
 
 
+def test_patch_merchant_rejects_explicit_null_on_required_fields(client):
+    m = client.post("/api/merchants", json={"name": "M"}).json()
+    assert client.patch(f"/api/merchants/{m['id']}", json={"name": None}).status_code == 422
+    assert client.patch(f"/api/merchants/{m['id']}", json={"status": None}).status_code == 422
+
+
+def test_patch_and_delete_missing_merchant_404(client):
+    assert client.patch("/api/merchants/999", json={"name": "X"}).status_code == 404
+    assert client.delete("/api/merchants/999").status_code == 404
+
+
 def test_delete_merchant_without_tasks(client):
     m = client.post("/api/merchants", json={"name": "Gone"}).json()
     assert client.delete(f"/api/merchants/{m['id']}").status_code == 204

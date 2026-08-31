@@ -85,3 +85,9 @@ def test_patch_text_fields(client):
     assert body["title"] == "T2"
     assert body["description"] == "d2"
     assert body["status"] == "todo"
+
+
+def test_patch_task_rejects_explicit_null_title(client):
+    m = make_merchant(client)
+    t = make_task(client, m["id"])
+    assert client.patch(f"/api/tasks/{t['id']}", json={"title": None}).status_code == 422

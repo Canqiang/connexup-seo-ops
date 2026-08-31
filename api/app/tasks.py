@@ -65,6 +65,8 @@ def get_task(task_id: int, conn=Depends(get_db)):
 def patch_task(task_id: int, body: TaskPatch, conn=Depends(get_db)):
     task = fetch_task(conn, task_id)
     updates = body.model_dump(exclude_unset=True)
+    if "title" in updates and updates["title"] is None:
+        raise HTTPException(status_code=422, detail="title cannot be null")
     new_status = updates.pop("status", None)
     for field, value in updates.items():
         conn.execute(f"UPDATE tasks SET {field} = ? WHERE id = ?", (value, task_id))

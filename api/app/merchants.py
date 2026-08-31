@@ -59,7 +59,11 @@ def get_merchant(merchant_id: int, conn=Depends(get_db)):
 @router.patch("/{merchant_id}")
 def patch_merchant(merchant_id: int, body: MerchantPatch, conn=Depends(get_db)):
     fetch_merchant(conn, merchant_id)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+    for field in ("name", "status"):
+        if field in updates and updates[field] is None:
+            raise HTTPException(status_code=422, detail=f"{field} cannot be null")
+    for field, value in updates.items():
         conn.execute(f"UPDATE merchants SET {field} = ? WHERE id = ?", (value, merchant_id))
     conn.commit()
     return dict(fetch_merchant(conn, merchant_id))
