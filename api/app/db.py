@@ -11,7 +11,9 @@ def db_path() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path())
+    # FastAPI 会把同步依赖的创建和路由函数放到线程池的不同线程执行；
+    # 每个请求独享一条连接、顺序使用，因此跨线程是安全的。
+    conn = sqlite3.connect(db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
