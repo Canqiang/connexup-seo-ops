@@ -30,17 +30,22 @@ def poll_runs_once(client) -> None:
             status = core["status"]
             if status not in TERMINAL_STATUSES:
                 continue
-            # Validate completed_at timestamp; fall back to now_iso() on invalid format
+            # Validate completed_at timestamp; fall back to now_iso() on invalid
+            # format, wrong type, or a naive (no-tzinfo) value.
             completed_at = core.get("completed_at")
-            if completed_at:
+            finished_at = now_iso()
+            if isinstance(completed_at, str) and completed_at:
                 try:
-                    datetime.fromisoformat(completed_at)
-                    finished_at = completed_at
-                except ValueError:
+                    parsed = datetime.fromisoformat(completed_at)
+                except (ValueError, TypeError):
                     logger.warning("poll run %s has malformed completed_at %r, using now", run["id"], completed_at)
-                    finished_at = now_iso()
-            else:
-                finished_at = now_iso()
+                else:
+                    if parsed.tzinfo is not None:
+                        finished_at = completed_at
+                    else:
+                        logger.warning("poll run %s has naive completed_at %r, using now", run["id"], completed_at)
+            elif completed_at:
+                logger.warning("poll run %s has non-string completed_at %r, using now", run["id"], completed_at)
             if status == "COMPLETED":
                 report = core.get("output") or None
                 conn.execute(

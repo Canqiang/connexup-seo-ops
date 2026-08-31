@@ -32,14 +32,19 @@ class CoreAiClient:
             raise CoreAiError(0, f"core-ai request failed: {e}") from e
         if res.status_code >= 400:
             try:
-                message = res.json().get("message") or res.text[:200]
+                error_body = res.json()
             except ValueError:
                 message = res.text[:200]
+            else:
+                message = (error_body.get("message") if isinstance(error_body, dict) else None) or res.text[:200]
             raise CoreAiError(res.status_code, message)
         try:
-            return res.json()
+            body = res.json()
         except ValueError as e:
             raise CoreAiError(0, "core-ai returned non-JSON response") from e
+        if not isinstance(body, dict):
+            raise CoreAiError(0, "core-ai returned non-object JSON")
+        return body
 
     def trigger(self, agent_id: str, input_text: str) -> dict:
         body = self._request("POST", f"/api/runs/agent/{agent_id}/trigger", {"input": input_text})

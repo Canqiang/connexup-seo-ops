@@ -162,6 +162,51 @@ def test_poll_handles_malformed_completed_at_timestamp(client):
     datetime.fromisoformat(detail["finished_at"])
 
 
+def test_poll_handles_non_string_completed_at_timestamp(client):
+    from app.scheduler import poll_runs_once
+
+    fake = FakeCoreAi()
+    m, run = make_merchant_with_run(client, fake)
+    # completed_at as an epoch int (truthy non-string) must not raise TypeError
+    fake.runs[run["coreai_run_id"]] = {
+        "status": "COMPLETED",
+        "output": REPORT_WITH_PLAN,
+        "completed_at": 1725100000,
+    }
+
+    poll_runs_once(fake)  # must not raise
+
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "succeeded"
+    assert detail["finished_at"] is not None
+    from datetime import datetime
+
+    parsed = datetime.fromisoformat(detail["finished_at"])
+    assert parsed.tzinfo is not None
+
+
+def test_poll_stores_aware_finished_at_for_naive_completed_at(client):
+    from app.scheduler import poll_runs_once
+
+    fake = FakeCoreAi()
+    m, run = make_merchant_with_run(client, fake)
+    # naive ISO string (no tzinfo) must not be stored as-is; it silently breaks
+    # auto_scan_once's aware-minus-naive subtraction later.
+    fake.runs[run["coreai_run_id"]] = {
+        "status": "COMPLETED",
+        "output": REPORT_WITH_PLAN,
+        "completed_at": "2026-08-31T12:00:00",
+    }
+
+    poll_runs_once(fake)
+
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "succeeded"
+    from datetime import datetime
+
+    assert datetime.fromisoformat(detail["finished_at"]).tzinfo is not None
+
+
 def test_auto_scan_continues_after_corrupt_merchant_timestamp(client):
     from app.db import connect
     from app.scheduler import auto_scan_once

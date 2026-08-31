@@ -76,9 +76,10 @@ export default function MerchantDetail() {
     try {
       await api.createRun(merchantId)
       setError('')
-      load()
     } catch (err) {
       setError((err as Error).message)
+    } finally {
+      load()
     }
   }
 

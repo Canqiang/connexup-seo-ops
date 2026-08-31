@@ -1,7 +1,7 @@
 # connexup-seo-ops
 
-商户 SEO 运营台账（重建版，一次一块砖）。当前砖：商户台账 + 任务工单。
-设计文档：docs/superpowers/specs/2026-08-31-seo-ops-rebuild-slice1-design.md
+商户 SEO 运营台账（重建版，一次一块砖）。当前系统已覆盖商户台账 + 任务工单 与 AI 分析（agent 跑批）。
+设计文档：docs/superpowers/specs/2026-08-31-seo-ops-rebuild-slice1-design.md 与 docs/superpowers/specs/2026-08-31-agent-runs-design.md
 
 ## 结构
 

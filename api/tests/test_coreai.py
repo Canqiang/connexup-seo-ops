@@ -66,3 +66,13 @@ def test_network_error_wrapped():
 
     with pytest.raises(CoreAiError):
         make_client(handler).get_run("r-4")
+
+
+def test_non_dict_json_body_raises_coreai_error_not_attributeerror():
+    from app.coreai import CoreAiError
+
+    def handler(request):
+        return httpx.Response(200, json=[1, 2, 3])
+
+    with pytest.raises(CoreAiError):
+        make_client(handler).get_run("r-5")
