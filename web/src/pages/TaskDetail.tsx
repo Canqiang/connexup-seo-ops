@@ -87,7 +87,7 @@ export default function TaskDetail() {
         placeholder="做了什么、结果如何；需要截图先贴链接"
       />
       <p>
-        <button onClick={saveEvidence}>保存证据</button>
+        <button onClick={saveEvidence} className="primary">保存证据</button>
         {saved && <span className="muted"> 已保存</span>}
       </p>
 

@@ -114,7 +114,7 @@ export default function MerchantDetail() {
 
       <h2>AI 分析</h2>
       <p>
-        <button onClick={startRun} disabled={hasRunning}>
+        <button onClick={startRun} disabled={hasRunning} className="primary">
           {hasRunning ? '分析进行中…' : '发起分析'}
         </button>
         {' '}
@@ -143,7 +143,7 @@ export default function MerchantDetail() {
         <input value={title} onChange={e => setTitle(e.target.value)} placeholder="标题" />
         <input value={rationale} onChange={e => setRationale(e.target.value)} placeholder="为什么做（动因）" />
         <input value={description} onChange={e => setDescription(e.target.value)} placeholder="描述（可选）" />
-        <button type="submit">创建</button>
+        <button type="submit" className="primary">创建</button>
       </form>
 
       {STATUS_ORDER.map(s => {
@@ -156,7 +156,7 @@ export default function MerchantDetail() {
               {group.map(t => (
                 <li key={t.id}>
                   <Link to={`/tasks/${t.id}`}>{t.title}</Link>
-                  {t.source_run_id != null && <span className="badge">AI</span>}
+                  {t.source_run_id != null && <span className="badge ai">AI</span>}
                   {t.rationale && <span className="muted">{t.rationale}</span>}
                 </li>
               ))}

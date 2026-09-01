@@ -37,7 +37,7 @@ export default function MerchantList() {
       <form onSubmit={create}>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="商户名称" />
         <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="备注（可选）" />
-        <button type="submit">新建商户</button>
+        <button type="submit" className="primary">新建商户</button>
       </form>
       <div className="filters">
         {(['active', 'archived', 'all'] as const).map(f => (
