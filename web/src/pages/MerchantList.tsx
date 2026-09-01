@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api, type MerchantStats } from '../api'
 import { formatTime } from '../format'
 import { RUN_STATUS_LABELS } from '../labels'
 
 export default function MerchantList() {
+  const navigate = useNavigate()
   const [merchants, setMerchants] = useState<MerchantStats[]>([])
   const [filter, setFilter] = useState<'all' | 'active' | 'archived'>('active')
   const [name, setName] = useState('')
@@ -33,24 +34,33 @@ export default function MerchantList() {
   }
 
   return (
-    <main>
-      <h1>商户台账</h1>
+    <main aria-label="商户台账" className="merchant-ledger-page">
       {error && <p className="error">{error}</p>}
-      <form onSubmit={create}>
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="商户名称" />
-        <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="备注（可选）" />
-        <button type="submit" className="primary">新建商户</button>
-      </form>
-      <div className="filters">
-        {(['active', 'archived', 'all'] as const).map(f => (
-          <button key={f} disabled={filter === f} onClick={() => setFilter(f)}>
-            {f === 'active' ? '在营' : f === 'archived' ? '已归档' : '全部'}
-          </button>
-        ))}
-      </div>
-      {merchants.length > 0 && (
-        <div className="table-wrap">
-          <table>
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <p className="section-code">MERCHANTS / 商户</p>
+            <h1 id="merchant-list-title">商户</h1>
+          </div>
+          <form onSubmit={create} aria-label="新建商户" className="compact-form">
+            <input aria-label="商户名称" value={name} onChange={e => setName(e.target.value)} placeholder="商户名称" />
+            <input aria-label="商户备注" value={notes} onChange={e => setNotes(e.target.value)} placeholder="备注（可选）" />
+            <button type="submit" className="primary">＋ 新建商户</button>
+          </form>
+        </div>
+        <div className="table-toolbar">
+          <div className="filters" role="group" aria-label="商户状态筛选">
+            {(['active', 'archived', 'all'] as const).map(f => (
+              <button key={f} disabled={filter === f} onClick={() => setFilter(f)}>
+                {f === 'active' ? '在营' : f === 'archived' ? '已归档' : '全部'}
+              </button>
+            ))}
+          </div>
+          <span className="result-count">{merchants.length} 个商户</span>
+        </div>
+        {merchants.length > 0 ? (
+          <div className="table-wrap flush">
+            <table aria-label="商户列表">
             <thead>
               <tr>
                 <th>商户</th>
@@ -59,13 +69,27 @@ export default function MerchantList() {
                 <th>进行中</th>
                 <th>最近分析</th>
                 <th>自动分析</th>
+                <th aria-label="进入商户" />
               </tr>
             </thead>
             <tbody>
               {merchants.map(m => (
-                <tr key={m.id}>
+                <tr
+                  key={m.id}
+                  className="merchant-row"
+                  role="link"
+                  tabIndex={0}
+                  aria-label={`打开商户 ${m.name}`}
+                  onClick={() => navigate(`/merchants/${m.id}`)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      navigate(`/merchants/${m.id}`)
+                    }
+                  }}
+                >
                   <td className="grow">
-                    <Link to={`/merchants/${m.id}`}>{m.name}</Link>
+                    <strong className="merchant-name">{m.name}</strong>
                     {m.notes && <div className="dim">{m.notes}</div>}
                   </td>
                   <td className="nowrap">
@@ -85,12 +109,16 @@ export default function MerchantList() {
                         : <span className="dim">未分析</span>}
                   </td>
                   <td className="dim nowrap">{m.auto_run_interval_days != null ? `每 ${m.auto_run_interval_days} 天` : '关闭'}</td>
+                  <td className="merchant-enter" aria-hidden="true">→</td>
                 </tr>
               ))}
             </tbody>
-          </table>
-        </div>
-      )}
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state">当前筛选下没有商户。</div>
+        )}
+      </section>
     </main>
   )
 }

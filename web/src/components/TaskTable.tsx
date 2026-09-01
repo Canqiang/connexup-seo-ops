@@ -24,8 +24,8 @@ export default function TaskTable({ tasks, showSource = true, showMerchant = fal
   if (tasks.length === 0) return null
   const selectable = selected !== undefined && onToggleSelect !== undefined
   return (
-    <div className="table-wrap">
-      <table>
+    <div className="table-wrap flush">
+      <table className="task-data-table" aria-label={showMerchant ? '跨商户任务列表' : '任务列表'}>
         <thead>
           <tr>
             {selectable && (
@@ -65,9 +65,9 @@ export default function TaskTable({ tasks, showSource = true, showMerchant = fal
                   ? <span className="badge cat">{CATEGORY_LABELS[t.category] ?? t.category}</span>
                   : <span className="dim">—</span>}
               </td>
-              <td className="grow"><Link to={`/tasks/${t.id}`}>{t.title}</Link></td>
-              <td className="dim">{t.rationale || '—'}</td>
-              <td className="dim">{t.expected_outcome || '—'}</td>
+              <td className="grow"><Link className="cell-clamp" to={`/tasks/${t.id}`}>{t.title}</Link></td>
+              <td className="dim detail-copy" title={t.rationale || undefined}><span className="cell-clamp">{t.rationale || '—'}</span></td>
+              <td className="dim detail-copy" title={t.expected_outcome || undefined}><span className="cell-clamp">{t.expected_outcome || '—'}</span></td>
               {showSource && (
                 <td className="nowrap">
                   {t.source_run_id != null
@@ -81,7 +81,13 @@ export default function TaskTable({ tasks, showSource = true, showMerchant = fal
               {onAction && (
                 <td className="nowrap">
                   {NEXT_ACTIONS[t.status].map(a => (
-                    <button key={a.to} className="sm" onClick={() => onAction(t.id, a.to)}>{a.label}</button>
+                    <button
+                      key={a.to}
+                      className={`sm ${a.to === 'doing' || a.to === 'done' ? 'row-primary' : 'quiet'}`}
+                      onClick={() => onAction(t.id, a.to)}
+                    >
+                      {a.label}
+                    </button>
                   ))}
                 </td>
               )}
