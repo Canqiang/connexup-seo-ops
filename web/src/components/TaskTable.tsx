@@ -33,7 +33,7 @@ export default function TaskTable({ tasks, showSource = true, onAction }: {
         </thead>
         <tbody>
           {tasks.map(t => (
-            <tr key={t.id}>
+            <tr key={t.id} className={t.status === 'cancelled' ? 'row-cancelled' : ''}>
               <td className="nowrap">
                 {t.category
                   ? <span className="badge cat">{CATEGORY_LABELS[t.category] ?? t.category}</span>

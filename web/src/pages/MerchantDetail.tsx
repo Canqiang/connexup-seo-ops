@@ -34,7 +34,18 @@ export default function MerchantDetail() {
     api.getMerchant(merchantId)
       .then(m => { setMerchant(m); setError('') })
       .catch(e => setError((e as Error).message))
-    api.listTasks(merchantId).then(setTasks).catch(e => setError((e as Error).message))
+    api.listTasks(merchantId)
+      .then(fresh => setTasks(prev => {
+        // 排序只在首次加载时算；之后就地更新，行不因状态变化跳位
+        const sortFresh = (xs: Task[]) =>
+          [...xs].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.id - a.id)
+        if (prev.length === 0) return sortFresh(fresh)
+        const byId = new Map(fresh.map(f => [f.id, f]))
+        const kept = prev.filter(p => byId.has(p.id)).map(p => byId.get(p.id)!)
+        const added = sortFresh(fresh.filter(f => !prev.some(p => p.id === f.id)))
+        return [...added, ...kept]
+      }))
+      .catch(e => setError((e as Error).message))
     api.listRuns(merchantId).then(setRuns).catch(e => setError((e as Error).message))
   }, [merchantId])
 
@@ -121,9 +132,7 @@ export default function MerchantDetail() {
 
   const counts = STATUS_ORDER.map(s => [s, tasks.filter(t => t.status === s).length] as const)
   const visibleRuns = showAllRuns ? runs : runs.slice(0, RUNS_PREVIEW)
-  const shownTasks = [...tasks]
-    .filter(t => statusFilter === null || t.status === statusFilter)
-    .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.id - a.id)
+  const shownTasks = tasks.filter(t => statusFilter === null || t.status === statusFilter)
 
   return (
     <main>

@@ -171,7 +171,7 @@ button.primary:disabled { background: var(--muted); border-color: var(--muted); 
 .badge.todo     { color: var(--ink-2); background: var(--paper); }
 .badge.doing, .badge.running { color: var(--brand-ink); border-color: var(--brand); background: var(--brand-soft); }
 .badge.done, .badge.succeeded { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
-.badge.cancelled { color: var(--muted); background: var(--paper); text-decoration: line-through; }
+.badge.cancelled { color: var(--muted); background: var(--paper); }
 .badge.failed   { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
 .badge.ai       { color: var(--ai); border-color: var(--ai); background: var(--ai-soft); font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.1em; }
 
@@ -221,6 +221,8 @@ button.primary:disabled { background: var(--muted); border-color: var(--muted); 
 td.dim, .dim { color: var(--muted); font-size: 12.5px; }
 td.nowrap { white-space: nowrap; }
 td.grow { min-width: 220px; }
+tr.row-cancelled td, tr.row-cancelled td a { color: var(--muted); }
+tr.row-cancelled td.grow a { text-decoration: line-through; text-decoration-color: var(--muted); }
 
 /* ---- 统计条 ---- */
 .stats { display: flex; gap: 8px; margin: 6px 0 4px; flex-wrap: wrap; }
