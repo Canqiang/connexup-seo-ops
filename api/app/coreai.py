@@ -52,6 +52,12 @@ class CoreAiClient:
             raise CoreAiError(0, "core-ai trigger response missing run_id")
         return body
 
+    def get_agent(self, agent_id: str) -> dict:
+        body = self._request("GET", f"/api/agents/{agent_id}")
+        if body.get("id") != agent_id:
+            raise CoreAiError(0, "core-ai agent detail id mismatch")
+        return body
+
     def get_run(self, run_id: str) -> dict:
         body = self._request("GET", f"/api/runs/{run_id}")
         if not body.get("status"):

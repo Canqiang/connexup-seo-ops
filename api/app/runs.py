@@ -9,7 +9,10 @@ from .merchants import fetch_merchant, now_iso
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
-RUN_LIST_COLUMNS = "id, merchant_id, coreai_run_id, status, trigger_kind, error, created_at, finished_at"
+RUN_LIST_COLUMNS = (
+    "id, merchant_id, coreai_run_id, status, trigger_kind, error,"
+    " plan_approved_at, created_at, finished_at"
+)
 
 _client: CoreAiClient | None = None
 
@@ -25,7 +28,20 @@ def get_coreai() -> tuple[CoreAiClient, str]:
 
 
 def build_input(merchant: sqlite3.Row) -> str:
-    return f"商户：{merchant['name']}\n备注：{merchant['notes'] or '无'}"
+    return "\n".join(
+        [
+            "Perform an evidence-led United States local SEO diagnosis for this merchant.",
+            "Use English keywords and the merchant's real US location. Do not invent rankings, access, or business facts.",
+            f"Merchant: {merchant['name']}",
+            f"Primary location: {merchant['primary_location'] or 'Not provided'}",
+            f"Website: {merchant['website_url'] or 'Not provided'}",
+            f"Operator notes: {merchant['notes'] or 'None'}",
+            "First report verified issues, evidence, severity, expected impact, and missing inputs.",
+            "Then return the proposed dated Plan as a JSON array in a fenced json block.",
+            "Each Plan item must include id, title, rationale, expected_outcome, category, description, and start_after_days.",
+            "Allowed categories: gbp, content, review, citation, technical, other.",
+        ]
+    )
 
 
 def has_running_run(conn: sqlite3.Connection, merchant_id: int) -> bool:
@@ -86,6 +102,27 @@ def get_run(run_id: int, conn=Depends(get_db)):
     if row is None:
         raise HTTPException(status_code=404, detail="run not found")
     return dict(row)
+
+
+@router.post("/runs/{run_id}/approve-plan")
+def approve_plan(run_id: int, conn=Depends(get_db)):
+    run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run["status"] != "succeeded":
+        raise HTTPException(status_code=409, detail="only a succeeded run can be approved")
+    task_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM tasks WHERE source_run_id = ?", (run_id,)
+    ).fetchone()["n"]
+    if task_count == 0:
+        raise HTTPException(status_code=409, detail="run has no generated plan")
+    if run["plan_approved_at"] is None:
+        conn.execute(
+            "UPDATE runs SET plan_approved_at = ? WHERE id = ?",
+            (now_iso(), run_id),
+        )
+        conn.commit()
+    return dict(conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone())
 
 
 @router.get("/runs/{run_id}/tasks")

@@ -3,6 +3,18 @@ class FakeCoreAi:
         self.fail = fail
         self.triggered: list[tuple[str, str]] = []
         self.runs: dict[str, dict] = {}
+        self.agent_definition = {
+            "id": "agent-t",
+            "status": "PUBLISHED",
+            "tools": [],
+            "skill_ids": [],
+            "subagent_ids": [],
+            "sandbox_config": None,
+            "dataset_config": [],
+        }
+
+    def get_agent(self, agent_id: str) -> dict:
+        return {**self.agent_definition, "id": agent_id}
 
     def trigger(self, agent_id: str, input_text: str) -> dict:
         from app.coreai import CoreAiError

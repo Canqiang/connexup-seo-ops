@@ -8,8 +8,11 @@ export default function MerchantList() {
   const navigate = useNavigate()
   const [merchants, setMerchants] = useState<MerchantStats[]>([])
   const [filter, setFilter] = useState<'all' | 'active' | 'archived'>('active')
+  const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
-  const [notes, setNotes] = useState('')
+  const [primaryLocation, setPrimaryLocation] = useState('')
+  const [websiteUrl, setWebsiteUrl] = useState('')
+  const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
 
   const load = useCallback(() => {
@@ -22,14 +25,25 @@ export default function MerchantList() {
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return
+    if (!name.trim() || !primaryLocation.trim() || creating) return
+    setCreating(true)
     try {
-      await api.createMerchant({ name: name.trim(), notes: notes.trim() || undefined })
-      setName('')
-      setNotes('')
-      load()
+      const merchant = await api.createMerchant({
+        name: name.trim(),
+        primary_location: primaryLocation.trim(),
+        website_url: websiteUrl.trim() || undefined,
+      })
+      let diagnosisStartFailed = false
+      try {
+        await api.createRun(merchant.id)
+      } catch {
+        diagnosisStartFailed = true
+      }
+      navigate(`/merchants/${merchant.id}`, { state: { diagnosisStartFailed } })
     } catch (err) {
       setError((err as Error).message)
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -42,12 +56,30 @@ export default function MerchantList() {
             <p className="section-code">MERCHANTS / 商户</p>
             <h1 id="merchant-list-title">商户</h1>
           </div>
-          <form onSubmit={create} aria-label="新建商户" className="compact-form">
-            <input aria-label="商户名称" value={name} onChange={e => setName(e.target.value)} placeholder="商户名称" />
-            <input aria-label="商户备注" value={notes} onChange={e => setNotes(e.target.value)} placeholder="备注（可选）" />
-            <button type="submit" className="primary">＋ 新建商户</button>
-          </form>
+          <button type="button" className={showCreate ? '' : 'primary'} onClick={() => setShowCreate(value => !value)}>
+            {showCreate ? '收起' : '＋ 新建商户'}
+          </button>
         </div>
+        {showCreate && (
+          <form onSubmit={create} aria-label="新建商户" className="merchant-create-form">
+            <label>
+              <span>商户名称</span>
+              <input aria-label="商户名称" value={name} onChange={e => setName(e.target.value)} placeholder="例如 Only Bear Chicken & Boba" required />
+            </label>
+            <label>
+              <span>主要地点</span>
+              <input aria-label="主要地点" value={primaryLocation} onChange={e => setPrimaryLocation(e.target.value)} placeholder="例如 Mineola, NY" required />
+            </label>
+            <label>
+              <span>官网</span>
+              <input aria-label="官网" type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="https://（可选）" />
+            </label>
+            <div className="merchant-create-actions">
+              <button type="submit" className="primary" disabled={creating}>{creating ? '正在保存…' : '保存并开始诊断'}</button>
+              <button type="button" className="quiet" onClick={() => setShowCreate(false)}>取消</button>
+            </div>
+          </form>
+        )}
         <div className="table-toolbar">
           <div className="filters" role="group" aria-label="商户状态筛选">
             {(['active', 'archived', 'all'] as const).map(f => (

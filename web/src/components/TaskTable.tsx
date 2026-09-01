@@ -1,42 +1,34 @@
-import { Link } from 'react-router-dom'
-import type { Task, TaskStatus } from '../api'
+import { Link, useLocation } from 'react-router-dom'
+import type { Task } from '../api'
 import { formatTime } from '../format'
 import { CATEGORY_LABELS, TASK_STATUS_LABELS } from '../labels'
 
-const NEXT_ACTIONS: Record<TaskStatus, { to: TaskStatus; label: string }[]> = {
-  todo: [{ to: 'doing', label: '开始' }, { to: 'cancelled', label: '取消' }],
-  doing: [{ to: 'done', label: '完成' }, { to: 'cancelled', label: '取消' }],
-  done: [],
-  cancelled: [],
-}
-
 type TaskLike = Task & { merchant_name?: string }
 
-export default function TaskTable({ tasks, showSource = true, showMerchant = false, onAction, selected, onToggleSelect, onToggleAll }: {
+const EXECUTION_LABELS = {
+  running: 'Agent 执行中',
+  ready: '待审批',
+  failed: '执行失败',
+  approved: '已完成',
+  returned: '已退回',
+} as const
+
+export default function TaskTable({ tasks, showSource = true, showMerchant = false }: {
   tasks: TaskLike[]
   showSource?: boolean
   showMerchant?: boolean
-  onAction?: (taskId: number, status: TaskStatus) => void
-  selected?: Set<number>
-  onToggleSelect?: (taskId: number) => void
-  onToggleAll?: () => void
 }) {
+  const location = useLocation()
   if (tasks.length === 0) return null
-  const selectable = selected !== undefined && onToggleSelect !== undefined
+  const taskOrigin = {
+    kind: showMerchant ? 'tasks' : 'merchant',
+    from: `${location.pathname}${location.search}`,
+  }
   return (
     <div className="table-wrap flush">
       <table className="task-data-table" aria-label={showMerchant ? '跨商户任务列表' : '任务列表'}>
         <thead>
           <tr>
-            {selectable && (
-              <th>
-                <input
-                  type="checkbox"
-                  checked={tasks.length > 0 && tasks.every(t => selected.has(t.id))}
-                  onChange={() => onToggleAll?.()}
-                />
-              </th>
-            )}
             {showMerchant && <th>商户</th>}
             <th>类别</th>
             <th>任务</th>
@@ -46,17 +38,14 @@ export default function TaskTable({ tasks, showSource = true, showMerchant = fal
             <th>状态</th>
             <th>计划开始</th>
             <th>创建</th>
-            {onAction && <th>操作</th>}
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          {tasks.map(t => (
+          {tasks.map(t => {
+            const planLocked = t.status === 'todo' && t.source_run_id != null && t.source_plan_approved === false
+            return (
             <tr key={t.id} className={t.status === 'cancelled' ? 'row-cancelled' : ''}>
-              {selectable && (
-                <td>
-                  <input type="checkbox" checked={selected.has(t.id)} onChange={() => onToggleSelect(t.id)} />
-                </td>
-              )}
               {showMerchant && (
                 <td className="nowrap"><Link to={`/merchants/${t.merchant_id}`}>{t.merchant_name ?? `#${t.merchant_id}`}</Link></td>
               )}
@@ -65,7 +54,9 @@ export default function TaskTable({ tasks, showSource = true, showMerchant = fal
                   ? <span className="badge cat">{CATEGORY_LABELS[t.category] ?? t.category}</span>
                   : <span className="dim">—</span>}
               </td>
-              <td className="grow"><Link className="cell-clamp" to={`/tasks/${t.id}`}>{t.title}</Link></td>
+              <td className="grow">
+                <Link className="cell-clamp" to={`/tasks/${t.id}`} state={{ taskOrigin }}>{t.title}</Link>
+              </td>
               <td className="dim detail-copy" title={t.rationale || undefined}><span className="cell-clamp">{t.rationale || '—'}</span></td>
               <td className="dim detail-copy" title={t.expected_outcome || undefined}><span className="cell-clamp">{t.expected_outcome || '—'}</span></td>
               {showSource && (
@@ -75,24 +66,20 @@ export default function TaskTable({ tasks, showSource = true, showMerchant = fal
                     : <span className="dim">手工</span>}
                 </td>
               )}
-              <td className="nowrap"><span className={`badge ${t.status}`}>{TASK_STATUS_LABELS[t.status]}</span></td>
+              <td className="nowrap">
+                <span className={`badge ${t.execution_status ?? t.status}`}>
+                  {t.execution_status ? EXECUTION_LABELS[t.execution_status] : TASK_STATUS_LABELS[t.status]}
+                </span>
+              </td>
               <td className="dim nowrap">{t.scheduled_start ? formatTime(t.scheduled_start) : '—'}</td>
               <td className="dim nowrap">{formatTime(t.created_at)}</td>
-              {onAction && (
-                <td className="nowrap">
-                  {NEXT_ACTIONS[t.status].map(a => (
-                    <button
-                      key={a.to}
-                      className={`sm ${a.to === 'doing' || a.to === 'done' ? 'row-primary' : 'quiet'}`}
-                      onClick={() => onAction(t.id, a.to)}
-                    >
-                      {a.label}
-                    </button>
-                  ))}
-                </td>
-              )}
+              <td className="nowrap">
+                {planLocked
+                  ? <span className="plan-lock-label">等待确认 Plan</span>
+                  : <Link className="table-action-link" aria-label={`查看任务：${t.title}`} to={`/tasks/${t.id}`} state={{ taskOrigin }}>查看</Link>}
+              </td>
             </tr>
-          ))}
+          )})}
         </tbody>
       </table>
     </div>

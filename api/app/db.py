@@ -20,7 +20,12 @@ def connect() -> sqlite3.Connection:
 
 
 MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
-    "merchants": {"auto_run_interval_days": "INTEGER"},
+    "merchants": {
+        "auto_run_interval_days": "INTEGER",
+        "primary_location": "TEXT",
+        "website_url": "TEXT",
+    },
+    "runs": {"plan_approved_at": "TEXT"},
     "tasks": {"source_run_id": "INTEGER REFERENCES runs(id)", "source_key": "TEXT", "expected_outcome": "TEXT", "category": "TEXT", "scheduled_start": "TEXT"},
 }
 
@@ -30,9 +35,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if not existing:
             continue  # 全新库，表还没建，executescript 已带新列
+        added: set[str] = set()
         for col, decl in cols.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                added.add(col)
+        if table == "runs" and "plan_approved_at" in added:
+            conn.execute(
+                "UPDATE runs SET plan_approved_at = COALESCE(finished_at, created_at)"
+                " WHERE status = 'succeeded'"
+            )
 
 
 def init_db() -> None:

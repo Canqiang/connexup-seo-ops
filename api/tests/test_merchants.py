@@ -17,6 +17,33 @@ def test_create_merchant_rejects_empty_name(client):
     assert client.post("/api/merchants", json={"name": ""}).status_code == 422
 
 
+def test_create_and_patch_merchant_preserves_public_diagnosis_inputs(client):
+    created = client.post(
+        "/api/merchants",
+        json={
+            "name": "Only Bear Chicken & Boba",
+            "primary_location": "Mineola, NY",
+            "website_url": "https://onlybear.example.com",
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["primary_location"] == "Mineola, NY"
+    assert created.json()["website_url"] == "https://onlybear.example.com"
+
+    merchant_id = created.json()["id"]
+    updated = client.patch(
+        f"/api/merchants/{merchant_id}",
+        json={
+            "primary_location": "Garden City, NY",
+            "website_url": "https://onlybear.example.com/mineola",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["primary_location"] == "Garden City, NY"
+    assert updated.json()["website_url"] == "https://onlybear.example.com/mineola"
+
+
 def test_get_missing_merchant_404(client):
     assert client.get("/api/merchants/999").status_code == 404
 

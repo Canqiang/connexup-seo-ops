@@ -13,12 +13,16 @@ router = APIRouter(prefix="/api/merchants", tags=["merchants"])
 class MerchantCreate(BaseModel):
     name: str = Field(min_length=1)
     notes: str | None = None
+    primary_location: str | None = None
+    website_url: str | None = None
 
 
 class MerchantPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1)
     status: Literal["active", "archived"] | None = None
     notes: str | None = None
+    primary_location: str | None = None
+    website_url: str | None = None
     auto_run_interval_days: int | None = Field(default=None, ge=1)
 
 
@@ -61,8 +65,9 @@ def list_merchants(status: Literal["active", "archived"] | None = None, conn=Dep
 @router.post("", status_code=201)
 def create_merchant(body: MerchantCreate, conn=Depends(get_db)):
     cur = conn.execute(
-        "INSERT INTO merchants (name, notes, created_at) VALUES (?, ?, ?)",
-        (body.name, body.notes, now_iso()),
+        "INSERT INTO merchants (name, notes, primary_location, website_url, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (body.name, body.notes, body.primary_location, body.website_url, now_iso()),
     )
     conn.commit()
     return dict(fetch_merchant(conn, cur.lastrowid))

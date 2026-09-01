@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from .config import coreai_settings
 from .coreai import CoreAiClient, CoreAiError, TERMINAL_STATUSES
 from .db import connect
+from .execution_result import normalize_execution_output
 from .merchants import now_iso
 from .plan_parser import create_tasks_from_plan, extract_plan
 from .runs import has_running_run, start_run
@@ -65,6 +66,54 @@ def poll_runs_once(client) -> None:
         conn.close()
 
 
+def poll_task_executions_once(client) -> None:
+    conn = connect()
+    try:
+        executions = conn.execute(
+            "SELECT * FROM task_executions WHERE status = 'running' AND coreai_run_id IS NOT NULL"
+        ).fetchall()
+        for execution in executions:
+            try:
+                core = client.get_run(execution["coreai_run_id"])
+            except CoreAiError as exc:
+                logger.warning("poll task execution %s failed, stays running: %s", execution["id"], exc)
+                continue
+            status = core["status"]
+            if status not in TERMINAL_STATUSES:
+                continue
+            finished_at = now_iso()
+            completed_at = core.get("completed_at")
+            if isinstance(completed_at, str) and completed_at:
+                try:
+                    parsed = datetime.fromisoformat(completed_at)
+                except (ValueError, TypeError):
+                    logger.warning("task execution %s has malformed completed_at %r", execution["id"], completed_at)
+                else:
+                    if parsed.tzinfo is not None:
+                        finished_at = completed_at
+            if status == "COMPLETED":
+                try:
+                    output = normalize_execution_output(core.get("output"))
+                except ValueError as exc:
+                    conn.execute(
+                        "UPDATE task_executions SET status = 'failed', error = ?, finished_at = ? WHERE id = ?",
+                        (str(exc), finished_at, execution["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE task_executions SET status = 'ready', output_text = ?, finished_at = ? WHERE id = ?",
+                        (output, finished_at, execution["id"]),
+                    )
+            else:
+                conn.execute(
+                    "UPDATE task_executions SET status = 'failed', error = ?, finished_at = ? WHERE id = ?",
+                    (core.get("error") or f"core-ai status {status}", finished_at, execution["id"]),
+                )
+            conn.commit()
+    finally:
+        conn.close()
+
+
 def auto_scan_once(client, agent_id: str) -> None:
     conn = connect()
     try:
@@ -101,6 +150,7 @@ async def scheduler_loop() -> None:
     while True:
         try:
             await asyncio.to_thread(poll_runs_once, client)
+            await asyncio.to_thread(poll_task_executions_once, client)
             if tick % SCAN_EVERY_TICKS == 0:
                 await asyncio.to_thread(auto_scan_once, client, settings.agent_id)
         except Exception:

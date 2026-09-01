@@ -1,8 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from .auth import require_operator, router as auth_router
 from .db import init_db
 from .merchants import router as merchants_router
 from .runs import router as runs_router
@@ -20,6 +21,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="SEO Ops API", lifespan=lifespan)
-app.include_router(merchants_router)
-app.include_router(tasks_router)
-app.include_router(runs_router)
+app.include_router(auth_router)
+operator_dependencies = [Depends(require_operator)]
+app.include_router(merchants_router, dependencies=operator_dependencies)
+app.include_router(tasks_router, dependencies=operator_dependencies)
+app.include_router(runs_router, dependencies=operator_dependencies)

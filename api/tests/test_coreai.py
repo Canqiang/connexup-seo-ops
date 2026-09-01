@@ -36,6 +36,17 @@ def test_trigger_missing_run_id_raises():
         make_client(handler).trigger("a", "x")
 
 
+def test_get_agent_reads_back_the_exact_published_capabilities():
+    def handler(request):
+        assert request.method == "GET"
+        assert request.url.path == "/api/agents/agent-9"
+        return httpx.Response(200, json={"id": "agent-9", "status": "PUBLISHED", "tools": []})
+
+    agent = make_client(handler).get_agent("agent-9")
+
+    assert agent == {"id": "agent-9", "status": "PUBLISHED", "tools": []}
+
+
 def test_get_run_returns_detail():
     def handler(request):
         assert str(request.url) == "https://core.test/api/runs/r-2"

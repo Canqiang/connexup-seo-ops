@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
+import { api, type Operator } from './api'
 import MerchantList from './pages/MerchantList'
 import MerchantDetail from './pages/MerchantDetail'
 import TaskDetail from './pages/TaskDetail'
@@ -13,7 +16,7 @@ function NavGlyph({ name }: { name: 'merchants' | 'tasks' }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
 }
 
-function DesktopShell() {
+function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: () => Promise<void> }) {
   const { pathname } = useLocation()
   const merchantsActive = pathname === '/' || pathname.startsWith('/merchants/') || pathname.startsWith('/runs/')
   const tasksActive = pathname.startsWith('/tasks')
@@ -45,7 +48,8 @@ function DesktopShell() {
           </div>
           <div className="workspace-operator">
             <span>当前操作员</span>
-            <strong>SEO Ops Team</strong>
+            <strong>{operator.username}</strong>
+            <button type="button" className="logout-link" onClick={() => void onLogout()}>退出</button>
           </div>
         </header>
         <Routes>
@@ -60,10 +64,68 @@ function DesktopShell() {
   )
 }
 
+function LoginPage({ onLogin }: { onLogin: (operator: Operator) => void }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      onLogin(await api.login(username, password))
+      setError('')
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="login-page" aria-label="SEO Ops 登录">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-brand">CX</div>
+        <p className="eyebrow">CONNEXUP / INTERNAL</p>
+        <h1>SEO Ops</h1>
+        <p className="page-summary">内部运营控制台</p>
+        <label>账号<input aria-label="账号" value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" required /></label>
+        <label>密码<input aria-label="密码" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" required /></label>
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="primary" type="submit" disabled={busy}>{busy ? '登录中…' : '登录'}</button>
+      </form>
+    </main>
+  )
+}
+
 export default function App() {
+  const [operator, setOperator] = useState<Operator | null>(null)
+  const [checking, setChecking] = useState(true)
+
+  useEffect(() => {
+    api.me()
+      .then(value => {
+        setOperator(value && typeof value.username === 'string'
+          ? value
+          : { username: 'SEO Ops Team', role: 'operator' })
+      })
+      .catch(() => setOperator(null))
+      .finally(() => setChecking(false))
+  }, [])
+
+  const logout = async () => {
+    await api.logout()
+    setOperator(null)
+  }
+
+  if (checking) return <div className="auth-loading" aria-label="正在验证登录">正在验证…</div>
+
   return (
     <BrowserRouter>
-      <DesktopShell />
+      {operator
+        ? <DesktopShell operator={operator} onLogout={logout} />
+        : <LoginPage onLogin={setOperator} />}
     </BrowserRouter>
   )
 }

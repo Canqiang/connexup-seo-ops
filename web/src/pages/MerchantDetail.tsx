@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, type Merchant, type Run, type Task, type TaskStatus } from '../api'
 import TaskTable from '../components/TaskTable'
 import { formatTime } from '../format'
 import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
+import { formatRunDuration, runResult } from '../runPresentation'
 
 const STATUS_RANK: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2, cancelled: 3 }
 const STATUS_ORDER: TaskStatus[] = ['todo', 'doing', 'done', 'cancelled']
@@ -16,13 +17,13 @@ const RUNS_PREVIEW = 3
 
 export default function MerchantDetail() {
   const { id } = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
   const merchantId = Number(id)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [runs, setRuns] = useState<Run[]>([])
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null)
-  const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [notice, setNotice] = useState('')
   const [showAllRuns, setShowAllRuns] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [title, setTitle] = useState('')
@@ -103,48 +104,6 @@ export default function MerchantDetail() {
     }
   }
 
-  const toggleSelect = (taskId: number) => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      if (next.has(taskId)) next.delete(taskId)
-      else next.add(taskId)
-      return next
-    })
-  }
-
-  const toggleAll = () => {
-    setSelected(prev => {
-      const ids = shownTasks.map(t => t.id)
-      const all = ids.length > 0 && ids.every(id => prev.has(id))
-      return all ? new Set<number>() : new Set(ids)
-    })
-  }
-
-  const batch = async (status: TaskStatus) => {
-    if (selected.size === 0) return
-    try {
-      const res = await api.batchTasks([...selected], status)
-      setNotice(`已更新 ${res.updated.length} 项${res.skipped.length ? `，跳过 ${res.skipped.length} 项（状态不允许）` : ''}`)
-      setError('')
-      setSelected(new Set())
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      load()
-    }
-  }
-
-  const transitionTask = async (taskId: number, status: TaskStatus) => {
-    try {
-      await api.patchTask(taskId, { status })
-      setError('')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      load()
-    }
-  }
-
   const changeInterval = async (value: string) => {
     try {
       setMerchant(await api.patchMerchant(merchantId, { auto_run_interval_days: value === '' ? null : Number(value) }))
@@ -163,16 +122,65 @@ export default function MerchantDetail() {
     )
   }
 
+  const diagnosisStartFailed = Boolean((location.state as { diagnosisStartFailed?: boolean } | null)?.diagnosisStartFailed)
+
   const counts = STATUS_ORDER.map(s => [s, tasks.filter(t => t.status === s).length] as const)
   const visibleRuns = showAllRuns ? runs : runs.slice(0, RUNS_PREVIEW)
   const shownTasks = tasks.filter(t => statusFilter === null || t.status === statusFilter)
+  const latestRun = runs[0]
+  const latestRunTasks = latestRun ? tasks.filter(task => task.source_run_id === latestRun.id) : []
+
+  const diagnosis = !latestRun
+    ? {
+        title: '尚未开始初始诊断',
+        copy: '先诊断网站、GBP、本地关键词与竞争环境，再由 Agent 提出执行 Plan。',
+        action: 'start' as const,
+        actionLabel: '开始诊断',
+      }
+    : latestRun.status === 'running'
+      ? {
+          title: '正在诊断商户当前问题',
+          copy: 'Core AI 正在收集证据并生成 Plan 草案，完成后会回到这里等待确认。',
+          action: null,
+          actionLabel: '',
+        }
+      : latestRun.status === 'failed'
+        ? {
+            title: '初始诊断未完成',
+            copy: latestRun.error || '本次诊断没有成功返回结果，可以重新开始。',
+            action: 'start' as const,
+            actionLabel: '重新开始诊断',
+          }
+        : latestRunTasks.length === 0
+          ? {
+              title: '诊断完成，但未生成 Plan',
+              copy: '报告已经返回，但没有生成可执行任务；建议重新分析。',
+              action: 'start' as const,
+              actionLabel: '重新分析',
+            }
+          : latestRun.plan_approved_at
+            ? {
+                title: 'Plan 已确认',
+                copy: `${latestRunTasks.length} 项任务已进入运营队列，Agent 可按任务状态执行。`,
+                action: 'report' as const,
+                actionLabel: '查看诊断报告',
+              }
+            : {
+                title: '诊断完成，Plan 草案待确认',
+                copy: `Agent 已提出 ${latestRunTasks.length} 项任务；确认后才会进入执行。`,
+                action: 'report' as const,
+                actionLabel: '查看并确认 Plan',
+              }
 
   return (
-    <main aria-labelledby="merchant-workspace-title">
-      <p className="breadcrumb"><Link to="/">← 商户台账</Link></p>
-      <header className="page-head merchant-head">
-        <div>
-          <p className="eyebrow">MERCHANT / 商户工作区</p>
+    <main aria-label="商户工作区" className="merchant-workspace-page">
+      {diagnosisStartFailed && <p className="notice warning" role="status">商户已保存，但初始诊断未能启动。</p>}
+      <header className="merchant-identity-bar">
+        <Link to="/" className="back-button" aria-label="返回商户列表">
+          <span aria-hidden="true">←</span>
+          <span>商户列表</span>
+        </Link>
+        <div className="merchant-identity">
           <h1 id="merchant-workspace-title">{merchant.name}</h1>
           <p className="page-summary">{merchant.notes || '管理本商户的分析记录、任务授权与执行进度。'}</p>
         </div>
@@ -182,6 +190,25 @@ export default function MerchantDetail() {
         </div>
       </header>
       {error && <p className="error">{error}</p>}
+
+      <section className="diagnosis-card" aria-label="初始诊断">
+        <div className="diagnosis-state">
+          <span className={`status-dot ${latestRun?.status ?? 'idle'}`} aria-hidden="true" />
+          <div>
+            <p className="section-code">INITIAL DIAGNOSIS</p>
+            <h2 id="diagnosis-title">{diagnosis.title}</h2>
+            <p>{diagnosis.copy}</p>
+          </div>
+        </div>
+        {diagnosis.action === 'start' && (
+          <button className="primary" onClick={startRun} disabled={hasRunning}>{diagnosis.actionLabel}</button>
+        )}
+        {diagnosis.action === 'report' && latestRun && (
+          <button className={latestRun.plan_approved_at ? '' : 'primary'} onClick={() => navigate(`/runs/${latestRun.id}`)}>
+            {diagnosis.actionLabel}
+          </button>
+        )}
+      </section>
 
       <div className="ledger-strip" aria-label="商户运营摘要">
         <div><span>待办任务</span><strong>{tasks.filter(t => t.status === 'todo').length}</strong></div>
@@ -197,37 +224,55 @@ export default function MerchantDetail() {
             <h2 id="analysis-title">AI 分析</h2>
             <p>生成分析报告和待办提案，执行仍由运营人员授权。</p>
           </div>
-          <div className="panel-actions">
-            <select
-              aria-label="自动分析周期"
-              value={merchant.auto_run_interval_days == null ? '' : String(merchant.auto_run_interval_days)}
-              onChange={e => changeInterval(e.target.value)}
-            >
-              {INTERVAL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-            <button onClick={startRun} disabled={hasRunning} className="primary">
-              {hasRunning ? '分析进行中…' : '发起分析'}
-            </button>
-          </div>
+          {latestRun?.plan_approved_at && (
+            <div className="panel-actions">
+              <select
+                aria-label="自动分析周期"
+                value={merchant.auto_run_interval_days == null ? '' : String(merchant.auto_run_interval_days)}
+                onChange={e => changeInterval(e.target.value)}
+              >
+                {INTERVAL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <button onClick={startRun} disabled={hasRunning}>
+                {hasRunning ? '分析进行中…' : '重新分析'}
+              </button>
+            </div>
+          )}
         </div>
         {runs.length > 0 ? (
           <>
             <div className="table-wrap flush">
               <table aria-label="分析记录">
                 <thead>
-                  <tr><th>#</th><th>状态</th><th>触发</th><th>发起</th><th>结束</th><th>错误</th></tr>
+                  <tr><th>分析时间</th><th>状态</th><th>触发方式</th><th>用时</th><th>结果</th><th aria-label="查看报告" /></tr>
                 </thead>
                 <tbody>
-                  {visibleRuns.map(r => (
-                    <tr key={r.id}>
-                      <td className="nowrap"><Link to={`/runs/${r.id}`}>#{r.id}</Link></td>
-                      <td className="nowrap"><span className={`badge ${r.status}`}>{RUN_STATUS_LABELS[r.status]}</span></td>
-                      <td className="dim nowrap">{r.trigger_kind === 'auto' ? '自动' : '手动'}</td>
-                      <td className="dim nowrap">{formatTime(r.created_at)}</td>
-                      <td className="dim nowrap">{r.finished_at ? formatTime(r.finished_at) : '—'}</td>
-                      <td className="dim">{r.error || '—'}</td>
-                    </tr>
-                  ))}
+                  {visibleRuns.map(r => {
+                    const analysisTime = formatTime(r.created_at)
+                    return (
+                      <tr
+                        key={r.id}
+                        className="run-row"
+                        role="link"
+                        tabIndex={0}
+                        aria-label={`打开 ${analysisTime} 的分析报告`}
+                        onClick={() => navigate(`/runs/${r.id}`)}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            navigate(`/runs/${r.id}`)
+                          }
+                        }}
+                      >
+                        <td className="nowrap"><strong>{analysisTime}</strong></td>
+                        <td className="nowrap"><span className={`badge ${r.status}`}>{RUN_STATUS_LABELS[r.status]}</span></td>
+                        <td className="dim nowrap">{r.trigger_kind === 'auto' ? '自动' : '手动'}</td>
+                        <td className="dim nowrap">{formatRunDuration(r.created_at, r.finished_at)}</td>
+                        <td className={`run-result ${r.status}`}>{runResult(r)}</td>
+                        <td className="run-enter" aria-hidden="true">→</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -280,24 +325,9 @@ export default function MerchantDetail() {
           <span className="result-count">显示 {shownTasks.length} / 共 {tasks.length} 项</span>
         </div>
 
-        {selected.size > 0 && (
-          <div className="batch-bar" role="toolbar" aria-label="批量任务操作">
-            <strong>已选 {selected.size} 项</strong>
-            <button className="primary" onClick={() => batch('doing')}>批量开始</button>
-            <button onClick={() => batch('done')}>批量完成</button>
-            <button onClick={() => batch('cancelled')}>批量取消</button>
-            <button className="quiet" onClick={() => setSelected(new Set())}>清除选择</button>
-          </div>
-        )}
-        {notice && <p className="notice" role="status">{notice}</p>}
-
         {shownTasks.length > 0 ? (
           <TaskTable
             tasks={shownTasks}
-            onAction={transitionTask}
-            selected={selected}
-            onToggleSelect={toggleSelect}
-            onToggleAll={toggleAll}
           />
         ) : (
           <div className="empty-state">当前筛选下没有任务。</div>
