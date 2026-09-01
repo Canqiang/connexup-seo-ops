@@ -21,12 +21,14 @@ class TaskCreate(BaseModel):
     title: str = Field(min_length=1)
     description: str | None = None
     rationale: str | None = None
+    expected_outcome: str | None = None
 
 
 class TaskPatch(BaseModel):
     title: str | None = Field(default=None, min_length=1)
     description: str | None = None
     rationale: str | None = None
+    expected_outcome: str | None = None
     evidence_note: str | None = None
     status: Literal["todo", "doing", "done", "cancelled"] | None = None
 
@@ -49,8 +51,8 @@ def list_tasks(merchant_id: int, conn=Depends(get_db)):
 def create_task(merchant_id: int, body: TaskCreate, conn=Depends(get_db)):
     fetch_merchant(conn, merchant_id)
     cur = conn.execute(
-        "INSERT INTO tasks (merchant_id, title, description, rationale, created_at) VALUES (?, ?, ?, ?, ?)",
-        (merchant_id, body.title, body.description, body.rationale, now_iso()),
+        "INSERT INTO tasks (merchant_id, title, description, rationale, expected_outcome, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (merchant_id, body.title, body.description, body.rationale, body.expected_outcome, now_iso()),
     )
     conn.commit()
     return dict(fetch_task(conn, cur.lastrowid))

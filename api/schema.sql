@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title TEXT NOT NULL,
   description TEXT,
   rationale TEXT,
+  expected_outcome TEXT,
   status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','doing','done','cancelled')),
   evidence_note TEXT,
   source_run_id INTEGER REFERENCES runs(id),

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type Task, type TaskStatus } from '../api'
+import { formatTime } from '../format'
 
 const NEXT: Record<TaskStatus, TaskStatus[]> = {
   todo: ['doing', 'cancelled'],
@@ -62,6 +63,8 @@ export default function TaskDetail() {
 
       <h2>为什么做</h2>
       <p>{task.rationale || <span className="muted">（未填写）</span>}</p>
+      <h2>预期效果</h2>
+      <p>{task.expected_outcome || <span className="muted">（未填写）</span>}</p>
       {task.description && (
         <>
           <h2>描述</h2>
@@ -91,7 +94,7 @@ export default function TaskDetail() {
         {saved && <span className="muted"> 已保存</span>}
       </p>
 
-      <p className="muted">创建于 {task.created_at}{task.completed_at ? ` · 完成于 ${task.completed_at}` : ''}</p>
+      <p className="muted">创建于 {formatTime(task.created_at)}{task.completed_at ? ` · 完成于 ${formatTime(task.completed_at)}` : ''}</p>
     </main>
   )
 }

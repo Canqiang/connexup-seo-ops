@@ -21,7 +21,7 @@ def connect() -> sqlite3.Connection:
 
 MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
     "merchants": {"auto_run_interval_days": "INTEGER"},
-    "tasks": {"source_run_id": "INTEGER REFERENCES runs(id)", "source_key": "TEXT"},
+    "tasks": {"source_run_id": "INTEGER REFERENCES runs(id)", "source_key": "TEXT", "expected_outcome": "TEXT"},
 }
 
 

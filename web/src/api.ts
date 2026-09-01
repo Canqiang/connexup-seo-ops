@@ -15,6 +15,7 @@ export type Task = {
   title: string
   description: string | null
   rationale: string | null
+  expected_outcome: string | null
   status: TaskStatus
   evidence_note: string | null
   source_run_id: number | null
@@ -57,10 +58,10 @@ export const api = {
   patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   listTasks: (merchantId: number) => request<Task[]>(`/api/merchants/${merchantId}/tasks`),
-  createTask: (merchantId: number, body: { title: string; description?: string; rationale?: string }) =>
+  createTask: (merchantId: number, body: { title: string; description?: string; rationale?: string; expected_outcome?: string }) =>
     request<Task>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body) }),
   getTask: (id: number) => request<Task>(`/api/tasks/${id}`),
-  patchTask: (id: number, body: Partial<Pick<Task, 'title' | 'description' | 'rationale' | 'evidence_note' | 'status'>>) =>
+  patchTask: (id: number, body: Partial<Pick<Task, 'title' | 'description' | 'rationale' | 'expected_outcome' | 'evidence_note' | 'status'>>) =>
     request<Task>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   listRuns: (merchantId: number) => request<Run[]>(`/api/merchants/${merchantId}/runs`),
   createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),

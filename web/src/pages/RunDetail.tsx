@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type Run } from '../api'
+import { formatTime } from '../format'
 
 const LABELS: Record<Run['status'], string> = { running: '进行中', succeeded: '成功', failed: '失败' }
 
@@ -29,7 +30,7 @@ export default function RunDetail() {
       <h1>分析 #{run.id}</h1>
       <p>
         <span className={`badge ${run.status}`}>{LABELS[run.status]}</span>
-        <span className="muted">{run.trigger_kind === 'auto' ? '自动' : '手动'} · 发起于 {run.created_at}{run.finished_at ? ` · 结束于 ${run.finished_at}` : ''}</span>
+        <span className="muted">{run.trigger_kind === 'auto' ? '自动' : '手动'} · 发起于 {formatTime(run.created_at)}{run.finished_at ? ` · 结束于 ${formatTime(run.finished_at)}` : ''}</span>
       </p>
       {error && <p className="error">{error}</p>}
       {run.error && <p className="error">{run.error}</p>}

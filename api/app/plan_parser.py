@@ -8,7 +8,13 @@ JSON_BLOCK_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 def extract_plan(report_text: str | None) -> list[dict]:
-    for block in JSON_BLOCK_RE.findall(report_text or ""):
+    text = report_text or ""
+    candidates = JSON_BLOCK_RE.findall(text)
+    # 容错：模型偶发漏掉收尾的 ```，把最后一个 ```json 到文末当作候选块
+    idx = text.rfind("```json")
+    if idx != -1:
+        candidates.append(text[idx + len("```json"):].strip().strip("`").strip())
+    for block in candidates:
         try:
             data = json.loads(block)
         except ValueError:
@@ -29,10 +35,12 @@ def extract_plan(report_text: str | None) -> list[dict]:
             ):
                 continue
             description = entry.get("description")
+            expected_outcome = entry.get("expected_outcome")
             items.append({
                 "id": item_id,
                 "title": title,
                 "rationale": rationale,
+                "expected_outcome": expected_outcome if isinstance(expected_outcome, str) and expected_outcome else None,
                 "description": description if isinstance(description, str) and description else None,
             })
         if items:
@@ -52,9 +60,9 @@ def create_tasks_from_plan(
         source_key = f"plan-{coreai_run_id}-{item['id']}"
         cur = conn.execute(
             "INSERT OR IGNORE INTO tasks"
-            " (merchant_id, title, description, rationale, source_run_id, source_key, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (merchant_id, item["title"], item["description"], item["rationale"], run_id, source_key, now_iso()),
+            " (merchant_id, title, description, rationale, expected_outcome, source_run_id, source_key, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (merchant_id, item["title"], item["description"], item["rationale"], item["expected_outcome"], run_id, source_key, now_iso()),
         )
         created += cur.rowcount
     return created

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type Merchant, type Run, type Task, type TaskStatus } from '../api'
+import { formatTime } from '../format'
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
   todo: '待办',
@@ -24,6 +25,7 @@ export default function MerchantDetail() {
   const [runs, setRuns] = useState<Run[]>([])
   const [title, setTitle] = useState('')
   const [rationale, setRationale] = useState('')
+  const [expectedOutcome, setExpectedOutcome] = useState('')
   const [description, setDescription] = useState('')
   const [error, setError] = useState('')
 
@@ -52,10 +54,12 @@ export default function MerchantDetail() {
       await api.createTask(merchantId, {
         title: title.trim(),
         rationale: rationale.trim() || undefined,
+        expected_outcome: expectedOutcome.trim() || undefined,
         description: description.trim() || undefined,
       })
       setTitle('')
       setRationale('')
+      setExpectedOutcome('')
       setDescription('')
       load()
     } catch (err) {
@@ -131,7 +135,7 @@ export default function MerchantDetail() {
             <li key={r.id}>
               <Link to={`/runs/${r.id}`}>#{r.id}</Link>
               <span className={`badge ${r.status}`}>{RUN_LABELS[r.status]}</span>
-              <span className="muted">{r.trigger_kind === 'auto' ? '自动' : '手动'} · {r.created_at}</span>
+              <span className="muted">{r.trigger_kind === 'auto' ? '自动' : '手动'} · {formatTime(r.created_at)}</span>
               {r.error && <span className="muted">{r.error}</span>}
             </li>
           ))}
@@ -142,6 +146,7 @@ export default function MerchantDetail() {
       <form onSubmit={createTask}>
         <input value={title} onChange={e => setTitle(e.target.value)} placeholder="标题" />
         <input value={rationale} onChange={e => setRationale(e.target.value)} placeholder="为什么做（动因）" />
+        <input value={expectedOutcome} onChange={e => setExpectedOutcome(e.target.value)} placeholder="预期效果（可选）" />
         <input value={description} onChange={e => setDescription(e.target.value)} placeholder="描述（可选）" />
         <button type="submit" className="primary">创建</button>
       </form>
@@ -158,6 +163,7 @@ export default function MerchantDetail() {
                   <Link to={`/tasks/${t.id}`}>{t.title}</Link>
                   {t.source_run_id != null && <span className="badge ai">AI</span>}
                   {t.rationale && <span className="muted">{t.rationale}</span>}
+                  <span className="muted row-end">{formatTime(t.created_at)}</span>
                 </li>
               ))}
             </ul>

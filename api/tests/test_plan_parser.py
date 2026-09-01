@@ -22,6 +22,7 @@ def test_extract_plan_parses_valid_block():
         "id": "item-1",
         "title": "修复 GBP 营业时间",
         "rationale": "营业时间与官网不一致",
+        "expected_outcome": None,
         "description": "改成 9-18",
     }
     assert items[1]["description"] is None
@@ -73,3 +74,44 @@ def test_create_tasks_idempotent(client):
     assert t1["status"] == "todo"
     assert t1["rationale"] == "营业时间与官网不一致"
     assert t1["source_run_id"] == run_id
+
+
+def test_extract_plan_carries_expected_outcome(client):
+    from app.db import connect
+    from app.plan_parser import create_tasks_from_plan, extract_plan
+
+    report = (
+        '```json\n'
+        '[{"id": "a", "title": "T", "rationale": "R", "expected_outcome": "E"},'
+        ' {"id": "b", "title": "T2", "rationale": "R2"}]\n'
+        '```'
+    )
+    items = extract_plan(report)
+    assert items[0]["expected_outcome"] == "E"
+    assert items[1]["expected_outcome"] is None
+
+    m = client.post("/api/merchants", json={"name": "M"}).json()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
+            " VALUES (?, 'core-eo', 'running', 'manual', '2026-09-01T00:00:00+00:00')",
+            (m["id"],),
+        )
+        run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-eo'").fetchone()["id"]
+        create_tasks_from_plan(conn, m["id"], run_id, "core-eo", items)
+        conn.commit()
+    finally:
+        conn.close()
+    by_key = {t["source_key"]: t for t in client.get(f"/api/merchants/{m['id']}/tasks").json()}
+    assert by_key["plan-core-eo-a"]["expected_outcome"] == "E"
+    assert by_key["plan-core-eo-b"]["expected_outcome"] is None
+
+
+def test_extract_plan_tolerates_unclosed_fence():
+    from app.plan_parser import extract_plan
+
+    report = '# 报告\n\n```json\n[{"id": "x", "title": "T", "rationale": "R", "expected_outcome": "E"}]'
+    items = extract_plan(report)
+    assert [i["id"] for i in items] == ["x"]
+    assert items[0]["expected_outcome"] == "E"

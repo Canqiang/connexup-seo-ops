@@ -52,6 +52,6 @@ def test_migration_adds_columns_and_runs_table(tmp_path, monkeypatch):
     indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     conn.close()
     assert "auto_run_interval_days" in merchant_cols
-    assert {"source_run_id", "source_key"} <= task_cols
+    assert {"source_run_id", "source_key", "expected_outcome"} <= task_cols
     assert "runs" in tables
     assert "idx_tasks_source_key" in indexes

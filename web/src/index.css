@@ -190,6 +190,7 @@ button.primary:disabled { background: var(--muted); border-color: var(--muted); 
 
 /* ---- 辅助文本 ---- */
 .muted { color: var(--muted); font-size: 12.5px; }
+.row-end { margin-left: auto; white-space: nowrap; }
 .error {
   color: var(--bad);
   background: var(--bad-soft);

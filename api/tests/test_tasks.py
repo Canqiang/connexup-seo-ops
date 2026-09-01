@@ -91,3 +91,16 @@ def test_patch_task_rejects_explicit_null_title(client):
     m = make_merchant(client)
     t = make_task(client, m["id"])
     assert client.patch(f"/api/tasks/{t['id']}", json={"title": None}).status_code == 422
+
+
+def test_task_expected_outcome_create_patch_and_default(client):
+    m = make_merchant(client)
+    t = client.post(
+        f"/api/merchants/{m['id']}/tasks",
+        json={"title": "t", "rationale": "r", "expected_outcome": "地图曝光提升"},
+    ).json()
+    assert t["expected_outcome"] == "地图曝光提升"
+    t2 = make_task(client, m["id"])
+    assert t2["expected_outcome"] is None
+    res = client.patch(f"/api/tasks/{t2['id']}", json={"expected_outcome": "评分回升"})
+    assert res.json()["expected_outcome"] == "评分回升"
