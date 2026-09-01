@@ -8,3 +8,4 @@ data/
 _to_delete/
 .idea/
 .DS_Store
+.env
