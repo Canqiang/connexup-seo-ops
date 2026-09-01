@@ -90,6 +90,17 @@ export default function MerchantDetail() {
     }
   }
 
+  const transitionTask = async (taskId: number, status: TaskStatus) => {
+    try {
+      await api.patchTask(taskId, { status })
+      setError('')
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      load()
+    }
+  }
+
   const changeInterval = async (value: string) => {
     try {
       setMerchant(await api.patchMerchant(merchantId, { auto_run_interval_days: value === '' ? null : Number(value) }))
@@ -197,7 +208,7 @@ export default function MerchantDetail() {
           </form>
         )}
 
-      <TaskTable tasks={shownTasks} />
+      <TaskTable tasks={shownTasks} onAction={transitionTask} />
     </main>
   )
 }

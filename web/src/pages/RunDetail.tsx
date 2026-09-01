@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
-import { api, type Run, type Task } from '../api'
+import { api, type Run, type Task, type TaskStatus } from '../api'
 import TaskTable from '../components/TaskTable'
 import { formatTime } from '../format'
 import { RUN_STATUS_LABELS } from '../labels'
@@ -17,6 +17,17 @@ export default function RunDetail() {
     api.getRun(runId).then(setRun).catch(e => setError((e as Error).message))
     api.listRunTasks(runId).then(setTasks).catch(() => {})
   }, [runId])
+
+  const transitionTask = async (taskId: number, status: TaskStatus) => {
+    try {
+      await api.patchTask(taskId, { status })
+      setError('')
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      api.listRunTasks(runId).then(setTasks).catch(() => {})
+    }
+  }
 
   if (!run) {
     return (
@@ -41,7 +52,7 @@ export default function RunDetail() {
       {tasks.length > 0 && (
         <>
           <h2>本次生成的任务（{tasks.length}）</h2>
-          <TaskTable tasks={tasks} showSource={false} />
+          <TaskTable tasks={tasks} showSource={false} onAction={transitionTask} />
         </>
       )}
 

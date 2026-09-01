@@ -134,6 +134,8 @@ button {
 }
 button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand-ink); }
 button:disabled { cursor: default; }
+button.sm { padding: 2px 10px; font-size: 12px; margin-right: 6px; }
+
 button.primary {
   background: var(--brand);
   border-color: var(--brand);

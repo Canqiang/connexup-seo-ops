@@ -1,9 +1,20 @@
 import { Link } from 'react-router-dom'
-import type { Task } from '../api'
+import type { Task, TaskStatus } from '../api'
 import { formatTime } from '../format'
 import { CATEGORY_LABELS, TASK_STATUS_LABELS } from '../labels'
 
-export default function TaskTable({ tasks, showSource = true }: { tasks: Task[]; showSource?: boolean }) {
+const NEXT_ACTIONS: Record<TaskStatus, { to: TaskStatus; label: string }[]> = {
+  todo: [{ to: 'doing', label: '开始' }, { to: 'cancelled', label: '取消' }],
+  doing: [{ to: 'done', label: '完成' }, { to: 'cancelled', label: '取消' }],
+  done: [],
+  cancelled: [],
+}
+
+export default function TaskTable({ tasks, showSource = true, onAction }: {
+  tasks: Task[]
+  showSource?: boolean
+  onAction?: (taskId: number, status: TaskStatus) => void
+}) {
   if (tasks.length === 0) return null
   return (
     <div className="table-wrap">
@@ -17,6 +28,7 @@ export default function TaskTable({ tasks, showSource = true }: { tasks: Task[];
             {showSource && <th>来源</th>}
             <th>状态</th>
             <th>创建</th>
+            {onAction && <th>操作</th>}
           </tr>
         </thead>
         <tbody>
@@ -39,6 +51,13 @@ export default function TaskTable({ tasks, showSource = true }: { tasks: Task[];
               )}
               <td className="nowrap"><span className={`badge ${t.status}`}>{TASK_STATUS_LABELS[t.status]}</span></td>
               <td className="dim nowrap">{formatTime(t.created_at)}</td>
+              {onAction && (
+                <td className="nowrap">
+                  {NEXT_ACTIONS[t.status].map(a => (
+                    <button key={a.to} className="sm" onClick={() => onAction(t.id, a.to)}>{a.label}</button>
+                  ))}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
