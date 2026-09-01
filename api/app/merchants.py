@@ -33,13 +33,29 @@ def fetch_merchant(conn: sqlite3.Connection, merchant_id: int) -> sqlite3.Row:
     return row
 
 
+LIST_SQL = """
+SELECT m.*,
+  (SELECT COUNT(*) FROM tasks t WHERE t.merchant_id = m.id AND t.status = 'todo') AS todo_count,
+  (SELECT COUNT(*) FROM tasks t WHERE t.merchant_id = m.id AND t.status = 'doing') AS doing_count,
+  EXISTS(SELECT 1 FROM runs r WHERE r.merchant_id = m.id AND r.status = 'running') AS has_running_run,
+  (SELECT r.created_at FROM runs r WHERE r.merchant_id = m.id ORDER BY r.id DESC LIMIT 1) AS last_run_at,
+  (SELECT r.status FROM runs r WHERE r.merchant_id = m.id ORDER BY r.id DESC LIMIT 1) AS last_run_status
+FROM merchants m
+"""
+
+
 @router.get("")
 def list_merchants(status: Literal["active", "archived"] | None = None, conn=Depends(get_db)):
     if status:
-        rows = conn.execute("SELECT * FROM merchants WHERE status = ? ORDER BY id DESC", (status,)).fetchall()
+        rows = conn.execute(LIST_SQL + " WHERE m.status = ? ORDER BY m.id DESC", (status,)).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM merchants ORDER BY id DESC").fetchall()
-    return [dict(r) for r in rows]
+        rows = conn.execute(LIST_SQL + " ORDER BY m.id DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["has_running_run"] = bool(d["has_running_run"])
+        out.append(d)
+    return out
 
 
 @router.post("", status_code=201)

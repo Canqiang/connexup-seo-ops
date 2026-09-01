@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type Task, type TaskStatus } from '../api'
 import { formatTime } from '../format'
+import { CATEGORY_LABELS } from '../labels'
 
 const NEXT: Record<TaskStatus, TaskStatus[]> = {
   todo: ['doing', 'cancelled'],
@@ -58,7 +59,11 @@ export default function TaskDetail() {
     <main>
       <p><Link to={`/merchants/${task.merchant_id}`}>← 返回商户</Link></p>
       <h1>{task.title}</h1>
-      <p><span className={`badge ${task.status}`}>{LABELS[task.status]}</span></p>
+      <p>
+        <span className={`badge ${task.status}`}>{LABELS[task.status]}</span>
+        {task.category && <span className="badge cat">{CATEGORY_LABELS[task.category] ?? task.category}</span>}
+        {task.source_run_id != null && <Link to={`/runs/${task.source_run_id}`} className="muted">来自分析 #{task.source_run_id}</Link>}
+      </p>
       {error && <p className="error">{error}</p>}
 
       <h2>为什么做</h2>

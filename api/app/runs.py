@@ -86,3 +86,13 @@ def get_run(run_id: int, conn=Depends(get_db)):
     if row is None:
         raise HTTPException(status_code=404, detail="run not found")
     return dict(row)
+
+
+@router.get("/runs/{run_id}/tasks")
+def get_run_tasks(run_id: int, conn=Depends(get_db)):
+    if conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE source_run_id = ? ORDER BY id", (run_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]

@@ -188,6 +188,47 @@ button.primary:disabled { background: var(--muted); border-color: var(--muted); 
   button { transition: none; }
 }
 
+/* ---- 统计条 ---- */
+.stats { display: flex; gap: 8px; margin: 6px 0 4px; flex-wrap: wrap; }
+.stats .stat {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.stats .stat.todo { border-color: var(--ink-2); }
+.stats .stat.doing { color: var(--brand-ink); border-color: var(--brand); background: var(--brand-soft); }
+.stats .stat.done { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.stats .stat.cancelled { color: var(--muted); }
+.stats .stat:hover { border-color: var(--brand); }
+
+/* ---- 双行任务行 ---- */
+.list li.task-row { display: block; }
+.task-line1 { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.task-line2 { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 3px; }
+.task-line1 a { font-weight: 500; text-decoration: none; }
+.task-line1 a:hover { text-decoration: underline; }
+.badge.cat { color: var(--ink-2); background: var(--paper); font-weight: 500; }
+
+/* ---- 报告渲染 ---- */
+.report {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 24px 16px;
+}
+.report h1 { font-size: 18px; margin: 16px 0 8px; }
+.report h2 { font-size: 15px; font-weight: 600; color: var(--ink); letter-spacing: 0; margin: 20px 0 8px; }
+.report h3 { font-size: 13.5px; margin: 16px 0 6px; }
+.report ul, .report ol { padding-left: 22px; }
+.report li { margin: 4px 0; }
+.report pre { border: none; background: var(--paper); padding: 12px 14px; }
+.report code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+
 /* ---- 辅助文本 ---- */
 .muted { color: var(--muted); font-size: 12.5px; }
 .row-end { margin-left: auto; white-space: nowrap; }

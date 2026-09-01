@@ -86,3 +86,29 @@ def test_patch_merchant_interval(client):
     res = client.patch(f"/api/merchants/{m['id']}", json={"auto_run_interval_days": None})
     assert res.json()["auto_run_interval_days"] is None
     assert client.patch(f"/api/merchants/{m['id']}", json={"auto_run_interval_days": 0}).status_code == 422
+
+
+def test_run_tasks_endpoint(client):
+    import os
+    import sqlite3
+
+    m = client.post("/api/merchants", json={"name": "M"}).json()
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
+        " VALUES (?, 'rt1', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00')",
+        (m["id"],),
+    )
+    run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id='rt1'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO tasks (merchant_id, title, source_run_id, source_key, created_at)"
+        " VALUES (?, 'from-run', ?, 'plan-rt1-a', '2026-09-01T00:06:00+00:00')",
+        (m["id"], run_id),
+    )
+    conn.commit()
+    conn.close()
+    client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "manual"})
+
+    tasks = client.get(f"/api/runs/{run_id}/tasks").json()
+    assert [t["title"] for t in tasks] == ["from-run"]
+    assert client.get("/api/runs/999/tasks").status_code == 404

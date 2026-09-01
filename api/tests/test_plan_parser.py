@@ -23,6 +23,7 @@ def test_extract_plan_parses_valid_block():
         "title": "修复 GBP 营业时间",
         "rationale": "营业时间与官网不一致",
         "expected_outcome": None,
+        "category": None,
         "description": "改成 9-18",
     }
     assert items[1]["description"] is None
@@ -115,3 +116,17 @@ def test_extract_plan_tolerates_unclosed_fence():
     items = extract_plan(report)
     assert [i["id"] for i in items] == ["x"]
     assert items[0]["expected_outcome"] == "E"
+
+
+def test_extract_plan_category_validated():
+    from app.plan_parser import extract_plan
+
+    report = (
+        '```json\n'
+        '[{"id": "a", "title": "T", "rationale": "R", "category": "gbp"},'
+        ' {"id": "b", "title": "T", "rationale": "R", "category": "weird"},'
+        ' {"id": "c", "title": "T", "rationale": "R"}]\n'
+        '```'
+    )
+    items = extract_plan(report)
+    assert [i["category"] for i in items] == ["gbp", "other", None]

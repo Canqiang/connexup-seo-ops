@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Merchant } from '../api'
+import { api, type MerchantStats } from '../api'
+import { formatTime } from '../format'
+import { RUN_STATUS_LABELS } from '../labels'
 
 export default function MerchantList() {
-  const [merchants, setMerchants] = useState<Merchant[]>([])
+  const [merchants, setMerchants] = useState<MerchantStats[]>([])
   const [filter, setFilter] = useState<'all' | 'active' | 'archived'>('active')
   const [name, setName] = useState('')
   const [notes, setNotes] = useState('')
@@ -48,10 +50,25 @@ export default function MerchantList() {
       </div>
       <ul className="list">
         {merchants.map(m => (
-          <li key={m.id}>
-            <Link to={`/merchants/${m.id}`}>{m.name}</Link>
-            <span className={`badge ${m.status}`}>{m.status === 'active' ? '在营' : '已归档'}</span>
-            {m.notes && <span className="muted">{m.notes}</span>}
+          <li key={m.id} className="task-row">
+            <div className="task-line1">
+              <Link to={`/merchants/${m.id}`}>{m.name}</Link>
+              <span className={`badge ${m.status}`}>{m.status === 'active' ? '在营' : '已归档'}</span>
+              {m.auto_run_interval_days != null && <span className="badge">自动·{m.auto_run_interval_days} 天</span>}
+              <span className="muted row-end">
+                {m.has_running_run
+                  ? <span className="badge running">分析中</span>
+                  : m.last_run_at
+                    ? <>最近分析 {formatTime(m.last_run_at)} · {m.last_run_status ? RUN_STATUS_LABELS[m.last_run_status] : ''}</>
+                    : '未分析过'}
+              </span>
+            </div>
+            <div className="task-line2 muted">
+              <span>{m.todo_count > 0 || m.doing_count > 0
+                ? `待办 ${m.todo_count} · 进行中 ${m.doing_count}`
+                : '无待办任务'}</span>
+              {m.notes && <span>{m.notes}</span>}
+            </div>
           </li>
         ))}
       </ul>

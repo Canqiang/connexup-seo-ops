@@ -9,6 +9,8 @@ from .merchants import fetch_merchant, now_iso
 
 router = APIRouter(prefix="/api", tags=["tasks"])
 
+TASK_CATEGORIES = ("gbp", "content", "review", "citation", "technical", "other")
+
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "todo": {"doing", "cancelled"},
     "doing": {"done", "cancelled"},
@@ -22,6 +24,7 @@ class TaskCreate(BaseModel):
     description: str | None = None
     rationale: str | None = None
     expected_outcome: str | None = None
+    category: Literal["gbp", "content", "review", "citation", "technical", "other"] | None = None
 
 
 class TaskPatch(BaseModel):
@@ -29,6 +32,7 @@ class TaskPatch(BaseModel):
     description: str | None = None
     rationale: str | None = None
     expected_outcome: str | None = None
+    category: Literal["gbp", "content", "review", "citation", "technical", "other"] | None = None
     evidence_note: str | None = None
     status: Literal["todo", "doing", "done", "cancelled"] | None = None
 
@@ -51,8 +55,8 @@ def list_tasks(merchant_id: int, conn=Depends(get_db)):
 def create_task(merchant_id: int, body: TaskCreate, conn=Depends(get_db)):
     fetch_merchant(conn, merchant_id)
     cur = conn.execute(
-        "INSERT INTO tasks (merchant_id, title, description, rationale, expected_outcome, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (merchant_id, body.title, body.description, body.rationale, body.expected_outcome, now_iso()),
+        "INSERT INTO tasks (merchant_id, title, description, rationale, expected_outcome, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (merchant_id, body.title, body.description, body.rationale, body.expected_outcome, body.category, now_iso()),
     )
     conn.commit()
     return dict(fetch_task(conn, cur.lastrowid))

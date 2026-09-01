@@ -3,6 +3,7 @@ import re
 import sqlite3
 
 from .merchants import now_iso
+from .tasks import TASK_CATEGORIES
 
 JSON_BLOCK_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
@@ -36,11 +37,15 @@ def extract_plan(report_text: str | None) -> list[dict]:
                 continue
             description = entry.get("description")
             expected_outcome = entry.get("expected_outcome")
+            category = entry.get("category")
+            if category is not None:
+                category = category if category in TASK_CATEGORIES else "other"
             items.append({
                 "id": item_id,
                 "title": title,
                 "rationale": rationale,
                 "expected_outcome": expected_outcome if isinstance(expected_outcome, str) and expected_outcome else None,
+                "category": category,
                 "description": description if isinstance(description, str) and description else None,
             })
         if items:
@@ -60,9 +65,9 @@ def create_tasks_from_plan(
         source_key = f"plan-{coreai_run_id}-{item['id']}"
         cur = conn.execute(
             "INSERT OR IGNORE INTO tasks"
-            " (merchant_id, title, description, rationale, expected_outcome, source_run_id, source_key, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (merchant_id, item["title"], item["description"], item["rationale"], item["expected_outcome"], run_id, source_key, now_iso()),
+            " (merchant_id, title, description, rationale, expected_outcome, category, source_run_id, source_key, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (merchant_id, item["title"], item["description"], item["rationale"], item["expected_outcome"], item["category"], run_id, source_key, now_iso()),
         )
         created += cur.rowcount
     return created

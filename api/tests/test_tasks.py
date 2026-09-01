@@ -104,3 +104,16 @@ def test_task_expected_outcome_create_patch_and_default(client):
     assert t2["expected_outcome"] is None
     res = client.patch(f"/api/tasks/{t2['id']}", json={"expected_outcome": "评分回升"})
     assert res.json()["expected_outcome"] == "评分回升"
+
+
+def test_task_category_create_patch_and_invalid(client):
+    m = make_merchant(client)
+    t = client.post(
+        f"/api/merchants/{m['id']}/tasks",
+        json={"title": "t", "category": "gbp"},
+    ).json()
+    assert t["category"] == "gbp"
+    t2 = make_task(client, m["id"])
+    assert t2["category"] is None
+    assert client.patch(f"/api/tasks/{t2['id']}", json={"category": "review"}).json()["category"] == "review"
+    assert client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "t", "category": "nope"}).status_code == 422

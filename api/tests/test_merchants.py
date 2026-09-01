@@ -70,3 +70,29 @@ def test_delete_merchant_with_tasks_conflicts(client):
     conn.commit()
     conn.close()
     assert client.delete(f"/api/merchants/{m['id']}").status_code == 409
+
+
+def test_list_merchants_includes_work_stats(client):
+    import os
+    import sqlite3
+
+    m = client.post("/api/merchants", json={"name": "S"}).json()
+    client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "a"})
+    client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "b"})
+    t = client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "c"}).json()
+    client.patch(f"/api/tasks/{t['id']}", json={"status": "doing"})
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
+        " VALUES (?, 'r1', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00', '2026-09-01T00:05:00+00:00')",
+        (m["id"],),
+    )
+    conn.commit()
+    conn.close()
+
+    row = [x for x in client.get("/api/merchants").json() if x["id"] == m["id"]][0]
+    assert row["todo_count"] == 2
+    assert row["doing_count"] == 1
+    assert row["has_running_run"] is False
+    assert row["last_run_status"] == "succeeded"
+    assert row["last_run_at"] == "2026-09-01T00:00:00+00:00"
