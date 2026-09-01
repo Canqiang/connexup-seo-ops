@@ -10,23 +10,41 @@ const NEXT_ACTIONS: Record<TaskStatus, { to: TaskStatus; label: string }[]> = {
   cancelled: [],
 }
 
-export default function TaskTable({ tasks, showSource = true, onAction }: {
-  tasks: Task[]
+type TaskLike = Task & { merchant_name?: string }
+
+export default function TaskTable({ tasks, showSource = true, showMerchant = false, onAction, selected, onToggleSelect, onToggleAll }: {
+  tasks: TaskLike[]
   showSource?: boolean
+  showMerchant?: boolean
   onAction?: (taskId: number, status: TaskStatus) => void
+  selected?: Set<number>
+  onToggleSelect?: (taskId: number) => void
+  onToggleAll?: () => void
 }) {
   if (tasks.length === 0) return null
+  const selectable = selected !== undefined && onToggleSelect !== undefined
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
+            {selectable && (
+              <th>
+                <input
+                  type="checkbox"
+                  checked={tasks.length > 0 && tasks.every(t => selected.has(t.id))}
+                  onChange={() => onToggleAll?.()}
+                />
+              </th>
+            )}
+            {showMerchant && <th>商户</th>}
             <th>类别</th>
             <th>任务</th>
             <th>动因</th>
             <th>预期效果</th>
             {showSource && <th>来源</th>}
             <th>状态</th>
+            <th>计划开始</th>
             <th>创建</th>
             {onAction && <th>操作</th>}
           </tr>
@@ -34,6 +52,14 @@ export default function TaskTable({ tasks, showSource = true, onAction }: {
         <tbody>
           {tasks.map(t => (
             <tr key={t.id} className={t.status === 'cancelled' ? 'row-cancelled' : ''}>
+              {selectable && (
+                <td>
+                  <input type="checkbox" checked={selected.has(t.id)} onChange={() => onToggleSelect(t.id)} />
+                </td>
+              )}
+              {showMerchant && (
+                <td className="nowrap"><Link to={`/merchants/${t.merchant_id}`}>{t.merchant_name ?? `#${t.merchant_id}`}</Link></td>
+              )}
               <td className="nowrap">
                 {t.category
                   ? <span className="badge cat">{CATEGORY_LABELS[t.category] ?? t.category}</span>
@@ -50,6 +76,7 @@ export default function TaskTable({ tasks, showSource = true, onAction }: {
                 </td>
               )}
               <td className="nowrap"><span className={`badge ${t.status}`}>{TASK_STATUS_LABELS[t.status]}</span></td>
+              <td className="dim nowrap">{t.scheduled_start ? formatTime(t.scheduled_start) : '—'}</td>
               <td className="dim nowrap">{formatTime(t.created_at)}</td>
               {onAction && (
                 <td className="nowrap">

@@ -24,6 +24,7 @@ def test_extract_plan_parses_valid_block():
         "rationale": "营业时间与官网不一致",
         "expected_outcome": None,
         "category": None,
+        "scheduled_start": None,
         "description": "改成 9-18",
     }
     assert items[1]["description"] is None
@@ -130,3 +131,47 @@ def test_extract_plan_category_validated():
     )
     items = extract_plan(report)
     assert [i["category"] for i in items] == ["gbp", "other", None]
+
+
+def test_extract_plan_start_after_days_to_scheduled_start():
+    from datetime import datetime, timedelta, timezone
+
+    from app.plan_parser import extract_plan
+
+    report = (
+        '```json\n'
+        '[{"id": "a", "title": "T", "rationale": "R", "start_after_days": 3},'
+        ' {"id": "b", "title": "T", "rationale": "R", "start_after_days": 0},'
+        ' {"id": "c", "title": "T", "rationale": "R"},'
+        ' {"id": "d", "title": "T", "rationale": "R", "start_after_days": "soon"}]\n'
+        '```'
+    )
+    items = extract_plan(report)
+    a = datetime.fromisoformat(items[0]["scheduled_start"])
+    assert abs((a - (datetime.now(timezone.utc) + timedelta(days=3))).total_seconds()) < 60
+    b = datetime.fromisoformat(items[1]["scheduled_start"])
+    assert abs((b - datetime.now(timezone.utc)).total_seconds()) < 60
+    assert items[2]["scheduled_start"] is None
+    assert items[3]["scheduled_start"] is None
+
+
+def test_create_tasks_persists_scheduled_start(client):
+    from app.db import connect
+    from app.plan_parser import create_tasks_from_plan, extract_plan
+
+    report = '```json\n[{"id": "a", "title": "T", "rationale": "R", "start_after_days": 1}]\n```'
+    m = client.post("/api/merchants", json={"name": "M"}).json()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
+            " VALUES (?, 'core-ss', 'running', 'manual', '2026-09-01T00:00:00+00:00')",
+            (m["id"],),
+        )
+        run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-ss'").fetchone()["id"]
+        create_tasks_from_plan(conn, m["id"], run_id, "core-ss", extract_plan(report))
+        conn.commit()
+    finally:
+        conn.close()
+    t = client.get(f"/api/merchants/{m['id']}/tasks").json()[0]
+    assert t["scheduled_start"] is not None

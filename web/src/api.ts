@@ -17,6 +17,7 @@ export type Task = {
   rationale: string | null
   expected_outcome: string | null
   category: string | null
+  scheduled_start: string | null
   status: TaskStatus
   evidence_note: string | null
   source_run_id: number | null
@@ -76,4 +77,7 @@ export const api = {
   createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),
   getRun: (id: number) => request<Run>(`/api/runs/${id}`),
   listRunTasks: (id: number) => request<Task[]>(`/api/runs/${id}/tasks`),
+  listAllTasks: () => request<(Task & { merchant_name: string })[]>('/api/tasks'),
+  batchTasks: (ids: number[], status: TaskStatus) =>
+    request<{ updated: number[]; skipped: number[] }>('/api/tasks/batch', { method: 'POST', body: JSON.stringify({ ids, status }) }),
 }

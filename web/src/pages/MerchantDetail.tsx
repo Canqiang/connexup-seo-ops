@@ -21,6 +21,8 @@ export default function MerchantDetail() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [runs, setRuns] = useState<Run[]>([])
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [notice, setNotice] = useState('')
   const [showAllRuns, setShowAllRuns] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [title, setTitle] = useState('')
@@ -94,6 +96,37 @@ export default function MerchantDetail() {
     try {
       await api.createRun(merchantId)
       setError('')
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      load()
+    }
+  }
+
+  const toggleSelect = (taskId: number) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(taskId)) next.delete(taskId)
+      else next.add(taskId)
+      return next
+    })
+  }
+
+  const toggleAll = () => {
+    setSelected(prev => {
+      const ids = shownTasks.map(t => t.id)
+      const all = ids.length > 0 && ids.every(id => prev.has(id))
+      return all ? new Set<number>() : new Set(ids)
+    })
+  }
+
+  const batch = async (status: TaskStatus) => {
+    if (selected.size === 0) return
+    try {
+      const res = await api.batchTasks([...selected], status)
+      setNotice(`已更新 ${res.updated.length} 项${res.skipped.length ? `，跳过 ${res.skipped.length} 项（状态不允许）` : ''}`)
+      setError('')
+      setSelected(new Set())
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -217,7 +250,24 @@ export default function MerchantDetail() {
           </form>
         )}
 
-      <TaskTable tasks={shownTasks} onAction={transitionTask} />
+      {selected.size > 0 && (
+        <p className="batch-bar">
+          <span className="muted">已选 {selected.size} 项</span>
+          <button className="primary" onClick={() => batch('doing')}>批量开始</button>
+          <button onClick={() => batch('done')}>批量完成</button>
+          <button onClick={() => batch('cancelled')}>批量取消</button>
+          <button onClick={() => setSelected(new Set())}>清除选择</button>
+        </p>
+      )}
+      {notice && <p className="muted">{notice}</p>}
+
+      <TaskTable
+        tasks={shownTasks}
+        onAction={transitionTask}
+        selected={selected}
+        onToggleSelect={toggleSelect}
+        onToggleAll={toggleAll}
+      />
     </main>
   )
 }

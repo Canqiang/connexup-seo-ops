@@ -117,3 +117,39 @@ def test_task_category_create_patch_and_invalid(client):
     assert t2["category"] is None
     assert client.patch(f"/api/tasks/{t2['id']}", json={"category": "review"}).json()["category"] == "review"
     assert client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "t", "category": "nope"}).status_code == 422
+
+
+def test_list_all_tasks_with_merchant_name(client):
+    a = client.post("/api/merchants", json={"name": "甲"}).json()
+    b = client.post("/api/merchants", json={"name": "乙"}).json()
+    make_task(client, a["id"])
+    make_task(client, b["id"])
+    tasks = client.get("/api/tasks").json()
+    names = {t["merchant_name"] for t in tasks}
+    assert {"甲", "乙"} <= names
+
+
+def test_batch_status_transitions(client):
+    m = make_merchant(client)
+    t1 = make_task(client, m["id"])  # todo -> doing 合法
+    t2 = make_task(client, m["id"])
+    client.patch(f"/api/tasks/{t2['id']}", json={"status": "cancelled"})  # 终态，批量应跳过
+    res = client.post("/api/tasks/batch", json={"ids": [t1["id"], t2["id"], 999], "status": "doing"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["updated"] == [t1["id"]]
+    assert set(body["skipped"]) == {t2["id"], 999}
+    assert client.get(f"/api/tasks/{t1['id']}").json()["status"] == "doing"
+
+
+def test_batch_done_sets_completed_at(client):
+    m = make_merchant(client)
+    t = make_task(client, m["id"])
+    client.patch(f"/api/tasks/{t['id']}", json={"status": "doing"})
+    res = client.post("/api/tasks/batch", json={"ids": [t["id"]], "status": "done"})
+    assert res.json()["updated"] == [t["id"]]
+    assert client.get(f"/api/tasks/{t['id']}").json()["completed_at"] is not None
+
+
+def test_batch_rejects_bad_status(client):
+    assert client.post("/api/tasks/batch", json={"ids": [1], "status": "todo"}).status_code == 422

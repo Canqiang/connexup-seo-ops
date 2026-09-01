@@ -44,6 +44,39 @@ def fetch_task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row:
     return row
 
 
+@router.get("/tasks")
+def list_all_tasks(conn=Depends(get_db)):
+    rows = conn.execute(
+        "SELECT t.*, m.name AS merchant_name FROM tasks t"
+        " JOIN merchants m ON m.id = t.merchant_id ORDER BY t.id DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+class BatchBody(BaseModel):
+    ids: list[int]
+    status: Literal["doing", "done", "cancelled"]
+
+
+@router.post("/tasks/batch")
+def batch_status(body: BatchBody, conn=Depends(get_db)):
+    updated: list[int] = []
+    skipped: list[int] = []
+    for task_id in body.ids:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None or body.status not in ALLOWED_TRANSITIONS[row["status"]]:
+            skipped.append(task_id)
+            continue
+        completed_at = now_iso() if body.status == "done" else None
+        conn.execute(
+            "UPDATE tasks SET status = ?, completed_at = ? WHERE id = ?",
+            (body.status, completed_at, task_id),
+        )
+        updated.append(task_id)
+    conn.commit()
+    return {"updated": updated, "skipped": skipped}
+
+
 @router.get("/merchants/{merchant_id}/tasks")
 def list_tasks(merchant_id: int, conn=Depends(get_db)):
     fetch_merchant(conn, merchant_id)

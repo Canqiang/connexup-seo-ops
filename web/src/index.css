@@ -52,6 +52,9 @@ body {
 }
 .wordmark:hover { color: #bcd0f0; }
 .topbar-sub { font-size: 12px; color: #8fa0b1; letter-spacing: 0.08em; }
+.topnav { display: flex; gap: 18px; margin-left: 12px; }
+.topnav a { color: #c6d2de; text-decoration: none; font-size: 13px; }
+.topnav a:hover { color: #fff; }
 
 main {
   max-width: 1080px;
@@ -268,6 +271,9 @@ tr.row-cancelled td.grow a { text-decoration: line-through; text-decoration-colo
 .report li { margin: 4px 0; }
 .report pre { border: none; background: var(--paper); padding: 12px 14px; }
 .report code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+
+/* ---- 批量操作条 ---- */
+.batch-bar { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
 
 /* ---- 辅助文本 ---- */
 .muted { color: var(--muted); font-size: 12.5px; }
