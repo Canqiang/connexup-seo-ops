@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import { api, type Run, type Task } from '../api'
+import TaskTable from '../components/TaskTable'
 import { formatTime } from '../format'
-import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
+import { RUN_STATUS_LABELS } from '../labels'
 
 export default function RunDetail() {
   const { id } = useParams()
@@ -40,20 +41,7 @@ export default function RunDetail() {
       {tasks.length > 0 && (
         <>
           <h2>本次生成的任务（{tasks.length}）</h2>
-          <ul className="list">
-            {tasks.map(t => (
-              <li key={t.id} className="task-row">
-                <div className="task-line1">
-                  {t.category && <span className="badge cat">{CATEGORY_LABELS[t.category] ?? t.category}</span>}
-                  <Link to={`/tasks/${t.id}`}>{t.title}</Link>
-                  <span className={`badge ${t.status}`}>{TASK_STATUS_LABELS[t.status]}</span>
-                </div>
-                {t.expected_outcome && (
-                  <div className="task-line2 muted"><span>预期：{t.expected_outcome}</span></div>
-                )}
-              </li>
-            ))}
-          </ul>
+          <TaskTable tasks={tasks} showSource={false} />
         </>
       )}
 

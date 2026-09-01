@@ -48,30 +48,49 @@ export default function MerchantList() {
           </button>
         ))}
       </div>
-      <ul className="list">
-        {merchants.map(m => (
-          <li key={m.id} className="task-row">
-            <div className="task-line1">
-              <Link to={`/merchants/${m.id}`}>{m.name}</Link>
-              <span className={`badge ${m.status}`}>{m.status === 'active' ? '在营' : '已归档'}</span>
-              {m.auto_run_interval_days != null && <span className="badge">自动·{m.auto_run_interval_days} 天</span>}
-              <span className="muted row-end">
-                {m.has_running_run
-                  ? <span className="badge running">分析中</span>
-                  : m.last_run_at
-                    ? <>最近分析 {formatTime(m.last_run_at)} · {m.last_run_status ? RUN_STATUS_LABELS[m.last_run_status] : ''}</>
-                    : '未分析过'}
-              </span>
-            </div>
-            <div className="task-line2 muted">
-              <span>{m.todo_count > 0 || m.doing_count > 0
-                ? `待办 ${m.todo_count} · 进行中 ${m.doing_count}`
-                : '无待办任务'}</span>
-              {m.notes && <span>{m.notes}</span>}
-            </div>
-          </li>
-        ))}
-      </ul>
+      {merchants.length > 0 && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>商户</th>
+                <th>状态</th>
+                <th>待办</th>
+                <th>进行中</th>
+                <th>最近分析</th>
+                <th>自动分析</th>
+              </tr>
+            </thead>
+            <tbody>
+              {merchants.map(m => (
+                <tr key={m.id}>
+                  <td className="grow">
+                    <Link to={`/merchants/${m.id}`}>{m.name}</Link>
+                    {m.notes && <div className="dim">{m.notes}</div>}
+                  </td>
+                  <td className="nowrap">
+                    <span className={`badge ${m.status}`}>{m.status === 'active' ? '在营' : '已归档'}</span>
+                  </td>
+                  <td>{m.todo_count > 0 ? <strong>{m.todo_count}</strong> : <span className="dim">0</span>}</td>
+                  <td>{m.doing_count > 0 ? <strong>{m.doing_count}</strong> : <span className="dim">0</span>}</td>
+                  <td className="nowrap">
+                    {m.has_running_run
+                      ? <span className="badge running">分析中</span>
+                      : m.last_run_at
+                        ? <>
+                            <span className="dim">{formatTime(m.last_run_at)}</span>
+                            {' '}
+                            {m.last_run_status && <span className={`badge ${m.last_run_status}`}>{RUN_STATUS_LABELS[m.last_run_status]}</span>}
+                          </>
+                        : <span className="dim">未分析</span>}
+                  </td>
+                  <td className="dim nowrap">{m.auto_run_interval_days != null ? `每 ${m.auto_run_interval_days} 天` : '关闭'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </main>
   )
 }

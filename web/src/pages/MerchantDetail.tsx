@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type Merchant, type Run, type Task, type TaskStatus } from '../api'
+import TaskTable from '../components/TaskTable'
 import { formatTime } from '../format'
 import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
 
+const STATUS_RANK: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2, cancelled: 3 }
 const STATUS_ORDER: TaskStatus[] = ['todo', 'doing', 'done', 'cancelled']
 const INTERVAL_OPTIONS = [
   { value: '', label: '自动分析：关闭' },
@@ -18,6 +20,7 @@ export default function MerchantDetail() {
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [runs, setRuns] = useState<Run[]>([])
+  const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null)
   const [showAllRuns, setShowAllRuns] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [title, setTitle] = useState('')
@@ -107,6 +110,9 @@ export default function MerchantDetail() {
 
   const counts = STATUS_ORDER.map(s => [s, tasks.filter(t => t.status === s).length] as const)
   const visibleRuns = showAllRuns ? runs : runs.slice(0, RUNS_PREVIEW)
+  const shownTasks = [...tasks]
+    .filter(t => statusFilter === null || t.status === statusFilter)
+    .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.id - a.id)
 
   return (
     <main>
@@ -118,13 +124,6 @@ export default function MerchantDetail() {
       </p>
       {merchant.notes && <p className="muted">{merchant.notes}</p>}
       {error && <p className="error">{error}</p>}
-
-      <div className="stats">
-        {counts.filter(([, n]) => n > 0).map(([s, n]) => (
-          <a key={s} href={`#sec-${s}`} className={`stat ${s}`}>{TASK_STATUS_LABELS[s]} {n}</a>
-        ))}
-        {tasks.length === 0 && <span className="muted">暂无任务</span>}
-      </div>
 
       <h2>AI 分析</h2>
       <p>
@@ -141,16 +140,25 @@ export default function MerchantDetail() {
       </p>
       {runs.length > 0 && (
         <>
-          <ul className="list">
-            {visibleRuns.map(r => (
-              <li key={r.id}>
-                <Link to={`/runs/${r.id}`}>#{r.id}</Link>
-                <span className={`badge ${r.status}`}>{RUN_STATUS_LABELS[r.status]}</span>
-                <span className="muted">{r.trigger_kind === 'auto' ? '自动' : '手动'} · {formatTime(r.created_at)}</span>
-                {r.error && <span className="muted">{r.error}</span>}
-              </li>
-            ))}
-          </ul>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>#</th><th>状态</th><th>触发</th><th>发起</th><th>结束</th><th>错误</th></tr>
+              </thead>
+              <tbody>
+                {visibleRuns.map(r => (
+                  <tr key={r.id}>
+                    <td className="nowrap"><Link to={`/runs/${r.id}`}>#{r.id}</Link></td>
+                    <td className="nowrap"><span className={`badge ${r.status}`}>{RUN_STATUS_LABELS[r.status]}</span></td>
+                    <td className="dim nowrap">{r.trigger_kind === 'auto' ? '自动' : '手动'}</td>
+                    <td className="dim nowrap">{formatTime(r.created_at)}</td>
+                    <td className="dim nowrap">{r.finished_at ? formatTime(r.finished_at) : '—'}</td>
+                    <td className="dim">{r.error || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {runs.length > RUNS_PREVIEW && (
             <p><button onClick={() => setShowAllRuns(v => !v)}>
               {showAllRuns ? '收起' : `全部 ${runs.length} 次分析`}
@@ -160,6 +168,19 @@ export default function MerchantDetail() {
       )}
 
       <h2>任务</h2>
+      <div className="stats">
+        {counts.filter(([, n]) => n > 0).map(([s, n]) => (
+          <button
+            key={s}
+            className={`stat ${s}${statusFilter === s ? ' on' : ''}`}
+            onClick={() => setStatusFilter(f => f === s ? null : s)}
+          >
+            {TASK_STATUS_LABELS[s]} {n}
+          </button>
+        ))}
+        {tasks.length === 0 && <span className="muted">暂无任务</span>}
+      </div>
+
       {!showCreate
         ? <p><button onClick={() => setShowCreate(true)}>＋ 新建任务</button></p>
         : (
@@ -176,33 +197,7 @@ export default function MerchantDetail() {
           </form>
         )}
 
-      {STATUS_ORDER.map(s => {
-        const group = tasks.filter(t => t.status === s)
-        if (group.length === 0) return null
-        return (
-          <section key={s} id={`sec-${s}`}>
-            <h2>{TASK_STATUS_LABELS[s]}（{group.length}）</h2>
-            <ul className="list">
-              {group.map(t => (
-                <li key={t.id} className="task-row">
-                  <div className="task-line1">
-                    {t.category && <span className="badge cat">{CATEGORY_LABELS[t.category] ?? t.category}</span>}
-                    <Link to={`/tasks/${t.id}`}>{t.title}</Link>
-                    {t.source_run_id != null && <span className="badge ai">AI</span>}
-                    <span className="muted row-end">{formatTime(t.created_at)}</span>
-                  </div>
-                  {(t.rationale || t.expected_outcome) && (
-                    <div className="task-line2 muted">
-                      {t.rationale && <span>动因：{t.rationale}</span>}
-                      {t.expected_outcome && <span>预期：{t.expected_outcome}</span>}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )
-      })}
+      <TaskTable tasks={shownTasks} />
     </main>
   )
 }
