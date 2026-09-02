@@ -142,7 +142,7 @@ describe('desktop operator shell', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '官网' }), { target: { value: 'https://onlybear.example.com' } })
     fireEvent.click(screen.getByRole('button', { name: '保存并开始诊断' }))
 
-    await screen.findByRole('main', { name: '商户工作区' })
+    await screen.findByRole('heading', { name: 'Only Bear Chicken & Boba' })
     expect(calls.indexOf('POST /api/merchants')).toBeLessThan(calls.indexOf('POST /api/merchants/91/runs'))
     expect(calls).toContain('GET /api/merchants/91')
   })
@@ -222,9 +222,197 @@ describe('desktop operator shell', () => {
     })))
     render(<App />)
 
-    await screen.findByRole('main', { name: '商户工作区' })
-    screen.getByRole('region', { name: 'AI 分析' })
+    await screen.findByRole('region', { name: 'AI 分析' })
     screen.getByRole('region', { name: '任务队列' })
+  })
+
+  it('links merchant operations to a separate merchant profile view', async () => {
+    window.history.pushState({}, '', '/merchants/1')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/1')
+        ? { id: 1, name: 'Only Bear', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+        : [],
+    })))
+    render(<App />)
+
+    const link = await screen.findByRole('link', { name: '商户资料' })
+    expect(link.getAttribute('href')).toBe('/merchants/1/profile')
+    screen.getByRole('link', { name: '运营' })
+  })
+
+  it('guides an unbound merchant to save an exact FBR merchant id', async () => {
+    window.history.pushState({}, '', '/merchants/1/profile')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/1/profile')
+        ? {
+            merchant_id: 1,
+            state: 'unbound',
+            fbr_merchant_id: null,
+            sync_status: null,
+            last_synced_at: null,
+            last_error: null,
+            locations: [],
+          }
+        : input.endsWith('/api/merchants/1')
+          ? { id: 1, name: 'Only Bear', status: 'active', notes: 'Mineola, NY', auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+          : [],
+    })))
+    render(<App />)
+
+    await screen.findByRole('main', { name: '商户资料' })
+    screen.getByRole('heading', { name: '连接 FBR 商户资料' })
+    screen.getByRole('textbox', { name: 'FBR Merchant ID' })
+    screen.getByRole('button', { name: '保存绑定' })
+    expect(screen.queryByText(/OAuth/)).toBeNull()
+  })
+
+  it('presents synchronized GBP facts as one readable location record', async () => {
+    window.history.pushState({}, '', '/merchants/1/profile')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/1/profile')
+        ? {
+            merchant_id: 1,
+            state: 'synced',
+            fbr_merchant_id: 'fbr-only-bear',
+            sync_status: 'synced',
+            last_synced_at: '2026-09-02T03:00:00Z',
+            last_error: null,
+            locations: [{
+              gbp_location_id: 'locations/123',
+              google_account_id: 'accounts/77',
+              name: 'locations/123',
+              title: 'Only Bear Chicken & Boba',
+              phone: '+1 516-555-1010',
+              additional_phones: [],
+              address: '123 Mineola Ave, Mineola, NY 11501, US',
+              address_lines: ['123 Mineola Ave'],
+              locality: 'Mineola',
+              administrative_area: 'NY',
+              postal_code: '11501',
+              region_code: 'US',
+              website_url: 'https://onlybear.example.com',
+              primary_category: 'Chicken restaurant',
+              additional_categories: ['Bubble tea store'],
+              open_status: 'OPEN',
+              description: 'Crispy chicken and boba in Mineola.',
+              regular_hours: [{ open_day: 'MONDAY', open_time: '11:00', close_day: 'MONDAY', close_time: '21:00' }],
+              attribute_count: 3,
+              post_count: 4,
+              live_post_count: 3,
+              recent_posts: [{
+                post_id: 'post-1',
+                state: 'LIVE',
+                summary: 'Fresh pastries near Broadway\nWarm scratch-baked croissants, made daily with real butter.',
+                created_at: '2026-09-01T10:00:00Z',
+                updated_at: null,
+                media_count: 1,
+                media_url: 'https://images.example/post-1.jpg',
+                media_format: 'PHOTO',
+                cta_type: 'ORDER',
+                cta_url: 'https://order.example.com',
+              }],
+              menu_count: 1,
+              menu_section_count: 2,
+              menu_item_count: 14,
+              menu_sections: [{ name: 'Lunch', item_count: 8 }, { name: 'Drinks', item_count: 6 }],
+              review_count: 1,
+              recent_reviews: [{
+                review_id: 'review-1',
+                rating: 5,
+                content: 'Great neighborhood cafe',
+                reviewer_name: 'Jamie',
+                created_at: '2026-09-01T12:00:00Z',
+                has_reply: false,
+              }],
+              media_count: null,
+              customer_media_count: null,
+              question_count: null,
+              place_action_link_count: null,
+              verification_count: null,
+              source_updated_at: '2026-09-02T02:30:00Z',
+              synced_at: '2026-09-02T03:00:00Z',
+            }],
+          }
+        : input.endsWith('/api/merchants/1')
+          ? { id: 1, name: 'Only Bear', status: 'active', notes: 'Mineola, NY', auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+          : [],
+    })))
+    render(<App />)
+
+    await screen.findByRole('main', { name: '商户资料' })
+    screen.getByRole('combobox', { name: 'GBP 门店' })
+    screen.getByRole('heading', { name: 'Only Bear Chicken & Boba' })
+    screen.getByText('123 Mineola Ave, Mineola, NY 11501, US')
+    screen.getByText('+1 516-555-1010')
+    screen.getByRole('link', { name: 'https://onlybear.example.com' })
+    screen.getByText('Chicken restaurant')
+    screen.getByText('Crispy chicken and boba in Mineola.')
+    screen.getByText('周一 11:00–21:00')
+    screen.getByRole('navigation', { name: 'GBP 资料分区' })
+    screen.getByRole('heading', { name: '内容资产' })
+    screen.getByText('4 条 Post')
+    screen.getByText('3 条在线')
+    screen.getByText('1 个菜单 · 2 个分类 · 14 个菜品')
+    screen.getByText(/Warm scratch-baked croissants/)
+    screen.getByRole('img', { name: 'GBP Post 配图' })
+    expect(screen.getByRole('link', { name: '打开 ORDER 链接' }).getAttribute('href')).toBe('https://order.example.com')
+    screen.getByText('Great neighborhood cafe')
+    screen.getByText('媒体未同步')
+    screen.getAllByText('UAT 接口未部署')
+    screen.getByText('同步于 09-02 11:00')
+  })
+
+  it('defaults a multi-location profile to the GBP record matching the SEO Ops merchant', async () => {
+    window.history.pushState({}, '', '/merchants/3/profile')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/3/profile')
+        ? {
+            merchant_id: 3,
+            state: 'synced',
+            fbr_merchant_id: 'fbr-choice',
+            sync_status: 'synced',
+            last_synced_at: '2026-09-02T03:00:00Z',
+            last_error: null,
+            locations: [
+              {
+                gbp_location_id: 'locations/clinton',
+                title: 'Choice Brooklyn - Clinton Hill',
+                address: '318 Lafayette Avenue, Brooklyn, NY 11238, US',
+                additional_phones: [],
+                address_lines: [],
+                additional_categories: [],
+                regular_hours: [],
+                synced_at: '2026-09-02T03:00:00Z',
+              },
+              {
+                gbp_location_id: 'locations/uws',
+                title: 'Choice Brooklyn - Upper West Side',
+                address: '2040 Broadway, New York, NY 10023, US',
+                additional_phones: [],
+                address_lines: [],
+                additional_categories: [],
+                regular_hours: [],
+                synced_at: '2026-09-02T03:00:00Z',
+              },
+            ],
+          }
+        : input.endsWith('/api/merchants/3')
+          ? { id: 3, name: 'Choice Brooklyn - Upper West Side', primary_location: '2040 Broadway, New York, NY 10023', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+          : [],
+    })))
+    render(<App />)
+
+    await screen.findByRole('main', { name: '商户资料' })
+    expect((screen.getByRole('combobox', { name: 'GBP 门店' }) as HTMLSelectElement).value).toBe('locations/uws')
+    screen.getByRole('heading', { name: 'Choice Brooklyn - Upper West Side', level: 2 })
   })
 
   it('shows one clear diagnosis status and next action for a new merchant', async () => {
@@ -326,8 +514,7 @@ describe('desktop operator shell', () => {
     })))
     render(<App />)
 
-    await screen.findByRole('main', { name: '商户工作区' })
-    screen.getByRole('link', { name: '返回商户列表' })
+    await screen.findByRole('link', { name: '返回商户列表' })
     screen.getByRole('columnheader', { name: '分析时间' })
     screen.getByRole('columnheader', { name: '用时' })
     screen.getByRole('link', { name: /打开 .* 的分析报告/ })
@@ -414,8 +601,7 @@ describe('desktop operator shell', () => {
     })))
     render(<App />)
 
-    await screen.findByRole('main', { name: '任务详情' })
-    screen.getByRole('button', { name: '交给 Agent 执行' })
+    await screen.findByRole('button', { name: '交给 Agent 执行' })
     screen.getByText('尚未交给 Agent')
     expect(screen.queryByRole('textbox')).toBeNull()
   })
@@ -587,8 +773,8 @@ describe('desktop operator shell', () => {
   it('makes the report primary and keeps generated tasks in a compact side list', async () => {
     window.history.pushState({}, '', '/runs/1')
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
-      ok: true,
-      status: 200,
+      ok: input !== '/api/runs/1/audit',
+      status: input === '/api/runs/1/audit' ? 404 : 200,
       json: async () => input === '/api/runs/1'
         ? {
             id: 1,
@@ -618,12 +804,13 @@ describe('desktop operator shell', () => {
               created_at: '2026-09-01T00:01:00Z',
               completed_at: null,
             }]
-          : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' },
+          : input === '/api/runs/1/audit'
+            ? { detail: 'accepted audit not found' }
+            : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' },
     })))
     render(<App />)
 
-    await screen.findByRole('main', { name: '分析报告' })
-    screen.getByRole('link', { name: '返回冒烟商户' })
+    await screen.findByRole('link', { name: '返回冒烟商户' })
     screen.getByRole('heading', { name: '09-01 08:00 分析报告' })
     const report = screen.getByRole('region', { name: '报告正文' })
     const tasks = screen.getByRole('complementary', { name: '本次生成任务' })
@@ -638,6 +825,9 @@ describe('desktop operator shell', () => {
     window.history.pushState({}, '', '/runs/1')
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
       const approvedAt = init?.method === 'POST' ? '2026-09-01T00:02:00Z' : null
+      if (input === '/api/runs/1/audit') {
+        return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({ detail: 'accepted audit not found' }) }
+      }
       const data = input === '/api/runs/1' || input === '/api/runs/1/approve-plan'
         ? {
             id: 1,
@@ -679,5 +869,71 @@ describe('desktop operator shell', () => {
 
     await within(decision).findByText('Plan 已确认')
     expect(within(decision).queryByRole('button', { name: '确认 Plan' })).toBeNull()
+  })
+
+  it('renders an accepted Audit snapshot as decisions instead of raw JSON or legacy Markdown', async () => {
+    window.history.pushState({}, '', '/runs/1')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input === '/api/runs/1'
+        ? {
+            id: 1,
+            merchant_id: 1,
+            coreai_run_id: 'run-1',
+            status: 'succeeded',
+            trigger_kind: 'manual',
+            report_text: '# Legacy text that should not be primary',
+            error: null,
+            created_at: '2026-09-01T00:00:00Z',
+            finished_at: '2026-09-01T00:01:00Z',
+          }
+        : input === '/api/runs/1/audit'
+          ? {
+              id: 7,
+              run_id: 1,
+              merchant_id: 1,
+              schema_version: 'seo_ops.audit_report.v1',
+              evidence_mode: 'PUBLIC_AND_CONFIRMED',
+              finding_count: 1,
+              source_ref: 'run-1',
+              accepted_at: '2026-09-01T00:01:00Z',
+              audit: {
+                schema_version: 'seo_ops.audit_report.v1',
+                merchant_id: '1',
+                title: 'Only Bear 本地 SEO 初诊',
+                summary: '官网与商户身份已确认，结构化数据仍需处理。',
+                evidence_mode: 'PUBLIC_AND_CONFIRMED',
+                findings: [{
+                  id: 'missing-schema',
+                  area: 'TECHNICAL',
+                  severity: 'HIGH',
+                  observation: '官网未发现 Restaurant 结构化数据。',
+                  evidence: ['公开页面源代码检查未发现 Restaurant JSON-LD。'],
+                  recommendation: '先生成草稿并由运营审批后上线。',
+                }],
+                limitations: ['本次未使用 Search Console 数据。'],
+                next_actions: ['审阅 Restaurant Schema 草稿。'],
+              },
+            }
+          : input === '/api/runs/1/tasks'
+            ? []
+            : { id: 1, name: 'Only Bear', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' },
+    })))
+    render(<App />)
+
+    const audit = await screen.findByRole('article', { name: 'Audit 报告' })
+    within(audit).getByRole('heading', { name: 'Only Bear 本地 SEO 初诊' })
+    within(audit).getByText('官网与商户身份已确认，结构化数据仍需处理。')
+    within(audit).getByText('公开资料 + 已确认信息')
+    within(audit).getByText('技术 SEO')
+    within(audit).getByText('高优先级')
+    within(audit).getByText('官网未发现 Restaurant 结构化数据。')
+    within(audit).getByText('公开页面源代码检查未发现 Restaurant JSON-LD。')
+    within(audit).getByText('先生成草稿并由运营审批后上线。')
+    within(audit).getByText('本次未使用 Search Console 数据。')
+    within(audit).getByText('审阅 Restaurant Schema 草稿。')
+    expect(screen.queryByText('seo_ops.audit_report.v1')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Legacy text that should not be primary' })).toBeNull()
   })
 })

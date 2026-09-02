@@ -1,0 +1,59 @@
+{
+  "schema_version": "seo_ops.agent_reconciliation_plan.v1",
+  "created_at": "2026-08-27T05:18:13.854Z",
+  "scope": {
+    "kind": "EXPLICIT"
+  },
+  "selected": [
+    {
+      "path": "server/core-ai-agents/seo-ops-gbp-post-content-v3.json",
+      "name": "[SEO Ops] GBP Post Content v3",
+      "manifest_hash": "b144c0c3b9df5ac5d5f92b54dcd21d49ad195dfed05ae7de116a06c91aa7b345",
+      "action": "NO_CHANGE",
+      "remote_agent_id": "38f25c1d-adaf-411a-98ed-28d85dc0b5f9",
+      "remote_state_hash": "03af5278a895abef677879c487e154aba11d2b5a8b9d55bc819f8f6dd5663a63",
+      "action_hash": "92ab9e25af7b3d86f04f967c473f802cf00e9c0f786c8c06f7b8ff7e7270ccad"
+    }
+  ],
+  "reference": {
+    "id": "24fae711-2012-43a7-a91d-6607d62821bd",
+    "name": "GooglePost每周图文助手",
+    "status": "PUBLISHED",
+    "owner_id": null,
+    "updated_at": "2026-08-21T03:21:12.242Z",
+    "published_at": "2026-08-21T03:21:12.242Z",
+    "editable_hash": "902fce1bfa3df9729e1a19cc8747fe2270d53ccf594507d2e5107b727e609f05",
+    "managed_hash": "936a30315eaab1764b57427df117c88db8c2b0dbef4846758b449feca5a423ce",
+    "field_hashes": {
+      "name": "c3a0e98f9846910485618e533ce5e4e279bf1631230c1d927a5b262c3e273bd3",
+      "description": "e8a2d7ce876218f9fc5a7a9cb5c2e7beb6e0590a46faede2cbfacff92607d9f0",
+      "system_prompt": "cc88f399c977c32f1dbe92c21ee13bfd4bac9fb7acae8b5f66518718050ec8f1",
+      "model": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "temperature": "d2cbad71ff333de67d07ec676e352ab7f38248eb69c942950157220607c55e84",
+      "thinking_effort": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "max_turns": "d59eced1ded07f84c145592f65bdf854358e009c5cd705f5215bf18697fed103",
+      "timeout_seconds": "284b7e6d788f363f910f7beb1910473e23ce9d6c871f1ce0f31f22a982d48ad4",
+      "enable_memory": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+      "type": "aa8afcb616454013a5e75920d60ecc502e5232b53a6f69c9e47bb927d8c7c8c5",
+      "tools": "0ad61cf9abe2c330a605da4cab3d255b9926b7e136231ba286fd4224691541d4",
+      "skill_ids": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "subagent_ids": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "dataset_config": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "sandbox_config": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "response_schema": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    "executable_field_hashes": {
+      "system_prompt_id": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "multi_modal_model": "57a2032f255a0201918d66d01276ed79dbaeda32cf4893ae6bdb1d7e2e89a98e",
+      "prefer_caption_path": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "input_template": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "variables": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    "unmanaged_executable_empty": false,
+    "unknown_fields_empty": true,
+    "label": "EDITABLE_REFERENCE_ONLY",
+    "evidence_scope": "EDITABLE_CONFIG_AND_STATUS_ONLY",
+    "coordinate_hash": "9d52c138367f9ccafa0326403fb126b5ebf556ec176c9ff9ca26ac48c80510d4"
+  },
+  "digest": "db38c1c66137317e5a42d4f5e2c23b9b096e33badce94b593bb927f4b44cf20f"
+}

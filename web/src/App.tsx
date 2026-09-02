@@ -7,6 +7,7 @@ import MerchantDetail from './pages/MerchantDetail'
 import TaskDetail from './pages/TaskDetail'
 import RunDetail from './pages/RunDetail'
 import TasksOverview from './pages/TasksOverview'
+import MerchantProfile from './pages/MerchantProfile'
 
 function NavGlyph({ name }: { name: 'merchants' | 'tasks' }) {
   const paths = {
@@ -55,6 +56,7 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
         <Routes>
           <Route path="/" element={<MerchantList />} />
           <Route path="/merchants/:id" element={<MerchantDetail />} />
+          <Route path="/merchants/:id/profile" element={<MerchantProfile />} />
           <Route path="/tasks" element={<TasksOverview />} />
           <Route path="/tasks/:id" element={<TaskDetail />} />
           <Route path="/runs/:id" element={<RunDetail />} />

@@ -9,6 +9,46 @@ CREATE TABLE IF NOT EXISTS merchants (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS merchant_fbr_links (
+  merchant_id INTEGER PRIMARY KEY REFERENCES merchants(id) ON DELETE CASCADE,
+  fbr_merchant_id TEXT NOT NULL,
+  sync_status TEXT NOT NULL DEFAULT 'not_synced'
+    CHECK (sync_status IN ('not_synced','syncing','synced','failed')),
+  last_synced_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_fbr_links_external
+  ON merchant_fbr_links(fbr_merchant_id);
+
+CREATE TABLE IF NOT EXISTS merchant_gbp_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  fbr_merchant_id TEXT NOT NULL,
+  gbp_location_id TEXT NOT NULL,
+  google_account_id TEXT,
+  source_name TEXT,
+  source_title TEXT,
+  location_json TEXT,
+  attributes_json TEXT,
+  food_menus_json TEXT,
+  local_posts_json TEXT,
+  media_json TEXT,
+  customer_media_json TEXT,
+  questions_json TEXT,
+  place_action_links_json TEXT,
+  verifications_json TEXT,
+  normalized_json TEXT NOT NULL,
+  source_updated_at TEXT,
+  synced_at TEXT NOT NULL,
+  UNIQUE (merchant_id, gbp_location_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_gbp_profiles_merchant
+  ON merchant_gbp_profiles(merchant_id, gbp_location_id);
+
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   merchant_id INTEGER NOT NULL REFERENCES merchants(id),
@@ -23,6 +63,21 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_merchant ON runs(merchant_id);
+
+CREATE TABLE IF NOT EXISTS audit_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id),
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+  schema_version TEXT NOT NULL CHECK (schema_version = 'seo_ops.audit_report.v1'),
+  payload_json TEXT NOT NULL,
+  evidence_mode TEXT NOT NULL CHECK (evidence_mode IN ('PUBLIC_AND_CONFIRMED','CONNECTED_AND_CONFIRMED','CONFIRMED_FACTS_ONLY')),
+  finding_count INTEGER NOT NULL CHECK (finding_count > 0),
+  source_ref TEXT,
+  accepted_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_snapshots_merchant
+  ON audit_snapshots(merchant_id, accepted_at DESC);
 
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

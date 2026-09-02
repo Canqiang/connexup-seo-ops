@@ -1,8 +1,33 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 from helpers import FakeCoreAi, cleanup_override, override_coreai
 
 REPORT_WITH_PLAN = '报告\n```json\n[{"id": "i1", "title": "T1", "rationale": "R1"}]\n```\n'
+
+
+def strict_audit(merchant_id: int) -> str:
+    return json.dumps(
+        {
+            "schema_version": "seo_ops.audit_report.v1",
+            "merchant_id": str(merchant_id),
+            "title": "Initial local SEO audit",
+            "summary": "The location identity is confirmed and the website needs review.",
+            "evidence_mode": "PUBLIC_AND_CONFIRMED",
+            "findings": [
+                {
+                    "id": "missing-schema",
+                    "area": "TECHNICAL",
+                    "severity": "MEDIUM",
+                    "observation": "No Restaurant structured data was observed.",
+                    "evidence": ["Public website source inspection."],
+                    "recommendation": "Prepare a reviewed Restaurant JSON-LD draft.",
+                }
+            ],
+            "limitations": ["No Search Console access was used."],
+            "next_actions": ["Review the structured data recommendation."],
+        }
+    )
 
 
 def iso_days_ago(days: float) -> str:
@@ -51,6 +76,23 @@ def test_poll_completed_without_plan_block_still_succeeds(client):
 
     assert client.get(f"/api/runs/{run['id']}").json()["status"] == "succeeded"
     assert client.get(f"/api/merchants/{m['id']}/tasks").json() == []
+
+
+def test_poll_accepts_a_strict_audit_snapshot_for_the_completed_run(client):
+    from app.scheduler import poll_runs_once
+
+    fake = FakeCoreAi()
+    merchant, run = make_merchant_with_run(client, fake)
+    fake.runs[run["coreai_run_id"]] = {
+        "status": "COMPLETED",
+        "output": strict_audit(merchant["id"]),
+    }
+
+    poll_runs_once(fake)
+
+    response = client.get(f"/api/runs/{run['id']}/audit")
+    assert response.status_code == 200
+    assert response.json()["audit"]["findings"][0]["id"] == "missing-schema"
 
 
 def test_poll_marks_failed_on_terminal_failure(client):

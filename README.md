@@ -20,6 +20,13 @@
 - 任务只有在人工批准 Agent 结果后才会完成；批量操作和普通状态修改都不能绕过审批
 - 设计文档：docs/superpowers/specs/2026-08-31-agent-runs-design.md
 
+## FBR / GBP 只读资料
+
+- 商户页的“商户资料”通过 SEO Ops 后端读取 FBR / Operation Assistant 暴露的只读 GBP 信息，浏览器不会直连 FBR。
+- `FBR_SEO_BASE_URL` 指向 GBP 数据入口。当前 UAT 使用 Operation Assistant，配置 `FBR_SEO_API_STYLE=operation_assistant`；以后直接接 SEO Integration 时使用 `seo_integration`。如服务要求服务端鉴权，可通过 `FBR_SEO_BEARER_TOKEN` 注入只读调用凭证。
+- SEO Ops 只保存明确绑定的 FBR Merchant ID、GBP 资源 ID 和当前资料快照；不会保存或返回 Google access token / refresh token。
+- 同步失败会保留上一次成功快照，不会修改 FBR 或 Google 的任何数据。
+
 ## 内部账号
 
 所有业务接口都要求内部操作员 Session。首次运行至少配置：

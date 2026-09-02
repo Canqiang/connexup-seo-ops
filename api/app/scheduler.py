@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
+from .audit_snapshots import persist_audit_snapshot
 from .config import coreai_settings
 from .coreai import CoreAiClient, CoreAiError, TERMINAL_STATUSES
 from .db import connect
@@ -53,6 +54,10 @@ def poll_runs_once(client) -> None:
                     "UPDATE runs SET status = 'succeeded', report_text = ?, finished_at = ? WHERE id = ?",
                     (report, finished_at, run["id"]),
                 )
+                try:
+                    persist_audit_snapshot(conn, run, report, finished_at)
+                except ValueError:
+                    logger.info("run %s returned a legacy non-Audit report", run["id"])
                 items = extract_plan(report)
                 if items:
                     create_tasks_from_plan(conn, run["merchant_id"], run["id"], run["coreai_run_id"], items)

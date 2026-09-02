@@ -8,7 +8,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    for var in ("COREAI_BASE_URL", "COREAI_API_KEY", "COREAI_AGENT_ID", "COREAI_EXECUTION_AGENT_ID"):
+    for var in (
+        "COREAI_BASE_URL",
+        "COREAI_API_KEY",
+        "COREAI_AGENT_ID",
+        "COREAI_EXECUTION_AGENT_ID",
+        "FBR_SEO_BASE_URL",
+        "FBR_SEO_BEARER_TOKEN",
+        "FBR_SEO_TIMEOUT_SECONDS",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("SEO_OPS_DB", str(tmp_path / "test.db"))
     monkeypatch.setenv("SEO_OPS_AUTH_USERNAME", "test")

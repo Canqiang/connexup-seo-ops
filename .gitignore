@@ -9,4 +9,5 @@ _to_delete/
 .idea/
 .DS_Store
 .env
+api/*.db
 .superpowers/

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, type Merchant, type Run, type Task, type TaskStatus } from '../api'
 import TaskTable from '../components/TaskTable'
+import MerchantSectionNav from '../components/MerchantSectionNav'
 import { formatTime } from '../format'
 import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
 import { formatRunDuration, runResult } from '../runPresentation'
@@ -189,6 +190,7 @@ export default function MerchantDetail() {
           <button onClick={toggleArchive}>{merchant.status === 'active' ? '归档商户' : '恢复在营'}</button>
         </div>
       </header>
+      <MerchantSectionNav merchantId={merchantId} active="operations" />
       {error && <p className="error">{error}</p>}
 
       <section className="diagnosis-card" aria-label="初始诊断">

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
-import { api, type Merchant, type Run, type Task } from '../api'
+import { api, type AuditSnapshot, type Merchant, type Run, type Task } from '../api'
+import AuditReport from '../components/AuditReport'
 import { formatTime } from '../format'
 import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
 import { reportForDisplay } from '../reportDisplay'
@@ -13,6 +14,7 @@ export default function RunDetail() {
   const [run, setRun] = useState<Run | null>(null)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
+  const [audit, setAudit] = useState<AuditSnapshot | null>(null)
   const [error, setError] = useState('')
   const [approving, setApproving] = useState(false)
 
@@ -25,6 +27,7 @@ export default function RunDetail() {
       .then(setMerchant)
       .catch(e => setError((e as Error).message))
     api.listRunTasks(runId).then(setTasks).catch(() => {})
+    api.getRunAudit(runId).then(setAudit).catch(e => setError((e as Error).message))
   }, [runId])
 
   const approvePlan = async () => {
@@ -73,7 +76,9 @@ export default function RunDetail() {
 
       <div className="run-review-grid">
         <section className="panel report-panel" aria-label="报告正文">
-          {run.report_text
+          {audit
+            ? <AuditReport snapshot={audit} />
+            : run.report_text
             ? <div className="report"><ReactMarkdown>{reportForDisplay(run.report_text)}</ReactMarkdown></div>
             : <div className="empty-state">这次分析还没有返回报告。</div>}
         </section>

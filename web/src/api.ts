@@ -90,6 +90,126 @@ export type Run = {
   finished_at: string | null
 }
 
+export type AuditArea = 'GBP' | 'WEBSITE' | 'LOCAL_CONTENT' | 'TECHNICAL' | 'CITATIONS' | 'REVIEWS' | 'ANALYTICS' | 'OTHER'
+export type AuditSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO'
+export type AuditEvidenceMode = 'PUBLIC_AND_CONFIRMED' | 'CONNECTED_AND_CONFIRMED' | 'CONFIRMED_FACTS_ONLY'
+
+export type AuditFinding = {
+  id: string
+  area: AuditArea
+  severity: AuditSeverity
+  observation: string
+  evidence: string[]
+  recommendation: string
+}
+
+export type AuditReport = {
+  schema_version: 'seo_ops.audit_report.v1'
+  merchant_id: string
+  title: string
+  summary: string
+  evidence_mode: AuditEvidenceMode
+  findings: AuditFinding[]
+  limitations: string[]
+  next_actions: string[]
+}
+
+export type AuditSnapshot = {
+  id: number
+  run_id: number
+  merchant_id: number
+  schema_version: 'seo_ops.audit_report.v1'
+  evidence_mode: AuditEvidenceMode
+  finding_count: number
+  source_ref: string | null
+  accepted_at: string
+  audit: AuditReport
+}
+
+export type GbpHoursPeriod = {
+  open_day: string
+  open_time: string
+  close_day: string
+  close_time: string
+}
+
+export type GbpPostSummary = {
+  post_id: string | null
+  state: string | null
+  summary: string | null
+  created_at: string | null
+  updated_at: string | null
+  media_count: number
+  media_url: string | null
+  media_format: string | null
+  cta_type: string | null
+  cta_url: string | null
+}
+
+export type GbpMenuSectionSummary = {
+  name: string
+  item_count: number
+}
+
+export type GbpReviewSummary = {
+  review_id: string | null
+  rating: number | null
+  content: string | null
+  reviewer_name: string | null
+  created_at: string | null
+  has_reply: boolean
+}
+
+export type MerchantGbpLocation = {
+  gbp_location_id: string
+  google_account_id: string | null
+  name: string | null
+  title: string
+  store_code: string | null
+  language_code: string | null
+  phone: string | null
+  additional_phones: string[]
+  address: string | null
+  address_lines: string[]
+  locality: string | null
+  administrative_area: string | null
+  postal_code: string | null
+  region_code: string | null
+  website_url: string | null
+  primary_category: string | null
+  additional_categories: string[]
+  open_status: string | null
+  description: string | null
+  regular_hours: GbpHoursPeriod[]
+  attribute_count: number | null
+  menu_count: number | null
+  menu_section_count: number | null
+  menu_item_count: number | null
+  menu_sections: GbpMenuSectionSummary[]
+  post_count: number | null
+  live_post_count: number | null
+  recent_posts: GbpPostSummary[]
+  review_count: number | null
+  recent_reviews: GbpReviewSummary[]
+  media_count: number | null
+  customer_media_count: number | null
+  question_count: number | null
+  place_action_link_count: number | null
+  verification_count: number | null
+  source_updated_at: string | null
+  synced_at: string
+}
+
+export type MerchantProfile = {
+  merchant_id: number
+  state: 'unbound' | 'not_synced' | 'syncing' | 'synced' | 'failed'
+  fbr_merchant_id: string | null
+  sync_status: string | null
+  last_synced_at: string | null
+  last_error: string | null
+  locations: MerchantGbpLocation[]
+}
+
 export type Operator = {
   username: string
   role: 'operator'
@@ -105,6 +225,14 @@ export const api = {
   createMerchant: (body: { name: string; notes?: string; primary_location?: string; website_url?: string }) =>
     request<Merchant>('/api/merchants', { method: 'POST', body: JSON.stringify(body) }),
   getMerchant: (id: number) => request<Merchant>(`/api/merchants/${id}`),
+  getMerchantProfile: (id: number) => request<MerchantProfile>(`/api/merchants/${id}/profile`),
+  bindMerchantFbr: (id: number, fbrMerchantId: string) =>
+    request<MerchantProfile>(`/api/merchants/${id}/fbr-link`, {
+      method: 'PUT',
+      body: JSON.stringify({ fbr_merchant_id: fbrMerchantId }),
+    }),
+  syncMerchantGbp: (id: number) =>
+    request<MerchantProfile>(`/api/merchants/${id}/gbp-sync`, { method: 'POST' }),
   patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'primary_location' | 'website_url' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   listTasks: (merchantId: number) => request<Task[]>(`/api/merchants/${merchantId}/tasks`),
@@ -120,6 +248,7 @@ export const api = {
   listRuns: (merchantId: number) => request<Run[]>(`/api/merchants/${merchantId}/runs`),
   createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),
   getRun: (id: number) => request<Run>(`/api/runs/${id}`),
+  getRunAudit: (id: number) => requestOptional<AuditSnapshot>(`/api/runs/${id}/audit`),
   approvePlan: (id: number) => request<Run>(`/api/runs/${id}/approve-plan`, { method: 'POST' }),
   listRunTasks: (id: number) => request<Task[]>(`/api/runs/${id}/tasks`),
   listAllTasks: () => request<(Task & { merchant_name: string })[]>('/api/tasks'),

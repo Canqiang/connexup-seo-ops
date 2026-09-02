@@ -1,0 +1,5 @@
+{"type":"JOURNAL_OPENED","plan_digest":"4a4fee13f4f30a7841f8686978130b9dc8e046187af55b2e94d1b3e23462326e","reference_id":"24fae711-2012-43a7-a91d-6607d62821bd","selected_paths_hash":"04e71c479f983d22b10320a522549b06bcf18883663384ca77770494ebee74ad"}
+{"type":"CREATE_INTENT","sequence":1,"manifest_path":"server/core-ai-agents/seo-ops-gbp-post-content-v2.json","name":"[SEO Ops] GBP Post Content v2","manifest_hash":"abf2be6be36ec5fc5777fd95132941dc6fa37544a48a77075312cfb42f93d90b"}
+{"type":"CREATE_OUTCOME","sequence":1,"manifest_path":"server/core-ai-agents/seo-ops-gbp-post-content-v2.json","name":"[SEO Ops] GBP Post Content v2","agent_id":"8c8b2dea-36ce-465a-92a1-8801ef4614a1"}
+{"type":"PREPUBLISH_VALIDATION_INTENT","sequence":1,"manifest_path":"server/core-ai-agents/seo-ops-gbp-post-content-v2.json","name":"[SEO Ops] GBP Post Content v2","agent_id":"8c8b2dea-36ce-465a-92a1-8801ef4614a1"}
+{"type":"PREPUBLISH_VALIDATION_FAILED","sequence":1,"manifest_path":"server/core-ai-agents/seo-ops-gbp-post-content-v2.json","name":"[SEO Ops] GBP Post Content v2","agent_id":"8c8b2dea-36ce-465a-92a1-8801ef4614a1","reason_code":"NOT_NEW_OWNED_EXACT_DRAFT"}
