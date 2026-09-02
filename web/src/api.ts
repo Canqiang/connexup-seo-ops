@@ -151,6 +151,15 @@ export type GbpMenuSectionSummary = {
   item_count: number
 }
 
+export type GbpMenuItem = {
+  section_name: string
+  name: string
+  description: string | null
+  price_amount: number | null
+  currency_code: string | null
+  media_url: string | null
+}
+
 export type GbpReviewSummary = {
   review_id: string | null
   rating: number | null
@@ -160,10 +169,23 @@ export type GbpReviewSummary = {
   has_reply: boolean
 }
 
+export type GbpPerformanceMetric = {
+  metric_date: string
+  metric: string
+  value: number
+}
+
+export type GbpSearchKeywordMetric = {
+  month: string
+  keyword: string
+  value: number
+}
+
 export type MerchantGbpLocation = {
   gbp_location_id: string
   google_account_id: string | null
   name: string | null
+  place_id: string | null
   title: string
   store_code: string | null
   language_code: string | null
@@ -186,16 +208,23 @@ export type MerchantGbpLocation = {
   menu_section_count: number | null
   menu_item_count: number | null
   menu_sections: GbpMenuSectionSummary[]
+  menu_items: GbpMenuItem[]
   post_count: number | null
   live_post_count: number | null
   recent_posts: GbpPostSummary[]
   review_count: number | null
+  review_sync_status?: 'ready' | 'unavailable'
+  review_scope?: 'all_synced' | 'recent_month' | null
+  review_average_rating?: number | null
+  review_reply_rate?: number | null
   recent_reviews: GbpReviewSummary[]
   media_count: number | null
   customer_media_count: number | null
   question_count: number | null
   place_action_link_count: number | null
   verification_count: number | null
+  performance_metrics?: GbpPerformanceMetric[]
+  search_keywords?: GbpSearchKeywordMetric[]
   source_updated_at: string | null
   synced_at: string
 }
@@ -208,6 +237,96 @@ export type MerchantProfile = {
   last_synced_at: string | null
   last_error: string | null
   locations: MerchantGbpLocation[]
+}
+
+export type SeoKeyword = {
+  keyword: string
+  strategy: 'LOCAL' | 'ORGANIC'
+  intent: 'LOCAL' | 'ORGANIC' | 'BRAND' | 'MENU' | 'NEAR_ME'
+  priority: 'P0' | 'P1' | 'P2' | 'P3' | 'UNSCORED'
+  rationale: string
+  source_tags: string[]
+  target_surface_types: string[]
+  target_location: string | null
+}
+
+export type SeoKeywordSet = {
+  schema_version: 'seo_ops.keyword_set.v2'
+  merchant_id: string
+  market: { country_code: 'US'; language: 'en-US'; search_engine: 'GOOGLE'; location_name?: string | null }
+  generation_method: 'PERSISTED_FBR_READBACK' | 'UPSTREAM_DETERMINISTIC_ADAPTER' | 'EVIDENCE_BOUNDED_RESEARCH'
+  title: string
+  summary: string
+  keywords: SeoKeyword[]
+  evidence_gaps: string[]
+}
+
+export type SeoRankingItem = {
+  keyword: string
+  local_rank: number | null
+  organic_rank: number | null
+  source: 'LIVE_READ_ONLY' | 'UNAVAILABLE'
+  note?: string | null
+}
+
+export type SeoRankingReport = {
+  schema_version: 'seo_ops.ranking_report.v1'
+  merchant_id: string
+  title: string
+  summary: string
+  captured_at: string
+  source_mode: 'LIVE_READ_ONLY' | 'CONFIRMED_FACTS_ONLY'
+  keywords: SeoRankingItem[]
+  limitations: string[]
+}
+
+export type LocalFalconGridPoint = {
+  lat: number
+  lng: number
+  found: boolean
+  rank: number | null
+}
+
+export type LocalFalconSnapshot = {
+  schema_version: 'seo_ops.local_falcon_snapshot.v1'
+  report_key: string
+  place_id: string
+  keyword: string
+  platform: 'google'
+  captured_at: string
+  center_lat: number
+  center_lng: number
+  grid_size: number
+  radius: number
+  measurement: 'mi' | 'km'
+  arp: number
+  atrp: number
+  solv: number
+  found_in: number
+  image_url: string | null
+  heatmap_url: string | null
+  grid_points: LocalFalconGridPoint[]
+}
+
+export type LocalFalconState = {
+  status: 'not_synced' | 'synced' | 'failed'
+  last_synced_at: string | null
+  last_error: string | null
+  missing_keywords: string[]
+  reports: LocalFalconSnapshot[]
+}
+
+export type SeoTargetState = {
+  merchant_id: number
+  cycle_id?: string
+  cycle_status: 'empty' | 'running' | 'ready' | 'failed'
+  active_stage: 'KEYWORD_SET' | 'AUDIT_REPORT' | 'RANKING_REPORT' | null
+  keyword_set: SeoKeywordSet | null
+  audit_report: AuditReport | null
+  ranking_report: SeoRankingReport | null
+  local_falcon?: LocalFalconState
+  capabilities?: { can_regenerate: boolean }
+  error: string | null
 }
 
 export type Operator = {
@@ -226,6 +345,13 @@ export const api = {
     request<Merchant>('/api/merchants', { method: 'POST', body: JSON.stringify(body) }),
   getMerchant: (id: number) => request<Merchant>(`/api/merchants/${id}`),
   getMerchantProfile: (id: number) => request<MerchantProfile>(`/api/merchants/${id}/profile`),
+  getSeoTargets: (id: number) => request<SeoTargetState>(`/api/merchants/${id}/seo-targets`),
+  refreshSeoTargets: (id: number) =>
+    request<SeoTargetState>(`/api/merchants/${id}/seo-targets/refresh`, { method: 'POST' }),
+  regenerateSeoTargets: (id: number) =>
+    request<SeoTargetState>(`/api/merchants/${id}/seo-targets/regenerate`, { method: 'POST' }),
+  syncLocalFalconReports: (id: number) =>
+    request<SeoTargetState>(`/api/merchants/${id}/local-falcon-sync`, { method: 'POST' }),
   bindMerchantFbr: (id: number, fbrMerchantId: string) =>
     request<MerchantProfile>(`/api/merchants/${id}/fbr-link`, {
       method: 'PUT',

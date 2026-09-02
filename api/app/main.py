@@ -10,6 +10,7 @@ from .merchants import router as merchants_router
 from .merchant_profiles import router as merchant_profiles_router
 from .runs import router as runs_router
 from .scheduler import scheduler_loop
+from .seo_targets import router as seo_targets_router
 from .tasks import router as tasks_router
 
 init_db()
@@ -30,3 +31,4 @@ app.include_router(merchant_profiles_router, dependencies=operator_dependencies)
 app.include_router(tasks_router, dependencies=operator_dependencies)
 app.include_router(runs_router, dependencies=operator_dependencies)
 app.include_router(audits_router, dependencies=operator_dependencies)
+app.include_router(seo_targets_router, dependencies=operator_dependencies)

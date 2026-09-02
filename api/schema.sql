@@ -79,6 +79,61 @@ CREATE TABLE IF NOT EXISTS audit_snapshots (
 CREATE INDEX IF NOT EXISTS idx_audit_snapshots_merchant
   ON audit_snapshots(merchant_id, accepted_at DESC);
 
+CREATE TABLE IF NOT EXISTS merchant_seo_artifacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  cycle_id TEXT NOT NULL,
+  artifact_type TEXT NOT NULL CHECK (artifact_type IN ('KEYWORD_SET','AUDIT_REPORT','RANKING_REPORT')),
+  schema_version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('running','ready','failed')),
+  source_agent_id TEXT NOT NULL,
+  coreai_run_id TEXT UNIQUE,
+  request_json TEXT NOT NULL,
+  payload_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_seo_artifacts_latest
+  ON merchant_seo_artifacts(merchant_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_local_falcon_syncs (
+  merchant_id INTEGER PRIMARY KEY REFERENCES merchants(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('synced','failed')),
+  last_attempt_at TEXT NOT NULL,
+  last_synced_at TEXT,
+  last_error TEXT,
+  missing_keywords_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS merchant_local_falcon_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  report_key TEXT NOT NULL,
+  place_id TEXT NOT NULL,
+  keyword TEXT NOT NULL,
+  platform TEXT NOT NULL CHECK (platform = 'google'),
+  captured_at TEXT NOT NULL,
+  center_lat REAL NOT NULL,
+  center_lng REAL NOT NULL,
+  grid_size INTEGER NOT NULL,
+  radius REAL NOT NULL,
+  measurement TEXT NOT NULL CHECK (measurement IN ('mi','km')),
+  arp REAL NOT NULL,
+  atrp REAL NOT NULL,
+  solv REAL NOT NULL,
+  found_in INTEGER NOT NULL,
+  image_url TEXT,
+  heatmap_url TEXT,
+  grid_points_json TEXT NOT NULL,
+  synced_at TEXT NOT NULL,
+  UNIQUE (merchant_id, report_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_local_falcon_latest
+  ON merchant_local_falcon_reports(merchant_id, keyword, captured_at DESC);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   merchant_id INTEGER NOT NULL REFERENCES merchants(id),

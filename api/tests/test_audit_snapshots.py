@@ -61,7 +61,10 @@ def test_parse_audit_report_accepts_only_the_strict_contract():
 
     no_evidence = audit_payload()
     no_evidence["findings"][0]["evidence"] = []
-    with pytest.raises(ValidationError):
+    assert parse_audit_report(json.dumps(no_evidence), expected_merchant_id=1).findings[0].evidence == []
+
+    no_evidence["limitations"] = []
+    with pytest.raises(ValueError, match="limitation"):
         parse_audit_report(json.dumps(no_evidence), expected_merchant_id=1)
 
     with pytest.raises(ValueError, match="merchant_id"):

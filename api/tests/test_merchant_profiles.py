@@ -101,6 +101,35 @@ def test_normalize_gbp_location_rejects_malformed_json():
         normalize_gbp_location("{not-json")
 
 
+def test_post_summary_preserves_every_post_returned_by_fbr():
+    from app.merchant_profiles import _post_summary
+
+    raw = json.dumps(
+        {
+            "posts": [
+                {"post_id": "post-1", "state": "LIVE", "summary": "Post one"},
+                {"post_id": "post-2", "state": "LIVE", "summary": "Post two"},
+                {"post_id": "post-3", "state": "LIVE", "summary": "Post three"},
+                {"post_id": "post-4", "state": "LIVE", "summary": "Post four"},
+                {"post_id": "post-5", "state": "LIVE", "summary": "Post five"},
+                {"post_id": "post-6", "state": "LIVE", "summary": "Post six"},
+            ]
+        }
+    )
+
+    summary = _post_summary(raw)
+
+    assert summary["post_count"] == 6
+    assert [post["post_id"] for post in summary["recent_posts"]] == [
+        "post-1",
+        "post-2",
+        "post-3",
+        "post-4",
+        "post-5",
+        "post-6",
+    ]
+
+
 def test_fbr_client_encodes_resource_ids_as_one_path_parameter(monkeypatch):
     from app.fbr_gbp import FbrGbpClient, FbrGbpSettings
 
@@ -209,6 +238,14 @@ def test_operation_assistant_client_uses_merchant_scoped_location_snapshot(monke
             return Response({"attributes": [{"attribute_id": "has_takeout", "values": [True]}]})
         if "/gbp/review/24300588970198995/review?" in url:
             return Response({"reviews": [], "total": 0})
+        if "/location/monthly-overview?" in url:
+            return Response({
+                "query_date": "2026-09-02",
+                "current_month_rating": 4.8,
+                "current_month_review_count": 17,
+                "reply_rate": 0.94,
+                "reviews": [{"rating": 5, "content": "Excellent brunch", "reply_content": "Thank you"}],
+            })
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("app.fbr_gbp.urlopen", fake_urlopen)
@@ -222,6 +259,7 @@ def test_operation_assistant_client_uses_merchant_scoped_location_snapshot(monke
     posts = client.get_field("merchant 1", "24300588970198995", "LOCAL_POSTS")
     attributes = client.get_field("merchant 1", "24300588970198995", "ATTRIBUTES")
     reviews = client.get_reviews("merchant 1", "24300588970198995")
+    overview = client.get_review_overview("merchant 1", "24300588970198995", query_date="2026-09-02")
     normalized = normalize_gbp_location(field["value"])
 
     assert all(merchant_header == "merchant 1" for _, merchant_header, _ in captured)
@@ -234,6 +272,7 @@ def test_operation_assistant_client_uses_merchant_scoped_location_snapshot(monke
             "google_account_id": None,
             "name": "locations/24300588970198995",
             "title": "Choice Brooklyn - Upper West Side",
+            "place_id": "ChIJH8iZh-5ZwokRPLzzADeSnYE",
         }
     ]
     assert normalized["title"] == "Choice Brooklyn - Upper West Side"
@@ -251,6 +290,144 @@ def test_operation_assistant_client_uses_merchant_scoped_location_snapshot(monke
     assert json.loads(posts["value"])["posts"][0]["state"] == "LIVE"
     assert json.loads(attributes["value"])["attributes"][0]["attribute_id"] == "has_takeout"
     assert reviews == {"reviews": [], "total": 0}
+    assert overview["current_month_review_count"] == 17
+
+
+def test_operation_assistant_client_uses_place_id_for_gbp_insights(monkeypatch):
+    from app.fbr_gbp import FbrGbpClient, FbrGbpSettings
+
+    captured = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def fake_urlopen(request, timeout):
+        captured.append((request.full_url, request.get_header("X-merchant-id"), timeout))
+        if "/gbp/performance-metric?" in request.full_url:
+            return Response(
+                {
+                    "metrics": [
+                        {
+                            "metric_date": "2026-09-01",
+                            "metric": "WEBSITE_CLICKS",
+                            "value": 14,
+                        }
+                    ]
+                }
+            )
+        if "/gbp/search-keyword-metric?" in request.full_url:
+            return Response(
+                {
+                    "keywords": [
+                        {"month": "2026-08", "keyword": "coffee", "value": 6246}
+                    ]
+                }
+            )
+        raise AssertionError(f"unexpected URL: {request.full_url}")
+
+    monkeypatch.setattr("app.fbr_gbp.urlopen", fake_urlopen)
+    client = FbrGbpClient(
+        FbrGbpSettings("http://operation-assistant.test", None, 4.0, "operation_assistant")
+    )
+
+    performance = client.list_performance_metrics(
+        "merchant 1",
+        "ChIJH8iZh-5ZwokRPLzzADeSnYE",
+        from_date="2026-08-03",
+        to_date="2026-09-02",
+    )
+    keywords = client.list_search_keyword_metrics(
+        "merchant 1",
+        "ChIJH8iZh-5ZwokRPLzzADeSnYE",
+        from_month="2026-07",
+        to_month="2026-09",
+    )
+
+    assert performance["metrics"][0]["value"] == 14
+    assert keywords["keywords"][0]["keyword"] == "coffee"
+    assert captured == [
+        (
+            "http://operation-assistant.test/gbp/performance-metric?"
+            "from_date=2026-08-03&to_date=2026-09-02&place_id=ChIJH8iZh-5ZwokRPLzzADeSnYE",
+            "merchant 1",
+            4.0,
+        ),
+        (
+            "http://operation-assistant.test/gbp/search-keyword-metric?"
+            "from_month=2026-07&to_month=2026-09&place_id=ChIJH8iZh-5ZwokRPLzzADeSnYE",
+            "merchant 1",
+            4.0,
+        ),
+    ]
+
+
+def test_operation_assistant_client_reads_persisted_local_keywords_by_place_id(monkeypatch):
+    from app.fbr_gbp import FbrGbpClient, FbrGbpSettings
+
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "place_id": "ChIJH8iZh-5ZwokRPLzzADeSnYE",
+                    "local_keywords": [
+                        {
+                            "local_keyword_id": "local-keywords-uws",
+                            "merchant_id": "fbr-choice",
+                            "place_id": "ChIJH8iZh-5ZwokRPLzzADeSnYE",
+                            "keywords": [
+                                {
+                                    "keyword": "breakfast Upper West Side",
+                                    "priority": "P1",
+                                    "target_surface_types": ["GBP"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("app.fbr_gbp.urlopen", fake_urlopen)
+    client = FbrGbpClient(
+        FbrGbpSettings("http://operation-assistant.test", None, 4.0, "operation_assistant")
+    )
+
+    payload = client.get_local_keywords("ChIJH8iZh-5ZwokRPLzzADeSnYE")
+
+    assert payload["local_keywords"][0]["keywords"][0] == {
+        "keyword": "breakfast Upper West Side",
+        "priority": "P1",
+        "target_surface_types": ["GBP"],
+    }
+    assert captured == {
+        "url": (
+            "http://operation-assistant.test/seo/keyword/local/"
+            "ChIJH8iZh-5ZwokRPLzzADeSnYE?"
+        ),
+        "timeout": 4.0,
+    }
 
 
 def test_binding_fbr_merchant_is_explicit_and_trimmed(client):
@@ -293,6 +470,7 @@ class FakeFbrGbpClient:
                 "google_account_id": "accounts/77",
                 "name": "locations/123",
                 "title": "George's Hakka Kitchen",
+                "place_id": "ChIJH8iZh-5ZwokRPLzzADeSnYE",
             }
         ]
 
@@ -339,7 +517,8 @@ class FakeFbrGbpClient:
                                 "items": [
                                     {
                                         "labels": [{"display_name": "Avocado sandwich", "description": "House-made lunch favorite"}],
-                                        "price": {"currency_code": "USD", "units": "12"},
+                                        "price": {"currency_code": "USD", "units": "12", "nanos": 500000000},
+                                        "media_keys": ["AF1QipMenuPhoto"],
                                     }
                                 ],
                             }
@@ -387,6 +566,36 @@ class FakeFbrGbpClient:
                     "reply": None,
                 }
             ],
+        }
+
+    def list_performance_metrics(self, fbr_merchant_id, place_id, *, from_date, to_date):
+        assert fbr_merchant_id == "fbr-merchant-123"
+        assert place_id == "ChIJH8iZh-5ZwokRPLzzADeSnYE"
+        assert from_date <= to_date
+        return {
+            "metrics": [
+                {
+                    "metric_date": "2026-09-01",
+                    "metric": "BUSINESS_IMPRESSIONS_MOBILE_MAPS",
+                    "value": 1215,
+                },
+                {
+                    "metric_date": "2026-09-01",
+                    "metric": "WEBSITE_CLICKS",
+                    "value": 14,
+                },
+            ]
+        }
+
+    def list_search_keyword_metrics(self, fbr_merchant_id, place_id, *, from_month, to_month):
+        assert fbr_merchant_id == "fbr-merchant-123"
+        assert place_id == "ChIJH8iZh-5ZwokRPLzzADeSnYE"
+        assert from_month <= to_month
+        return {
+            "keywords": [
+                {"month": "2026-08", "keyword": "coffee", "value": 6246},
+                {"month": "2026-08", "keyword": "brunch", "value": 2376},
+            ]
         }
 
 
@@ -451,7 +660,19 @@ def test_sync_caches_real_gbp_facts_without_credentials(client):
     assert location["menu_section_count"] == 1
     assert location["menu_item_count"] == 1
     assert location["menu_sections"] == [{"name": "Lunch", "item_count": 1}]
+    assert location["menu_items"] == [
+        {
+            "section_name": "Lunch",
+            "name": "Avocado sandwich",
+            "description": "House-made lunch favorite",
+            "price_amount": 12.5,
+            "currency_code": "USD",
+            "media_url": "https://lh3.googleusercontent.com/p/AF1QipMenuPhoto",
+        }
+    ]
     assert location["review_count"] == 1
+    assert location["review_sync_status"] == "ready"
+    assert location["review_scope"] == "all_synced"
     assert location["recent_reviews"] == [
         {
             "review_id": "review-1",
@@ -464,6 +685,23 @@ def test_sync_caches_real_gbp_facts_without_credentials(client):
     ]
     assert location["media_count"] == 1
     assert location["question_count"] == 1
+    assert location["place_id"] == "ChIJH8iZh-5ZwokRPLzzADeSnYE"
+    assert location["performance_metrics"] == [
+        {
+            "metric_date": "2026-09-01",
+            "metric": "BUSINESS_IMPRESSIONS_MOBILE_MAPS",
+            "value": 1215,
+        },
+        {
+            "metric_date": "2026-09-01",
+            "metric": "WEBSITE_CLICKS",
+            "value": 14,
+        },
+    ]
+    assert location["search_keywords"] == [
+        {"month": "2026-08", "keyword": "coffee", "value": 6246},
+        {"month": "2026-08", "keyword": "brunch", "value": 2376},
+    ]
     assert location["source_updated_at"] == "2026-09-02T02:30:00Z"
     assert "access_token" not in json.dumps(profile).lower()
     assert "refresh_token" not in json.dumps(profile).lower()
@@ -502,6 +740,80 @@ def test_unavailable_gbp_collections_are_unknown_instead_of_zero(client):
     assert location["media_count"] is None
     assert location["question_count"] is None
     assert location["verification_count"] is None
+
+
+def test_unavailable_review_source_is_not_reported_as_zero_reviews(client):
+    from app.fbr_gbp import FbrUnavailableError
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+
+    def unavailable_reviews(*_args, **_kwargs):
+        raise FbrUnavailableError("GBP location not found")
+
+    fake.get_reviews = unavailable_reviews
+    fake.get_review_overview = unavailable_reviews
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        response = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert response.status_code == 200
+    location = response.json()["locations"][0]
+    assert location["review_sync_status"] == "unavailable"
+    assert location["review_count"] is None
+    assert location["recent_reviews"] == []
+
+
+def test_live_review_overview_fills_empty_persisted_review_snapshot(client):
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    fake.get_reviews = lambda *_args: {"total": 0, "reviews": []}
+    fake.get_review_overview = lambda *_args, **_kwargs: {
+        "query_date": "2026-09-02",
+        "current_month_rating": 4.8,
+        "current_month_review_count": 17,
+        "reply_rate": 0.94,
+        "reviews": [
+            {"rating": 5, "content": "Excellent brunch", "reply_content": "Thank you"},
+            {"rating": 4, "content": "Good coffee", "reply_content": None},
+        ],
+    }
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        response = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert response.status_code == 200
+    location = response.json()["locations"][0]
+    assert location["review_sync_status"] == "ready"
+    assert location["review_scope"] == "recent_month"
+    assert location["review_count"] == 17
+    assert location["review_average_rating"] == 4.8
+    assert location["review_reply_rate"] == 0.94
+    assert location["recent_reviews"][0] == {
+        "review_id": None,
+        "rating": 5.0,
+        "content": "Excellent brunch",
+        "reviewer_name": None,
+        "created_at": None,
+        "has_reply": True,
+    }
 
 
 def test_failed_resync_preserves_last_successful_snapshot(client):

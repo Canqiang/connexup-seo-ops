@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -142,6 +142,48 @@ def _label(value: object) -> str | None:
     return None
 
 
+def _description(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    labels = value.get("labels")
+    if not isinstance(labels, list):
+        return _safe_text(value.get("description"))
+    for candidate in labels:
+        if not isinstance(candidate, dict):
+            continue
+        text = _safe_text(candidate.get("description"))
+        if text:
+            return text
+    return None
+
+
+def _price_amount(value: object) -> float | None:
+    if not isinstance(value, dict):
+        return None
+    units = value.get("units")
+    nanos = value.get("nanos")
+    if units is None and nanos is None:
+        return None
+    try:
+        units_value = float(units or 0)
+        nanos_value = float(nanos or 0)
+    except (TypeError, ValueError):
+        return None
+    return round(units_value + nanos_value / 1_000_000_000, 9)
+
+
+def _menu_media_url(item: dict[str, Any]) -> str | None:
+    media_keys = item.get("media_keys") or item.get("mediaKeys")
+    if not isinstance(media_keys, list) or not media_keys:
+        return None
+    media_key = _safe_text(media_keys[0])
+    if not media_key:
+        return None
+    if media_key.startswith("https://") or media_key.startswith("http://"):
+        return media_key
+    return f"https://lh3.googleusercontent.com/p/{media_key}"
+
+
 def _menu_summary(raw: str | None) -> dict[str, Any]:
     menus = _first_list(_json_object(raw), "menus", "foodMenus")
     if menus is None:
@@ -150,8 +192,10 @@ def _menu_summary(raw: str | None) -> dict[str, Any]:
             "menu_section_count": None,
             "menu_item_count": None,
             "menu_sections": [],
+            "menu_items": [],
         }
     section_summaries: list[dict[str, Any]] = []
+    menu_items: list[dict[str, Any]] = []
     item_count = 0
     for menu in menus:
         if not isinstance(menu, dict):
@@ -165,14 +209,33 @@ def _menu_summary(raw: str | None) -> dict[str, Any]:
             items = section.get("items")
             count = len(items) if isinstance(items, list) else 0
             item_count += count
+            section_name = _label(section) or f"分类 {index}"
             section_summaries.append(
-                {"name": _label(section) or f"分类 {index}", "item_count": count}
+                {"name": section_name, "item_count": count}
             )
+            for item in items if isinstance(items, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                price = item.get("price")
+                menu_items.append(
+                    {
+                        "section_name": section_name,
+                        "name": _label(item) or "未命名菜品",
+                        "description": _description(item),
+                        "price_amount": _price_amount(price),
+                        "currency_code": _safe_text(price.get("currency_code"))
+                        or _safe_text(price.get("currencyCode"))
+                        if isinstance(price, dict)
+                        else None,
+                        "media_url": _menu_media_url(item),
+                    }
+                )
     return {
         "menu_count": len(menus),
         "menu_section_count": len(section_summaries),
         "menu_item_count": item_count,
         "menu_sections": section_summaries,
+        "menu_items": menu_items,
     }
 
 
@@ -209,7 +272,7 @@ def _post_summary(raw: str | None) -> dict[str, Any]:
     return {
         "post_count": len(posts),
         "live_post_count": live_count,
-        "recent_posts": recent_posts[:5],
+        "recent_posts": recent_posts,
     }
 
 
@@ -282,8 +345,25 @@ def _safe_text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _month_key(value: date) -> str:
+    return f"{value.year:04d}-{value.month:02d}"
+
+
+def _months_ago(value: date, count: int) -> date:
+    month_index = value.year * 12 + value.month - 1 - count
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def _insight_rows(payload: dict[str, Any] | None, key: str) -> list[dict[str, Any]]:
+    values = _first_list(payload, key)
+    if values is None:
+        return []
+    return [value for value in values if isinstance(value, dict)]
+
+
 def _fetch_location(client: FbrGbpClient, fbr_merchant_id: str, identity: dict[str, Any], synced_at: str):
     gbp_location_id = _safe_text(identity.get("gbp_location_id"))
+    place_id = _safe_text(identity.get("place_id"))
     if not gbp_location_id:
         raise FbrPayloadError("FBR GBP location is missing gbp_location_id")
     fields: dict[str, str | None] = {field: None for field in GBP_FIELDS}
@@ -300,11 +380,73 @@ def _fetch_location(client: FbrGbpClient, fbr_merchant_id: str, identity: dict[s
         if updated_at:
             source_times.append(updated_at)
 
+    today = datetime.now(timezone.utc).date()
     reviews: dict[str, Any] | None = None
+    review_sync_status = "unavailable"
+    review_scope: str | None = None
+    review_average_rating: float | None = None
+    review_reply_rate: float | None = None
     try:
         reviews = client.get_reviews(fbr_merchant_id, gbp_location_id)
+        review_sync_status = "ready"
+        review_scope = "all_synced"
     except (FbrUnavailableError, FbrPayloadError):
         pass
+
+    persisted_review_total = reviews.get("total") if isinstance(reviews, dict) else None
+    if reviews is None or persisted_review_total == 0:
+        try:
+            overview = client.get_review_overview(
+                fbr_merchant_id,
+                gbp_location_id,
+                query_date=today.isoformat(),
+            )
+        except (FbrUnavailableError, FbrPayloadError):
+            overview = None
+        if isinstance(overview, dict):
+            overview_count = overview.get("current_month_review_count")
+            overview_reviews = _first_list(overview, "reviews")
+            if isinstance(overview_count, int) and not isinstance(overview_count, bool):
+                reviews = {
+                    "total": overview_count,
+                    "reviews": [
+                        {
+                            "rating": item.get("rating"),
+                            "content": item.get("content"),
+                            "reply": item.get("reply_content"),
+                        }
+                        for item in (overview_reviews or [])
+                        if isinstance(item, dict)
+                    ],
+                }
+                review_sync_status = "ready"
+                review_scope = "recent_month"
+                review_average_rating = _rating(overview.get("current_month_rating"))
+                reply_rate = overview.get("reply_rate")
+                if isinstance(reply_rate, (int, float)) and not isinstance(reply_rate, bool):
+                    review_reply_rate = float(reply_rate)
+
+    performance: dict[str, Any] | None = None
+    search_keywords: dict[str, Any] | None = None
+    if place_id:
+        try:
+            performance = client.list_performance_metrics(
+                fbr_merchant_id,
+                place_id,
+                from_date=(today - timedelta(days=30)).isoformat(),
+                to_date=today.isoformat(),
+            )
+        except (FbrUnavailableError, FbrPayloadError):
+            pass
+        try:
+            search_keywords = client.list_search_keyword_metrics(
+                fbr_merchant_id,
+                place_id,
+                from_month=_month_key(_months_ago(today, 2)),
+                to_month=_month_key(today),
+            )
+        except (FbrUnavailableError, FbrPayloadError):
+            pass
 
     location_raw = fields["LOCATION"]
     normalized = normalize_gbp_location(location_raw) if location_raw else normalize_gbp_location("{}")
@@ -313,15 +455,22 @@ def _fetch_location(client: FbrGbpClient, fbr_merchant_id: str, identity: dict[s
     review_summary = _review_summary(reviews)
     normalized.update(
         {
+            "place_id": place_id,
             "attribute_count": _attribute_count(fields["ATTRIBUTES"]),
             **menu,
             **posts,
             **review_summary,
+            "review_sync_status": review_sync_status,
+            "review_scope": review_scope,
+            "review_average_rating": review_average_rating,
+            "review_reply_rate": review_reply_rate,
             "media_count": _collection_count(fields["MEDIA"]),
             "customer_media_count": _collection_count(fields["CUSTOMER_MEDIA"]),
             "question_count": _collection_count(fields["QUESTIONS"]),
             "place_action_link_count": _collection_count(fields["PLACE_ACTION_LINKS"]),
             "verification_count": _collection_count(fields["VERIFICATIONS"]),
+            "performance_metrics": _insight_rows(performance, "metrics"),
+            "search_keywords": _insight_rows(search_keywords, "keywords"),
         }
     )
     return {

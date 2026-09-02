@@ -10,6 +10,7 @@ from .execution_result import normalize_execution_output
 from .merchants import now_iso
 from .plan_parser import create_tasks_from_plan, extract_plan
 from .runs import has_running_run, start_run
+from .seo_targets import SeoAgentIds, poll_seo_targets_once
 
 logger = logging.getLogger("seo_ops.scheduler")
 
@@ -156,6 +157,16 @@ async def scheduler_loop() -> None:
         try:
             await asyncio.to_thread(poll_runs_once, client)
             await asyncio.to_thread(poll_task_executions_once, client)
+            if settings.keyword_agent_id and settings.audit_agent_id and settings.ranking_agent_id:
+                await asyncio.to_thread(
+                    poll_seo_targets_once,
+                    client,
+                    SeoAgentIds(
+                        settings.keyword_agent_id,
+                        settings.audit_agent_id,
+                        settings.ranking_agent_id,
+                    ),
+                )
             if tick % SCAN_EVERY_TICKS == 0:
                 await asyncio.to_thread(auto_scan_once, client, settings.agent_id)
         except Exception:

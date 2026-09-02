@@ -134,6 +134,7 @@ class FbrGbpClient:
                         "google_account_id": None,
                         "name": resource_name,
                         "title": _text(location.get("title")),
+                        "place_id": _text(_as_dict(location.get("metadata")).get("place_id")),
                     }
                 )
             return identities
@@ -195,6 +196,72 @@ class FbrGbpClient:
             {"unreplied_only": "false", "skip": "0", "limit": "50"},
             {"x-merchant-id": fbr_merchant_id},
         )
+
+    def get_review_overview(
+        self,
+        fbr_merchant_id: str,
+        gbp_location_id: str,
+        *,
+        query_date: str,
+    ) -> dict[str, Any]:
+        if self.settings.api_style != "operation_assistant":
+            raise FbrUnavailableError(
+                "FBR SEO Integration does not expose live review overview through this client"
+            )
+        return self._get_json(
+            "/location/monthly-overview",
+            {
+                "location_id": gbp_location_id,
+                "query_date": query_date,
+                "start_rating": "1",
+                "end_rating": "5",
+            },
+            {"x-merchant-id": fbr_merchant_id},
+        )
+
+    def list_performance_metrics(
+        self,
+        fbr_merchant_id: str,
+        place_id: str,
+        *,
+        from_date: str,
+        to_date: str,
+    ) -> dict[str, Any]:
+        if self.settings.api_style != "operation_assistant":
+            raise FbrUnavailableError(
+                "FBR SEO Integration does not expose GBP performance through this client"
+            )
+        return self._get_json(
+            "/gbp/performance-metric",
+            {"from_date": from_date, "to_date": to_date, "place_id": place_id},
+            {"x-merchant-id": fbr_merchant_id},
+        )
+
+    def list_search_keyword_metrics(
+        self,
+        fbr_merchant_id: str,
+        place_id: str,
+        *,
+        from_month: str,
+        to_month: str,
+    ) -> dict[str, Any]:
+        if self.settings.api_style != "operation_assistant":
+            raise FbrUnavailableError(
+                "FBR SEO Integration does not expose GBP search keywords through this client"
+            )
+        return self._get_json(
+            "/gbp/search-keyword-metric",
+            {"from_month": from_month, "to_month": to_month, "place_id": place_id},
+            {"x-merchant-id": fbr_merchant_id},
+        )
+
+    def get_local_keywords(self, place_id: str) -> dict[str, Any]:
+        if self.settings.api_style != "operation_assistant":
+            raise FbrUnavailableError(
+                "FBR SEO Integration does not expose persisted local keywords through this client"
+            )
+        encoded_place_id = quote(place_id, safe="")
+        return self._get_json(f"/seo/keyword/local/{encoded_place_id}", {})
 
 
 def fbr_gbp_client() -> FbrGbpClient:

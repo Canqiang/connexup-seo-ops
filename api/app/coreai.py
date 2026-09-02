@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}
@@ -63,6 +65,25 @@ class CoreAiClient:
         if not body.get("status"):
             raise CoreAiError(0, "core-ai run detail missing status")
         return body
+
+    def call_mcp_tool(self, server_id: str, tool_name: str, arguments: dict) -> dict:
+        body = self._request(
+            "POST",
+            f"/api/tools/mcp-servers/{server_id}/test-tool",
+            {"tool_name": tool_name, "arguments": json.dumps(arguments)},
+        )
+        result = body.get("result")
+        if body.get("success") is not True:
+            message = result if isinstance(result, str) and result else "core-ai MCP tool call failed"
+            raise CoreAiError(0, message[:500])
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except json.JSONDecodeError as exc:
+                raise CoreAiError(0, "core-ai MCP tool returned invalid JSON") from exc
+        if not isinstance(result, dict):
+            raise CoreAiError(0, "core-ai MCP tool returned non-object JSON")
+        return result
 
     def close(self) -> None:
         self._client.close()

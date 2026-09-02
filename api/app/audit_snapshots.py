@@ -3,7 +3,7 @@ import sqlite3
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .db import get_db
 
@@ -15,7 +15,7 @@ class AuditFindingV1(BaseModel):
     area: Literal["GBP", "WEBSITE", "LOCAL_CONTENT", "TECHNICAL", "CITATIONS", "REVIEWS", "ANALYTICS", "OTHER"]
     severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
     observation: str = Field(min_length=1, max_length=2000)
-    evidence: list[str] = Field(min_length=1, max_length=10)
+    evidence: list[str] = Field(max_length=10)
     recommendation: str = Field(min_length=1, max_length=2000)
 
 
@@ -30,6 +30,12 @@ class AuditReportV1(BaseModel):
     findings: list[AuditFindingV1] = Field(min_length=1, max_length=100)
     limitations: list[str] = Field(max_length=50)
     next_actions: list[str] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def require_limitation_for_unverified_findings(self):
+        if any(not finding.evidence for finding in self.findings) and not self.limitations:
+            raise ValueError("a finding without evidence requires an explicit limitation")
+        return self
 
 
 def parse_audit_report(raw: object, expected_merchant_id: int) -> AuditReportV1:

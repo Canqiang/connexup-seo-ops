@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -247,7 +247,9 @@ describe('desktop operator shell', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
       status: 200,
-      json: async () => input.endsWith('/api/merchants/1/profile')
+      json: async () => input.endsWith('/api/merchants/1/seo-targets')
+        ? { merchant_id: 1, cycle_status: 'empty', active_stage: null, keyword_set: null, audit_report: null, ranking_report: null, error: null }
+        : input.endsWith('/api/merchants/1/profile')
         ? {
             merchant_id: 1,
             state: 'unbound',
@@ -275,7 +277,45 @@ describe('desktop operator shell', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
       status: 200,
-      json: async () => input.endsWith('/api/merchants/1/profile')
+      json: async () => input.endsWith('/api/merchants/1/seo-targets')
+        ? {
+            merchant_id: 1,
+            cycle_id: 'cycle-1',
+            cycle_status: 'ready',
+            active_stage: null,
+            keyword_set: {
+              schema_version: 'seo_ops.keyword_set.v2',
+              merchant_id: '1',
+              market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Mineola, NY' },
+              generation_method: 'PERSISTED_FBR_READBACK',
+              title: 'Only Bear keyword set',
+              summary: 'US local SEO targets.',
+              keywords: [{
+                keyword: 'fried chicken mineola ny',
+                strategy: 'LOCAL',
+                intent: 'LOCAL',
+                priority: 'UNSCORED',
+                rationale: 'Connected category and location evidence.',
+                source_tags: ['FBR_KEYWORD_STORE'],
+                target_surface_types: ['GBP', 'WEBSITE'],
+                target_location: 'Mineola, NY',
+              }],
+              evidence_gaps: [],
+            },
+            audit_report: null,
+            ranking_report: {
+              schema_version: 'seo_ops.ranking_report.v1',
+              merchant_id: '1',
+              title: 'Only Bear ranking baseline',
+              summary: 'Live baseline.',
+              captured_at: '2026-09-02T03:30:00Z',
+              source_mode: 'LIVE_READ_ONLY',
+              keywords: [{ keyword: 'fried chicken mineola ny', local_rank: 3, organic_rank: 8, source: 'LIVE_READ_ONLY', note: 'DataForSEO Local Pack.' }],
+              limitations: [],
+            },
+            error: null,
+          }
+        : input.endsWith('/api/merchants/1/profile')
         ? {
             merchant_id: 1,
             state: 'synced',
@@ -287,6 +327,7 @@ describe('desktop operator shell', () => {
               gbp_location_id: 'locations/123',
               google_account_id: 'accounts/77',
               name: 'locations/123',
+              place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE',
               title: 'Only Bear Chicken & Boba',
               phone: '+1 516-555-1010',
               additional_phones: [],
@@ -303,8 +344,8 @@ describe('desktop operator shell', () => {
               description: 'Crispy chicken and boba in Mineola.',
               regular_hours: [{ open_day: 'MONDAY', open_time: '11:00', close_day: 'MONDAY', close_time: '21:00' }],
               attribute_count: 3,
-              post_count: 4,
-              live_post_count: 3,
+              post_count: 6,
+              live_post_count: 6,
               recent_posts: [{
                 post_id: 'post-1',
                 state: 'LIVE',
@@ -316,12 +357,53 @@ describe('desktop operator shell', () => {
                 media_format: 'PHOTO',
                 cta_type: 'ORDER',
                 cta_url: 'https://order.example.com',
-              }],
+              }, ...Array.from({ length: 5 }, (_, index) => ({
+                post_id: `post-${index + 2}`,
+                state: 'LIVE',
+                summary: `Scheduled post ${index + 2}`,
+                created_at: `2026-08-${String(30 - index).padStart(2, '0')}T10:00:00Z`,
+                updated_at: null,
+                media_count: 1,
+                media_url: `https://images.example/post-${index + 2}.jpg`,
+                media_format: 'PHOTO',
+                cta_type: null,
+                cta_url: null,
+              }))],
               menu_count: 1,
               menu_section_count: 2,
               menu_item_count: 14,
               menu_sections: [{ name: 'Lunch', item_count: 8 }, { name: 'Drinks', item_count: 6 }],
-              review_count: 1,
+              menu_items: [
+                {
+                  section_name: 'Lunch',
+                  name: 'Avocado sandwich',
+                  description: 'House-made lunch favorite',
+                  price_amount: 12.5,
+                  currency_code: 'USD',
+                  media_url: null,
+                },
+                {
+                  section_name: 'Drinks',
+                  name: 'Cold Brew',
+                  description: 'Slow-steeped house coffee',
+                  price_amount: 5.5,
+                  currency_code: 'USD',
+                  media_url: null,
+                },
+                ...Array.from({ length: 5 }, (_, index) => ({
+                  section_name: 'Lunch',
+                  name: `Menu item ${index + 3}`,
+                  description: `Menu description ${index + 3}`,
+                  price_amount: index + 7,
+                  currency_code: 'USD',
+                  media_url: index === 4 ? 'https://images.example/menu-7.jpg' : null,
+                })),
+              ],
+              review_count: 17,
+              review_sync_status: 'ready',
+              review_scope: 'recent_month',
+              review_average_rating: 4.8,
+              review_reply_rate: 0.94,
               recent_reviews: [{
                 review_id: 'review-1',
                 rating: 5,
@@ -335,6 +417,21 @@ describe('desktop operator shell', () => {
               question_count: null,
               place_action_link_count: null,
               verification_count: null,
+              performance_metrics: [
+                { metric_date: '2026-09-01', metric: 'BUSINESS_IMPRESSIONS_MOBILE_MAPS', value: 1215 },
+                { metric_date: '2026-09-01', metric: 'BUSINESS_IMPRESSIONS_DESKTOP_MAPS', value: 70 },
+                { metric_date: '2026-09-01', metric: 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH', value: 664 },
+                { metric_date: '2026-09-01', metric: 'BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', value: 129 },
+                { metric_date: '2026-09-01', metric: 'WEBSITE_CLICKS', value: 14 },
+                { metric_date: '2026-09-01', metric: 'BUSINESS_DIRECTION_REQUESTS', value: 26 },
+                { metric_date: '2026-09-01', metric: 'CALL_CLICKS', value: 1 },
+              ],
+              search_keywords: [
+                { month: '2026-08', keyword: 'coffee', value: 6246 },
+                { month: '2026-07', keyword: 'coffee', value: 754 },
+                { month: '2026-08', keyword: 'breakfast', value: 2727 },
+                { month: '2026-08', keyword: 'brunch', value: 2376 },
+              ],
               source_updated_at: '2026-09-02T02:30:00Z',
               synced_at: '2026-09-02T03:00:00Z',
             }],
@@ -356,16 +453,210 @@ describe('desktop operator shell', () => {
     screen.getByText('周一 11:00–21:00')
     screen.getByRole('navigation', { name: 'GBP 资料分区' })
     screen.getByRole('heading', { name: '内容资产' })
-    screen.getByText('4 条 Post')
-    screen.getByText('3 条在线')
+    screen.getByText('本次同步 6 条')
+    screen.getByText('显示 5 / 6')
+    expect(screen.getAllByRole('img', { name: 'GBP Post 缩略图' })).toHaveLength(5)
+    expect(screen.queryByText('Scheduled post 6')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '查看全部 6 条 Post' }))
+    expect(screen.getAllByText('Scheduled post 6')).toHaveLength(2)
+    expect(screen.getAllByRole('img', { name: 'GBP Post 缩略图' })).toHaveLength(6)
+    const unavailableThumbnail = screen.getAllByRole('img', { name: 'GBP Post 缩略图' })[0]
+    fireEvent.error(unavailableThumbnail)
+    expect(document.body.contains(unavailableThumbnail)).toBe(false)
+    expect(screen.queryAllByRole('img', { name: 'GBP Post 配图' })
+      .filter(image => image.getAttribute('src') === 'https://images.example/post-1.jpg')).toHaveLength(0)
+    expect(screen.getAllByText('媒体暂不可用')).toHaveLength(2)
     screen.getByText('1 个菜单 · 2 个分类 · 14 个菜品')
+    screen.getByRole('combobox', { name: '菜品分类' })
+    screen.getByRole('img', { name: 'Menu item 7' })
+    screen.getByText('House-made lunch favorite')
+    screen.getByText('$12.50')
+    expect(screen.getAllByText('暂无菜品图片')).toHaveLength(5)
+    expect(screen.queryByText('Menu item 6')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '查看全部 7 个菜品' }))
+    screen.getByText('Menu item 6')
+    fireEvent.change(screen.getByRole('combobox', { name: '菜品分类' }), { target: { value: 'Drinks' } })
+    screen.getByText('Cold Brew')
+    expect(screen.queryByText('Avocado sandwich')).toBeNull()
+    expect(screen.queryByRole('button', { name: '字段说明' })).toBeNull()
+    const storeCodeHelp = screen.getByRole('button', { name: '说明：门店代码' })
+    fireEvent.click(storeCodeHelp)
+    within(screen.getByRole('dialog', { name: '门店代码说明' })).getByText(/不是 GBP Location ID/)
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole('dialog', { name: '门店代码说明' })).toBeNull()
+    fireEvent.click(storeCodeHelp)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: '门店代码说明' })).toBeNull()
+    screen.getByRole('button', { name: '说明：同步数量' })
+    screen.getByRole('button', { name: '说明：真实搜索词' })
+    screen.getByRole('button', { name: '说明：目标关键词' })
+    screen.getByRole('button', { name: '说明：本地排名' })
+    screen.getByRole('button', { name: '说明：自然排名' })
     screen.getByText(/Warm scratch-baked croissants/)
-    screen.getByRole('img', { name: 'GBP Post 配图' })
     expect(screen.getByRole('link', { name: '打开 ORDER 链接' }).getAttribute('href')).toBe('https://order.example.com')
     screen.getByText('Great neighborhood cafe')
-    screen.getByText('媒体未同步')
-    screen.getAllByText('UAT 接口未部署')
+    screen.getByText('近 30 天 17 条')
+    screen.getByText('平均 4.8 · 回复率 94%')
+    screen.getByText('独立媒体库未同步')
+    screen.getByRole('heading', { name: 'GBP 表现与真实搜索词' })
+    screen.getByText('地图曝光')
+    screen.getByText('1,285')
+    screen.getByText('搜索曝光')
+    screen.getByText('793')
+    screen.getByText('网站点击')
+    screen.getByText('路线请求')
+    screen.getByText('电话点击')
+    screen.getByRole('heading', { name: '真实搜索词' })
+    screen.getByText('coffee')
+    screen.getByText('7,000')
+    screen.getByText('breakfast')
+    screen.getByText('2,727')
+    screen.getByText('brunch')
+    screen.getByText('2,376')
+    screen.getByRole('heading', { name: 'SEO 目标关键词与排名' })
+    screen.getByText('fried chicken mineola ny')
+    screen.getByText('待运营确认')
+    screen.getByText('#3')
+    screen.getByText('#8')
+    screen.getByText('FBR 已落库 · 1 个关键词')
+    screen.getByRole('button', { name: '重新同步关键词库' })
+    screen.getByText('排名来源：DataForSEO')
+    expect(screen.queryByRole('button', { name: '重新生成' })).toBeNull()
+    expect(screen.queryByText('尚未接入')).toBeNull()
+    expect(screen.queryByText('UAT 接口未部署')).toBeNull()
     screen.getByText('同步于 09-02 11:00')
+  })
+
+  it('shows Local Falcon reports as compact heatmap rows and opens a fixed report drawer', async () => {
+    window.history.pushState({}, '', '/merchants/3/profile')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/3/seo-targets')
+        ? {
+            merchant_id: 3,
+            cycle_id: 'cycle-lf',
+            cycle_status: 'ready',
+            active_stage: null,
+            keyword_set: {
+              schema_version: 'seo_ops.keyword_set.v2',
+              merchant_id: '3',
+              market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Upper West Side, New York, NY' },
+              generation_method: 'EVIDENCE_BOUNDED_RESEARCH',
+              title: 'UWS keyword set',
+              summary: 'Accepted targets.',
+              keywords: [
+                { keyword: 'breakfast upper west side', strategy: 'LOCAL', intent: 'LOCAL', priority: 'UNSCORED', rationale: 'Local target.', source_tags: ['GBP'], target_surface_types: ['GBP'], target_location: 'Upper West Side' },
+                { keyword: 'coffee near lincoln center', strategy: 'LOCAL', intent: 'LOCAL', priority: 'UNSCORED', rationale: 'Local target.', source_tags: ['GBP'], target_surface_types: ['GBP'], target_location: 'Upper West Side' },
+              ],
+              evidence_gaps: [],
+            },
+            audit_report: null,
+            ranking_report: {
+              schema_version: 'seo_ops.ranking_report.v1',
+              merchant_id: '3',
+              title: 'UWS ranking baseline',
+              summary: 'Live baseline.',
+              captured_at: '2026-09-02T03:30:00Z',
+              source_mode: 'LIVE_READ_ONLY',
+              keywords: [
+                { keyword: 'breakfast upper west side', local_rank: 1, organic_rank: null, source: 'LIVE_READ_ONLY', note: 'Local Falcon ARP rounded by the v1 Agent.' },
+                { keyword: 'coffee near lincoln center', local_rank: 3, organic_rank: 8, source: 'LIVE_READ_ONLY', note: 'DataForSEO Local Pack.' },
+              ],
+              limitations: [],
+            },
+            local_falcon: {
+              status: 'synced',
+              last_synced_at: '2026-09-02T08:30:00Z',
+              last_error: null,
+              missing_keywords: ['coffee near lincoln center'],
+              reports: [{
+                schema_version: 'seo_ops.local_falcon_snapshot.v1',
+                report_key: '8aa3c7e1f6c599b',
+                place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE',
+                keyword: 'breakfast upper west side',
+                platform: 'google',
+                captured_at: '2026-08-28T12:00:00',
+                center_lat: 40.1,
+                center_lng: -73.1,
+                grid_size: 3,
+                radius: 0.5,
+                measurement: 'km',
+                arp: 1.38,
+                atrp: 1.38,
+                solv: 93.83,
+                found_in: 9,
+                image_url: null,
+                heatmap_url: null,
+                grid_points: [
+                  { lat: 40.2, lng: -73.2, found: true, rank: 1 },
+                  { lat: 40.1, lng: -73.2, found: true, rank: 1 },
+                  { lat: 40.0, lng: -73.2, found: true, rank: 2 },
+                  { lat: 40.2, lng: -73.1, found: true, rank: 1 },
+                  { lat: 40.1, lng: -73.1, found: true, rank: 1 },
+                  { lat: 40.0, lng: -73.1, found: true, rank: 3 },
+                  { lat: 40.2, lng: -73.0, found: true, rank: 2 },
+                  { lat: 40.1, lng: -73.0, found: true, rank: 4 },
+                  { lat: 40.0, lng: -73.0, found: true, rank: 8 },
+                ],
+              }],
+            },
+            capabilities: { can_regenerate: true },
+            error: null,
+          }
+        : input.endsWith('/api/merchants/3/profile')
+          ? {
+              merchant_id: 3,
+              state: 'synced',
+              fbr_merchant_id: 'fbr-choice',
+              sync_status: 'synced',
+              last_synced_at: '2026-09-02T03:00:00Z',
+              last_error: null,
+              locations: [{
+                gbp_location_id: 'locations/uws',
+                title: 'Choice Brooklyn - Upper West Side',
+                address: '2040 Broadway, New York, NY 10023, US',
+                additional_phones: [],
+                address_lines: [],
+                additional_categories: [],
+                regular_hours: [],
+                menu_sections: [],
+                menu_items: [],
+                recent_posts: [],
+                recent_reviews: [],
+                performance_metrics: [],
+                search_keywords: [],
+                synced_at: '2026-09-02T03:00:00Z',
+              }],
+            }
+          : input.endsWith('/api/merchants/3')
+            ? { id: 3, name: 'Choice Brooklyn - Upper West Side', primary_location: '2040 Broadway, New York, NY 10023', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+            : [],
+    })))
+
+    render(<App />)
+
+    await screen.findByRole('heading', { name: 'SEO 目标关键词与排名' })
+    screen.getByRole('button', { name: '重新生成' })
+    screen.getByRole('button', { name: '同步已有 Local Falcon 报告' })
+    screen.getByRole('columnheader', { name: '热力图' })
+    screen.getByRole('img', { name: 'breakfast upper west side Local Falcon 热力图' })
+    screen.getByText('3 × 3 grid')
+    screen.getByText('0.5 km radius')
+    expect(screen.getAllByText('1.38')).toHaveLength(2)
+    screen.getByText('93.83')
+    expect(screen.queryByRole('button', { name: '查看 coffee near lincoln center 的 Local Falcon 报告' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: 'breakfast upper west side Local Falcon 报告' })).toBeNull()
+    const detailButton = screen.getByRole('button', { name: '查看 breakfast upper west side 的 Local Falcon 报告' })
+    fireEvent.click(detailButton)
+    const drawer = screen.getByRole('dialog', { name: 'breakfast upper west side Local Falcon 报告' })
+    const grid = within(drawer).getByRole('grid', { name: 'breakfast upper west side 地理排名点阵' })
+    expect(within(grid).getAllByRole('gridcell')).toHaveLength(9)
+    within(drawer).getByText('3 × 3')
+    within(drawer).getByText('0.5 km')
+    within(drawer).getByText('报告 8aa3c7e1f6c599b')
+    fireEvent.click(within(drawer).getByRole('button', { name: '关闭 Local Falcon 报告' }))
+    expect(screen.queryByRole('dialog', { name: 'breakfast upper west side Local Falcon 报告' })).toBeNull()
   })
 
   it('defaults a multi-location profile to the GBP record matching the SEO Ops merchant', async () => {
@@ -373,7 +664,9 @@ describe('desktop operator shell', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
       status: 200,
-      json: async () => input.endsWith('/api/merchants/3/profile')
+      json: async () => input.endsWith('/api/merchants/3/seo-targets')
+        ? { merchant_id: 3, cycle_status: 'empty', active_stage: null, keyword_set: null, audit_report: null, ranking_report: null, error: null }
+        : input.endsWith('/api/merchants/3/profile')
         ? {
             merchant_id: 3,
             state: 'synced',
@@ -413,6 +706,116 @@ describe('desktop operator shell', () => {
     await screen.findByRole('main', { name: '商户资料' })
     expect((screen.getByRole('combobox', { name: 'GBP 门店' }) as HTMLSelectElement).value).toBe('locations/uws')
     screen.getByRole('heading', { name: 'Choice Brooklyn - Upper West Side', level: 2 })
+  })
+
+  it('automatically reads the FBR keyword repository only when no saved snapshot exists', async () => {
+    window.history.pushState({}, '', '/merchants/3/profile')
+    const fetchMock = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => ({
+      ok: true,
+      status: input.endsWith('/seo-targets/refresh') ? 202 : 200,
+      json: async () => input.endsWith('/seo-targets/refresh') && init?.method === 'POST'
+        ? {
+            merchant_id: 3,
+            cycle_id: 'first-fbr-read',
+            cycle_status: 'ready',
+            active_stage: null,
+            keyword_set: {
+              schema_version: 'seo_ops.keyword_set.v2',
+              merchant_id: '3',
+              market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Upper West Side' },
+              generation_method: 'PERSISTED_FBR_READBACK',
+              title: 'UWS persisted keywords',
+              summary: 'Read from FBR.',
+              keywords: [{ keyword: 'breakfast upper west side', strategy: 'LOCAL', intent: 'LOCAL', priority: 'P1', rationale: 'Persisted.', source_tags: ['FBR_KEYWORD_STORE'], target_surface_types: ['GBP'], target_location: 'Upper West Side' }],
+              evidence_gaps: [],
+            },
+            audit_report: null,
+            ranking_report: null,
+            error: null,
+          }
+        : input.endsWith('/api/merchants/3/seo-targets')
+          ? { merchant_id: 3, cycle_status: 'empty', active_stage: null, keyword_set: null, audit_report: null, ranking_report: null, error: null }
+          : input.endsWith('/api/merchants/3/profile')
+            ? {
+                merchant_id: 3,
+                state: 'synced',
+                fbr_merchant_id: 'fbr-choice',
+                sync_status: 'synced',
+                last_synced_at: '2026-09-02T03:00:00Z',
+                last_error: null,
+                locations: [{
+                  gbp_location_id: 'locations/uws',
+                  title: 'Choice Brooklyn - Upper West Side',
+                  address: '2040 Broadway, New York, NY 10023, US',
+                  additional_phones: [],
+                  address_lines: [],
+                  additional_categories: [],
+                  regular_hours: [],
+                  menu_sections: [],
+                  menu_items: [],
+                  recent_posts: [],
+                  recent_reviews: [],
+                  performance_metrics: [],
+                  search_keywords: [],
+                  synced_at: '2026-09-02T03:00:00Z',
+                }],
+              }
+            : input.endsWith('/api/merchants/3')
+              ? { id: 3, name: 'Choice Brooklyn - Upper West Side', primary_location: '2040 Broadway, New York, NY 10023', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+              : [],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await screen.findByRole('button', { name: '重新同步关键词库' })
+    screen.getByText('FBR 已落库 · 1 个关键词')
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith('/api/merchants/3/seo-targets/refresh') && (init as RequestInit | undefined)?.method === 'POST',
+      )).toHaveLength(1)
+    })
+  })
+
+  it('shows unavailable review data as unsynced instead of zero reviews', async () => {
+    window.history.pushState({}, '', '/merchants/3/profile')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/3/seo-targets')
+        ? { merchant_id: 3, cycle_status: 'empty', active_stage: null, keyword_set: null, audit_report: null, ranking_report: null, error: null }
+        : input.endsWith('/api/merchants/3/profile')
+          ? {
+              merchant_id: 3,
+              state: 'synced',
+              fbr_merchant_id: 'fbr-choice',
+              sync_status: 'synced',
+              last_synced_at: '2026-09-02T03:00:00Z',
+              last_error: null,
+              locations: [{
+                gbp_location_id: 'locations/uws',
+                title: 'Choice Brooklyn - Upper West Side',
+                address: '2040 Broadway, New York, NY 10023, US',
+                additional_phones: [],
+                address_lines: [],
+                additional_categories: [],
+                regular_hours: [],
+                review_sync_status: 'unavailable',
+                review_count: null,
+                recent_reviews: [],
+                synced_at: '2026-09-02T03:00:00Z',
+              }],
+            }
+          : input.endsWith('/api/merchants/3')
+            ? { id: 3, name: 'Choice Brooklyn - Upper West Side', primary_location: '2040 Broadway, New York, NY 10023', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+            : [],
+    })))
+    render(<App />)
+
+    await screen.findByRole('main', { name: '商户资料' })
+    screen.getByText('评价数据未同步')
+    screen.getByText('Review Integration 尚未关联这家 GBP 门店；这不代表 Google 商户页面没有评价。')
+    expect(screen.queryByText('0 条')).toBeNull()
   })
 
   it('shows one clear diagnosis status and next action for a new merchant', async () => {
@@ -756,8 +1159,7 @@ describe('desktop operator shell', () => {
     })))
     render(<App />)
 
-    await screen.findByRole('main', { name: '任务详情' })
-    screen.getByRole('button', { name: '返回冒烟商户' })
+    await screen.findByRole('button', { name: '返回冒烟商户' })
     screen.getByRole('heading', { name: task.title })
     screen.getByRole('heading', { name: '任务说明' })
     screen.getByRole('heading', { name: 'Agent 执行结果' })

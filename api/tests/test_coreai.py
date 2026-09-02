@@ -87,3 +87,52 @@ def test_non_dict_json_body_raises_coreai_error_not_attributeerror():
 
     with pytest.raises(CoreAiError):
         make_client(handler).get_run("r-5")
+
+
+def test_call_mcp_tool_posts_json_arguments_and_parses_nested_object():
+    seen = {}
+
+    def handler(request):
+        import json
+
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "duration_ms": 12,
+                "result": json.dumps({"reports": [{"report_key": "abc123"}]}),
+            },
+        )
+
+    result = make_client(handler).call_mcp_tool(
+        "local-falcon-id",
+        "listLocalFalconScanReports",
+        {"placeId": "place-1", "keyword": "breakfast"},
+    )
+
+    assert seen["url"] == "https://core.test/api/tools/mcp-servers/local-falcon-id/test-tool"
+    assert seen["body"] == {
+        "tool_name": "listLocalFalconScanReports",
+        "arguments": '{"placeId": "place-1", "keyword": "breakfast"}',
+    }
+    assert result == {"reports": [{"report_key": "abc123"}]}
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"success": False, "result": "upstream rejected", "duration_ms": 3}, "upstream rejected"),
+        ({"success": True, "result": "[]", "duration_ms": 3}, "non-object"),
+        ({"success": True, "result": "not-json", "duration_ms": 3}, "invalid JSON"),
+    ],
+)
+def test_call_mcp_tool_rejects_failed_or_malformed_results(response, expected):
+    from app.coreai import CoreAiError
+
+    def handler(request):
+        return httpx.Response(200, json=response)
+
+    with pytest.raises(CoreAiError, match=expected):
+        make_client(handler).call_mcp_tool("server-1", "readTool", {})
