@@ -2038,13 +2038,15 @@ def insert_verified_skill_keyword_set(
     place_id=TEST_PLACE_ID,
     location_name=TEST_LOCATION_NAME,
     keyword="verified breakfast keyword",
+    local_keywords=None,
 ):
     from app import seo_targets
 
     payload = mark_deterministic_local_ranks(
         keyword_result(
             merchant_id,
-            [local_keyword(keyword, score=95, priority="P0")],
+            local_keywords
+            or [local_keyword(keyword, score=95, priority="P0")],
             generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
         )
     )
@@ -2164,6 +2166,140 @@ def insert_unscored_fbr_keyword_inventory(
     artifact_id = cursor.lastrowid
     conn.close()
     return artifact_id
+
+
+def test_keyword_head_bootstrap_prefers_newest_trusted_skill_without_deleting_history(
+    client, monkeypatch
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    older_skill_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="older-trusted-skill",
+        local_keywords=[
+            local_keyword(f"older trusted local keyword {index}", score=200 - index)
+            for index in range(19)
+        ],
+    )
+    newer_skill_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="newer-trusted-skill",
+        local_keywords=[
+            local_keyword(f"newer trusted local keyword {index}", score=200 - index)
+            for index in range(16)
+        ],
+    )
+    insert_unscored_fbr_keyword_inventory(
+        merchant_id,
+        cycle_id="newer-fbr-inventory-one",
+    )
+    insert_unscored_fbr_keyword_inventory(
+        merchant_id,
+        cycle_id="newer-fbr-inventory-two",
+    )
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.row_factory = sqlite3.Row
+    head = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
+    active_row, active_payload = seo_targets._active_ready_keyword_artifact(
+        conn,
+        merchant_id,
+        TEST_PLACE_ID,
+    )
+    artifact_count = conn.execute(
+        "SELECT COUNT(*) FROM merchant_seo_artifacts WHERE merchant_id = ?",
+        (merchant_id,),
+    ).fetchone()[0]
+    conn.close()
+
+    assert older_skill_id != newer_skill_id
+    assert head["active_artifact_id"] == newer_skill_id
+    assert head["activated_by"] == "system-bootstrap"
+    assert head["activation_reason"] == "SYSTEM_BOOTSTRAP"
+    assert head["activated_at"] is not None
+    assert active_row["id"] == newer_skill_id
+    assert len(active_payload["keywords"]) == 16
+    assert artifact_count == 4
+
+
+def test_keyword_head_bootstrap_creates_one_null_head_for_an_empty_location(
+    client, monkeypatch
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.row_factory = sqlite3.Row
+
+    first = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
+    second = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
+    active_row, active_payload = seo_targets._active_ready_keyword_artifact(
+        conn,
+        merchant_id,
+        TEST_PLACE_ID,
+    )
+    count = conn.execute(
+        "SELECT COUNT(*) FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()[0]
+    conn.close()
+
+    assert first["active_artifact_id"] is None
+    assert first["activated_by"] is None
+    assert first["activation_reason"] is None
+    assert first["activated_at"] is None
+    assert second["active_artifact_id"] is None
+    assert active_row is None
+    assert active_payload is None
+    assert count == 1
+
+
+def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_without_skill(
+    client, monkeypatch
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    trusted_skill_id = insert_verified_skill_keyword_set(merchant_id)
+    insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="another-place",
+        place_id="another-place-id",
+        location_name="Another place",
+    )
+    insert_ready_keyword_set(
+        merchant_id,
+        generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+    )
+    insert_unscored_fbr_keyword_inventory(merchant_id)
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, payload_json, created_at, completed_at)"
+        " VALUES (?, 'malformed-payload', 'KEYWORD_SET', 'seo_ops.keyword_set.v2', 'ready',"
+        " 'fbr-keyword-store', ?, '{', '2026-09-02T11:00:00Z', '2026-09-02T11:01:00Z')",
+        (merchant_id, json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID})),
+    )
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    trusted_head = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
+    conn.close()
+
+    fallback_merchant_id = create_uws_merchant(client, monkeypatch)
+    fallback_fbr_id = insert_unscored_fbr_keyword_inventory(fallback_merchant_id)
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.row_factory = sqlite3.Row
+    fallback_head = seo_targets._ensure_keyword_head(
+        conn,
+        fallback_merchant_id,
+        TEST_PLACE_ID,
+    )
+    conn.close()
+
+    assert trusted_head["active_artifact_id"] == trusted_skill_id
+    assert fallback_head["active_artifact_id"] == fallback_fbr_id
 
 
 def test_state_prefers_newest_paid_keyword_artifact_for_the_current_location(

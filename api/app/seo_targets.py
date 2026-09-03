@@ -52,6 +52,12 @@ RANKING_SKILL_OUTPUT_ADAPTER_VERSION = "seo_ops.ranking_skill_output_adapter.v1"
 RANKING_SKILL_KEYWORD_SET_ADAPTER_VERSION = (
     "seo_ops.ranking_skill_keyword_set_adapter.v2"
 )
+KEYWORD_ACTIVATION_REASONS = {
+    "SKILL_GENERATION",
+    "SYSTEM_BOOTSTRAP",
+    "RESTORE_SKILL",
+    "ADOPT_FBR",
+}
 # The current Local Falcon report contract has neither a timezone-aware
 # submission timestamp nor a batch/request correlation id. A report with the
 # same keyword and scan parameters could therefore belong to another paid run.
@@ -899,6 +905,130 @@ def _preferred_ready_keyword_artifact(
         if _keyword_artifact_paid_eligible(row, keyword_set, current_place_id):
             return row, keyword_set
     return candidates[0] if candidates else (None, None)
+
+
+def _ready_keyword_artifact_candidates(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> list[tuple[sqlite3.Row, dict]]:
+    rows = conn.execute(
+        "SELECT * FROM merchant_seo_artifacts"
+        " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'ready'"
+        " AND payload_json IS NOT NULL ORDER BY id DESC",
+        (merchant_id,),
+    ).fetchall()
+    candidates: list[tuple[sqlite3.Row, dict]] = []
+    for row in rows:
+        if _keyword_artifact_place_id(row) != place_id:
+            continue
+        try:
+            keyword_set = json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(keyword_set, dict):
+            candidates.append((row, keyword_set))
+    return candidates
+
+
+def _ensure_keyword_head(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> sqlite3.Row:
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        head = conn.execute(
+            "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+            (merchant_id, place_id),
+        ).fetchone()
+        if head is not None:
+            if owns_transaction:
+                conn.commit()
+            return head
+
+        candidates = _ready_keyword_artifact_candidates(conn, merchant_id, place_id)
+        active_artifact_id = next(
+            (
+                row["id"]
+                for row, keyword_set in candidates
+                if keyword_set.get("generation_method")
+                == "UPSTREAM_DETERMINISTIC_ADAPTER"
+                and _has_deterministic_scored_local_cohort(keyword_set)
+                and _keyword_artifact_paid_eligible(row, keyword_set, place_id)
+            ),
+            None,
+        )
+        if active_artifact_id is None:
+            active_artifact_id = next(
+                (
+                    row["id"]
+                    for row, keyword_set in candidates
+                    if keyword_set.get("generation_method") == "PERSISTED_FBR_READBACK"
+                ),
+                None,
+            )
+
+        timestamp = now_iso()
+        activation_values = (
+            ("system-bootstrap", "SYSTEM_BOOTSTRAP", timestamp)
+            if active_artifact_id is not None
+            else (None, None, None)
+        )
+        conn.execute(
+            "INSERT INTO merchant_keyword_heads"
+            " (merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+            " activated_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (merchant_id, place_id, active_artifact_id, *activation_values, timestamp),
+        )
+        head = conn.execute(
+            "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+            (merchant_id, place_id),
+        ).fetchone()
+        if owns_transaction:
+            conn.commit()
+        return head
+    except Exception:
+        if owns_transaction:
+            conn.rollback()
+        raise
+
+
+def _active_ready_keyword_artifact(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> tuple[sqlite3.Row | None, dict | None]:
+    head = conn.execute(
+        "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, place_id),
+    ).fetchone()
+    if head is None or head["active_artifact_id"] is None:
+        return None, None
+
+    row = conn.execute(
+        "SELECT artifact.* FROM merchant_keyword_heads AS head"
+        " JOIN merchant_seo_artifacts AS artifact ON artifact.id = head.active_artifact_id"
+        " WHERE head.merchant_id = ? AND head.place_id = ?",
+        (merchant_id, place_id),
+    ).fetchone()
+    if (
+        row is None
+        or row["merchant_id"] != merchant_id
+        or row["artifact_type"] != "KEYWORD_SET"
+        or row["status"] != "ready"
+        or _keyword_artifact_place_id(row) != place_id
+    ):
+        raise HTTPException(status_code=409, detail="active keyword artifact is invalid")
+    try:
+        keyword_set = json.loads(row["payload_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="active keyword artifact is invalid") from exc
+    if not isinstance(keyword_set, dict):
+        raise HTTPException(status_code=409, detail="active keyword artifact is invalid")
+    return row, keyword_set
 
 
 def _local_falcon_cohort(keyword_set: dict | None) -> list[dict]:
