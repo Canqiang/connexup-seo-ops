@@ -2576,6 +2576,154 @@ describe('desktop operator shell', () => {
   })
 })
 
+describe('关键词版本 controls', () => {
+  const activeState = (overrides: Record<string, unknown> = {}) => ({
+    merchant_id: 3,
+    cycle_status: 'ready',
+    active_stage: null,
+    keyword_set_artifact_id: 41,
+    active_keyword_artifact_id: 41,
+    active_keyword_source: 'SKILL',
+    active_keyword_activated_at: '2026-09-03T00:00:00Z',
+    keyword_versions: [
+      { artifact_id: 41, place_id: 'place-3', source: 'SKILL', generation_method: 'EVIDENCE_BOUNDED_RESEARCH', keyword_count: 16, local_keyword_count: 10, organic_keyword_count: 6, scored_keyword_count: 16, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-03T00:00:00Z', is_active: true },
+      { artifact_id: 32, place_id: 'place-3', source: 'SKILL', generation_method: 'EVIDENCE_BOUNDED_RESEARCH', keyword_count: 12, local_keyword_count: 8, organic_keyword_count: 4, scored_keyword_count: 12, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-02T00:00:00Z', is_active: false },
+      { artifact_id: 99, place_id: 'place-3', source: 'FBR', generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 101, local_keyword_count: 71, organic_keyword_count: 30, scored_keyword_count: 0, score_status: 'UNSCORED', completed_at: '2026-09-03T00:01:00Z', is_active: false },
+    ],
+    latest_fbr_import: {
+      artifact_id: 99,
+      imported_at: '2026-09-03T00:01:00Z',
+      is_active: false,
+      comparison: {
+        active_local_count: 10,
+        fbr_local_count: 71,
+        added_count: 63,
+        removed_count: 2,
+        priority_changed_count: 4,
+        target_surfaces_changed_count: 5,
+        added_keywords: ['candidate one'],
+        removed_keywords: ['active one'],
+        changed_keywords: [],
+      },
+    },
+    keyword_set: {
+      schema_version: 'seo_ops.keyword_set.v2', merchant_id: '3',
+      market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Brooklyn' },
+      generation_method: 'EVIDENCE_BOUNDED_RESEARCH', title: 'Active Skill', summary: 'Active local truth.',
+      keywords: [{ keyword: 'active local truth', strategy: 'LOCAL', intent: 'LOCAL', priority: 'P0', score: 95, score_rank: 1, local_falcon_selected: true, rationale: 'active', source_tags: ['SKILL'], target_surface_types: ['GBP'], target_location: 'Brooklyn' }],
+      evidence_gaps: [],
+    },
+    audit_report: null, ranking_report: null,
+    local_falcon: { current_place_id: 'place-3', status: 'not_synced', last_synced_at: null, last_error: null, missing_keywords: [], reports: [] },
+    capabilities: { can_regenerate: true, can_sync_local_falcon: false, can_approve_local_falcon: false, can_generate_local_falcon: false },
+    error: null,
+    ...overrides,
+  })
+
+  const profile = {
+    merchant_id: 3, state: 'synced', fbr_merchant_id: 'fbr-3', sync_status: 'synced', last_synced_at: '2026-09-03T00:00:00Z', last_error: null,
+    locations: [{ gbp_location_id: 'locations/3', place_id: 'place-3', title: 'Version Store', address: 'Brooklyn, NY', additional_phones: [], address_lines: [], additional_categories: [], regular_hours: [], menu_sections: [], menu_items: [], recent_posts: [], recent_reviews: [], performance_metrics: [], search_keywords: [], synced_at: '2026-09-03T00:00:00Z' }],
+  }
+
+  const renderWithState = (state: Record<string, unknown>, onActivate?: (body: string) => { ok: boolean; status: number; data: unknown }) => {
+    window.history.pushState({}, '', '/merchants/3/profile')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      const body = String(init?.body || '')
+      if (input === '/api/merchants/3/seo-targets/activations' && init?.method === 'POST' && onActivate) {
+        const response = onActivate(body)
+        return { ok: response.ok, status: response.status, statusText: response.ok ? 'OK' : 'Conflict', json: async () => response.data }
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => input === '/api/merchants/3/seo-targets' ? state
+          : input === '/api/merchants/3/profile' ? profile
+            : input === '/api/merchants/3' ? { id: 3, name: 'Version Store', primary_location: 'Brooklyn, NY', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+              : { username: 'test', role: 'operator' },
+      }
+    }))
+    render(<App />)
+  }
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('renders separate active Skill and latest FBR Local labels', async () => {
+    renderWithState(activeState())
+    await screen.findByText('SEO Ops 当前版本 · Skill · 16 个关键词（Local 10 / Organic 6）· 评分已验证')
+    screen.getByText('最新 FBR Local 导入 · 101 个关键词 · 未采用')
+    screen.getByText('active local truth')
+  })
+
+  it('renders API comparison counts without recomputing truncated details', async () => {
+    renderWithState(activeState())
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+    const comparison = screen.getByRole('region', { name: '最新 FBR Local 对比' })
+    within(comparison).getByText('当前 Local 10')
+    within(comparison).getByText('FBR Local 71')
+    within(comparison).getByText('新增 63')
+    within(comparison).getByText('移除 2')
+    within(comparison).getByText('优先级变化 4')
+    within(comparison).getByText('落地页变化 5')
+  })
+
+  it('offers Skill restore and FBR adoption only for inactive versions', async () => {
+    renderWithState(activeState())
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+    screen.getByRole('button', { name: '恢复这个 Skill 版本' })
+    screen.getByRole('button', { name: '采用这个 FBR 版本' })
+    expect(within(screen.getByText(/#41/).closest('li') as HTMLElement).queryByRole('button')).toBeNull()
+  })
+
+  it('waits for explicit confirmation before adopting an unscored FBR version', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => ({
+      ok: true, status: 200,
+      json: async () => input === '/api/merchants/3/seo-targets/activations' ? activeState({ active_keyword_artifact_id: 99, active_keyword_source: 'FBR' })
+        : input === '/api/merchants/3/seo-targets' ? activeState()
+          : input === '/api/merchants/3/profile' ? profile
+            : input === '/api/merchants/3' ? { id: 3, name: 'Version Store', primary_location: 'Brooklyn, NY', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+              : { username: 'test', role: 'operator' },
+    }))
+    window.history.pushState({}, '', '/merchants/3/profile')
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+    fireEvent.click(screen.getByRole('button', { name: '采用这个 FBR 版本' }))
+    const dialog = screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })
+    within(dialog).getByText('采用未评分的 FBR 版本会停用 Local Falcon Top 20，直到恢复或重新生成已评分的 Skill 版本。')
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === '/api/merchants/3/seo-targets/activations' && (init as RequestInit).method === 'POST')).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === '/api/merchants/3/seo-targets/activations' && (init as RequestInit).method === 'POST')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: '采用这个 FBR 版本' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })).getByRole('button', { name: '确认采用 FBR 版本' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/merchants/3/seo-targets/activations', expect.objectContaining({ body: JSON.stringify({ artifact_id: 99, expected_active_artifact_id: 41, confirmed: true }) })))
+  })
+
+  it('reads back server truth once after a stale activation conflict', async () => {
+    const serverTruth = activeState({ active_keyword_artifact_id: 32, active_keyword_source: 'SKILL', keyword_set_artifact_id: 32, keyword_versions: activeState().keyword_versions.map((version: { artifact_id: number }) => ({ ...version, is_active: version.artifact_id === 32 })) })
+    let seoReads = 0
+    window.history.pushState({}, '', '/merchants/3/profile')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/merchants/3/seo-targets') { seoReads += 1; return { ok: true, status: 200, json: async () => seoReads === 1 ? activeState() : serverTruth } }
+      if (input === '/api/merchants/3/seo-targets/activations') return { ok: false, status: 409, statusText: 'Conflict', json: async () => ({ detail: '版本已被其他操作更新' }) }
+      return { ok: true, status: 200, json: async () => input === '/api/merchants/3/profile' ? profile : input === '/api/merchants/3' ? { id: 3, name: 'Version Store', primary_location: 'Brooklyn, NY', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' } : { username: 'test', role: 'operator' } }
+    }))
+    render(<App />)
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+    fireEvent.click(screen.getByRole('button', { name: '采用这个 FBR 版本' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })).getByRole('button', { name: '确认采用 FBR 版本' }))
+    await screen.findByRole('alert')
+    expect(seoReads).toBe(2)
+    screen.getByText(/#32.*当前版本/)
+    screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })
+  })
+})
+
 describe('Performance 数据看板', () => {
   const dashboard = {
     window: {
