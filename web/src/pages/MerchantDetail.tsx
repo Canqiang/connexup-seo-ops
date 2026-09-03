@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { api, type Merchant, type Run, type Task, type TaskPlan, type TaskStatus } from '../api'
+import { api, type Merchant, type Run, type Task, type TaskCategory, type TaskPlan, type TaskStatus } from '../api'
 import TaskTable from '../components/TaskTable'
 import MerchantSectionNav from '../components/MerchantSectionNav'
 import { formatTime } from '../format'
@@ -8,8 +8,19 @@ import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../label
 import { formatRunDuration, runResult } from '../runPresentation'
 import { isTaskPlan } from '../taskPlan'
 
-const STATUS_RANK: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2, cancelled: 3 }
-const STATUS_ORDER: TaskStatus[] = ['todo', 'doing', 'done', 'cancelled']
+const STATUS_RANK: Record<TaskStatus, number> = {
+  NEEDS_ATTENTION: 0,
+  AWAITING_APPROVAL: 1,
+  PENDING: 2,
+  PREPARING: 3,
+  EXECUTING: 4,
+  VERIFYING: 5,
+  DONE: 6,
+  CANCELLED: 7,
+}
+const STATUS_ORDER = Object.keys(STATUS_RANK) as TaskStatus[]
+const TODO_STATUSES: TaskStatus[] = ['NEEDS_ATTENTION', 'AWAITING_APPROVAL', 'PENDING']
+const ACTIVE_STATUSES: TaskStatus[] = ['PREPARING', 'EXECUTING', 'VERIFYING']
 const INTERVAL_OPTIONS = [
   { value: '', label: '自动分析：关闭' },
   { value: '7', label: '自动分析：每 7 天' },
@@ -20,7 +31,7 @@ const RUNS_PREVIEW = 3
 type PlanReadState = 'idle' | 'loading' | 'ready' | 'missing' | 'error'
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
+  return error instanceof Error && error.name === 'AbortError'
 }
 
 export default function MerchantDetail() {
@@ -37,6 +48,8 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
   const loadControllerRef = useRef<AbortController | null>(null)
   const planEpochRef = useRef(0)
   const planControllerRef = useRef<AbortController | null>(null)
+  const createControllerRef = useRef<AbortController | null>(null)
+  const createBusyRef = useRef(false)
   const latestRunIdRef = useRef<number | null>(null)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
@@ -49,8 +62,10 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
   const [title, setTitle] = useState('')
   const [rationale, setRationale] = useState('')
   const [expectedOutcome, setExpectedOutcome] = useState('')
-  const [category, setCategory] = useState('other')
+  const [category, setCategory] = useState<TaskCategory>('other')
   const [description, setDescription] = useState('')
+  const [scheduledStart, setScheduledStart] = useState('')
+  const [createBusy, setCreateBusy] = useState(false)
   const [merchantError, setMerchantError] = useState(validMerchantId ? '' : '商户 ID 无效')
   const [tasksError, setTasksError] = useState('')
   const [runsError, setRunsError] = useState('')
@@ -124,6 +139,9 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
     api.listTasks(merchantId, controller.signal)
       .then(fresh => {
         if (!current()) return
+        if (fresh.some(task => task.merchant_id !== merchantId)) {
+          throw new Error('任务列表响应与当前商户不一致')
+        }
         setTasks(prev => {
           // 排序只在首次加载时算；之后就地更新，行不因状态变化跳位
           const sortFresh = (xs: Task[]) =>
@@ -165,6 +183,7 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
       planEpochRef.current += 1
       loadControllerRef.current?.abort()
       planControllerRef.current?.abort()
+      createControllerRef.current?.abort()
     }
   }, [load, merchantId, validMerchantId])
 
@@ -178,24 +197,41 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
 
   const createTask = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!title.trim()) return
+    if (createBusyRef.current || !title.trim() || !rationale.trim() || !expectedOutcome.trim()) return
+    createBusyRef.current = true
+    setCreateBusy(true)
+    const controller = new AbortController()
+    createControllerRef.current?.abort()
+    createControllerRef.current = controller
     try {
-      await api.createTask(merchantId, {
+      const created = await api.createTask(merchantId, {
+        task_type: 'PREPARE_ONLY',
         title: title.trim(),
-        rationale: rationale.trim() || undefined,
-        expected_outcome: expectedOutcome.trim() || undefined,
-        category,
-        description: description.trim() || undefined,
-      })
+        rationale: rationale.trim(),
+        expected_outcome: expectedOutcome.trim(),
+        scheduled_start: scheduledStart ? new Date(scheduledStart).toISOString() : null,
+        parameters: {
+          ...(description.trim() ? { description: description.trim() } : {}),
+          category,
+        },
+      }, controller.signal)
+      if (!mountedRef.current || controller.signal.aborted) return
+      if (created.merchant_id !== merchantId) throw new Error('新建任务响应与当前商户不一致')
       setTitle('')
       setRationale('')
       setExpectedOutcome('')
       setDescription('')
+      setScheduledStart('')
       setShowCreate(false)
       setActionError('')
       load()
     } catch (err) {
-      setActionError((err as Error).message)
+      if (!isAbortError(err) && mountedRef.current && !controller.signal.aborted) setActionError((err as Error).message)
+    } finally {
+      if (createControllerRef.current === controller) {
+        createBusyRef.current = false
+        if (mountedRef.current) setCreateBusy(false)
+      }
     }
   }
 
@@ -298,7 +334,7 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
           : latestTaskPlan.current_revision.decision_state === 'APPROVED'
             ? {
                 title: 'Plan 已确认',
-                copy: `${latestPlanTaskCount} 项任务已进入运营队列，Agent 可按任务状态执行。`,
+                copy: `${latestPlanTaskCount} 项任务已进入运营队列，可按依赖顺序进行无工具内容准备。`,
                 action: 'report' as const,
                 actionLabel: '查看诊断报告',
               }
@@ -369,8 +405,8 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
       </section>
 
       <div className="ledger-strip" aria-label="商户运营摘要">
-        <div><span>待办任务</span><strong>{tasks.filter(t => t.status === 'todo').length}</strong></div>
-        <div><span>进行中</span><strong>{tasks.filter(t => t.status === 'doing').length}</strong></div>
+        <div><span>待办任务</span><strong>{tasks.filter(t => TODO_STATUSES.includes(t.status)).length}</strong></div>
+        <div><span>进行中</span><strong>{tasks.filter(t => ACTIVE_STATUSES.includes(t.status)).length}</strong></div>
         <div><span>分析记录</span><strong>{runs.length}</strong></div>
         <div><span>自动分析</span><strong>{merchant.auto_run_interval_days ? `${merchant.auto_run_interval_days} 天` : '关闭'}</strong></div>
       </div>
@@ -456,15 +492,19 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
 
         {showCreate && (
           <form onSubmit={createTask} aria-label="新建任务" className="task-create-form">
-            <input value={title} onChange={e => setTitle(e.target.value)} placeholder="任务标题" />
-            <input value={rationale} onChange={e => setRationale(e.target.value)} placeholder="为什么做" />
-            <input value={expectedOutcome} onChange={e => setExpectedOutcome(e.target.value)} placeholder="预期效果（可选）" />
-            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="补充描述（可选）" />
-            <select aria-label="任务类别" value={category} onChange={e => setCategory(e.target.value)}>
+            <label>任务标题<input aria-label="任务标题" required maxLength={200} value={title} onChange={e => setTitle(e.target.value)} /></label>
+            <label>为什么做<input aria-label="为什么做" required maxLength={2000} value={rationale} onChange={e => setRationale(e.target.value)} /></label>
+            <label>预期效果<input aria-label="预期效果" required maxLength={1000} value={expectedOutcome} onChange={e => setExpectedOutcome(e.target.value)} /></label>
+            <label>准备要求<input aria-label="准备要求" maxLength={4000} value={description} onChange={e => setDescription(e.target.value)} /></label>
+            <label>计划开始<input aria-label="计划开始" type="datetime-local" value={scheduledStart} onChange={e => setScheduledStart(e.target.value)} /></label>
+            <label>任务类别<select aria-label="任务类别" value={category} onChange={e => setCategory(e.target.value as TaskCategory)}>
               {Object.entries(CATEGORY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-            <button type="submit" className="primary">创建任务</button>
-            <button type="button" className="quiet" onClick={() => setShowCreate(false)}>取消</button>
+            </select></label>
+            <p className="task-create-boundary">PREPARE_ONLY · 仅生成可审内容，不发布外部资源。</p>
+            <div className="task-create-actions">
+              <button type="submit" className="primary" disabled={createBusy || !title.trim() || !rationale.trim() || !expectedOutcome.trim()}>{createBusy ? '创建中…' : '创建任务'}</button>
+              <button type="button" className="quiet" disabled={createBusy} onClick={() => setShowCreate(false)}>取消</button>
+            </div>
           </form>
         )}
 

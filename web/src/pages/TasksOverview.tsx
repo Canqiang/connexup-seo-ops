@@ -1,51 +1,97 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api, type Task, type TaskStatus } from '../api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, type TaskBlockerCode, type TaskReadiness, type TaskSourceKind, type TaskStatus, type TaskSummary } from '../api'
 import TaskTable from '../components/TaskTable'
-import { CATEGORY_LABELS, TASK_STATUS_LABELS } from '../labels'
+import { TASK_STATUS_LABELS } from '../labels'
 
-type TaskWithMerchant = Task & { merchant_name: string }
+const STATUS_RANK: Record<TaskStatus, number> = {
+  NEEDS_ATTENTION: 0,
+  AWAITING_APPROVAL: 1,
+  PENDING: 2,
+  PREPARING: 3,
+  EXECUTING: 4,
+  VERIFYING: 5,
+  DONE: 6,
+  CANCELLED: 7,
+}
 
-const STATUS_RANK: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2, cancelled: 3 }
-const STATUS_ORDER: TaskStatus[] = ['todo', 'doing', 'done', 'cancelled']
+const STATUS_ORDER = Object.keys(STATUS_RANK) as TaskStatus[]
+const BLOCKER_OPTIONS: Array<[TaskBlockerCode, string]> = [
+  ['UPSTREAM_NOT_DONE', '等待上游任务'],
+  ['SCHEDULED_FOR_FUTURE', '等待计划时间'],
+  ['MERCHANT_ARCHIVED', '商户已归档'],
+  ['REVISION_INACTIVE', 'Plan revision 已停用'],
+]
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
 
 export default function TasksOverview() {
-  const [tasks, setTasks] = useState<TaskWithMerchant[]>([])
-  const [statusFilter, setStatusFilter] = useState<TaskStatus | null>('todo')
-  const [categoryFilter, setCategoryFilter] = useState('')
+  const mountedRef = useRef(false)
+  const loadEpochRef = useRef(0)
+  const loadControllerRef = useRef<AbortController | null>(null)
+  const [tasks, setTasks] = useState<TaskSummary[]>([])
+  const [status, setStatus] = useState<TaskStatus | ''>('')
+  const [readiness, setReadiness] = useState<TaskReadiness | ''>('')
+  const [blockerCode, setBlockerCode] = useState<TaskBlockerCode | ''>('')
+  const [sourceKind, setSourceKind] = useState<TaskSourceKind | ''>('')
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const load = useCallback(() => {
-    api.listAllTasks()
-      .then(fresh => setTasks(prev => {
-        const sortFresh = (xs: TaskWithMerchant[]) =>
-          [...xs].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.id - a.id)
-        if (prev.length === 0) return sortFresh(fresh)
-        const byId = new Map(fresh.map(f => [f.id, f]))
-        const kept = prev.filter(p => byId.has(p.id)).map(p => byId.get(p.id)!)
-        const added = sortFresh(fresh.filter(f => !prev.some(p => p.id === f.id)))
-        return [...added, ...kept]
-      }))
-      .catch(e => setError((e as Error).message))
-  }, [])
+    const epoch = ++loadEpochRef.current
+    loadControllerRef.current?.abort()
+    const controller = new AbortController()
+    loadControllerRef.current = controller
+    setLoading(true)
+    setError('')
+    setTasks([])
+    api.listAllTasks({
+      status: status || undefined,
+      readiness: readiness || undefined,
+      blocker_code: blockerCode || undefined,
+      source_kind: sourceKind || undefined,
+    }, controller.signal)
+      .then(fresh => {
+        if (!mountedRef.current || loadEpochRef.current !== epoch || controller.signal.aborted) return
+        setTasks([...fresh].sort((left, right) => STATUS_RANK[left.status] - STATUS_RANK[right.status] || right.id - left.id))
+      })
+      .catch(nextError => {
+        if (!isAbortError(nextError) && mountedRef.current && loadEpochRef.current === epoch) {
+          setTasks([])
+          setError((nextError as Error).message)
+        }
+      })
+      .finally(() => {
+        if (mountedRef.current && loadEpochRef.current === epoch) setLoading(false)
+      })
+  }, [blockerCode, readiness, sourceKind, status])
 
-  useEffect(load, [load])
+  useEffect(() => {
+    mountedRef.current = true
+    const initialLoad = window.setTimeout(load, 0)
+    return () => {
+      window.clearTimeout(initialLoad)
+      mountedRef.current = false
+      loadEpochRef.current += 1
+      loadControllerRef.current?.abort()
+    }
+  }, [load])
 
-  const shown = tasks
-    .filter(t => statusFilter === null || t.status === statusFilter)
-    .filter(t => categoryFilter === '' || t.category === categoryFilter)
-
-  const counts = STATUS_ORDER.map(s => [s, tasks.filter(t => t.status === s).length] as const)
+  const changeReadiness = (next: TaskReadiness | '') => {
+    setReadiness(next)
+    if (next !== 'BLOCKED') setBlockerCode('')
+  }
 
   return (
-    <main aria-labelledby="tasks-overview-title">
+    <main aria-labelledby="tasks-overview-title" className="tasks-overview-page">
       <header className="page-head">
         <div>
           <p className="eyebrow">EXECUTION / 跨商户任务</p>
           <h1 id="tasks-overview-title">任务总览</h1>
-          <p className="page-summary">在同一张表里筛选、授权并跟进所有商户的执行任务。</p>
+          <p className="page-summary">查询正式 Task、阻塞原因和审批状态；列表只显示首个阻塞条件。</p>
         </div>
       </header>
-      {error && <p className="error">{error}</p>}
 
       <section className="panel">
         <div className="panel-head compact">
@@ -53,35 +99,54 @@ export default function TasksOverview() {
             <p className="section-code">ACTION QUEUE</p>
             <h2>执行队列</h2>
           </div>
-          <span className="result-count">显示 {shown.length} / 共 {tasks.length} 项</span>
+          <span className="result-count">{loading ? '正在查询…' : `返回 ${tasks.length} 项`}</span>
         </div>
 
-        <div className="table-toolbar task-toolbar">
-          <div className="stats" role="group" aria-label="任务状态筛选">
-            {counts.filter(([, n]) => n > 0).map(([s, n]) => (
-              <button
-                key={s}
-                className={`stat ${s}${statusFilter === s ? ' on' : ''}`}
-                onClick={() => setStatusFilter(f => f === s ? null : s)}
-              >
-                {TASK_STATUS_LABELS[s]} <strong>{n}</strong>
-              </button>
-            ))}
-          </div>
-          <select aria-label="任务类别" value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
-            <option value="">全部类别</option>
-            {Object.entries(CATEGORY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
+        <div className="table-toolbar task-query-toolbar" role="group" aria-label="任务查询条件">
+          <label>
+            <span>权威状态</span>
+            <select aria-label="任务状态" value={status} onChange={event => setStatus(event.target.value as TaskStatus | '')}>
+              <option value="">全部状态</option>
+              {STATUS_ORDER.map(value => <option key={value} value={value}>{TASK_STATUS_LABELS[value]}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>就绪状态</span>
+            <select aria-label="任务就绪状态" value={readiness} onChange={event => changeReadiness(event.target.value as TaskReadiness | '')}>
+              <option value="">全部</option>
+              <option value="READY">可执行</option>
+              <option value="BLOCKED">被阻塞</option>
+            </select>
+          </label>
+          <label>
+            <span>阻塞原因</span>
+            <select aria-label="任务阻塞原因" value={blockerCode} disabled={readiness !== 'BLOCKED'} onChange={event => setBlockerCode(event.target.value as TaskBlockerCode | '')}>
+              <option value="">全部阻塞原因</option>
+              {BLOCKER_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>来源</span>
+            <select aria-label="任务来源" value={sourceKind} onChange={event => setSourceKind(event.target.value as TaskSourceKind | '')}>
+              <option value="">全部来源</option>
+              <option value="AGENT">Agent Plan</option>
+              <option value="OPERATOR">操作人新增</option>
+              <option value="MIGRATION">历史迁移</option>
+            </select>
+          </label>
+          <button type="button" onClick={load} disabled={loading}>刷新</button>
         </div>
 
-        {shown.length > 0 ? (
-          <TaskTable
-            tasks={shown}
-            showMerchant
-          />
-        ) : (
-          <div className="empty-state">当前筛选下没有任务。</div>
-        )}
+        {error ? (
+          <section className="task-query-error" role="alert">
+            <p>{error}</p>
+            <button type="button" onClick={load}>重试查询</button>
+          </section>
+        ) : tasks.length > 0 ? (
+          <TaskTable tasks={tasks} showMerchant />
+        ) : !loading ? (
+          <div className="empty-state">当前查询条件下没有任务。</div>
+        ) : null}
       </section>
     </main>
   )

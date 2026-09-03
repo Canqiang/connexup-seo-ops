@@ -13,43 +13,7 @@ export type Merchant = {
   created_at: string
 }
 
-export type TaskStatus = 'todo' | 'doing' | 'done' | 'cancelled'
-export type TaskExecutionStatus = 'running' | 'ready' | 'failed' | 'approved' | 'returned'
-
-export type TaskExecution = {
-  id: number
-  task_id: number
-  coreai_run_id: string | null
-  status: TaskExecutionStatus
-  attempt: number
-  output_text: string | null
-  error: string | null
-  review_note: string | null
-  created_at: string
-  finished_at: string | null
-  reviewed_at: string | null
-}
-
-export type Task = {
-  id: number
-  merchant_id: number
-  title: string
-  description: string | null
-  rationale: string | null
-  expected_outcome: string | null
-  category: string | null
-  scheduled_start: string | null
-  status: TaskStatus
-  execution_status?: TaskExecutionStatus | null
-  evidence_note: string | null
-  source_run_id: number | null
-  source_plan_approved: boolean
-  source_key: string | null
-  created_at: string
-  completed_at: string | null
-}
-
-export type TaskWorkflowStatus =
+export type TaskStatus =
   | 'PENDING'
   | 'PREPARING'
   | 'AWAITING_APPROVAL'
@@ -59,24 +23,179 @@ export type TaskWorkflowStatus =
   | 'NEEDS_ATTENTION'
   | 'CANCELLED'
 
-export type PlanTaskSummary = {
+export type TaskWorkflowStatus = TaskStatus
+export type TaskReadiness = 'READY' | 'BLOCKED'
+export type TaskSourceKind = 'AGENT' | 'OPERATOR' | 'MIGRATION'
+export type TaskCategory = 'gbp' | 'content' | 'review' | 'citation' | 'technical' | 'other'
+export type TaskExecutionStage = 'PREPARATION' | 'PUBLICATION' | 'VERIFICATION'
+export type TaskExecutionStatus =
+  | 'PENDING'
+  | 'DISPATCHING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'UNKNOWN'
+  | 'CANCELLED'
+
+export type TaskBlockerCode =
+  | 'MERCHANT_ARCHIVED'
+  | 'REVISION_INACTIVE'
+  | 'SCHEDULED_FOR_FUTURE'
+  | 'UPSTREAM_NOT_DONE'
+
+export type TaskBlocker =
+  | { code: 'MERCHANT_ARCHIVED' }
+  | { code: 'REVISION_INACTIVE' }
+  | { code: 'SCHEDULED_FOR_FUTURE'; scheduled_start: string }
+  | { code: 'UPSTREAM_NOT_DONE'; task_id: number; task_key: string; task_title: string }
+
+export type TaskResult = {
+  outcome: 'ready'
+  summary: string
+  artifact_refs: string[]
+  evidence: string[]
+  external_write_performed: false
+}
+
+export type TaskExecutionRequest = Record<string, unknown> & {
+  definition_checksum?: string
+  executor_kind?: string
+  llm_call_id?: string
+  stage?: TaskExecutionStage
+  task_id?: number
+  workflow_version?: number
+}
+
+export type TaskExecution = {
+  id: number
+  task_id: number
+  stage: TaskExecutionStage
+  status: TaskExecutionStatus
+  attempt: number
+  approval_id: number | null
+  artifact_id: number | null
+  request_checksum: string
+  idempotency_key: string
+  dispatch_started_at: string | null
+  coreai_run_id: string | null
+  provider_resource_id: string | null
+  request: TaskExecutionRequest
+  evidence: string[]
+  result: TaskResult | null
+  result_checksum: string | null
+  legacy_result?: { unverified: true; output_text: string }
+  error: string | null
+  review_note: string | null
+  next_attempt_at: string | null
+  created_at: string
+  finished_at: string | null
+  reviewed_at: string | null
+}
+
+export type TaskPlanContext = {
+  id: number
+  source_kind: TaskSourceKind
+  state: TaskPlan['state']
+  latest_revision: number
+  approved_revision: number | null
+}
+
+export type TaskSummary = {
   id: number
   merchant_id: number
+  merchant_name: string
   plan_id: number
   plan_revision: number
   task_key: string
   task_type: 'PREPARE_ONLY'
+  workflow_version: number
+  parameters: Record<string, unknown>
+  definition_checksum: string
   title: string
-  category: string | null
-  status: TaskWorkflowStatus
+  description: string | null
+  rationale: string | null
+  expected_outcome: string | null
+  category: TaskCategory | null
+  scheduled_start: string | null
+  status: TaskStatus
+  version: number
+  assignee: string | null
+  labels: string[]
+  operator_note: string | null
+  evidence_note: string | null
   source_run_id: number | null
-  plan: {
-    id: number
-    latest_revision: number
-    approved_revision: number | null
-    state: TaskPlan['state']
-    source_kind: TaskPlan['source_kind']
-  }
+  source_key: string | null
+  replaces_task_id: number | null
+  replaced_by_task_id: number | null
+  plan: TaskPlanContext
+  source_plan_approved: boolean
+  readiness: TaskReadiness
+  blocker: TaskBlocker | null
+  execution_status: TaskExecutionStatus | null
+  created_at: string
+  updated_at: string | null
+  started_at: string | null
+  completed_at: string | null
+  cancelled_at: string | null
+}
+
+export type TaskEvent = {
+  id: number
+  entity_type: 'TASK'
+  entity_id: number
+  event_type: string
+  actor_type: string
+  actor_id: string | null
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export type TaskDetail = TaskSummary & {
+  upstream: TaskSummary[]
+  downstream: TaskSummary[]
+  executions: TaskExecution[]
+  events: TaskEvent[]
+}
+
+/** Compatibility name for existing consumers; formal Task rows are server summaries. */
+export type Task = TaskSummary
+export type PlanTaskSummary = TaskSummary
+
+export type TaskQuery = {
+  merchant_id?: number
+  plan_id?: number
+  plan_revision?: number
+  task_type?: 'PREPARE_ONLY'
+  status?: TaskStatus
+  readiness?: TaskReadiness
+  blocker_code?: TaskBlockerCode
+  source_kind?: TaskSourceKind
+  scheduled_before?: string
+  scheduled_after?: string
+}
+
+export type OperatorTaskCreate = {
+  task_type: 'PREPARE_ONLY'
+  title: string
+  rationale: string
+  expected_outcome: string
+  scheduled_start: string | null
+  parameters: { description?: string | null; category?: TaskCategory | null }
+  replaces_task_id?: number
+  replaces_task_version?: number
+}
+
+export type TaskMetadataUpdate = {
+  expected_version: number
+  assignee?: string | null
+  labels?: string[] | null
+  operator_note?: string | null
+}
+
+export type TaskReviewIdentity = {
+  expected_version: number
+  expected_execution_id: number
+  expected_result_checksum: string
 }
 
 const PLAN_VALIDATION_LABELS: Record<string, string> = {
@@ -150,6 +269,15 @@ async function requestOptional<T>(path: string, init?: RequestInit): Promise<T |
     throw new ApiError(res.status, errorDetail(body, res.status, res.statusText))
   }
   return res.json()
+}
+
+function taskQueryPath(filters: TaskQuery = {}): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+  }
+  const query = params.toString()
+  return `/api/tasks${query ? `?${query}` : ''}`
 }
 
 export type RunStatus = 'running' | 'succeeded' | 'failed'
@@ -446,16 +574,24 @@ export const api = {
     request<MerchantProfile>(`/api/merchants/${id}/gbp-sync`, { method: 'POST' }),
   patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'primary_location' | 'website_url' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  listTasks: (merchantId: number, signal?: AbortSignal) => request<Task[]>(`/api/merchants/${merchantId}/tasks`, { signal }),
-  createTask: (merchantId: number, body: { title: string; description?: string; rationale?: string; expected_outcome?: string; category?: string }) =>
-    request<Task>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body) }),
-  getTask: (id: number) => request<Task>(`/api/tasks/${id}`),
-  getTaskExecution: (id: number) => requestOptional<TaskExecution>(`/api/tasks/${id}/execution`),
-  executeTask: (id: number) => request<TaskExecution>(`/api/tasks/${id}/execute`, { method: 'POST' }),
-  approveTaskExecution: (id: number) => request<{ task: Task; execution: TaskExecution }>(`/api/tasks/${id}/approve-execution`, { method: 'POST' }),
-  returnTaskExecution: (id: number, reason: string) => request<TaskExecution>(`/api/tasks/${id}/return-execution`, { method: 'POST', body: JSON.stringify({ reason }) }),
-  patchTask: (id: number, body: Partial<Pick<Task, 'title' | 'description' | 'rationale' | 'expected_outcome' | 'category' | 'evidence_note' | 'status'>>) =>
-    request<Task>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listTasks: (merchantId: number, signal?: AbortSignal) =>
+    request<TaskSummary[]>(taskQueryPath({ merchant_id: merchantId }), { signal }),
+  createTask: (merchantId: number, body: OperatorTaskCreate, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body), signal }),
+  getTask: (id: number, signal?: AbortSignal) => request<TaskDetail>(`/api/tasks/${id}`, { signal }),
+  getTaskExecution: (id: number, signal?: AbortSignal) => requestOptional<TaskExecution>(`/api/tasks/${id}/execution`, { signal }),
+  patchTaskMetadata: (id: number, body: TaskMetadataUpdate, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body), signal }),
+  cancelTask: (id: number, body: { expected_version: number; reason: string }, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/tasks/${id}/cancel`, { method: 'POST', body: JSON.stringify(body), signal }),
+  retryTaskPreparation: (id: number, body: { expected_version: number; reason: string }, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/tasks/${id}/retry-preparation`, { method: 'POST', body: JSON.stringify(body), signal }),
+  executeTask: (id: number, body: { expected_version: number }, signal?: AbortSignal) =>
+    request<TaskExecution>(`/api/tasks/${id}/execute`, { method: 'POST', body: JSON.stringify(body), signal }),
+  approveTaskExecution: (id: number, body: TaskReviewIdentity, signal?: AbortSignal) =>
+    request<{ task: TaskDetail; execution: TaskExecution }>(`/api/tasks/${id}/approve-execution`, { method: 'POST', body: JSON.stringify(body), signal }),
+  returnTaskExecution: (id: number, body: TaskReviewIdentity & { reason: string }, signal?: AbortSignal) =>
+    request<{ task: TaskDetail; execution: TaskExecution }>(`/api/tasks/${id}/return-execution`, { method: 'POST', body: JSON.stringify(body), signal }),
   listRuns: (merchantId: number, signal?: AbortSignal) => request<Run[]>(`/api/merchants/${merchantId}/runs`, { signal }),
   createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),
   getRun: (id: number, signal?: AbortSignal) => request<Run>(`/api/runs/${id}`, { signal }),
@@ -475,8 +611,6 @@ export const api = {
     request<TaskPlan>(`/api/task-plans/${id}/approve`, { method: 'POST', body: JSON.stringify(body), signal }),
   rejectTaskPlan: (id: number, body: { expected_revision: number; reason: string }, signal?: AbortSignal) =>
     request<TaskPlan>(`/api/task-plans/${id}/reject`, { method: 'POST', body: JSON.stringify(body), signal }),
-  listPlanTasks: (id: number, signal?: AbortSignal) => request<PlanTaskSummary[]>(`/api/tasks?plan_id=${id}`, { signal }),
-  listAllTasks: () => request<(Task & { merchant_name: string })[]>('/api/tasks'),
-  batchTasks: (ids: number[], status: TaskStatus) =>
-    request<{ updated: number[]; skipped: number[] }>('/api/tasks/batch', { method: 'POST', body: JSON.stringify({ ids, status }) }),
+  listPlanTasks: (id: number, signal?: AbortSignal) => request<PlanTaskSummary[]>(taskQueryPath({ plan_id: id }), { signal }),
+  listAllTasks: (filters: TaskQuery = {}, signal?: AbortSignal) => request<TaskSummary[]>(taskQueryPath(filters), { signal }),
 }

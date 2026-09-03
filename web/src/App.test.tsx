@@ -96,6 +96,110 @@ function canonicalPlanContext(approvedRevision = 1) {
   }
 }
 
+function taskSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 12,
+    merchant_id: 1,
+    plan_id: 7,
+    plan_revision: 1,
+    task_key: 'review',
+    task_type: 'PREPARE_ONLY',
+    workflow_version: 1,
+    parameters: { description: 'Review the prepared copy', category: 'review' },
+    definition_checksum: 'c'.repeat(64),
+    title: 'Review content',
+    description: 'Review the prepared copy',
+    rationale: 'Catch unsupported claims',
+    expected_outcome: 'A reviewable decision',
+    category: 'review',
+    scheduled_start: null,
+    status: 'PENDING',
+    version: 3,
+    assignee: null,
+    labels: [],
+    operator_note: null,
+    evidence_note: null,
+    source_run_id: 1,
+    source_key: 'plan:7:review',
+    replaces_task_id: null,
+    replaced_by_task_id: null,
+    created_at: '2026-09-03T01:00:00+00:00',
+    updated_at: '2026-09-03T01:00:00+00:00',
+    started_at: null,
+    completed_at: null,
+    cancelled_at: null,
+    merchant_name: 'Only Bear',
+    plan: canonicalPlanContext(1),
+    source_plan_approved: true,
+    blocker: null,
+    readiness: 'READY',
+    execution_status: null,
+    ...overrides,
+  }
+}
+
+function taskExecution(overrides: Record<string, unknown> = {}) {
+  const result = {
+    outcome: 'ready',
+    summary: 'Prepared a reviewable draft.',
+    artifact_refs: ['artifact://draft-v1'],
+    evidence: ['Prepared from the approved merchant context.'],
+    external_write_performed: false,
+  }
+  return {
+    id: 41,
+    task_id: 12,
+    stage: 'PREPARATION',
+    status: 'SUCCEEDED',
+    attempt: 1,
+    approval_id: null,
+    artifact_id: null,
+    request_checksum: 'd'.repeat(64),
+    idempotency_key: 'task:12:preparation:1:dddddddddddddddd',
+    dispatch_started_at: '2026-09-03T01:01:00+00:00',
+    coreai_run_id: null,
+    provider_resource_id: null,
+    error: null,
+    review_note: null,
+    next_attempt_at: null,
+    created_at: '2026-09-03T01:01:00+00:00',
+    finished_at: '2026-09-03T01:02:00+00:00',
+    reviewed_at: null,
+    request: {
+      definition_checksum: 'c'.repeat(64),
+      executor_kind: 'COREAI_LLM_CALL',
+      llm_call_id: 'preparation-call',
+      stage: 'PREPARATION',
+      task_id: 12,
+      workflow_version: 1,
+    },
+    evidence: result.evidence,
+    result,
+    result_checksum: 'e'.repeat(64),
+    ...overrides,
+  }
+}
+
+function taskDetail(overrides: Record<string, unknown> = {}) {
+  return {
+    ...taskSummary(),
+    upstream: [],
+    downstream: [],
+    executions: [],
+    events: [{
+      id: 91,
+      entity_type: 'TASK',
+      entity_id: 12,
+      event_type: 'TASK_MATERIALIZED',
+      actor_type: 'SYSTEM',
+      actor_id: null,
+      payload: { plan_revision: 1 },
+      created_at: '2026-09-03T01:00:00+00:00',
+    }],
+    ...overrides,
+  }
+}
+
 describe('desktop operator shell', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/tasks')
@@ -150,38 +254,56 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     await screen.findByRole('main', { name: '任务总览' })
-    screen.getByRole('group', { name: '任务状态筛选' })
-    screen.getByRole('combobox', { name: '任务类别' })
+    screen.getByRole('group', { name: '任务查询条件' })
+    fireEvent.change(screen.getByRole('combobox', { name: '任务状态' }), { target: { value: 'EXECUTING' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '任务就绪状态' }), { target: { value: 'BLOCKED' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '任务阻塞原因' }), { target: { value: 'UPSTREAM_NOT_DONE' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '任务来源' }), { target: { value: 'AGENT' } })
+
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/tasks?status=EXECUTING&readiness=BLOCKED&blocker_code=UPSTREAM_NOT_DONE&source_kind=AGENT',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    ))
   })
 
-  it('opens tasks for agent assignment instead of bypassing review from the list', async () => {
+  it('does not show rows from the previous server query beneath newly selected filters', async () => {
+    const filtered = deferred<ReturnType<typeof response>>()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      if (input === '/api/auth/me') return Promise.resolve(response({ username: 'test', role: 'operator' }))
+      if (input === '/api/tasks') return Promise.resolve(response([taskSummary({ title: 'Old unfiltered task' })]))
+      if (input === '/api/tasks?status=DONE') return filtered.promise
+      return Promise.resolve(response([]))
+    }))
+    render(<App />)
+
+    await screen.findByRole('link', { name: '查看任务：Old unfiltered task' })
+    fireEvent.change(screen.getByRole('combobox', { name: '任务状态' }), { target: { value: 'DONE' } })
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/tasks?status=DONE',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    ))
+    expect(screen.queryByRole('link', { name: '查看任务：Old unfiltered task' })).toBeNull()
+
+    filtered.resolve(response([taskSummary({ id: 13, title: 'Completed filtered task', status: 'DONE' })]))
+    await screen.findByRole('link', { name: '查看任务：Completed filtered task' })
+  })
+
+  it('opens formal tasks without offering direct completion or a batch status mutation', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => [{
+      json: async () => [taskSummary({
         id: 5,
-        merchant_id: 1,
-        merchant_name: 'Only Bear',
         title: '生成本周 GBP Post',
-        description: null,
-        rationale: '保持内容活跃度',
-        expected_outcome: '提升本地曝光',
         category: 'gbp',
-        scheduled_start: null,
-        status: 'todo',
-        execution_status: 'ready',
-        evidence_note: null,
-        source_run_id: null,
-        source_plan_approved: true,
-        source_key: null,
-        created_at: '2026-09-01T00:00:00Z',
-        completed_at: null,
-      }],
+        status: 'AWAITING_APPROVAL',
+        execution_status: 'SUCCEEDED',
+      })],
     }))
     render(<App />)
 
     await screen.findByRole('link', { name: '查看任务：生成本周 GBP Post' })
-    screen.getByText('待审批')
+    within(screen.getByRole('table', { name: '跨商户任务列表' })).getByText('待内容审批')
     expect(screen.queryByRole('button', { name: '开始' })).toBeNull()
     expect(screen.queryByRole('button', { name: '完成' })).toBeNull()
     expect(screen.queryByRole('checkbox')).toBeNull()
@@ -979,7 +1101,7 @@ describe('desktop operator shell', () => {
       if (input === '/api/merchants/1') return response({
         id: 1, name: 'Merchant', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z',
       })
-      if (input === '/api/merchants/1/tasks') return response({ detail: 'task queue read failed' }, 503)
+      if (input === '/api/tasks?merchant_id=1') return response({ detail: 'task queue read failed' }, 503)
       if (input === '/api/merchants/1/runs') return response([{
         id: 7, merchant_id: 1, coreai_run_id: 'run-7', status: 'succeeded', trigger_kind: 'manual',
         report_text: '# Report', error: null, plan_approved_at: null,
@@ -1069,48 +1191,50 @@ describe('desktop operator shell', () => {
 
   it('shows the agent result as read-only and gives the human only review actions', async () => {
     window.history.pushState({}, '', '/tasks/1')
+    const execution = taskExecution({
+      id: 4,
+      task_id: 1,
+      idempotency_key: 'task:1:preparation:1:dddddddddddddddd',
+      request: {
+        definition_checksum: 'c'.repeat(64),
+        executor_kind: 'COREAI_LLM_CALL',
+        llm_call_id: 'preparation-call',
+        stage: 'PREPARATION',
+        task_id: 1,
+        workflow_version: 1,
+      },
+      evidence: ['基于已确认的营业时间事实。'],
+      result: {
+        outcome: 'ready',
+        summary: '已生成营业时间更新草案。',
+        artifact_refs: ['artifact://hours-draft'],
+        evidence: ['基于已确认的营业时间事实。'],
+        external_write_performed: false,
+      },
+    })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
       status: 200,
       json: async () => input === '/api/tasks/1'
-        ? ({
-        id: 1,
-        merchant_id: 1,
-        title: '更新 GBP 营业时间',
-        description: null,
-        rationale: '营业时间已变化',
-        expected_outcome: '减少误访',
-        category: 'gbp',
-        scheduled_start: null,
-        status: 'doing',
-        evidence_note: '',
-        source_run_id: null,
-        source_key: null,
-        created_at: '2026-09-01T00:00:00Z',
-        completed_at: null,
+        ? taskDetail({
+            id: 1,
+            title: '更新 GBP 营业时间',
+            rationale: '营业时间已变化',
+            expected_outcome: '减少误访',
+            category: 'gbp',
+            status: 'AWAITING_APPROVAL',
+            version: 5,
+            execution_status: 'SUCCEEDED',
+            executions: [execution],
           })
-        : input === '/api/tasks/1/execution'
-          ? ({
-              id: 4,
-              task_id: 1,
-              coreai_run_id: 'run-exec-4',
-              status: 'ready',
-              attempt: 1,
-              output_text: '已更新营业时间草案，并完成回读检查。',
-              error: null,
-              review_note: null,
-              created_at: '2026-09-01T00:01:00Z',
-              finished_at: '2026-09-01T00:02:00Z',
-              reviewed_at: null,
-            })
           : ({ id: 1, name: '测试商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }),
     })))
     render(<App />)
 
-    const result = await screen.findByRole('region', { name: 'Agent 执行结果' })
-    within(result).getByText('已更新营业时间草案，并完成回读检查。')
-    within(result).getByRole('button', { name: '批准完成' })
-    within(result).getByRole('button', { name: '退回重做' })
+    const result = await screen.findByRole('region', { name: 'Attempt 1 结果' })
+    within(result).getByText('已生成营业时间更新草案。')
+    screen.getByRole('button', { name: '批准准备结果' })
+    screen.getByRole('button', { name: '退回重新准备' })
     expect(screen.queryByRole('textbox', { name: '执行证据' })).toBeNull()
     expect(screen.queryByRole('button', { name: '保存证据' })).toBeNull()
   })
@@ -1118,64 +1242,47 @@ describe('desktop operator shell', () => {
   it('assigns a new task to the agent instead of opening a manual evidence form', async () => {
     window.history.pushState({}, '', '/tasks/2')
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
-      ok: input !== '/api/tasks/2/execution',
-      status: input === '/api/tasks/2/execution' ? 404 : 200,
-      statusText: input === '/api/tasks/2/execution' ? 'Not Found' : 'OK',
+      ok: true,
+      status: 200,
       json: async () => input === '/api/tasks/2'
-        ? ({
+        ? taskDetail({
             id: 2,
-            merchant_id: 1,
             title: '生成本周 GBP Post',
-            description: null,
             rationale: '保持内容活跃度',
             expected_outcome: '提升本地曝光',
             category: 'gbp',
-            scheduled_start: null,
-            status: 'todo',
-            evidence_note: null,
-            source_run_id: null,
-            source_key: null,
-            created_at: '2026-09-01T00:00:00Z',
-            completed_at: null,
           })
-        : input === '/api/tasks/2/execution'
-          ? ({ detail: 'execution not found' })
           : ({ id: 1, name: '测试商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }),
     })))
     render(<App />)
 
-    await screen.findByRole('button', { name: '交给 Agent 执行' })
-    screen.getByText('尚未交给 Agent')
-    expect(screen.queryByRole('textbox')).toBeNull()
+    await screen.findByRole('button', { name: '开始内容准备' })
+    screen.getByText('尚无内容准备 Attempt。')
+    expect(screen.queryByRole('textbox', { name: '执行证据' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /发布/ })).toBeNull()
   })
 
   it('returns a merchant task to the merchant workspace it came from', async () => {
     window.history.pushState({}, '', '/merchants/1')
-    const task = {
+    const task = taskSummary({
       id: 37,
-      merchant_id: 1,
       title: '撰写本地落地页或服务介绍内容',
       description: '补全本地服务内容',
       rationale: '缺少本地关键词内容页',
       expected_outcome: '覆盖本地搜索需求',
       category: 'content',
-      scheduled_start: null,
-      status: 'todo',
-      evidence_note: null,
       source_run_id: 8,
       source_key: 'local-page',
-      created_at: '2026-09-01T06:43:00Z',
-      completed_at: null,
-    }
+    })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
       status: 200,
       json: async () => input === '/api/merchants/1'
         ? { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
-        : input === '/api/merchants/1/tasks'
+        : input === '/api/tasks?merchant_id=1'
           ? [task]
           : input === '/api/tasks/37'
-            ? task
+            ? taskDetail(task)
             : [],
     })))
     render(<App />)
@@ -1189,30 +1296,22 @@ describe('desktop operator shell', () => {
 
   it('returns a task opened from the task overview to the task overview', async () => {
     window.history.pushState({}, '', '/tasks')
-    const task = {
+    const task = taskSummary({
       id: 38,
-      merchant_id: 1,
       merchant_name: '冒烟商户',
       title: '完善 GBP 商户资料',
-      description: null,
       rationale: '资料不完整',
       expected_outcome: '提升地图可见性',
       category: 'gbp',
-      scheduled_start: null,
-      status: 'todo',
-      evidence_note: null,
       source_run_id: null,
-      source_key: null,
-      created_at: '2026-09-01T06:43:00Z',
-      completed_at: null,
-    }
+    })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
       status: 200,
       json: async () => input === '/api/tasks'
         ? [task]
         : input === '/api/tasks/38'
-          ? task
+          ? taskDetail(task)
           : input === '/api/merchants/1'
             ? { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
             : [],
@@ -1221,7 +1320,7 @@ describe('desktop operator shell', () => {
 
     fireEvent.click(await screen.findByRole('link', { name: task.title }))
     await screen.findByRole('main', { name: '任务详情' })
-    fireEvent.click(screen.getByRole('button', { name: '返回任务总览' }))
+    fireEvent.click(await screen.findByRole('button', { name: '返回任务总览' }))
 
     await screen.findByRole('main', { name: '任务总览' })
   })
@@ -1232,31 +1331,20 @@ describe('desktop operator shell', () => {
       '',
       '/tasks/40',
     )
-    const task = {
+    const task = taskDetail({
       id: 40,
-      merchant_id: 1,
       title: '同步本地服务内容',
-      description: null,
       rationale: '保持信息一致',
       expected_outcome: '减少信息差异',
       category: 'content',
-      scheduled_start: null,
-      status: 'todo',
-      evidence_note: null,
       source_run_id: null,
-      source_key: null,
-      created_at: '2026-09-01T06:43:00Z',
-      completed_at: null,
-    }
+    })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
-      ok: input !== '/api/tasks/40/execution',
-      status: input === '/api/tasks/40/execution' ? 404 : 200,
-      statusText: input === '/api/tasks/40/execution' ? 'Not Found' : 'OK',
+      ok: true,
+      status: 200,
       json: async () => input === '/api/tasks/40'
         ? task
-        : input === '/api/tasks/40/execution'
-          ? { detail: 'execution not found' }
-          : input === '/api/merchants/1'
+        : input === '/api/merchants/1'
             ? { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
             : [],
     })))
@@ -1271,38 +1359,30 @@ describe('desktop operator shell', () => {
 
   it('uses the merchant as the safe fallback and removes internal task decoration', async () => {
     window.history.replaceState({}, '', '/tasks/39')
-    const task = {
+    const task = taskDetail({
       id: 39,
-      merchant_id: 1,
       title: '更新官网服务介绍',
-      description: null,
       rationale: '页面信息过期',
       expected_outcome: '保持信息一致',
       category: 'content',
-      scheduled_start: null,
-      status: 'doing',
-      evidence_note: '',
+      status: 'PREPARING',
       source_run_id: 8,
       source_key: 'service-page',
-      created_at: '2026-09-01T06:43:00Z',
-      completed_at: null,
-    }
+    })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
-      ok: input !== '/api/tasks/39/execution',
-      status: input === '/api/tasks/39/execution' ? 404 : 200,
-      statusText: input === '/api/tasks/39/execution' ? 'Not Found' : 'OK',
+      ok: true,
+      status: 200,
       json: async () => input === '/api/tasks/39'
         ? task
-        : input === '/api/tasks/39/execution'
-          ? { detail: 'execution not found' }
-          : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' },
+        : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' },
     })))
     render(<App />)
 
     await screen.findByRole('button', { name: '返回冒烟商户' })
     screen.getByRole('heading', { name: task.title })
-    screen.getByRole('heading', { name: '任务说明' })
-    screen.getByRole('heading', { name: 'Agent 执行结果' })
+    screen.getByRole('heading', { name: '任务定义' })
+    screen.getByRole('heading', { name: '全部 Attempts' })
+    screen.getByRole('heading', { name: '生命周期轨迹' })
     const context = screen.getByRole('banner', { name: '任务上下文' })
     within(context).getByRole('group', { name: '任务状态与来源' })
     within(context).getByRole('group', { name: '任务操作' })
@@ -2019,5 +2099,478 @@ describe('desktop operator shell', () => {
     within(audit).getByText('审阅 Restaurant Schema 草稿。')
     expect(screen.queryByText('seo_ops.audit_report.v1')).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Legacy text that should not be primary' })).toBeNull()
+  })
+
+  it('shows one queue blocker, publication-compatible labels, and the full dependency chain only in detail', async () => {
+    window.history.pushState({}, '', '/tasks')
+    const draft = taskSummary({ id: 11, task_key: 'draft', title: 'Draft content', status: 'EXECUTING', execution_status: 'RUNNING' })
+    const review = taskSummary({
+      blocker: { code: 'UPSTREAM_NOT_DONE', task_id: 11, task_key: 'draft', task_title: 'Draft content' },
+      readiness: 'BLOCKED',
+    })
+    const publish = taskSummary({ id: 13, task_key: 'publish', title: 'Publish content', status: 'VERIFYING', execution_status: 'RUNNING' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/tasks/12') {
+        return response(taskDetail({
+          upstream: [draft],
+          downstream: [publish],
+          blocker: review.blocker,
+          readiness: 'BLOCKED',
+          scheduled_start: '2026-09-05T09:30:00+08:00',
+        }))
+      }
+      if (input === '/api/merchants/1') {
+        return response({
+          id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null,
+          website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z',
+        })
+      }
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input.startsWith('/api/tasks')) return response([draft, review, publish])
+      return response([])
+    }))
+
+    render(<App />)
+
+    await screen.findByText('被「Draft content」阻塞')
+    const queue = screen.getByRole('table', { name: '跨商户任务列表' })
+    within(queue).getByText('发布中')
+    within(queue).getByText('验证中')
+    expect(screen.queryByRole('heading', { name: '上游任务' })).toBeNull()
+    fireEvent.click(screen.getByRole('link', { name: '查看任务：Review content' }))
+    const upstream = await screen.findByRole('region', { name: '上游任务' })
+    expect(within(upstream).getByRole('link', { name: 'Draft content' }).getAttribute('href')).toBe('/tasks/11')
+    const downstream = screen.getByRole('region', { name: '下游任务' })
+    expect(within(downstream).getByRole('link', { name: 'Publish content' }).getAttribute('href')).toBe('/tasks/13')
+    const lifecycle = screen.getByRole('region', { name: '生命周期轨迹' })
+    expect(lifecycle.textContent).toContain('被「Draft content」阻塞')
+    screen.getByText('09-05 09:30')
+    screen.getByRole('button', { name: '刷新任务状态' })
+    expect(screen.queryByRole('button', { name: /物理删除|直接完成|批量/ })).toBeNull()
+  })
+
+  it('creates an independent PREPARE_ONLY task with the complete strict envelope', async () => {
+    window.history.pushState({}, '', '/merchants/1')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({
+        id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: 'Mineola, NY',
+        website_url: 'https://example.test', auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z',
+      })
+      if (input === '/api/merchants/1/tasks' && init?.method === 'POST') {
+        return response(taskSummary({ id: 21, source_kind: 'OPERATOR', title: 'Prepare weekly post copy' }), 201)
+      }
+      if (input.startsWith('/api/tasks')) return response([])
+      if (input === '/api/merchants/1/runs') return response([])
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '＋ 新建任务' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '任务标题' }), { target: { value: ' Prepare weekly post copy ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '为什么做' }), { target: { value: ' Keep the profile useful ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '预期效果' }), { target: { value: ' A reviewable post draft ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '准备要求' }), { target: { value: ' Draft only ' } })
+    fireEvent.change(screen.getByLabelText('计划开始'), { target: { value: '2026-09-05T09:30' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '任务类别' }), { target: { value: 'content' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(calls.some(call => call.input === '/api/merchants/1/tasks' && call.init?.method === 'POST')).toBe(true))
+    const create = calls.find(call => call.input === '/api/merchants/1/tasks' && call.init?.method === 'POST')!
+    expect(JSON.parse(String(create.init?.body))).toEqual({
+      task_type: 'PREPARE_ONLY',
+      title: 'Prepare weekly post copy',
+      rationale: 'Keep the profile useful',
+      expected_outcome: 'A reviewable post draft',
+      scheduled_start: new Date('2026-09-05T09:30').toISOString(),
+      parameters: { description: 'Draft only', category: 'content' },
+    })
+  })
+
+  it('saves only operator metadata with CAS, normalized labels, and a detail readback', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    let current = taskDetail()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({
+        id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null,
+        website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z',
+      })
+      if (input === '/api/tasks/12' && init?.method === 'PATCH') {
+        current = taskDetail({ version: 4, assignee: 'operator-a', labels: ['urgent', 'review'], operator_note: 'Check brand tone' })
+        return response(taskSummary(current))
+      }
+      if (input === '/api/tasks/12') return response(current)
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.change(await screen.findByRole('textbox', { name: '负责人' }), { target: { value: ' operator-a ' } })
+    for (let index = 0; index < 3; index += 1) fireEvent.click(screen.getByRole('button', { name: '新增内部标签' }))
+    const labelInputs = screen.getAllByRole('textbox', { name: /^内部标签 \d+$/ })
+    fireEvent.change(labelInputs[0], { target: { value: ' urgent ' } })
+    fireEvent.change(labelInputs[1], { target: { value: ' review ' } })
+    fireEvent.change(labelInputs[2], { target: { value: ' urgent ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '操作人备注' }), { target: { value: ' Check brand tone ' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存内部元数据' }))
+
+    await screen.findByText('Task version 4')
+    const mutation = calls.find(call => call.input === '/api/tasks/12' && call.init?.method === 'PATCH')!
+    expect(JSON.parse(String(mutation.init?.body))).toEqual({
+      expected_version: 3,
+      assignee: 'operator-a',
+      labels: ['urgent', 'review'],
+      operator_note: 'Check brand tone',
+    })
+    expect(calls.filter(call => call.input === '/api/tasks/12' && !call.init?.method)).toHaveLength(2)
+  })
+
+  it('preserves comma and newline-containing labels plus untouched metadata when saving one dirty field', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    let current = taskDetail({ labels: ['New York,\nUSA'], operator_note: ' Keep this exact ' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12' && init?.method === 'PATCH') {
+        current = taskDetail({ version: 4, assignee: 'operator-a', labels: ['New York,\nUSA'], operator_note: ' Keep this exact ' })
+        return response(taskSummary(current))
+      }
+      if (input === '/api/tasks/12') return response(current)
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.change(await screen.findByRole('textbox', { name: '负责人' }), { target: { value: 'operator-a' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存内部元数据' }))
+    await screen.findByText('Task version 4')
+    expect(JSON.parse(String(calls.find(call => call.input === '/api/tasks/12' && call.init?.method === 'PATCH')?.init?.body))).toEqual({
+      expected_version: 3,
+      assignee: 'operator-a',
+    })
+    expect((screen.getByRole('textbox', { name: '内部标签 1' }) as HTMLTextAreaElement).value).toBe('New York,\nUSA')
+    expect((screen.getByRole('textbox', { name: '操作人备注' }) as HTMLTextAreaElement).value).toBe(' Keep this exact ')
+  })
+
+  it('cancels a safe task with a reason and preserves its history instead of deleting it', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    let current = taskDetail()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12/cancel') {
+        current = taskDetail({ status: 'CANCELLED', version: 4, cancelled_at: '2026-09-03T02:00:00+00:00' })
+        return response(taskSummary(current))
+      }
+      if (input === '/api/tasks/12') return response(current)
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '取消任务并保留历史' }))
+    const submit = screen.getByRole('button', { name: '确认取消任务' }) as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+    fireEvent.change(screen.getByRole('textbox', { name: '取消原因' }), { target: { value: ' Campaign was withdrawn ' } })
+    fireEvent.click(submit)
+
+    await screen.findByText('已取消')
+    const mutation = calls.find(call => call.input === '/api/tasks/12/cancel')!
+    expect(mutation.init?.method).toBe('POST')
+    expect(JSON.parse(String(mutation.init?.body))).toEqual({ expected_version: 3, reason: 'Campaign was withdrawn' })
+    expect(calls.some(call => call.init?.method === 'DELETE')).toBe(false)
+  })
+
+  it('treats a 201 execution as an attempt result, binds approval identity, and never claims publication', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    const result = taskExecution()
+    let current = taskDetail()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12/execute') {
+        current = taskDetail({ status: 'AWAITING_APPROVAL', version: 5, execution_status: 'SUCCEEDED', executions: [result] })
+        return response(result, 201)
+      }
+      if (input === '/api/tasks/12/approve-execution') {
+        current = taskDetail({ status: 'DONE', version: 6, execution_status: 'SUCCEEDED', completed_at: '2026-09-03T02:03:00+00:00', executions: [{ ...result, reviewed_at: '2026-09-03T02:03:00+00:00' }] })
+        return response({ task: current, execution: current.executions[0] })
+      }
+      if (input === '/api/tasks/12') return response(current)
+      return response([])
+    }))
+    render(<App />)
+
+    const start = await screen.findByRole('button', { name: '开始内容准备' })
+    act(() => { start.click(); start.click() })
+    await screen.findByRole('button', { name: '批准准备结果' })
+    expect(calls.filter(call => call.input === '/api/tasks/12/execute')).toHaveLength(1)
+    expect(JSON.parse(String(calls.find(call => call.input === '/api/tasks/12/execute')?.init?.body))).toEqual({ expected_version: 3 })
+    screen.getByText('Prepared a reviewable draft.')
+    screen.getByText('人工批准只会完成这个内容准备 Task；不会发布，也不会验证外部资源。')
+    fireEvent.click(screen.getByRole('button', { name: '批准准备结果' }))
+    await screen.findByText('已完成')
+    expect(JSON.parse(String(calls.find(call => call.input === '/api/tasks/12/approve-execution')?.init?.body))).toEqual({
+      expected_version: 5,
+      expected_execution_id: 41,
+      expected_result_checksum: 'e'.repeat(64),
+    })
+  })
+
+  it('binds return to the current Task version, execution id, checksum, and a non-empty reason', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    const execution = taskExecution()
+    let current = taskDetail({ status: 'AWAITING_APPROVAL', version: 5, execution_status: 'SUCCEEDED', executions: [execution] })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12/return-execution') {
+        current = taskDetail({ status: 'PENDING', version: 6, execution_status: 'SUCCEEDED', executions: [{ ...execution, reviewed_at: '2026-09-03T02:03:00+00:00', review_note: 'Use approved menu facts' }] })
+        return response({ task: current, execution: current.executions[0] })
+      }
+      if (input === '/api/tasks/12') return response(current)
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '退回重新准备' }))
+    const submit = screen.getByRole('button', { name: '确认退回' }) as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+    fireEvent.change(screen.getByRole('textbox', { name: '退回原因' }), { target: { value: ' Use approved menu facts ' } })
+    fireEvent.click(submit)
+    await screen.findByText('待办')
+    expect(JSON.parse(String(calls.find(call => call.input === '/api/tasks/12/return-execution')?.init?.body))).toEqual({
+      expected_version: 5,
+      expected_execution_id: 41,
+      expected_result_checksum: 'e'.repeat(64),
+      reason: 'Use approved menu facts',
+    })
+  })
+
+  it('never offers PREPARE_ONLY review actions for a succeeded publication attempt', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const publication = taskExecution({ stage: 'PUBLICATION' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') {
+        return response(taskDetail({ status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED', executions: [publication] }))
+      }
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByRole('article', { name: 'Attempt 1' })
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '退回重新准备' })).toBeNull()
+  })
+
+  it('fails closed instead of crashing or claiming no-write for a malformed stored result', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const malformed = taskExecution({
+      result: { outcome: 'ready', summary: 'Missing result arrays', external_write_performed: false },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED', executions: [malformed] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('结果结构未通过本地安全校验')
+    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+  })
+
+  it('surfaces a write-positive stored result as unsafe and never renders the green no-write mark', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const unsafe = taskExecution({
+      result: {
+        outcome: 'ready', summary: 'A write was reported.', artifact_refs: ['provider://resource'],
+        evidence: ['Provider accepted a write.'], external_write_performed: true,
+      },
+      evidence: ['Provider accepted a write.'],
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED', executions: [unsafe] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('结果报告可能发生外部业务写入')
+    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+  })
+
+  it('does not offer preparation retry or no-write reassurance for publication uncertainty', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const publication = taskExecution({ stage: 'PUBLICATION', status: 'UNKNOWN', result: null, result_checksum: null })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', execution_status: 'UNKNOWN', executions: [publication] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByRole('article', { name: 'Attempt 1' })
+    expect(screen.queryByRole('button', { name: '授权重新准备' })).toBeNull()
+    screen.getByText('外部发布结果不确定，可能已经发生业务写入；不要重复发布，需人工核对。')
+    expect(screen.queryByText('再次准备可能重复产生模型成本，但这个阶段没有外部业务写入。')).toBeNull()
+  })
+
+  it('does not offer retry for a legacy failed execution whose result is null', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const legacy = taskExecution({
+      status: 'FAILED', result: null, result_checksum: null,
+      idempotency_key: 'legacy-task-execution-41',
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', execution_status: 'FAILED', executions: [legacy] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByRole('article', { name: 'Attempt 1' })
+    expect(screen.queryByRole('button', { name: '授权重新准备' })).toBeNull()
+  })
+
+  it('requires an explicit retry reason after UNKNOWN and warns about duplicate model cost without implying a write', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    const unknown = taskExecution({
+      status: 'UNKNOWN', result: null, result_checksum: null, evidence: [],
+      finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
+    })
+    let current = taskDetail({ status: 'NEEDS_ATTENTION', version: 7, execution_status: 'UNKNOWN', executions: [unknown] })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12/retry-preparation') {
+        current = taskDetail({ status: 'PENDING', version: 8, execution_status: 'UNKNOWN', executions: [unknown] })
+        return response(taskSummary(current))
+      }
+      if (input === '/api/tasks/12') return response(current)
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('结果不确定，需要人工介入')
+    screen.getByText('再次准备可能重复产生模型成本，但这个阶段没有外部业务写入。')
+    fireEvent.click(screen.getByRole('button', { name: '授权重新准备' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '重试原因' }), { target: { value: ' No external result was returned ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认重新准备' }))
+    await screen.findByText('Task version 8')
+    expect(JSON.parse(String(calls.find(call => call.input === '/api/tasks/12/retry-preparation')?.init?.body))).toEqual({
+      expected_version: 7,
+      reason: 'No external result was returned',
+    })
+  })
+
+  it('keeps a 409 conflict visible and never automatically repeats the mutation', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12' && init?.method === 'PATCH') return response({ detail: 'task changed; refresh and retry' }, 409)
+      if (input === '/api/tasks/12') return response(taskDetail())
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.change(await screen.findByRole('textbox', { name: '负责人' }), { target: { value: 'operator-a' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存内部元数据' }))
+    await screen.findByText('任务已变更，请刷新后再操作。')
+    screen.getByRole('button', { name: '刷新任务' })
+    expect(calls.filter(call => call.input === '/api/tasks/12' && call.init?.method === 'PATCH')).toHaveLength(1)
+    screen.getByText('Task version 3')
+  })
+
+  it('preserves a non-stale 409 safety explanation instead of mislabeling it as a version conflict', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    const unknown = taskExecution({
+      status: 'UNKNOWN', result: null, result_checksum: null, evidence: [],
+      finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12/retry-preparation') {
+        return response({ detail: 'task does not have a safely retryable preparation failure' }, 409)
+      }
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', version: 7, execution_status: 'UNKNOWN', executions: [unknown] }))
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '授权重新准备' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '重试原因' }), { target: { value: 'No result returned' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认重新准备' }))
+
+    await screen.findByText('task does not have a safely retryable preparation failure')
+    expect(screen.queryByText('任务已变更，请刷新后再操作。')).toBeNull()
+    expect(calls.filter(call => call.input === '/api/tasks/12/retry-preparation')).toHaveLength(1)
+  })
+
+  it('ignores a stale detail read after the route changes', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const stale = deferred<ReturnType<typeof response>>()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      if (input === '/api/auth/me') return Promise.resolve(response({ username: 'test', role: 'operator' }))
+      if (input === '/api/tasks/12') return stale.promise
+      if (input === '/api/tasks/13') return Promise.resolve(response(taskDetail({ id: 13, task_key: 'current', title: 'Current task' })))
+      if (input === '/api/merchants/1') return Promise.resolve(response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }))
+      return Promise.resolve(response([]))
+    }))
+    render(<App />)
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => input === '/api/tasks/12')).toBe(true))
+
+    act(() => {
+      window.history.pushState({}, '', '/tasks/13')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    await screen.findByRole('heading', { name: 'Current task' })
+    stale.resolve(response(taskDetail({ title: 'Stale task' })))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByRole('heading', { name: 'Stale task' })).toBeNull()
+  })
+
+  it('retries a failed server-filtered task query without inventing a local fallback', async () => {
+    window.history.pushState({}, '', '/tasks')
+    let attempts = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input.startsWith('/api/tasks')) {
+        attempts += 1
+        return attempts === 1 ? response({ detail: 'task query unavailable' }, 503) : response([taskSummary()])
+      }
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('task query unavailable')
+    fireEvent.click(screen.getByRole('button', { name: '重试查询' }))
+    await screen.findByRole('link', { name: '查看任务：Review content' })
+    expect(attempts).toBe(2)
   })
 })

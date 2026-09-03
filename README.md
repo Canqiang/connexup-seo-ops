@@ -1,24 +1,33 @@
 # connexup-seo-ops
 
-商户 SEO 运营台账（重建版，一次一块砖）。当前系统已覆盖商户台账 + 任务工单 与 AI 分析（agent 跑批）。
-设计文档：docs/superpowers/specs/2026-08-31-seo-ops-rebuild-slice1-design.md 与 docs/superpowers/specs/2026-08-31-agent-runs-design.md
+商户 SEO 运营台账（重建版，一次一块砖）。当前系统覆盖商户台账、AI 分析、Task Plan 审批和依赖感知的正式 Task 操作。
+设计文档：docs/superpowers/specs/2026-08-31-seo-ops-rebuild-slice1-design.md、docs/superpowers/specs/2026-08-31-agent-runs-design.md 与 docs/superpowers/specs/2026-09-02-agent-generated-task-dependencies-design.md
 
 ## 结构
 
 - `api/` — FastAPI + SQLite 后端（库文件 `data/seo-ops-v3.db`，schema 见 `api/schema.sql`）
 - `web/` — React + Vite + TS 前端（开发期 `/api` 代理到 8000）
 
-## AI 分析与任务执行
+## Plan、Task 与内容准备
 
-- 商户详情页可手动"发起分析"，或设置每商户自动周期（7/30 天）
-- 后台每 30 秒轮询进行中的 run，每小时扫描到期商户
-- 报告中的 ```json 计划块自动解析为待办任务（幂等，不重复创建）；无计划块时报告仍可在 run 详情页查看
-- 诊断/Plan Agent 通过 `COREAI_AGENT_ID` 配置；任务准备通过 `COREAI_PREPARATION_LLM_CALL_ID` 调用 Core AI 已发布的 LLM Call 定义
-- Plan 经人工确认后任务才能进入准备；LLM Call 结果同步回填，人工只负责批准或退回重做
-- LLM Call 接口固定不加载 Agent Tool、Skill、Sub-agent、Memory、Sandbox 或 Dataset，也不接收附件；当前任务准备只允许生成草稿、审计和操作建议，不允许发布或修改任何外部系统
-- 只有符合本地严格结构、明确声明未外写的结果才能进入人工审批；网络超时或服务端错误会标记为 UNKNOWN，必须由人工明确授权后才能新建一次准备尝试
-- 任务只有在人工批准 Agent 结果后才会完成；批量操作和普通状态修改都不能绕过审批
-- 设计文档：docs/superpowers/specs/2026-08-31-agent-runs-design.md
+- 商户详情页可手动发起分析，或设置每商户自动周期（7/30 天）；后台每 30 秒轮询进行中的 Run，每小时扫描到期商户。
+- 成功的分析 Run 可以产生严格、版本化的 Task Plan 草案。草案不是正式 Task：操作人可以逐项修改，只有整份 revision 通过校验并由人工批准后，服务端才原子物化对应 Task 和依赖边。
+- 逻辑 Plan 使用 `OPEN`、`REJECTED`、`CLOSED`；其不可变 revision 使用 `DRAFT`、`APPROVED`、`REJECTED`、`SUPERSEDED`。批准新 revision 不会静默改写已开始或已完成的 Task 历史。
+- Task 间依赖只表达“所有上游必须为 `DONE`”。队列展示服务端计算的 `READY` / `BLOCKED` 和一个首要阻塞原因，详情保留完整上下游链路；客户端不能直接写 readiness 或完成状态。
+- Phase 1 正式启用的模板是 `PREPARE_ONLY`：`PENDING -> PREPARING -> AWAITING_APPROVAL -> DONE`。`EXECUTING`（发布中）和 `VERIFYING`（验证中）目前只作兼容展示，外部发布与真实回读验证属于后续阶段。
+- 诊断/Plan Agent 通过 `COREAI_AGENT_ID` 配置；内容准备通过 `COREAI_PREPARATION_LLM_CALL_ID` 调用 Core AI 已发布的 LLM Call 定义。SEO Ops 不修改 Core AI 仓库中的 Agent 或 LLM Call 定义。
+- Preparation LLM Call 是无工具内容准备：不加载 Agent Tool、Skill、Sub-agent、Memory、Sandbox 或 Dataset，也不接收附件。它只能生成草稿、审计和操作建议，不能发布或修改任何外部系统。
+- 每次准备都会创建独立 Attempt。只有符合本地严格结构且声明未外写的 `SUCCEEDED` 结果可供审批；审批和退回精确绑定 Task version、execution id 与 result checksum。
+- 网络超时或服务端错误会记为 `UNKNOWN`，不会被当成成功。操作人确认后才能创建新的准备 Attempt，并会看到可能重复产生模型成本的提示；这个阶段仍没有外部业务写入。
+- 人工批准 `PREPARE_ONLY` 结果只会完成该内容准备 Task，不会发布，也不会验证外部资源。
+
+## 操作人 Task 操作
+
+- **新增：** 商户页创建普通独立 `PREPARE_ONLY` Task；标题、动因和预期效果必填，计划时间按带时区 ISO 时间提交。
+- **修改：** 正式 Task 只允许更新负责人、内部标签和操作人备注。执行定义与依赖必须回到对应 Plan revision 修改，不能在 Task 上原地覆盖。
+- **取消：** UI 使用“取消任务并保留历史”，要求填写原因并携带 expected version；不存在物理删除或直接标记 `DONE` 的操作。
+- **查询：** 任务总览使用服务端状态、readiness、blocker 和来源过滤，并在写操作后读取 TaskDetail，以服务端返回的 version 为准。
+- 所有写操作都使用乐观锁；版本或审批对象变化的 `409` 会要求刷新，其他安全拒绝会保留服务端原因，任何 `409` 都不自动重试。Attempts 与 Task events 是 append-only 审计历史。
 
 ## FBR / GBP 只读资料
 

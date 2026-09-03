@@ -1,10 +1,25 @@
 import type { RunStatus, TaskStatus } from './api'
 
 export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
-  todo: '待办',
-  doing: '进行中',
-  done: '已完成',
-  cancelled: '已取消',
+  PENDING: '待办',
+  PREPARING: '准备中',
+  AWAITING_APPROVAL: '待内容审批',
+  EXECUTING: '发布中',
+  VERIFYING: '验证中',
+  DONE: '已完成',
+  NEEDS_ATTENTION: '需要人工处理',
+  CANCELLED: '已取消',
+}
+
+export const TASK_STATUS_CLASSES: Record<TaskStatus, string> = {
+  PENDING: 'todo',
+  PREPARING: 'doing',
+  AWAITING_APPROVAL: 'awaiting',
+  EXECUTING: 'executing',
+  VERIFYING: 'verifying',
+  DONE: 'done',
+  NEEDS_ATTENTION: 'failed',
+  CANCELLED: 'cancelled',
 }
 
 export const RUN_STATUS_LABELS: Record<RunStatus, string> = {
