@@ -1513,6 +1513,7 @@ def test_skill_activation_accepts_observed_adapter_and_finishes_payable_atomical
         triggered = []
 
         def get_run(self, run_id):
+            assert polling_conn.in_transaction is False
             assert run_id == "verified-skill-only-run"
             return {
                 "status": "COMPLETED",
@@ -1522,6 +1523,7 @@ def test_skill_activation_accepts_observed_adapter_and_finishes_payable_atomical
             }
 
         def get_trace(self, trace_id):
+            assert polling_conn.in_transaction is False
             return {
                 "traceId": trace_id,
                 "agentId": "keyword-skill-agent",
@@ -1535,6 +1537,7 @@ def test_skill_activation_accepts_observed_adapter_and_finishes_payable_atomical
             ]
 
         def get_trace_span(self, _trace_id, span_id):
+            assert polling_conn.in_transaction is False
             names = {
                 "seed-span": (
                     "fbradmin/seo-keyword-seed-generate",

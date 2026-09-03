@@ -1651,16 +1651,14 @@ def _mark_stale_keyword_dispatches_unknown(conn: sqlite3.Connection) -> None:
         "keyword Skill dispatch stopped before a Core AI run ID was persisted; "
         "the dispatch outcome is unknown. Verify Core AI run history before manually retrying"
     )
-    updated = conn.execute(
+    conn.execute(
         "UPDATE merchant_seo_artifacts"
         " SET status = 'failed', dispatch_state = 'unknown', error = ?, completed_at = ?"
         " WHERE artifact_type = 'KEYWORD_SET' AND status = 'running'"
         " AND coreai_run_id IS NULL AND dispatch_state IN ('pending', 'dispatching')"
         " AND COALESCE(dispatch_started_at, created_at) < ?",
         (error, now_iso(), cutoff),
-    ).rowcount
-    if updated:
-        conn.commit()
+    )
 
 
 def _parse_json_object(raw: object, label: str) -> dict:
@@ -2021,6 +2019,7 @@ def poll_seo_targets_once(client: CoreAiClient, agents: SeoAgentIds) -> None:
         # into an explicit unknown outcome so an operator can verify Core AI
         # and then choose whether to submit a fresh regeneration.
         _mark_stale_keyword_dispatches_unknown(conn)
+        conn.commit()
         rows = conn.execute(
             "SELECT * FROM merchant_seo_artifacts"
             " WHERE status = 'running' AND coreai_run_id IS NOT NULL ORDER BY id"
@@ -3518,6 +3517,7 @@ def recover_stale_seo_dispatches_once() -> None:
     conn = connect()
     try:
         _mark_stale_keyword_dispatches_unknown(conn)
+        conn.commit()
         _mark_stale_local_falcon_dispatches_unknown(conn)
     finally:
         conn.close()
