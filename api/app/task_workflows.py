@@ -8,8 +8,10 @@ transition or mark a task complete outside that lifecycle.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Any
 
 
@@ -17,25 +19,36 @@ from typing import Any
 class WorkflowTemplate:
     task_type: str
     version: int
-    transitions: dict[str, frozenset[str]]
+    transitions: Mapping[str, frozenset[str]]
     terminal_after_approval: bool
 
 
-WORKFLOW_TEMPLATES = {
-    "PREPARE_ONLY": WorkflowTemplate(
-        task_type="PREPARE_ONLY",
-        version=1,
-        transitions={
-            "PENDING": frozenset({"PREPARING", "NEEDS_ATTENTION", "CANCELLED"}),
-            "PREPARING": frozenset({"AWAITING_APPROVAL", "NEEDS_ATTENTION", "CANCELLED"}),
-            "AWAITING_APPROVAL": frozenset({"DONE", "PENDING", "NEEDS_ATTENTION", "CANCELLED"}),
-            "NEEDS_ATTENTION": frozenset({"PENDING", "CANCELLED"}),
-            "DONE": frozenset(),
-            "CANCELLED": frozenset(),
-        },
-        terminal_after_approval=True,
-    )
-}
+class TaskWorkflowDataError(RuntimeError):
+    """Raised when persisted workflow relationships fail integrity checks."""
+
+
+_PREPARE_ONLY_TRANSITIONS = MappingProxyType(
+    {
+        "PENDING": frozenset({"PREPARING", "NEEDS_ATTENTION", "CANCELLED"}),
+        "PREPARING": frozenset({"AWAITING_APPROVAL", "NEEDS_ATTENTION", "CANCELLED"}),
+        "AWAITING_APPROVAL": frozenset({"DONE", "PENDING", "NEEDS_ATTENTION", "CANCELLED"}),
+        "NEEDS_ATTENTION": frozenset({"PENDING", "CANCELLED"}),
+        "DONE": frozenset(),
+        "CANCELLED": frozenset(),
+    }
+)
+
+
+WORKFLOW_TEMPLATES: Mapping[str, WorkflowTemplate] = MappingProxyType(
+    {
+        "PREPARE_ONLY": WorkflowTemplate(
+            task_type="PREPARE_ONLY",
+            version=1,
+            transitions=_PREPARE_ONLY_TRANSITIONS,
+            terminal_after_approval=True,
+        )
+    }
+)
 
 
 def enabled_task_types() -> set[str]:
@@ -131,20 +144,28 @@ def _first_incomplete_dependency(conn: sqlite3.Connection, task: Any) -> dict[st
     if not _table_has_columns(conn, "task_dependencies", {"id", "task_id", "depends_on_task_id"}):
         return None
     upstream_rows = conn.execute(
-        "SELECT t.* FROM task_dependencies d "
-        "JOIN tasks t ON t.id = d.depends_on_task_id "
+        "SELECT d.id AS dependency_id, d.depends_on_task_id, "
+        "t.id AS upstream_id, t.task_key, t.title, t.status "
+        "FROM task_dependencies d LEFT JOIN tasks t ON t.id = d.depends_on_task_id "
         "WHERE d.task_id = ? ORDER BY d.id",
         (_value(task, "id"),),
     ).fetchall()
+    first_incomplete: dict[str, object] | None = None
     for upstream in upstream_rows:
-        if str(_value(upstream, "status", "")).upper() != "DONE":
-            return {
+        if _value(upstream, "upstream_id") is None:
+            raise TaskWorkflowDataError(
+                "dangling dependency "
+                f"{_value(upstream, 'dependency_id')}: task {_value(task, 'id')} "
+                f"references missing task {_value(upstream, 'depends_on_task_id')}"
+            )
+        if first_incomplete is None and str(_value(upstream, "status", "")).upper() != "DONE":
+            first_incomplete = {
                 "code": "UPSTREAM_NOT_DONE",
-                "task_id": _value(upstream, "id"),
+                "task_id": _value(upstream, "upstream_id"),
                 "task_key": _value(upstream, "task_key"),
                 "task_title": _value(upstream, "title"),
             }
-    return None
+    return first_incomplete
 
 
 def task_blocker(
@@ -166,6 +187,7 @@ def task_blocker(
 
 __all__ = [
     "WORKFLOW_TEMPLATES",
+    "TaskWorkflowDataError",
     "WorkflowTemplate",
     "assert_transition",
     "enabled_task_types",

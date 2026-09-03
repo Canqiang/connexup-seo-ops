@@ -85,6 +85,10 @@ def test_prepare_only_template_is_versioned_and_immutable():
         "DONE": frozenset(),
         "CANCELLED": frozenset(),
     }
+    with pytest.raises(TypeError):
+        template.transitions["PENDING"] = frozenset({"DONE"})
+    with pytest.raises(TypeError):
+        WORKFLOW_TEMPLATES["GBP_POST"] = template
     with pytest.raises((AttributeError, TypeError)):
         template.version = 2
 
@@ -149,6 +153,18 @@ def test_dependency_blocker_uses_dependency_row_order(seed_task_graph, db):
     db.commit()
     downstream = db.execute("SELECT * FROM tasks WHERE id = 20").fetchone()
     assert task_blocker(db, downstream)["task_key"] == "research"
+
+
+def test_dangling_dependency_fails_closed(seed_task_graph, db):
+    from app.task_workflows import TaskWorkflowDataError, task_blocker
+
+    db.execute(
+        "INSERT INTO task_dependencies (id, task_id, depends_on_task_id) VALUES (2, 20, 999)"
+    )
+    db.commit()
+    downstream = db.execute("SELECT * FROM tasks WHERE id = 20").fetchone()
+    with pytest.raises(TaskWorkflowDataError, match="dangling dependency"):
+        task_blocker(db, downstream)
 
 
 def test_archived_merchant_blocks_before_other_conditions(seed_task_graph, db):
