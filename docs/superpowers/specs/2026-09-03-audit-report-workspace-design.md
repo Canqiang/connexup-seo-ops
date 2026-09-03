@@ -2,7 +2,7 @@
 
 **日期：** 2026-09-03
 
-**状态：** 对话设计已确认；书面规格等待最终评审
+**状态：** 已确认；实现限定于 `codex/audit-report-workspace` 隔离分支
 
 **仓库：** `/Users/xander/git_repo/connexup-seo-ops`
 
