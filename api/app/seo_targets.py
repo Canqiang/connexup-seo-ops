@@ -1053,6 +1053,107 @@ def _active_ready_keyword_artifact(
     return row, keyword_set
 
 
+def _keyword_version_source(keyword_set: dict) -> str | None:
+    generation_method = keyword_set.get("generation_method")
+    if generation_method == "UPSTREAM_DETERMINISTIC_ADAPTER":
+        return "SKILL"
+    if generation_method == "PERSISTED_FBR_READBACK":
+        return "FBR"
+    if generation_method is None:
+        return None
+    return "LEGACY"
+
+
+def _keyword_score_status(
+    row: sqlite3.Row,
+    keyword_set: dict,
+    place_id: str,
+) -> str:
+    if (
+        _keyword_version_source(keyword_set) == "SKILL"
+        and _keyword_artifact_paid_eligible(row, keyword_set, place_id)
+    ):
+        return "VERIFIED_SKILL"
+    keywords = keyword_set.get("keywords")
+    valid_keywords = (
+        [item for item in keywords if isinstance(item, dict)]
+        if isinstance(keywords, list)
+        else []
+    )
+    scored_keyword_count = sum(
+        _is_numeric_keyword_score(item.get("score")) for item in valid_keywords
+    )
+    if scored_keyword_count == 0:
+        return "UNSCORED"
+    if scored_keyword_count == len(valid_keywords):
+        return "SCORED_UNVERIFIED"
+    return "PARTIAL"
+
+
+def _keyword_version_summaries(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+    active_artifact_id: int | None,
+) -> list[dict]:
+    summaries = []
+    for row, keyword_set in _ready_keyword_artifact_candidates(
+        conn, merchant_id, place_id
+    ):
+        keywords = keyword_set.get("keywords")
+        valid_keywords = (
+            [item for item in keywords if isinstance(item, dict)]
+            if isinstance(keywords, list)
+            else []
+        )
+        summaries.append(
+            {
+                "artifact_id": row["id"],
+                "place_id": place_id,
+                "source": _keyword_version_source(keyword_set),
+                "generation_method": keyword_set.get("generation_method"),
+                "keyword_count": len(valid_keywords),
+                "local_keyword_count": sum(
+                    item.get("strategy") == "LOCAL" for item in valid_keywords
+                ),
+                "organic_keyword_count": sum(
+                    item.get("strategy") == "ORGANIC" for item in valid_keywords
+                ),
+                "scored_keyword_count": sum(
+                    _is_numeric_keyword_score(item.get("score"))
+                    for item in valid_keywords
+                ),
+                "score_status": _keyword_score_status(row, keyword_set, place_id),
+                "completed_at": row["completed_at"],
+                "is_active": row["id"] == active_artifact_id,
+            }
+        )
+    return summaries
+
+
+def _ready_keyword_artifact_for_another_place(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> sqlite3.Row | None:
+    rows = conn.execute(
+        "SELECT * FROM merchant_seo_artifacts"
+        " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'ready'"
+        " AND payload_json IS NOT NULL ORDER BY id DESC",
+        (merchant_id,),
+    ).fetchall()
+    for row in rows:
+        if _keyword_artifact_place_id(row) == place_id:
+            continue
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            return row
+    return None
+
+
 def _local_falcon_cohort(keyword_set: dict | None) -> list[dict]:
     if (
         not keyword_set
@@ -2327,6 +2428,24 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
     merchant = conn.execute("SELECT * FROM merchants WHERE id = ?", (merchant_id,)).fetchone()
     location = _selected_location_context(conn, merchant) if merchant is not None else None
     current_place_id = location.get("place_id") if location else None
+    keyword_head = (
+        _ensure_keyword_head(conn, merchant_id, current_place_id)
+        if current_place_id
+        else None
+    )
+    keyword_row, keyword_payload = (
+        _active_ready_keyword_artifact(conn, merchant_id, current_place_id)
+        if current_place_id
+        else (None, None)
+    )
+    active_artifact_id = keyword_row["id"] if keyword_row else None
+    keyword_versions = (
+        _keyword_version_summaries(
+            conn, merchant_id, current_place_id, active_artifact_id
+        )
+        if current_place_id
+        else []
+    )
     unresolved_batch = _unresolved_local_falcon_batch(conn, merchant_id)
     regenerate_blockers = []
     if not current_place_id:
@@ -2378,20 +2497,39 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
         ).fetchone()
         cycle_id = row["cycle_id"] if row else None
     if cycle_id is None:
+        paid_eligible = _keyword_artifact_paid_eligible(
+            keyword_row,
+            keyword_payload,
+            current_place_id,
+        )
         return {
             "merchant_id": merchant_id,
             "cycle_status": "empty",
             "active_stage": None,
-            "keyword_set_artifact_id": None,
-            "local_falcon_cohort_sha256": None,
-            "keyword_set": None,
+            "keyword_set_artifact_id": active_artifact_id,
+            "active_keyword_artifact_id": active_artifact_id,
+            "active_keyword_source": (
+                _keyword_version_source(keyword_payload) if keyword_payload else None
+            ),
+            "active_keyword_activated_at": (
+                keyword_head["activated_at"] if keyword_head else None
+            ),
+            "local_falcon_cohort_sha256": (
+                _local_falcon_cohort_sha256(keyword_payload)
+                if paid_eligible
+                else None
+            ),
+            "keyword_set": keyword_payload,
+            "keyword_versions": keyword_versions,
             "audit_report": None,
             "ranking_report": None,
             "local_falcon": _local_falcon_state(
                 conn,
                 merchant_id,
-                None,
+                keyword_payload,
+                active_artifact_id,
                 current_place_id=current_place_id,
+                paid_eligible=paid_eligible,
             ),
             "capabilities": capabilities,
             "error": None,
@@ -2403,12 +2541,7 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
     running = next((row for row in rows if row["status"] == "running"), None)
     failed = next((row for row in reversed(rows) if row["status"] == "failed"), None)
 
-    keyword_row, keyword_payload = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        current_place_id,
-    )
-    display_cycle_id = keyword_row["cycle_id"] if keyword_row else None
+    display_cycle_id = keyword_row["cycle_id"] if keyword_row else cycle_id
     display_rows = conn.execute(
         "SELECT * FROM merchant_seo_artifacts"
         " WHERE merchant_id = ? AND cycle_id = ? AND status = 'ready' ORDER BY id",
@@ -2471,9 +2604,17 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
         "cycle_id": cycle_id,
         "cycle_status": "running" if running else "failed" if failed else "ready",
         "active_stage": running["artifact_type"] if running else None,
-        "keyword_set_artifact_id": keyword_row["id"] if keyword_row else None,
+        "keyword_set_artifact_id": active_artifact_id,
+        "active_keyword_artifact_id": active_artifact_id,
+        "active_keyword_source": (
+            _keyword_version_source(keyword_payload) if keyword_payload else None
+        ),
+        "active_keyword_activated_at": (
+            keyword_head["activated_at"] if keyword_head else None
+        ),
         "local_falcon_cohort_sha256": cohort_sha256,
         "keyword_set": keyword_payload,
+        "keyword_versions": keyword_versions,
         "audit_report": payload("AUDIT_REPORT"),
         "ranking_report": payload("RANKING_REPORT"),
         "local_falcon": local_falcon,
@@ -2514,21 +2655,15 @@ def approve_local_falcon_cohort(
             detail="wait for keyword regeneration to finish before approval",
         )
 
-    latest_keyword_row, keyword_set = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        place_id,
+    _ensure_keyword_head(conn, merchant_id, place_id)
+    latest_keyword_row, keyword_set = _active_ready_keyword_artifact(
+        conn, merchant_id, place_id
     )
     if latest_keyword_row is None:
-        latest_other_location, _ = _preferred_ready_keyword_artifact(
-            conn,
-            merchant_id,
-            None,
+        latest_other_location = _ready_keyword_artifact_for_another_place(
+            conn, merchant_id, place_id
         )
-        if (
-            latest_other_location is not None
-            and _keyword_artifact_place_id(latest_other_location) != place_id
-        ):
+        if latest_other_location is not None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -2675,10 +2810,9 @@ def create_local_falcon_scan_batch(
             ),
         )
 
-    latest_keyword_row, latest_keyword_set = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        approval["place_id"],
+    _ensure_keyword_head(conn, merchant_id, approval["place_id"])
+    latest_keyword_row, latest_keyword_set = _active_ready_keyword_artifact(
+        conn, merchant_id, approval["place_id"]
     )
     latest_sha256 = _local_falcon_cohort_sha256(latest_keyword_set)
     if (
@@ -3672,21 +3806,15 @@ def sync_local_falcon_reports(
     place_id = location.get("place_id")
     if not place_id:
         raise HTTPException(status_code=409, detail="GBP Place ID is required for Local Falcon")
-    keyword_row, keyword_set = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        place_id,
+    _ensure_keyword_head(conn, merchant_id, place_id)
+    keyword_row, keyword_set = _active_ready_keyword_artifact(
+        conn, merchant_id, place_id
     )
     if keyword_row is None:
-        latest_other_location, _ = _preferred_ready_keyword_artifact(
-            conn,
-            merchant_id,
-            None,
+        latest_other_location = _ready_keyword_artifact_for_another_place(
+            conn, merchant_id, place_id
         )
-        if (
-            latest_other_location is not None
-            and _keyword_artifact_place_id(latest_other_location) != place_id
-        ):
+        if latest_other_location is not None:
             raise HTTPException(
                 status_code=409,
                 detail=(

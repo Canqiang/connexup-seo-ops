@@ -957,7 +957,7 @@ def test_fbr_readback_collapses_unicode_keyword_duplicates_and_keeps_first_displ
     ]
 
 
-def test_refresh_orders_scored_fbr_keywords_and_selects_only_top_20_for_local_falcon(
+def test_refresh_records_scored_fbr_keywords_without_replacing_the_active_head(
     client, monkeypatch
 ):
     from app.main import app
@@ -999,8 +999,23 @@ def test_refresh_orders_scored_fbr_keywords_and_selects_only_top_20_for_local_fa
 
     assert response.status_code == 202
     state = response.json()
-    assert state["keyword_set_artifact_id"] != previous_artifact_id
-    keywords = state["keyword_set"]["keywords"]
+    assert state["keyword_set_artifact_id"] == previous_artifact_id
+    assert state["active_keyword_artifact_id"] == previous_artifact_id
+    assert [item["keyword"] for item in state["keyword_set"]["keywords"]] == [
+        "verified breakfast keyword"
+    ]
+    assert state["capabilities"]["can_sync_local_falcon"] is True
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    fbr_payload = json.loads(
+        conn.execute(
+            "SELECT payload_json FROM merchant_seo_artifacts"
+            " WHERE merchant_id = ? ORDER BY id DESC LIMIT 1",
+            (merchant_id,),
+        ).fetchone()[0]
+    )
+    conn.close()
+    keywords = fbr_payload["keywords"]
     assert [item["keyword"] for item in keywords] == [
         f"ranked keyword {index:02d}" for index in range(20, -1, -1)
     ]
@@ -1009,7 +1024,6 @@ def test_refresh_orders_scored_fbr_keywords_and_selects_only_top_20_for_local_fa
     ]
     assert [item["score_rank"] for item in keywords] == list(range(1, 22))
     assert [item["local_falcon_selected"] for item in keywords] == [True] * 20 + [False]
-    assert state["capabilities"]["can_sync_local_falcon"] is True
 
     class MissingLocalFalcon:
         def __init__(self):
@@ -1028,9 +1042,7 @@ def test_refresh_orders_scored_fbr_keywords_and_selects_only_top_20_for_local_fa
         app.dependency_overrides.pop(seo_targets.get_local_falcon, None)
 
     assert sync.status_code == 200, sync.text
-    assert fake.listed_keywords == [
-        f"ranked keyword {index:02d}" for index in range(20, 0, -1)
-    ]
+    assert fake.listed_keywords == ["verified breakfast keyword"]
 
 
 def test_refresh_does_not_fall_back_to_the_legacy_agent_when_fbr_has_no_keywords(client, monkeypatch):
@@ -1554,9 +1566,13 @@ def test_skill_only_regeneration_accepts_observed_adapter_and_finishes_payable(
     assert state["cycle_status"] == "ready"
     assert state["audit_report"] is None
     assert state["ranking_report"] is None
-    assert state["local_falcon_cohort_sha256"] is not None
-    assert state["capabilities"]["can_approve_local_falcon"] is True
-    assert state["capabilities"]["can_generate_local_falcon"] is True
+    assert state["keyword_set"] is None
+    assert state["active_keyword_artifact_id"] is None
+    assert state["local_falcon_cohort_sha256"] is None
+    assert state["capabilities"]["can_approve_local_falcon"] is False
+    assert state["capabilities"]["can_generate_local_falcon"] is False
+    assert state["keyword_versions"][0]["source"] == "SKILL"
+    assert state["keyword_versions"][0]["score_status"] == "VERIFIED_SKILL"
     assert fake.triggered == []
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
     provenance = json.loads(
@@ -1898,7 +1914,8 @@ def test_polling_chains_keyword_audit_and_live_ranking_artifacts(client, monkeyp
     assert state.status_code == 200
     assert state.json()["cycle_status"] == "ready"
     assert state.json()["active_stage"] is None
-    assert state.json()["keyword_set"]["keywords"][0]["keyword"] == "coffee upper west side"
+    assert state.json()["keyword_set"] is None
+    assert state.json()["keyword_versions"][0]["source"] == "LEGACY"
     assert state.json()["audit_report"]["findings"][0]["severity"] == "HIGH"
     assert state.json()["ranking_report"]["keywords"][0] == {
         "keyword": "coffee upper west side",
@@ -1911,7 +1928,11 @@ def test_polling_chains_keyword_audit_and_live_ranking_artifacts(client, monkeyp
 
 def test_get_keeps_saved_targets_visible_while_a_new_cycle_is_running(client, monkeypatch):
     merchant_id = create_uws_merchant(client, monkeypatch)
-    saved_keyword_set = {"keywords": [{"keyword": "saved upper west side keyword"}]}
+    saved_artifact_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="saved-cycle",
+        keyword="saved upper west side keyword",
+    )
     saved_audit = {"findings": [{"id": "saved-finding"}]}
     saved_ranking = {"keywords": [{"keyword": "saved upper west side keyword", "local_rank": 4}]}
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
@@ -1921,9 +1942,6 @@ def test_get_keeps_saved_targets_visible_while_a_new_cycle_is_running(client, mo
         " coreai_run_id, request_json, payload_json, created_at, completed_at)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (merchant_id, "saved-cycle", "KEYWORD_SET", "seo_ops.keyword_set.v2", "ready", KEYWORD_AGENT_ID,
-             "saved-keyword-run", json.dumps({"place_id": TEST_PLACE_ID}), json.dumps(saved_keyword_set),
-             "2026-09-02T06:00:00Z", "2026-09-02T06:01:00Z"),
             (merchant_id, "saved-cycle", "AUDIT_REPORT", "seo_ops.audit_report.v1", "ready", AUDIT_AGENT_ID,
              "saved-audit-run", "{}", json.dumps(saved_audit), "2026-09-02T06:02:00Z", "2026-09-02T06:03:00Z"),
             (merchant_id, "saved-cycle", "RANKING_REPORT", "seo_ops.ranking_report.v1", "ready", RANKING_AGENT_ID,
@@ -1942,7 +1960,10 @@ def test_get_keeps_saved_targets_visible_while_a_new_cycle_is_running(client, mo
     assert response.json()["cycle_id"] == "refresh-cycle"
     assert response.json()["cycle_status"] == "running"
     assert response.json()["active_stage"] == "KEYWORD_SET"
-    assert response.json()["keyword_set"] == saved_keyword_set
+    assert response.json()["keyword_set_artifact_id"] == saved_artifact_id
+    assert [item["keyword"] for item in response.json()["keyword_set"]["keywords"]] == [
+        "saved upper west side keyword"
+    ]
     assert response.json()["audit_report"] == saved_audit
     assert response.json()["ranking_report"] == saved_ranking
 
@@ -2142,12 +2163,21 @@ def insert_unscored_fbr_keyword_inventory(
     *,
     cycle_id="newer-fbr-inventory",
     keyword="new unscored inventory keyword",
+    scored=False,
 ):
     payload = keyword_result(
         merchant_id,
-        [local_keyword(keyword)],
+        [
+            local_keyword(
+                keyword,
+                score=91 if scored else None,
+                priority="P1" if scored else "UNSCORED",
+            )
+        ],
         generation_method="PERSISTED_FBR_READBACK",
     )
+    if scored:
+        payload = mark_deterministic_local_ranks(payload)
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
     cursor = conn.execute(
         "INSERT INTO merchant_seo_artifacts"
@@ -2335,7 +2365,7 @@ def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(
     assert head["active_artifact_id"] == valid_fbr_id
 
 
-def test_state_prefers_newest_paid_keyword_artifact_for_the_current_location(
+def test_state_resolves_the_bootstrapped_active_head_not_a_newer_scored_fbr_artifact(
     client, monkeypatch
 ):
     merchant_id = create_uws_merchant(client, monkeypatch)
@@ -2349,9 +2379,10 @@ def test_state_prefers_newest_paid_keyword_artifact_for_the_current_location(
         keyword="wrong location keyword",
     )
 
-    insert_unscored_fbr_keyword_inventory(
+    newer_fbr_artifact_id = insert_unscored_fbr_keyword_inventory(
         merchant_id,
-        keyword="unscored FBR inventory keyword",
+        keyword="newer scored FBR inventory keyword",
+        scored=True,
     )
 
     response = client.get(f"/api/merchants/{merchant_id}/seo-targets")
@@ -2360,11 +2391,53 @@ def test_state_prefers_newest_paid_keyword_artifact_for_the_current_location(
     state = response.json()
     assert state["cycle_id"] == "newer-fbr-inventory"
     assert state["keyword_set_artifact_id"] == current_artifact_id
+    assert state["active_keyword_artifact_id"] == current_artifact_id
+    assert state["active_keyword_source"] == "SKILL"
+    assert state["active_keyword_activated_at"] is not None
     assert [item["keyword"] for item in state["keyword_set"]["keywords"]] == [
         "verified breakfast keyword"
     ]
+    assert [item["artifact_id"] for item in state["keyword_versions"]] == [
+        newer_fbr_artifact_id,
+        current_artifact_id,
+    ]
+    assert state["keyword_versions"][0] == {
+        "artifact_id": newer_fbr_artifact_id,
+        "place_id": TEST_PLACE_ID,
+        "source": "FBR",
+        "generation_method": "PERSISTED_FBR_READBACK",
+        "keyword_count": 1,
+        "local_keyword_count": 1,
+        "organic_keyword_count": 0,
+        "scored_keyword_count": 1,
+        "score_status": "SCORED_UNVERIFIED",
+        "completed_at": "2026-09-02T10:01:00Z",
+        "is_active": False,
+    }
+    assert state["keyword_versions"][1]["source"] == "SKILL"
+    assert state["keyword_versions"][1]["score_status"] == "VERIFIED_SKILL"
+    assert state["keyword_versions"][1]["is_active"] is True
     assert state["local_falcon_cohort_sha256"] is not None
     assert state["capabilities"]["can_approve_local_falcon"] is True
+
+
+def test_get_seo_targets_resolves_active_keyword_state_from_sqlite_without_fbr_readback(
+    client, monkeypatch
+):
+    from app import fbr_gbp
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    active_artifact_id = insert_verified_skill_keyword_set(merchant_id)
+
+    def unexpected_fbr_readback():
+        raise AssertionError("GET /seo-targets must not call FBR")
+
+    monkeypatch.setattr(fbr_gbp, "fbr_gbp_client", unexpected_fbr_readback)
+
+    response = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+
+    assert response.status_code == 200
+    assert response.json()["active_keyword_artifact_id"] == active_artifact_id
 
 
 def test_refresh_preserves_verified_scored_cohort_when_fbr_inventory_is_unscored(
@@ -2669,14 +2742,23 @@ class FakeLocalFalcon:
         }
 
 
-def test_local_falcon_approval_uses_scored_artifact_hidden_by_newer_fbr_inventory(
+def test_local_falcon_approval_rejects_newer_non_active_scored_fbr_artifact(
     client, monkeypatch
 ):
     merchant_id = create_uws_merchant(client, monkeypatch)
     scored_artifact_id = insert_verified_skill_keyword_set(merchant_id)
-    insert_unscored_fbr_keyword_inventory(merchant_id)
+    newer_fbr_artifact_id = insert_unscored_fbr_keyword_inventory(
+        merchant_id, scored=True
+    )
     state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
 
+    rejected = client.post(
+        f"/api/merchants/{merchant_id}/local-falcon-approvals",
+        json={
+            "keyword_artifact_id": newer_fbr_artifact_id,
+            "expected_cohort_sha256": state["local_falcon_cohort_sha256"],
+        },
+    )
     response = client.post(
         f"/api/merchants/{merchant_id}/local-falcon-approvals",
         json={
@@ -2685,6 +2767,8 @@ def test_local_falcon_approval_uses_scored_artifact_hidden_by_newer_fbr_inventor
         },
     )
 
+    assert state["active_keyword_artifact_id"] == scored_artifact_id
+    assert rejected.status_code == 409
     assert response.status_code == 201
     approval = response.json()["local_falcon"]["approval"]
     assert approval["keyword_artifact_id"] == scored_artifact_id
@@ -2702,7 +2786,7 @@ def test_local_falcon_sync_uses_scored_artifact_hidden_by_newer_fbr_inventory(
 
     merchant_id = create_uws_merchant(client, monkeypatch)
     scored_artifact_id = insert_verified_skill_keyword_set(merchant_id)
-    insert_unscored_fbr_keyword_inventory(merchant_id)
+    insert_unscored_fbr_keyword_inventory(merchant_id, scored=True)
 
     class MissingReportLocalFalcon:
         def __init__(self):
@@ -2763,7 +2847,7 @@ def test_local_falcon_scan_batch_keeps_exact_approved_scored_cohort_when_newer_f
         )
         assert approval_response.status_code == 201
         approval = approval_response.json()["local_falcon"]["approval"]
-        insert_unscored_fbr_keyword_inventory(merchant_id)
+        insert_unscored_fbr_keyword_inventory(merchant_id, scored=True)
 
         response = client.post(
             f"/api/merchants/{merchant_id}/local-falcon-scan-batches",
