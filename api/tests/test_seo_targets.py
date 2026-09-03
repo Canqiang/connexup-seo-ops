@@ -2302,6 +2302,39 @@ def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_witho
     assert fallback_head["active_artifact_id"] == fallback_fbr_id
 
 
+def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(
+    client, monkeypatch
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    valid_fbr_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+    untrusted_payload = keyword_result(
+        merchant_id,
+        [local_keyword("untrusted persisted keyword")],
+        generation_method="PERSISTED_FBR_READBACK",
+    )
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, payload_json, created_at, completed_at)"
+        " VALUES (?, 'untrusted-fbr', 'KEYWORD_SET', 'seo_ops.keyword_set.v2', 'ready',"
+        " 'another-keyword-source', ?, ?, '2026-09-02T11:00:00Z', '2026-09-02T11:01:00Z')",
+        (
+            merchant_id,
+            json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID}),
+            json.dumps(untrusted_payload),
+        ),
+    )
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    head = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
+    conn.close()
+
+    assert head["active_artifact_id"] == valid_fbr_id
+
+
 def test_state_prefers_newest_paid_keyword_artifact_for_the_current_location(
     client, monkeypatch
 ):

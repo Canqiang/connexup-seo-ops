@@ -931,6 +931,28 @@ def _ready_keyword_artifact_candidates(
     return candidates
 
 
+def _is_valid_fbr_keyword_artifact(
+    row: sqlite3.Row,
+    keyword_set: dict,
+    place_id: str,
+) -> bool:
+    if (
+        keyword_set.get("generation_method") != "PERSISTED_FBR_READBACK"
+        or _keyword_artifact_place_id(row) != place_id
+        or row["source_agent_id"] != "fbr-keyword-store"
+    ):
+        return False
+    try:
+        request = json.loads(row["request_json"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return bool(
+        isinstance(request, dict)
+        and request.get("source") == "FBR_KEYWORD_STORE"
+        and request.get("place_id") == place_id
+    )
+
+
 def _ensure_keyword_head(
     conn: sqlite3.Connection,
     merchant_id: int,
@@ -966,7 +988,7 @@ def _ensure_keyword_head(
                 (
                     row["id"]
                     for row, keyword_set in candidates
-                    if keyword_set.get("generation_method") == "PERSISTED_FBR_READBACK"
+                    if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id)
                 ),
                 None,
             )
