@@ -53,6 +53,7 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
         "result_json",
         "evidence_json",
         "next_attempt_at",
+        "reviewed_at",
     } <= execution_cols
     assert marker == 1
     assert foreign_key_errors == []

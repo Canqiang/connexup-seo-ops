@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS task_executions (
   next_attempt_at TEXT,
   created_at TEXT NOT NULL,
   finished_at TEXT,
+  reviewed_at TEXT,
   UNIQUE (task_id, stage, attempt)
 );
 

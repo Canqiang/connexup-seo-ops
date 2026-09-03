@@ -7,9 +7,10 @@ import json
 import re
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
-from .task_workflows import WORKFLOW_TEMPLATES
+from .task_plan_contract import validate_task_plan
+from .task_workflows import WORKFLOW_TEMPLATES, enabled_task_types
 
 TASK_WORKFLOW_MIGRATION = "task_workflow_v1"
 _TASK_KEY_RE = re.compile(r"^[a-z0-9_-]{1,80}$")
@@ -209,6 +210,7 @@ def _create_replacement_task_tables(conn: sqlite3.Connection) -> None:
           next_attempt_at TEXT,
           created_at TEXT NOT NULL,
           finished_at TEXT,
+          reviewed_at TEXT,
           UNIQUE (task_id, stage, attempt)
         )
         """
@@ -239,7 +241,7 @@ def _plan_item(task: dict[str, Any], used: set[str]) -> dict[str, object]:
     title = str(task["title"])
     return {
         "key": _task_key(task, used),
-        "task_type": "PREPARE_ONLY",
+        "task_type": task["task_type"] if "task_type" in task else "PREPARE_ONLY",
         "title": title,
         "rationale": task.get("rationale") or f"Migrated legacy task: {title}",
         "expected_outcome": task.get("expected_outcome") or "A reviewable migrated task result",
@@ -259,8 +261,13 @@ def _create_plan(
     decided_at: str | None,
 ) -> tuple[int, list[dict[str, object]]]:
     used: set[str] = set()
-    items = [_plan_item(task, used) for task in tasks]
-    payload_json = _canonical_json({"schema_version": "seo_ops.task_plan.v1", "tasks": items})
+    candidate = {
+        "schema_version": "seo_ops.task_plan.v1",
+        "tasks": [_plan_item(task, used) for task in tasks],
+    }
+    validated = validate_task_plan(candidate, enabled_task_types())
+    items = cast(list[dict[str, object]], validated.payload["tasks"])
+    payload_json = validated.canonical_json
     created_at = str(tasks[0]["created_at"]) if tasks else _now_iso()
     terminal = approved and all(
         _task_status(task, _legacy_executions_for_task(conn, int(task["id"])))
@@ -290,7 +297,7 @@ def _create_plan(
             plan_id,
             "APPROVED" if approved else "DRAFT",
             payload_json,
-            _checksum(payload_json),
+            validated.checksum,
             created_at,
             "legacy-migration" if approved else None,
             decided_at if approved else None,
@@ -338,7 +345,9 @@ def _materialize_task(
     executions = _legacy_executions_for_task(conn, int(task["id"]))
     status = _task_status(task, executions)
     item_json = _canonical_json(item)
-    parameters_json = _canonical_json(item["parameters"])
+    parameters = cast(dict[str, object], item["parameters"])
+    parameters_json = _canonical_json(parameters)
+    task_type = str(item["task_type"])
     started_at = executions[0]["created_at"] if executions else None
     updated_at = task.get("completed_at") or (executions[-1].get("finished_at") if executions else None)
     conn.execute(
@@ -347,21 +356,22 @@ def _materialize_task(
         "title, description, rationale, expected_outcome, category, scheduled_start, status, version, assignee, labels_json, "
         "operator_note, evidence_note, source_run_id, source_key, replaces_task_id, replaced_by_task_id, created_at, updated_at, "
         "started_at, completed_at, cancelled_at) "
-        "VALUES (?, ?, ?, 1, ?, 'PREPARE_ONLY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, '[]', NULL, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, '[]', NULL, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)",
         (
             task["id"],
             task["merchant_id"],
             plan_id,
             item["key"],
-            WORKFLOW_TEMPLATES["PREPARE_ONLY"].version,
+            task_type,
+            WORKFLOW_TEMPLATES[task_type].version,
             parameters_json,
             _checksum(item_json),
-            task["title"],
-            task.get("description"),
-            task.get("rationale"),
-            task.get("expected_outcome"),
-            task.get("category"),
-            task.get("scheduled_start"),
+            item["title"],
+            parameters.get("description"),
+            item["rationale"],
+            item["expected_outcome"],
+            parameters.get("category"),
+            item["scheduled_start"],
             status,
             task.get("evidence_note"),
             task.get("source_run_id"),
@@ -390,8 +400,8 @@ def _materialize_execution(conn: sqlite3.Connection, execution: dict[str, Any]) 
         "INSERT INTO _task_workflow_task_executions "
         "(id, task_id, stage, status, attempt, approval_id, artifact_id, request_json, request_checksum, idempotency_key, "
         "dispatch_token, dispatch_started_at, coreai_run_id, provider_resource_id, result_json, evidence_json, error, "
-        "review_note, next_attempt_at, created_at, finished_at) "
-        "VALUES (?, ?, 'PREPARATION', ?, ?, NULL, NULL, ?, ?, ?, NULL, ?, ?, NULL, ?, '[]', ?, ?, NULL, ?, ?)",
+        "review_note, next_attempt_at, created_at, finished_at, reviewed_at) "
+        "VALUES (?, ?, 'PREPARATION', ?, ?, NULL, NULL, ?, ?, ?, NULL, ?, ?, NULL, ?, '[]', ?, ?, NULL, ?, ?, ?)",
         (
             execution["id"],
             execution["task_id"],
@@ -407,6 +417,7 @@ def _materialize_execution(conn: sqlite3.Connection, execution: dict[str, Any]) 
             execution.get("review_note"),
             execution["created_at"],
             execution.get("finished_at"),
+            execution.get("reviewed_at"),
         ),
     )
 
@@ -475,6 +486,75 @@ def _swap_replacement_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_task_workflow_indexes_and_triggers(conn: sqlite3.Connection) -> None:
+    """Install every workflow object whose acceptance depends on migrated data."""
+
+    statements = (
+        "CREATE INDEX IF NOT EXISTS idx_task_plan_revisions_checksum "
+        "ON task_plan_revisions(plan_id, checksum)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_plan_revisions_one_draft "
+        "ON task_plan_revisions(plan_id) WHERE decision_state = 'DRAFT'",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_merchant ON tasks(merchant_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id, plan_revision)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source_key "
+        "ON tasks(source_key) WHERE source_key IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_task_dependencies_task "
+        "ON task_dependencies(task_id, id)",
+        "CREATE INDEX IF NOT EXISTS idx_task_dependencies_upstream "
+        "ON task_dependencies(depends_on_task_id, id)",
+        "CREATE INDEX IF NOT EXISTS idx_task_executions_task "
+        "ON task_executions(task_id, id DESC)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_executions_active "
+        "ON task_executions(task_id) "
+        "WHERE status IN ('PENDING','DISPATCHING','RUNNING')",
+        "CREATE INDEX IF NOT EXISTS idx_task_events_entity "
+        "ON task_events(entity_type, entity_id, id)",
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_task_events_no_update
+        BEFORE UPDATE ON task_events
+        BEGIN
+          SELECT RAISE(ABORT, 'task events are append-only');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_task_events_no_delete
+        BEFORE DELETE ON task_events
+        BEGIN
+          SELECT RAISE(ABORT, 'task events are append-only');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_tasks_no_delete
+        BEFORE DELETE ON tasks
+        BEGIN
+          SELECT RAISE(ABORT, 'formal tasks cannot be deleted');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_task_plan_revisions_definition_immutable
+        BEFORE UPDATE OF payload_json, checksum, schema_version, plan_id, revision
+        ON task_plan_revisions
+        WHEN OLD.payload_json IS NOT NEW.payload_json
+          OR OLD.checksum IS NOT NEW.checksum
+          OR OLD.schema_version IS NOT NEW.schema_version
+          OR OLD.plan_id IS NOT NEW.plan_id
+          OR OLD.revision IS NOT NEW.revision
+        BEGIN
+          SELECT RAISE(ABORT, 'plan revision definition is immutable');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_task_plan_revisions_no_delete
+        BEFORE DELETE ON task_plan_revisions
+        BEGIN
+          SELECT RAISE(ABORT, 'plan revisions cannot be deleted');
+        END
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 def migrate_task_workflow_v1(conn: sqlite3.Connection) -> None:
     """Apply the idempotent Task workflow migration in one rebuild transaction."""
 
@@ -495,6 +575,12 @@ def migrate_task_workflow_v1(conn: sqlite3.Connection) -> None:
             _create_replacement_task_tables(conn)
             _convert_legacy_runs_and_tasks(conn)
             _swap_replacement_tables(conn)
+        _create_task_workflow_indexes_and_triggers(conn)
+        foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_key_errors:
+            raise RuntimeError(
+                f"task workflow migration left broken foreign keys: {foreign_key_errors!r}"
+            )
         conn.execute(
             "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
             (TASK_WORKFLOW_MIGRATION, _now_iso()),
@@ -505,8 +591,6 @@ def migrate_task_workflow_v1(conn: sqlite3.Connection) -> None:
         raise
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
-    if conn.execute("PRAGMA foreign_key_check").fetchall():
-        raise RuntimeError("task workflow migration left broken foreign keys")
 
 
 __all__ = ["TASK_WORKFLOW_MIGRATION", "migrate_task_workflow_v1", "task_table_kind"]

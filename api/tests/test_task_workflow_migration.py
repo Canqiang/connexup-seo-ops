@@ -81,7 +81,7 @@ def _seed_legacy_database(path, *, unapproved_execution=False):
         [
             (1, "Manual todo", "todo description", "todo rationale", "todo outcome", "content", None, "todo", "todo evidence", None, "manual-todo", "2026-08-03T00:00:00+00:00", None),
             (2, "Manual done", "done description", "done rationale", "done outcome", "review", None, "done", "done evidence", None, "manual-done", "2026-08-03T01:00:00+00:00", "2026-08-04T00:00:00+00:00"),
-            (3, "Ambiguous doing", None, None, None, None, None, "doing", None, None, "ambiguous", "2026-08-03T02:00:00+00:00", None),
+            (3, "Ambiguous doing", None, None, None, "unsupported", "2026-08-11T00:00:00", "doing", None, None, "ambiguous", "2026-08-03T02:00:00+00:00", None),
             (4, "Returned task", "returned description", "returned rationale", "returned outcome", "gbp", None, "doing", "returned evidence", None, "returned", "2026-08-03T03:00:00+00:00", None),
             (5, "Failed task", "failed description", "failed rationale", "failed outcome", "technical", None, "doing", "failed evidence", None, "failed", "2026-08-03T04:00:00+00:00", None),
             (10, "Approved running", "running description", "running rationale", "running outcome", "citation", "2026-08-10T00:00:00+00:00", "doing", "running evidence", 10, "running", "2026-08-05T00:00:00+00:00", None),
@@ -116,6 +116,66 @@ def legacy_task_db(tmp_path):
     path = tmp_path / "legacy-task.db"
     _seed_legacy_database(path)
     return path
+
+
+WORKFLOW_TABLES = (
+    "schema_migrations",
+    "task_plans",
+    "task_plan_revisions",
+    "tasks",
+    "task_dependencies",
+    "task_executions",
+    "task_events",
+)
+
+
+def _workflow_schema_shape(conn):
+    def columns(table):
+        return [tuple(row[1:]) for row in conn.execute(f"PRAGMA table_info({table})")]
+
+    def foreign_keys(table):
+        return sorted(
+            tuple(row[2:]) for row in conn.execute(f"PRAGMA foreign_key_list({table})")
+        )
+
+    def indexes(table):
+        result = []
+        for row in conn.execute(f"PRAGMA index_list({table})"):
+            name = row[1]
+            if name.startswith("sqlite_autoindex_"):
+                continue
+            result.append(
+                (
+                    name,
+                    row[2],
+                    row[3],
+                    row[4],
+                    tuple(
+                        index_row[2]
+                        for index_row in conn.execute(f'PRAGMA index_info("{name}")')
+                    ),
+                )
+            )
+        return sorted(result)
+
+    triggers = sorted(
+        (row[0], " ".join(row[1].split()))
+        for row in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND tbl_name IN ('tasks','task_plan_revisions','task_events')"
+        )
+    )
+    return {
+        "tables": {
+            table: {
+                "columns": columns(table),
+                "foreign_keys": foreign_keys(table),
+                "indexes": indexes(table),
+            }
+            for table in WORKFLOW_TABLES
+        },
+        "triggers": triggers,
+    }
 
 
 def test_legacy_tasks_are_converted_without_losing_history(legacy_task_db, monkeypatch):
@@ -199,6 +259,51 @@ def test_legacy_tasks_are_converted_without_losing_history(legacy_task_db, monke
     assert executions[103]["attempt"] == 4
     assert executions[103]["created_at"] == "2026-08-07T06:00:00+00:00"
     assert executions[103]["finished_at"] == "2026-08-07T07:00:00+00:00"
+    assert executions[99]["reviewed_at"] == "2026-08-07T00:00:00+00:00"
+    assert executions[102]["reviewed_at"] == "2026-08-07T05:00:00+00:00"
+
+    normalized = conn.execute("SELECT * FROM tasks WHERE source_key = 'ambiguous'").fetchone()
+    normalized_item = {
+        "depends_on": [],
+        "expected_outcome": "A reviewable migrated task result",
+        "key": "ambiguous",
+        "parameters": {"category": None, "description": None},
+        "rationale": "Migrated legacy task: Ambiguous doing",
+        "scheduled_start": None,
+        "task_type": "PREPARE_ONLY",
+        "title": "Ambiguous doing",
+    }
+    normalized_revision = conn.execute(
+        "SELECT r.payload_json, r.checksum FROM task_plan_revisions r "
+        "JOIN task_plans p ON p.id = r.plan_id WHERE p.source_run_id IS NULL "
+        "AND json_extract(r.payload_json, '$.tasks[0].key') = 'ambiguous'"
+    ).fetchone()
+    normalized_payload = {
+        "schema_version": "seo_ops.task_plan.v1",
+        "tasks": [normalized_item],
+    }
+    normalized_payload_json = json.dumps(
+        normalized_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    normalized_json = json.dumps(
+        normalized_item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    assert normalized_revision["payload_json"] == normalized_payload_json
+    assert normalized_revision["checksum"] == hashlib.sha256(
+        normalized_payload_json.encode()
+    ).hexdigest()
+    assert normalized["task_key"] == normalized_item["key"]
+    assert normalized["task_type"] == normalized_item["task_type"]
+    assert normalized["title"] == normalized_item["title"]
+    assert normalized["rationale"] == normalized_item["rationale"]
+    assert normalized["expected_outcome"] == normalized_item["expected_outcome"]
+    assert normalized["scheduled_start"] == normalized_item["scheduled_start"]
+    assert normalized["description"] == normalized_item["parameters"]["description"]
+    assert normalized["category"] == normalized_item["parameters"]["category"]
+    assert normalized["parameters_json"] == '{"category":null,"description":null}'
+    assert normalized["definition_checksum"] == hashlib.sha256(
+        normalized_json.encode()
+    ).hexdigest()
 
     manual = conn.execute("SELECT * FROM tasks WHERE source_key = 'manual-todo'").fetchone()
     assert (manual["description"], manual["rationale"], manual["expected_outcome"]) == (
@@ -281,6 +386,122 @@ def test_rebuild_failure_rolls_back_every_schema_change(legacy_task_db, monkeypa
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'task_plans'"
     ).fetchone()[0] == 0
     conn.close()
+
+
+def test_duplicate_active_legacy_executions_roll_back_after_swap(tmp_path, monkeypatch):
+    path = tmp_path / "duplicate-active.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO task_executions "
+        "(id, task_id, coreai_run_id, status, attempt, output_text, error, review_note, created_at, finished_at, reviewed_at) "
+        "VALUES (105, 10, 'exec-running-2', 'running', 2, NULL, NULL, NULL, "
+        "'2026-08-07T00:30:00+00:00', NULL, NULL)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    task_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+    ).fetchone()[0]
+    assert "'todo','doing','done','cancelled'" in task_sql
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 9
+    assert conn.execute("SELECT COUNT(*) FROM task_executions").fetchone()[0] == 6
+    assert (
+        conn.execute("SELECT status FROM task_executions WHERE id = 105").fetchone()[0]
+        == "running"
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'task_plans'"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("invalid_kind", "expected_code"),
+    [
+        pytest.param("unsupported_type", "task_type_disabled", id="unsupported-type"),
+        pytest.param("oversized_description", "parameters", id="oversized-description"),
+        pytest.param("too_many_tasks", "task_count", id="more-than-50-tasks"),
+    ],
+)
+def test_invalid_legacy_plan_fails_closed_without_mutation(
+    tmp_path, monkeypatch, invalid_kind, expected_code
+):
+    path = tmp_path / f"invalid-{invalid_kind}.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    if invalid_kind == "unsupported_type":
+        conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT")
+        conn.execute("UPDATE tasks SET task_type = 'PREPARE_ONLY'")
+        conn.execute("UPDATE tasks SET task_type = 'GBP_POST' WHERE id = 10")
+    elif invalid_kind == "oversized_description":
+        conn.execute("UPDATE tasks SET description = ? WHERE id = 10", ("x" * 4001,))
+    else:
+        conn.executemany(
+            "INSERT INTO tasks "
+            "(id, merchant_id, title, description, rationale, expected_outcome, category, scheduled_start, "
+            "status, evidence_note, source_run_id, source_key, created_at, completed_at) "
+            "VALUES (?, 1, ?, 'description', 'rationale', 'outcome', 'content', NULL, "
+            "'todo', NULL, 10, ?, '2026-08-05T02:00:00+00:00', NULL)",
+            [(task_id, f"Extra {task_id}", f"extra-{task_id}") for task_id in range(30, 79)],
+        )
+    conn.commit()
+    original_task_count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+    from app.task_plan_contract import TaskPlanValidationError
+
+    with pytest.raises(TaskPlanValidationError) as exc:
+        init_db()
+    assert expected_code in exc.value.codes
+
+    conn = sqlite3.connect(path)
+    task_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+    ).fetchone()[0]
+    assert "'todo','doing','done','cancelled'" in task_sql
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == original_task_count
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_fresh_and_migrated_workflow_schema_are_equivalent(tmp_path, monkeypatch):
+    legacy_path = tmp_path / "legacy.db"
+    fresh_path = tmp_path / "fresh.db"
+    _seed_legacy_database(legacy_path)
+    from app.db import init_db
+
+    monkeypatch.setenv("SEO_OPS_DB", str(legacy_path))
+    init_db()
+    monkeypatch.setenv("SEO_OPS_DB", str(fresh_path))
+    init_db()
+
+    legacy = sqlite3.connect(legacy_path)
+    fresh = sqlite3.connect(fresh_path)
+    legacy_shape = _workflow_schema_shape(legacy)
+    fresh_shape = _workflow_schema_shape(fresh)
+    execution_columns = {
+        row[1] for row in legacy.execute("PRAGMA table_info(task_executions)")
+    }
+    assert "reviewed_at" in execution_columns
+    assert legacy_shape == fresh_shape
+    assert legacy.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert fresh.execute("PRAGMA foreign_key_check").fetchall() == []
+    legacy.close()
+    fresh.close()
 
 
 def test_events_tasks_and_revision_payloads_are_database_immutable(tmp_path, monkeypatch):
