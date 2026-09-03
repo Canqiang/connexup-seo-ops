@@ -2681,6 +2681,33 @@ describe('关键词版本 controls', () => {
     expect(within(screen.getByText(/#41/).closest('li') as HTMLElement).queryByRole('button')).toBeNull()
   })
 
+  it('renders partial and unverified score states and restores only verified Skill versions', async () => {
+    renderWithState(activeState({
+      keyword_versions: [
+        ...activeState().keyword_versions,
+        { artifact_id: 52, place_id: 'place-3', source: 'SKILL', generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 1, score_status: 'PARTIAL', completed_at: '2026-09-03T00:02:00Z', is_active: false },
+        { artifact_id: 53, place_id: 'place-3', source: 'SKILL', generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 2, score_status: 'SCORED_UNVERIFIED', completed_at: '2026-09-03T00:03:00Z', is_active: false },
+      ],
+    }))
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+
+    within(screen.getByText(/#52/).closest('li') as HTMLElement).getByText(/部分评分/)
+    within(screen.getByText(/#53/).closest('li') as HTMLElement).getByText(/已评分，来源未验证/)
+    expect(screen.getAllByRole('button', { name: '恢复这个 Skill 版本' })).toHaveLength(1)
+  })
+
+  it('renders the active partial score status accurately', async () => {
+    const partial = { artifact_id: 52, place_id: 'place-3', source: 'SKILL', generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 1, score_status: 'PARTIAL', completed_at: '2026-09-03T00:02:00Z', is_active: true }
+    renderWithState(activeState({
+      active_keyword_artifact_id: 52,
+      keyword_set_artifact_id: 52,
+      keyword_versions: [partial],
+    }))
+
+    await screen.findByText('SEO Ops 当前版本 · Skill · 2 个关键词（Local 1 / Organic 1）· 部分评分')
+  })
+
   it('waits for explicit confirmation before adopting an unscored FBR version', async () => {
     const fetchMock = vi.fn().mockImplementation(async (input: string) => ({
       ok: true, status: 200,
@@ -2704,6 +2731,24 @@ describe('关键词版本 controls', () => {
     fireEvent.click(screen.getByRole('button', { name: '采用这个 FBR 版本' }))
     fireEvent.click(within(screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })).getByRole('button', { name: '确认采用 FBR 版本' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/merchants/3/seo-targets/activations', expect.objectContaining({ body: JSON.stringify({ artifact_id: 99, expected_active_artifact_id: 41, confirmed: true }) })))
+  })
+
+  it('keeps Local Falcon eligibility language for a verified scored FBR version', async () => {
+    const verifiedFbr = { artifact_id: 98, place_id: 'place-3', source: 'FBR', generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 10, local_keyword_count: 10, organic_keyword_count: 0, scored_keyword_count: 10, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-03T00:04:00Z', is_active: false }
+    renderWithState(activeState({
+      keyword_versions: [activeState().keyword_versions[0], verifiedFbr],
+      latest_fbr_import: {
+        ...activeState().latest_fbr_import,
+        artifact_id: 98,
+      },
+    }))
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+    fireEvent.click(screen.getByRole('button', { name: '采用这个 FBR 版本' }))
+
+    const dialog = screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })
+    within(dialog).getByText('该 FBR 版本评分已验证；采用后可继续使用 Local Falcon Top 20。')
+    expect(within(dialog).queryByText(/会停用 Local Falcon Top 20/)).toBeNull()
   })
 
   it('uses server active ID over stale version flags after a successful FBR adoption', async () => {

@@ -213,6 +213,18 @@ def test_delete_archived_merchant_cascades_tasks_and_related_business_data(clien
     )
     artifact_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute(
+        "INSERT INTO merchant_keyword_heads"
+        " (merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+        " activated_at, updated_at) VALUES (?, 'place-delete', ?, 'test',"
+        " 'SYSTEM_BOOTSTRAP', ?, ?)",
+        (
+            m["id"],
+            artifact_id,
+            "2026-09-02T00:01:00+00:00",
+            "2026-09-02T00:01:00+00:00",
+        ),
+    )
+    conn.execute(
         "INSERT INTO merchant_local_falcon_approvals"
         " (merchant_id, keyword_artifact_id, cohort_sha256, cohort_json, place_id,"
         " approved_by, approved_at) VALUES (?, ?, ?, '[]', 'place-delete', 'test', ?)",
@@ -270,6 +282,9 @@ def test_delete_archived_merchant_cascades_tasks_and_related_business_data(clien
         ).fetchone()[0],
         "merchant_seo_artifacts": conn.execute(
             "SELECT COUNT(*) FROM merchant_seo_artifacts WHERE merchant_id = ?", (m["id"],)
+        ).fetchone()[0],
+        "merchant_keyword_heads": conn.execute(
+            "SELECT COUNT(*) FROM merchant_keyword_heads WHERE merchant_id = ?", (m["id"],)
         ).fetchone()[0],
         "merchant_local_falcon_scan_items": conn.execute(
             "SELECT COUNT(*) FROM merchant_local_falcon_scan_items WHERE batch_id = ?", (batch_id,)

@@ -118,8 +118,11 @@ def local_keyword(keyword, *, score=None, priority="UNSCORED"):
 
 
 def mark_deterministic_local_ranks(keyword_set):
+    local_keywords = [
+        item for item in keyword_set["keywords"] if item["strategy"] == "LOCAL"
+    ]
     ordered = sorted(
-        enumerate(keyword_set["keywords"]),
+        enumerate(local_keywords),
         key=lambda value: (-value[1]["score"], value[0]),
     )
     ranked = []
@@ -127,8 +130,31 @@ def mark_deterministic_local_ranks(keyword_set):
         item["score_rank"] = rank
         item["local_falcon_selected"] = rank <= 20
         ranked.append(item)
-    keyword_set["keywords"] = ranked
+    keyword_set["keywords"] = ranked + [
+        item for item in keyword_set["keywords"] if item["strategy"] != "LOCAL"
+    ]
     return keyword_set
+
+
+def skill_payload_with_unscored_organic(merchant_id):
+    organic = {
+        **local_keyword("breakfast delivery", score=None, priority="P1"),
+        "strategy": "ORGANIC",
+        "intent": "ORGANIC",
+        "target_surface_types": ["WEBSITE"],
+    }
+    return mark_deterministic_local_ranks(
+        keyword_result(
+            merchant_id,
+            [
+                local_keyword(
+                    "breakfast upper west side", score=95, priority="P0"
+                ),
+                organic,
+            ],
+            generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+        )
+    )
 
 
 def test_keyword_workflow_envelope_accepts_exact_seed_to_ranking_lineage():
@@ -1270,6 +1296,94 @@ def test_refresh_failure_preserves_every_keyword_head_field(
     ).fetchone()
     conn.close()
     assert after == before
+
+
+@pytest.mark.parametrize("boundary", ["keyword-count", "keyword-text"])
+def test_refresh_validation_boundary_fails_the_claim_and_releases_the_next_operation(
+    client, monkeypatch, boundary
+):
+    from app import fbr_gbp
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    active_artifact_id = insert_verified_skill_keyword_set(merchant_id)
+    assert client.get(f"/api/merchants/{merchant_id}/seo-targets").json()[
+        "active_keyword_artifact_id"
+    ] == active_artifact_id
+    head_before = keyword_head_snapshot(merchant_id)
+
+    invalid_keywords = (
+        [
+            {
+                "keyword": f"boundary keyword {index:03d}",
+                "priority": "P1",
+                "target_surface_types": ["GBP"],
+            }
+            for index in range(201)
+        ]
+        if boundary == "keyword-count"
+        else [
+            {
+                "keyword": "x" * 301,
+                "priority": "P1",
+                "target_surface_types": ["GBP"],
+            }
+        ]
+    )
+    responses = [
+        {
+            "place_id": TEST_PLACE_ID,
+            "local_keywords": [
+                {"local_keyword_id": boundary, "keywords": invalid_keywords}
+            ],
+        },
+        {
+            "place_id": TEST_PLACE_ID,
+            "local_keywords": [
+                {
+                    "local_keyword_id": "valid-after-failure",
+                    "keywords": [
+                        {
+                            "keyword": "valid after failed import",
+                            "priority": "P1",
+                            "target_surface_types": ["GBP"],
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
+
+    class BoundaryKeywordClient:
+        def get_local_keywords(self, _place_id):
+            return responses.pop(0)
+
+    fake = BoundaryKeywordClient()
+    monkeypatch.setattr(fbr_gbp, "fbr_gbp_client", lambda: fake)
+
+    rejected = client.post(f"/api/merchants/{merchant_id}/seo-targets/refresh")
+
+    assert rejected.status_code == 502
+    assert rejected.json()["detail"] == (
+        "FBR persisted local keyword payload violates the supported local contract"
+    )
+    assert keyword_head_snapshot(merchant_id) == head_before
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    failed_claim = conn.execute(
+        "SELECT status, error FROM merchant_seo_artifacts"
+        " WHERE merchant_id = ? ORDER BY id DESC LIMIT 1",
+        (merchant_id,),
+    ).fetchone()
+    conn.close()
+    assert failed_claim == (
+        "failed",
+        "FBR persisted local keyword payload violates the supported local contract",
+    )
+
+    retry = client.post(f"/api/merchants/{merchant_id}/seo-targets/refresh")
+
+    assert retry.status_code == 202
+    assert retry.json()["latest_fbr_import"]["artifact_id"] > active_artifact_id
+    assert keyword_head_snapshot(merchant_id) == head_before
 
 
 def test_regenerate_requires_a_dedicated_keyword_skill_workflow(client, monkeypatch):
@@ -2538,6 +2652,13 @@ def active_keyword_artifact_id(merchant_id):
             "keyword-skill-agent",
         ),
         (
+            "unscored-organic",
+            lambda merchant_id: keyword_workflow_result(
+                skill_payload_with_unscored_organic(merchant_id)
+            ),
+            "keyword-skill-agent",
+        ),
+        (
             "failed-provenance",
             lambda merchant_id: keyword_workflow_result(
                 mark_deterministic_local_ranks(
@@ -2756,6 +2877,51 @@ def keyword_head_snapshot(merchant_id):
     ).fetchone()
     conn.close()
     return row
+
+
+def test_unscored_organic_keyword_is_partial_and_cannot_bootstrap_or_restore_a_skill_version(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    fully_scored_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="fully-scored-skill",
+    )
+    partial_payload = skill_payload_with_unscored_organic(merchant_id)
+    partial_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="partial-skill",
+        local_keywords=partial_payload["keywords"],
+    )
+
+    state = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+
+    assert state.status_code == 200
+    body = state.json()
+    assert body["active_keyword_artifact_id"] == fully_scored_id
+    partial_version = next(
+        version
+        for version in body["keyword_versions"]
+        if version["artifact_id"] == partial_id
+    )
+    assert partial_version["scored_keyword_count"] == 1
+    assert partial_version["keyword_count"] == 2
+    assert partial_version["score_status"] == "PARTIAL"
+
+    activation = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": partial_id,
+            "expected_active_artifact_id": fully_scored_id,
+            "confirmed": True,
+        },
+    )
+
+    assert activation.status_code == 409
+    assert activation.json()["detail"] == (
+        "keyword activation target is not a verified scored Skill artifact"
+    )
+    assert keyword_head_snapshot(merchant_id)[0] == fully_scored_id
 
 
 @pytest.mark.parametrize(
@@ -3946,6 +4112,98 @@ def test_local_falcon_approval_rejects_a_stale_keyword_cohort(client, monkeypatc
     ).fetchone()[0]
     conn.close()
     assert count == 0
+
+
+def test_local_falcon_approval_rejects_a_head_change_that_wins_before_its_write_lock(
+    client, monkeypatch
+):
+    from app.main import app
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    original_artifact_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="approval-race-original",
+        keyword="approval race original",
+    )
+    original_state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
+    assert original_state["active_keyword_artifact_id"] == original_artifact_id
+    winning_artifact_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="approval-race-winner",
+        keyword="approval race winner",
+    )
+
+    class RacingConnection:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.race_has_run = False
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+        def execute(self, sql, params=()):
+            normalized = " ".join(sql.split())
+            if not self.race_has_run and (
+                normalized == "BEGIN IMMEDIATE"
+                or normalized.startswith(
+                    "INSERT INTO merchant_local_falcon_approvals"
+                )
+            ):
+                competitor = sqlite3.connect(os.environ["SEO_OPS_DB"])
+                competitor.execute(
+                    "UPDATE merchant_keyword_heads SET active_artifact_id = ?,"
+                    " activated_by = 'race-winner', activation_reason = 'RESTORE_SKILL',"
+                    " activated_at = '2026-09-03T08:00:00Z',"
+                    " updated_at = '2026-09-03T08:00:00Z'"
+                    " WHERE merchant_id = ? AND place_id = ?",
+                    (winning_artifact_id, merchant_id, TEST_PLACE_ID),
+                )
+                competitor.commit()
+                competitor.close()
+                self.race_has_run = True
+            return self.wrapped.execute(sql, params)
+
+    wrapped = seo_targets.connect()
+    racing = RacingConnection(wrapped)
+
+    def racing_db():
+        yield racing
+
+    app.dependency_overrides[seo_targets.get_db] = racing_db
+    try:
+        response = client.post(
+            f"/api/merchants/{merchant_id}/local-falcon-approvals",
+            json={
+                "keyword_artifact_id": original_artifact_id,
+                "expected_cohort_sha256": original_state[
+                    "local_falcon_cohort_sha256"
+                ],
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(seo_targets.get_db, None)
+        wrapped.close()
+
+    assert racing.race_has_run is True
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "keyword cohort changed; review the latest Top 20"
+    )
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    approvals = conn.execute(
+        "SELECT keyword_artifact_id FROM merchant_local_falcon_approvals"
+        " WHERE merchant_id = ?",
+        (merchant_id,),
+    ).fetchall()
+    active_artifact_id = conn.execute(
+        "SELECT active_artifact_id FROM merchant_keyword_heads"
+        " WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()[0]
+    conn.close()
+    assert approvals == []
+    assert active_artifact_id == winning_artifact_id
 
 
 def test_local_falcon_approval_waits_for_an_active_keyword_regeneration(client, monkeypatch):

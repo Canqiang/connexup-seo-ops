@@ -50,6 +50,28 @@ type LocalFalconConfirmationBinding = Pick<
   'requestId' | 'scanConfigSha256' | 'keywordArtifactId' | 'cohortSha256' | 'placeId'
 >
 
+type KeywordScoreStatus = SeoTargetState['keyword_versions'][number]['score_status']
+
+const KEYWORD_SCORE_STATUS_LABELS: Record<KeywordScoreStatus, string> = {
+  VERIFIED_SKILL: '评分已验证',
+  SCORED_UNVERIFIED: '已评分，来源未验证',
+  UNSCORED: '未评分',
+  PARTIAL: '部分评分',
+}
+
+function fbrActivationEligibilityCopy(scoreStatus: KeywordScoreStatus) {
+  if (scoreStatus === 'VERIFIED_SKILL') {
+    return '该 FBR 版本评分已验证；采用后可继续使用 Local Falcon Top 20。'
+  }
+  if (scoreStatus === 'SCORED_UNVERIFIED') {
+    return '该 FBR 版本虽有完整评分，但评分来源未验证；采用后会停用 Local Falcon Top 20，直到恢复或重新生成评分已验证的 Skill 版本。'
+  }
+  if (scoreStatus === 'PARTIAL') {
+    return '该 FBR 版本仅有部分评分；采用后会停用 Local Falcon Top 20，直到恢复或重新生成评分已验证的 Skill 版本。'
+  }
+  return '采用未评分的 FBR 版本会停用 Local Falcon Top 20，直到恢复或重新生成已评分的 Skill 版本。'
+}
+
 function FieldHelp({
   label,
   description,
@@ -991,7 +1013,9 @@ function KeywordRanking({
   }
 
   const activeSourceLabel = activeVersion?.source === 'FBR' ? 'FBR Local' : activeVersion?.source === 'LEGACY' ? '历史' : 'Skill'
-  const activeScoreLabel = activeVersion?.score_status === 'VERIFIED_SKILL' ? '评分已验证' : '未评分'
+  const activeScoreLabel = activeVersion
+    ? KEYWORD_SCORE_STATUS_LABELS[activeVersion.score_status]
+    : null
   const comparison = state?.latest_fbr_import?.comparison
 
   return (
@@ -1114,13 +1138,15 @@ function KeywordRanking({
                 : version.artifact_id === state.active_keyword_artifact_id
               const sourceLabel = isFbr ? 'FBR Local' : version.source === 'SKILL' ? 'Skill' : '历史'
               const actionLabel = isFbr ? '采用这个 FBR 版本' : '恢复这个 Skill 版本'
+              const canActivate = isFbr
+                || (version.source === 'SKILL' && version.score_status === 'VERIFIED_SKILL')
               return (
                 <li key={version.artifact_id} className={isCurrentActive ? 'is-active' : ''}>
                   <div>
                     <strong>{sourceLabel} · #{version.artifact_id}{isCurrentActive ? ' · 当前版本' : ''}</strong>
-                    <span>{version.keyword_count} 个关键词（Local {version.local_keyword_count} / Organic {version.organic_keyword_count}） · {version.score_status === 'VERIFIED_SKILL' ? '评分已验证' : '未评分'}</span>
+                    <span>{version.keyword_count} 个关键词（Local {version.local_keyword_count} / Organic {version.organic_keyword_count}） · {KEYWORD_SCORE_STATUS_LABELS[version.score_status]}</span>
                   </div>
-                  {!isCurrentActive && <button type="button" className={isFbr ? 'primary compact' : 'quiet compact'} disabled={activationBusy} onClick={() => openVersionConfirmation(version)}>{actionLabel}</button>}
+                  {!isCurrentActive && canActivate && <button type="button" className={isFbr ? 'primary compact' : 'quiet compact'} disabled={activationBusy} onClick={() => openVersionConfirmation(version)}>{actionLabel}</button>}
                 </li>
               )
             })}
@@ -1318,8 +1344,8 @@ function KeywordRanking({
             </header>
             <div className="keyword-version-confirm-copy">
               <p>将采用 #{selectedVersion.version.artifact_id}，并以确认时的当前活动版本 #{selectedVersion.expectedActiveArtifactId ?? '无'} 作为冲突校验。</p>
-              {selectedVersion.version.source === 'FBR' && selectedVersion.version.score_status !== 'VERIFIED_SKILL' && (
-                <p className="credit-warning">采用未评分的 FBR 版本会停用 Local Falcon Top 20，直到恢复或重新生成已评分的 Skill 版本。</p>
+              {selectedVersion.version.source === 'FBR' && (
+                <p className={selectedVersion.version.score_status === 'VERIFIED_SKILL' ? 'muted' : 'credit-warning'}>{fbrActivationEligibilityCopy(selectedVersion.version.score_status)}</p>
               )}
               {activationError && <p className="scan-confirm-error" role="alert">{activationError}</p>}
             </div>
