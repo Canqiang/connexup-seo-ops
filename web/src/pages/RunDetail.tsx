@@ -38,16 +38,36 @@ function isAbortError(error: unknown): boolean {
 }
 
 function currentPlanTasks(plan: TaskPlan, rows: PlanTaskSummary[]): PlanTaskSummary[] {
+  const expectedKeys = plan.current_revision.payload.tasks.map(item => item.key)
+  const expected = new Set(expectedKeys)
+  if (expected.size !== expectedKeys.length) throw new Error('当前批准 Plan 包含重复 Task key，请刷新 Plan')
   const seen = new Set<string>()
   for (const row of rows) {
     if (seen.has(row.task_key)) throw new Error(`正式 Task 数据包含重复 key：${row.task_key}`)
     seen.add(row.task_key)
-    if (row.plan_id !== plan.id) throw new Error('正式 Task 数据与当前 Plan 不一致')
+    if (row.plan_id !== plan.id || !row.plan || row.plan.id !== plan.id) {
+      throw new Error('正式 Task 数据与当前 Plan 不一致，请刷新 Plan')
+    }
+    if (row.plan.approved_revision !== plan.current_revision.revision) {
+      throw new Error('正式 Task 所属批准 revision 已变化，请刷新 Plan')
+    }
+    if (row.plan_revision > plan.current_revision.revision) {
+      throw new Error('正式 Task revision 晚于当前批准 Plan，请刷新 Plan')
+    }
+    if (row.plan.latest_revision !== plan.latest_revision
+      || row.plan.state !== plan.state
+      || row.plan.source_kind !== plan.source_kind) {
+      throw new Error('正式 Task 所属 Plan 已变化，请刷新 Plan')
+    }
+    if (!expected.has(row.task_key) && row.status !== 'CANCELLED') {
+      throw new Error(`正式 Task 数据包含当前批准 Plan 之外的 key：${row.task_key}，请刷新 Plan`)
+    }
   }
   const byKey = new Map(rows.map(row => [row.task_key, row]))
-  return plan.current_revision.payload.tasks.flatMap(item => {
-    const row = byKey.get(item.key)
-    return row ? [row] : []
+  return expectedKeys.map(key => {
+    const row = byKey.get(key)
+    if (!row) throw new Error(`正式 Task 数据缺少当前批准 key：${key}，请刷新 Plan`)
+    return row
   })
 }
 
@@ -94,6 +114,7 @@ function RunDetailPage({ runId }: { runId: number }) {
       }
       if (!isTaskPlan(fresh)
         || fresh.current_revision.plan_id !== fresh.id
+        || fresh.latest_revision !== fresh.current_revision.revision
         || fresh.source_run_id !== runId) {
         throw new Error('Task Plan 响应格式或来源无效')
       }

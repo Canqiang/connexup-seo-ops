@@ -70,6 +70,13 @@ export type PlanTaskSummary = {
   category: string | null
   status: TaskWorkflowStatus
   source_run_id: number | null
+  plan: {
+    id: number
+    latest_revision: number
+    approved_revision: number | null
+    state: TaskPlan['state']
+    source_kind: TaskPlan['source_kind']
+  }
 }
 
 const PLAN_VALIDATION_LABELS: Record<string, string> = {

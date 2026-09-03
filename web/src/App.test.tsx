@@ -86,6 +86,16 @@ function response<T>(data: T, status = 200) {
   }
 }
 
+function canonicalPlanContext(approvedRevision = 1) {
+  return {
+    id: 7,
+    source_kind: 'AGENT',
+    state: 'OPEN',
+    latest_revision: approvedRevision,
+    approved_revision: approvedRevision,
+  }
+}
+
 describe('desktop operator shell', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/tasks')
@@ -1331,7 +1341,7 @@ describe('desktop operator shell', () => {
     screen.getByRole('heading', { name: '09-01 08:00 分析报告' })
     const report = screen.getByRole('region', { name: '报告正文' })
     const tasks = screen.getByRole('complementary', { name: '本次生成任务' })
-    const planLink = screen.getByRole('link', { name: '查看并编辑 Plan' })
+    const planLink = await screen.findByRole('link', { name: '查看并编辑 Plan' })
     expect(planLink.getAttribute('href')).toBe('/task-plans/7')
     within(tasks).getByText(/Revision 1/)
     within(tasks).getByText('0 项')
@@ -1379,6 +1389,19 @@ describe('desktop operator shell', () => {
                 category: 'content',
                 status: 'PENDING',
                 source_run_id: 1,
+                plan: canonicalPlanContext(1),
+              }, {
+                id: 12,
+                merchant_id: 1,
+                plan_id: 7,
+                plan_revision: 1,
+                task_key: 'review',
+                task_type: 'PREPARE_ONLY',
+                title: '正式审核任务',
+                category: 'review',
+                status: 'PENDING',
+                source_run_id: 1,
+                plan: canonicalPlanContext(1),
               }]
             : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
       return { ok: true, status: 200, json: async () => data }
@@ -1419,9 +1442,9 @@ describe('desktop operator shell', () => {
       })
       if (input === '/api/runs/1/task-plan') return response(approved)
       if (input === '/api/tasks?plan_id=7') return response([
-        { id: 99, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'obsolete', task_type: 'PREPARE_ONLY', title: 'Removed history', category: null, status: 'CANCELLED', source_run_id: 1 },
-        { id: 12, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'draft', task_type: 'PREPARE_ONLY', title: 'Draft formal task', category: 'content', status: 'PENDING', source_run_id: 1 },
-        { id: 11, merchant_id: 1, plan_id: 7, plan_revision: 0, task_key: 'review', task_type: 'PREPARE_ONLY', title: 'Review formal task', category: 'review', status: 'DONE', source_run_id: 1 },
+        { id: 99, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'obsolete', task_type: 'PREPARE_ONLY', title: 'Removed history', category: null, status: 'CANCELLED', source_run_id: 1, plan: canonicalPlanContext(1) },
+        { id: 12, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'draft', task_type: 'PREPARE_ONLY', title: 'Draft formal task', category: 'content', status: 'PENDING', source_run_id: 1, plan: canonicalPlanContext(1) },
+        { id: 11, merchant_id: 1, plan_id: 7, plan_revision: 0, task_key: 'review', task_type: 'PREPARE_ONLY', title: 'Review formal task', category: 'review', status: 'DONE', source_run_id: 1, plan: canonicalPlanContext(1) },
       ])
       return response({ id: 1, name: 'Merchant', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
     }))
@@ -1473,9 +1496,9 @@ describe('desktop operator shell', () => {
         current_revision: { ...planView().current_revision, decision_state: 'APPROVED' },
       }))
       if (input === '/api/tasks?plan_id=7') return response([
-        { id: 11, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'draft', task_type: 'PREPARE_ONLY', title: 'Draft A', category: null, status: 'PENDING', source_run_id: 1 },
-        { id: 12, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'draft', task_type: 'PREPARE_ONLY', title: 'Draft B', category: null, status: 'PENDING', source_run_id: 1 },
-        { id: 13, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'review', task_type: 'PREPARE_ONLY', title: 'Review task', category: null, status: 'PENDING', source_run_id: 1 },
+        { id: 11, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'draft', task_type: 'PREPARE_ONLY', title: 'Draft A', category: null, status: 'PENDING', source_run_id: 1, plan: canonicalPlanContext(1) },
+        { id: 12, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'draft', task_type: 'PREPARE_ONLY', title: 'Draft B', category: null, status: 'PENDING', source_run_id: 1, plan: canonicalPlanContext(1) },
+        { id: 13, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'review', task_type: 'PREPARE_ONLY', title: 'Review task', category: null, status: 'PENDING', source_run_id: 1, plan: canonicalPlanContext(1) },
       ])
       if (input === '/api/runs/1') return response({
         id: 1, merchant_id: 1, coreai_run_id: 'run-1', status: 'succeeded', trigger_kind: 'manual',
@@ -1490,6 +1513,87 @@ describe('desktop operator shell', () => {
     await screen.findByText('正式 Task 数据包含重复 key：draft')
     expect(screen.queryByRole('link', { name: 'Draft A' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Draft B' })).toBeNull()
+    within(screen.getByRole('complementary', { name: '本次生成任务' })).getByText('0 项')
+  })
+
+  it('fails closed when an approved payload key has no canonical Task row', async () => {
+    window.history.pushState({}, '', '/runs/1')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/runs/1/audit') return response({ detail: 'accepted audit not found' }, 404)
+      if (input === '/api/runs/1/task-plan') return response(planView({
+        approved_revision: 1,
+        current_revision: { ...planView().current_revision, decision_state: 'APPROVED' },
+      }))
+      if (input === '/api/tasks?plan_id=7') return response([
+        {
+          id: 11,
+          merchant_id: 1,
+          plan_id: 7,
+          plan_revision: 1,
+          task_key: 'draft',
+          task_type: 'PREPARE_ONLY',
+          title: 'Only one row',
+          category: null,
+          status: 'PENDING',
+          source_run_id: 1,
+          plan: canonicalPlanContext(1),
+        },
+      ])
+      if (input === '/api/runs/1') return response({
+        id: 1, merchant_id: 1, coreai_run_id: 'run-1', status: 'succeeded', trigger_kind: 'manual',
+        report_text: '# Report', error: null, plan_approved_at: '2026-09-01T00:02:00Z',
+        created_at: '2026-09-01T00:00:00Z', finished_at: '2026-09-01T00:01:00Z',
+      })
+      return response({ id: 1, name: 'Merchant', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+    }))
+
+    render(<App />)
+
+    await screen.findByText('正式 Task 数据缺少当前批准 key：review，请刷新 Plan')
+    expect(screen.queryByRole('link', { name: 'Only one row' })).toBeNull()
+    within(screen.getByRole('complementary', { name: '本次生成任务' })).getByText('0 项')
+  })
+
+  it('rejects Task rows from a newer approved revision snapshot', async () => {
+    window.history.pushState({}, '', '/runs/1')
+    const taskRows = deferred<ReturnType<typeof response>>()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      if (input === '/api/runs/1/audit') return Promise.resolve(response({ detail: 'accepted audit not found' }, 404))
+      if (input === '/api/runs/1/task-plan') return Promise.resolve(response(planView({
+        approved_revision: 1,
+        current_revision: {
+          ...planView().current_revision,
+          decision_state: 'APPROVED',
+          payload: { schema_version: 'seo_ops.task_plan.v1', tasks: [planItem('draft')] },
+        },
+      })))
+      if (input === '/api/tasks?plan_id=7') return taskRows.promise
+      if (input === '/api/runs/1') return Promise.resolve(response({
+        id: 1, merchant_id: 1, coreai_run_id: 'run-1', status: 'succeeded', trigger_kind: 'manual',
+        report_text: '# Report', error: null, plan_approved_at: '2026-09-01T00:02:00Z',
+        created_at: '2026-09-01T00:00:00Z', finished_at: '2026-09-01T00:01:00Z',
+      }))
+      return Promise.resolve(response({ id: 1, name: 'Merchant', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }))
+    }))
+
+    render(<App />)
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => input === '/api/tasks?plan_id=7')).toBe(true))
+    taskRows.resolve(response([{
+      id: 21,
+      merchant_id: 1,
+      plan_id: 7,
+      plan_revision: 1,
+      task_key: 'draft',
+      task_type: 'PREPARE_ONLY',
+      title: 'Revision two row',
+      category: null,
+      status: 'PENDING',
+      source_run_id: 1,
+      plan: canonicalPlanContext(2),
+    }]))
+
+    await screen.findByText('正式 Task 所属批准 revision 已变化，请刷新 Plan')
+    expect(screen.queryByRole('link', { name: 'Revision two row' })).toBeNull()
     within(screen.getByRole('complementary', { name: '本次生成任务' })).getByText('0 项')
   })
 
