@@ -320,20 +320,7 @@ def test_legacy_tasks_are_converted_without_losing_history(legacy_task_db, monke
     conn.close()
 
 
-def test_v1_formal_database_is_atomically_upgraded_to_all_frozen_states(
-    tmp_path, monkeypatch
-):
-    from app import task_migrations
-    from app.db import SCHEMA_PATH
-
-    path = tmp_path / "interim-v1.db"
-    schema = SCHEMA_PATH.read_text().replace(
-        "('PENDING','PREPARING','AWAITING_APPROVAL','EXECUTING','VERIFYING',"
-        "'NEEDS_ATTENTION','DONE','CANCELLED')",
-        "('PENDING','PREPARING','AWAITING_APPROVAL','NEEDS_ATTENTION','DONE','CANCELLED')",
-    )
-    conn = sqlite3.connect(path)
-    conn.executescript(schema)
+def _seed_interim_formal_graph(conn):
     conn.execute(
         "INSERT INTO schema_migrations (name, applied_at) "
         "VALUES ('task_workflow_v1', '2026-09-03T00:00:00+00:00')"
@@ -358,16 +345,90 @@ def test_v1_formal_database_is_atomically_upgraded_to_all_frozen_states(
         "'2026-09-03T00:00:00+00:00')",
         (plan_id, payload, checksum),
     )
-    task_id = conn.execute(
+    definition_checksum = hashlib.sha256(b"{}").hexdigest()
+    conn.execute(
         "INSERT INTO tasks "
-        "(merchant_id, plan_id, plan_revision, task_key, task_type, workflow_version, "
+        "(id, merchant_id, plan_id, plan_revision, task_key, task_type, workflow_version, "
         "parameters_json, definition_checksum, title, status, version, created_at) "
-        "VALUES (1, ?, 1, 'interim-task', 'PREPARE_ONLY', 1, '{}', ?, 'Interim Task', "
-        "'PENDING', 7, '2026-09-03T00:00:00+00:00')",
-        (plan_id, hashlib.sha256(b"{}").hexdigest()),
-    ).lastrowid
+        "VALUES (41, 1, ?, 1, 'interim-source', 'PREPARE_ONLY', 1, '{}', ?, "
+        "'Interim Source', 'NEEDS_ATTENTION', 7, '2026-09-03T00:00:00+00:00')",
+        (plan_id, definition_checksum),
+    )
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, merchant_id, plan_id, plan_revision, task_key, task_type, workflow_version, "
+        "parameters_json, definition_checksum, title, status, version, replaces_task_id, "
+        "created_at) VALUES (42, 1, ?, 1, 'interim-replacement', 'PREPARE_ONLY', 1, "
+        "'{}', ?, 'Interim Replacement', 'PENDING', 3, 41, "
+        "'2026-09-03T00:01:00+00:00')",
+        (plan_id, definition_checksum),
+    )
+    conn.execute("UPDATE tasks SET replaced_by_task_id = 42 WHERE id = 41")
+    conn.execute(
+        "INSERT INTO task_dependencies (id, task_id, depends_on_task_id) "
+        "VALUES (71, 42, 41)"
+    )
+    request_json = '{"task_id":41}'
+    conn.execute(
+        "INSERT INTO task_executions "
+        "(id, task_id, stage, status, attempt, request_json, request_checksum, "
+        "idempotency_key, evidence_json, error, created_at, finished_at) "
+        "VALUES (81, 41, 'PREPARATION', 'FAILED', 1, ?, ?, "
+        "'interim:41:preparation:1', '[\"preserved evidence\"]', "
+        "'preserved error', '2026-09-03T00:02:00+00:00', "
+        "'2026-09-03T00:03:00+00:00')",
+        (request_json, hashlib.sha256(request_json.encode()).hexdigest()),
+    )
+    return {"source_id": 41, "replacement_id": 42, "dependency_id": 71, "execution_id": 81}
+
+
+def _v2_data_snapshot(conn):
+    return {
+        "tasks": conn.execute("SELECT * FROM tasks ORDER BY id").fetchall(),
+        "task_dependencies": conn.execute(
+            "SELECT * FROM task_dependencies ORDER BY id"
+        ).fetchall(),
+        "task_executions": conn.execute(
+            "SELECT * FROM task_executions ORDER BY id"
+        ).fetchall(),
+    }
+
+
+def _v2_failure_snapshot(conn):
+    return {
+        **_v2_data_snapshot(conn),
+        "markers": conn.execute(
+            "SELECT * FROM schema_migrations ORDER BY name"
+        ).fetchall(),
+        "sqlite_sequence": conn.execute(
+            "SELECT * FROM sqlite_sequence ORDER BY name"
+        ).fetchall(),
+        "sqlite_master": conn.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('table','index','trigger') "
+            "AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name"
+        ).fetchall(),
+    }
+
+
+def test_v1_formal_database_is_atomically_upgraded_to_all_frozen_states(
+    tmp_path, monkeypatch
+):
+    from app import task_migrations
+    from app.db import SCHEMA_PATH
+
+    path = tmp_path / "interim-v1.db"
+    schema = SCHEMA_PATH.read_text().replace(
+        "('PENDING','PREPARING','AWAITING_APPROVAL','EXECUTING','VERIFYING',"
+        "'NEEDS_ATTENTION','DONE','CANCELLED')",
+        "('PENDING','PREPARING','AWAITING_APPROVAL','NEEDS_ATTENTION','DONE','CANCELLED')",
+    )
+    conn = sqlite3.connect(path)
+    conn.executescript(schema)
+    ids = _seed_interim_formal_graph(conn)
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
+    before = _v2_data_snapshot(conn)
 
     task_migrations.migrate_task_workflow_v1(conn)
     task_sql = conn.execute(
@@ -386,23 +447,38 @@ def test_v1_formal_database_is_atomically_upgraded_to_all_frozen_states(
             "CANCELLED",
         )
     )
+    assert _v2_data_snapshot(conn) == before
     assert conn.execute(
-        "SELECT title, version FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone() == ("Interim Task", 7)
+        "SELECT id, replaces_task_id, replaced_by_task_id FROM tasks ORDER BY id"
+    ).fetchall() == [
+        (ids["source_id"], None, ids["replacement_id"]),
+        (ids["replacement_id"], ids["source_id"], None),
+    ]
+    assert conn.execute(
+        "SELECT id, task_id, depends_on_task_id FROM task_dependencies"
+    ).fetchall() == [(ids["dependency_id"], ids["replacement_id"], ids["source_id"])]
+    assert conn.execute(
+        "SELECT id, task_id, evidence_json, error FROM task_executions"
+    ).fetchall() == [
+        (ids["execution_id"], ids["source_id"], '["preserved evidence"]', "preserved error")
+    ]
     assert conn.execute(
         "SELECT COUNT(*) FROM schema_migrations "
         "WHERE name = 'task_workflow_states_v2'"
     ).fetchone()[0] == 1
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     with pytest.raises(sqlite3.IntegrityError, match="formal tasks cannot be deleted"):
-        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE id = ?", (ids["source_id"],))
 
     task_migrations.migrate_task_workflow_v1(conn)
     assert conn.execute(
         "SELECT COUNT(*) FROM schema_migrations "
         "WHERE name = 'task_workflow_states_v2'"
     ).fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM tasks WHERE id = ?", (task_id,)).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE id IN (?, ?)",
+        (ids["source_id"], ids["replacement_id"]),
+    ).fetchone()[0] == 2
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     conn.close()
 
@@ -419,15 +495,10 @@ def test_states_v2_rebuild_failure_restores_interim_schema(tmp_path, monkeypatch
     )
     conn = sqlite3.connect(path)
     conn.executescript(schema)
-    conn.execute(
-        "INSERT INTO schema_migrations (name, applied_at) "
-        "VALUES ('task_workflow_v1', '2026-09-03T00:00:00+00:00')"
-    )
+    _seed_interim_formal_graph(conn)
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
-    before_sql = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
-    ).fetchone()[0]
+    before = _v2_failure_snapshot(conn)
 
     def fail_after_swap(_conn):
         raise RuntimeError("injected states v2 failure")
@@ -438,13 +509,8 @@ def test_states_v2_rebuild_failure_restores_interim_schema(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="injected states v2 failure"):
         task_migrations.migrate_task_workflow_v1(conn)
 
-    assert conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
-    ).fetchone()[0] == before_sql
-    assert conn.execute(
-        "SELECT COUNT(*) FROM schema_migrations "
-        "WHERE name = 'task_workflow_states_v2'"
-    ).fetchone()[0] == 0
+    assert _v2_failure_snapshot(conn) == before
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     conn.close()
 
@@ -500,6 +566,68 @@ def test_migrated_plain_text_execution_is_readable_but_never_reviewable_or_retry
             json={"expected_version": returned["version"], "reason": "retry"},
         )
         assert refused_retry.status_code == 409
+
+
+def test_migrated_json_shaped_text_is_legacy_and_never_retryable(
+    legacy_task_db, monkeypatch
+):
+    raw_output = '{"external_write_performed":false}'
+    conn = sqlite3.connect(legacy_task_db)
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, merchant_id, title, status, source_key, created_at) "
+        "VALUES (12, 1, 'JSON-shaped legacy output', 'doing', 'json-shaped', "
+        "'2026-08-08T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO task_executions "
+        "(id, task_id, coreai_run_id, status, attempt, output_text, error, created_at, "
+        "finished_at) VALUES (106, 12, 'legacy-json-run', 'failed', 1, ?, "
+        "'legacy failure', '2026-08-08T01:00:00+00:00', "
+        "'2026-08-08T02:00:00+00:00')",
+        (raw_output,),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("SEO_OPS_DB", str(legacy_task_db))
+    monkeypatch.setenv("SEO_OPS_AUTH_USERNAME", "test")
+    monkeypatch.setenv("SEO_OPS_AUTH_PASSWORD", "seo-ops-test")
+    monkeypatch.setenv("SEO_OPS_AUTH_SECRET", "test-secret-that-is-at-least-32-chars")
+    monkeypatch.setenv("SEO_OPS_COOKIE_SECURE", "false")
+    from app.db import init_db
+
+    init_db()
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/api/auth/login",
+            json={"username": "test", "password": "seo-ops-test"},
+        ).status_code == 200
+        detail = client.get("/api/tasks/12").json()
+        assert detail["status"] == "NEEDS_ATTENTION"
+        assert detail["executions"][-1]["result"] is None
+        assert detail["executions"][-1]["legacy_result"] == {
+            "unverified": True,
+            "output_text": raw_output,
+        }
+        before = (
+            detail["status"],
+            detail["version"],
+            len(detail["events"]),
+        )
+
+        response = client.post(
+            "/api/tasks/12/retry-preparation",
+            json={"expected_version": detail["version"], "reason": "retry"},
+        )
+
+        assert response.status_code == 409
+        reread = client.get("/api/tasks/12").json()
+        assert (reread["status"], reread["version"], len(reread["events"])) == before
 
 
 def test_second_init_is_an_idempotent_no_op(legacy_task_db, monkeypatch):

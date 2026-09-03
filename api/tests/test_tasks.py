@@ -587,6 +587,110 @@ def test_replacement_rejects_stale_source_version_without_creating_a_plan(client
     assert client.get(f"/api/merchants/{merchant['id']}/tasks").json() == [cancelled]
 
 
+def test_historical_replaced_attention_task_cannot_retry_or_execute(client):
+    from app.db import connect
+    from helpers import FakeCoreAi
+
+    merchant = make_merchant(client)
+    source = make_task(client, merchant["id"], title="Historical source")
+    replacement = make_task(client, merchant["id"], title="Historical replacement")
+    insert_execution(source["id"])
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET replaced_by_task_id = ? WHERE id = ?",
+            (replacement["id"], source["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = client.get(f"/api/tasks/{source['id']}").json()
+    assert before["status"] == "NEEDS_ATTENTION"
+    assert before["replaced_by_task_id"] == replacement["id"]
+    state = (before["status"], before["version"], len(before["events"]))
+
+    retry = client.post(
+        f"/api/tasks/{source['id']}/retry-preparation",
+        json={"expected_version": before["version"], "reason": "historical retry"},
+    )
+    assert retry.status_code == 409
+    assert retry.json()["detail"] == "replaced task cannot be reactivated"
+
+    fake = FakeCoreAi()
+    override_preparation_agent(fake)
+    try:
+        execute = client.post(
+            f"/api/tasks/{source['id']}/execute",
+            json={"expected_version": before["version"]},
+        )
+        assert execute.status_code == 409
+        assert execute.json()["detail"] == "replaced task cannot be reactivated"
+        assert fake.triggered == []
+    finally:
+        clear_preparation_agent()
+
+    reread = client.get(f"/api/tasks/{source['id']}").json()
+    assert (reread["status"], reread["version"], len(reread["events"])) == state
+
+
+def test_pathological_pending_replaced_task_execute_never_contacts_core_ai(client):
+    from app.db import connect
+    from helpers import FakeCoreAi
+
+    class CountingCoreAi(FakeCoreAi):
+        def __init__(self):
+            super().__init__()
+            self.agent_reads = 0
+
+        def get_agent(self, agent_id):
+            self.agent_reads += 1
+            return super().get_agent(agent_id)
+
+    merchant = make_merchant(client)
+    source = make_task(client, merchant["id"], title="Pathological source")
+    replacement = make_task(client, merchant["id"], title="Pathological replacement")
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET replaced_by_task_id = ? WHERE id = ?",
+            (replacement["id"], source["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = client.get(f"/api/tasks/{source['id']}").json()
+    assert before["status"] == "PENDING"
+    state = (
+        before["status"],
+        before["version"],
+        len(before["events"]),
+        len(before["executions"]),
+    )
+    fake = CountingCoreAi()
+    override_preparation_agent(fake)
+    try:
+        response = client.post(
+            f"/api/tasks/{source['id']}/execute",
+            json={"expected_version": before["version"]},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "replaced task cannot be reactivated"
+        assert fake.agent_reads == 0
+        assert fake.triggered == []
+    finally:
+        clear_preparation_agent()
+
+    reread = client.get(f"/api/tasks/{source['id']}").json()
+    assert (
+        reread["status"],
+        reread["version"],
+        len(reread["events"]),
+        len(reread["executions"]),
+    ) == state
+
+
 def test_blocked_task_never_contacts_core_ai(client):
     from helpers import FakeCoreAi
 

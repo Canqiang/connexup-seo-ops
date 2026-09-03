@@ -432,6 +432,8 @@ def list_tasks(merchant_id: int, conn=Depends(get_db)):
 def _safe_retryable_preparation(execution: sqlite3.Row | None) -> bool:
     if execution is None:
         return False
+    if str(execution["idempotency_key"]).startswith("legacy-task-execution-"):
+        return False
     if execution["stage"] != "PREPARATION" or execution["status"] not in {
         "FAILED",
         "CANCELLED",
@@ -862,6 +864,10 @@ def retry_preparation(
         task = fetch_task(conn, task_id)
         if body.expected_version != task["version"]:
             raise HTTPException(status_code=409, detail="task changed; refresh and retry")
+        if task["replaced_by_task_id"] is not None:
+            raise HTTPException(
+                status_code=409, detail="replaced task cannot be reactivated"
+            )
         execution = latest_execution(conn, task_id)
         if (
             task["status"] != "NEEDS_ATTENTION"
@@ -877,7 +883,8 @@ def retry_preparation(
         updated = conn.execute(
             "UPDATE tasks SET status = 'PENDING', version = version + 1, updated_at = ?, "
             "started_at = NULL, completed_at = NULL, cancelled_at = NULL "
-            "WHERE id = ? AND version = ? AND status = 'NEEDS_ATTENTION'",
+            "WHERE id = ? AND version = ? AND status = 'NEEDS_ATTENTION' "
+            "AND replaced_by_task_id IS NULL",
             (changed_at, task_id, body.expected_version),
         )
         if updated.rowcount != 1:
@@ -971,6 +978,10 @@ def execute_task(
         task = fetch_task(conn, task_id)
         if task["version"] != body.expected_version:
             raise HTTPException(status_code=409, detail="task changed; refresh and retry")
+        if task["replaced_by_task_id"] is not None:
+            raise HTTPException(
+                status_code=409, detail="replaced task cannot be reactivated"
+            )
         if task["status"] != "PENDING":
             if task["status"] in {"DONE", "CANCELLED"}:
                 detail = "terminal task cannot be executed"
@@ -1013,7 +1024,8 @@ def execute_task(
         claimed = conn.execute(
             "UPDATE tasks SET status = 'PREPARING', version = version + 1, updated_at = ?, "
             "started_at = COALESCE(started_at, ?) "
-            "WHERE id = ? AND version = ? AND status = 'PENDING'",
+            "WHERE id = ? AND version = ? AND status = 'PENDING' "
+            "AND replaced_by_task_id IS NULL",
             (started_at, started_at, task_id, body.expected_version),
         )
         if claimed.rowcount != 1:
