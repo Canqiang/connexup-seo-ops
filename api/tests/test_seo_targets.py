@@ -2747,6 +2747,353 @@ def insert_unscored_fbr_keyword_inventory(
     return artifact_id
 
 
+def keyword_head_snapshot(merchant_id):
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    row = conn.execute(
+        "SELECT active_artifact_id, activated_by, activation_reason, activated_at, updated_at"
+        " FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+@pytest.mark.parametrize(
+    ("candidate_source", "expected_source", "expected_reason"),
+    [
+        ("skill", "SKILL", "RESTORE_SKILL"),
+        ("fbr", "FBR", "ADOPT_FBR"),
+    ],
+)
+def test_keyword_activation_moves_the_exact_head_and_records_the_operator(
+    client,
+    monkeypatch,
+    candidate_source,
+    expected_source,
+    expected_reason,
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    if candidate_source == "skill":
+        candidate_id = insert_verified_skill_keyword_set(
+            merchant_id,
+            cycle_id="historic-skill-version",
+            keyword="historic skill keyword",
+        )
+        active_id = insert_verified_skill_keyword_set(
+            merchant_id,
+            cycle_id="current-skill-version",
+            keyword="current skill keyword",
+        )
+        assert client.get(f"/api/merchants/{merchant_id}/seo-targets").json()[
+            "active_keyword_artifact_id"
+        ] == active_id
+    else:
+        active_id = insert_verified_skill_keyword_set(merchant_id)
+        assert client.get(f"/api/merchants/{merchant_id}/seo-targets").json()[
+            "active_keyword_artifact_id"
+        ] == active_id
+        candidate_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": candidate_id,
+            "expected_active_artifact_id": active_id,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 200
+    state = response.json()
+    assert state["active_keyword_artifact_id"] == candidate_id
+    assert state["active_keyword_source"] == expected_source
+    assert next(
+        version for version in state["keyword_versions"] if version["artifact_id"] == candidate_id
+    )["is_active"] is True
+    head = keyword_head_snapshot(merchant_id)
+    assert head[0:3] == (candidate_id, "test", expected_reason)
+    assert head[3]
+    assert head[4]
+
+
+def test_keyword_activation_adopts_an_unscored_fbr_version_and_freezes_paid_actions_until_skill_restore(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    monkeypatch.setenv("COREAI_LOCAL_FALCON_TOOL_ID", "local-falcon-tool")
+    skill_id = insert_verified_skill_keyword_set(merchant_id)
+    assert client.get(f"/api/merchants/{merchant_id}/seo-targets").json()[
+        "active_keyword_artifact_id"
+    ] == skill_id
+    fbr_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+
+    adopted = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": fbr_id,
+            "expected_active_artifact_id": skill_id,
+            "confirmed": True,
+        },
+    )
+
+    assert adopted.status_code == 200
+    adopted_state = adopted.json()
+    assert adopted_state["active_keyword_artifact_id"] == fbr_id
+    assert adopted_state["local_falcon_cohort_sha256"] is None
+    assert adopted_state["capabilities"]["can_approve_local_falcon"] is False
+    assert adopted_state["capabilities"]["can_generate_local_falcon"] is False
+    assert "no_trusted_scored_cohort" in adopted_state["capabilities"]["blockers"][
+        "approve_local_falcon"
+    ]
+    assert "no_trusted_scored_cohort" in adopted_state["capabilities"]["blockers"][
+        "generate_local_falcon"
+    ]
+
+    restored = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": skill_id,
+            "expected_active_artifact_id": fbr_id,
+            "confirmed": True,
+        },
+    )
+
+    assert restored.status_code == 200
+    restored_state = restored.json()
+    assert restored_state["active_keyword_artifact_id"] == skill_id
+    assert restored_state["capabilities"]["can_approve_local_falcon"] is True
+    assert "no_trusted_scored_cohort" not in restored_state["capabilities"]["blockers"][
+        "generate_local_falcon"
+    ]
+
+
+def test_keyword_activation_supports_compare_and_set_from_an_initialized_empty_head(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    initial = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+    assert initial.status_code == 200
+    assert initial.json()["active_keyword_artifact_id"] is None
+    assert keyword_head_snapshot(merchant_id)[0] is None
+    candidate_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": candidate_id,
+            "expected_active_artifact_id": None,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["active_keyword_artifact_id"] == candidate_id
+    assert keyword_head_snapshot(merchant_id)[0:3] == (
+        candidate_id,
+        "test",
+        "ADOPT_FBR",
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"artifact_id": 1, "expected_active_artifact_id": None, "confirmed": False},
+        {"artifact_id": 1, "expected_active_artifact_id": None, "confirmed": "true"},
+        {"artifact_id": 1, "expected_active_artifact_id": None, "confirmed": 1},
+        {
+            "artifact_id": 1,
+            "expected_active_artifact_id": None,
+            "confirmed": True,
+            "force": True,
+        },
+    ],
+)
+def test_keyword_activation_rejects_unconfirmed_coerced_or_extra_request_values(
+    client, monkeypatch, body
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json=body,
+    )
+
+    assert response.status_code == 422
+
+
+def test_keyword_activation_requires_an_authenticated_operator(client, monkeypatch):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    candidate_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+    client.cookies.clear()
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": candidate_id,
+            "expected_active_artifact_id": None,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 401
+    assert keyword_head_snapshot(merchant_id) is None
+
+
+def test_keyword_activation_invalid_candidate_does_not_initialize_a_missing_head(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    insert_verified_skill_keyword_set(merchant_id)
+    assert keyword_head_snapshot(merchant_id) is None
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": 999999,
+            "expected_active_artifact_id": None,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "keyword artifact not found"
+    assert keyword_head_snapshot(merchant_id) is None
+
+
+def test_keyword_activation_rejects_an_inactive_merchant_without_moving_the_head(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    active_id = insert_verified_skill_keyword_set(merchant_id)
+    assert client.get(f"/api/merchants/{merchant_id}/seo-targets").status_code == 200
+    candidate_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+    before = keyword_head_snapshot(merchant_id)
+    assert client.patch(
+        f"/api/merchants/{merchant_id}", json={"status": "archived"}
+    ).status_code == 200
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": candidate_id,
+            "expected_active_artifact_id": active_id,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "merchant is archived"
+    assert keyword_head_snapshot(merchant_id) == before
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_status", "expected_detail"),
+    [
+        ("nonexistent", 404, "keyword artifact not found"),
+        ("wrong-merchant", 404, "keyword artifact not found"),
+        ("wrong-place", 409, "another GBP location"),
+        ("non-ready", 409, "not ready"),
+        ("malformed-payload", 409, "payload is invalid"),
+        ("stale-head", 409, "active keyword version changed"),
+    ],
+)
+def test_keyword_activation_rejects_invalid_or_stale_candidates_without_moving_the_head(
+    client, monkeypatch, case, expected_status, expected_detail
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    active_id = insert_verified_skill_keyword_set(merchant_id)
+    assert client.get(f"/api/merchants/{merchant_id}/seo-targets").json()[
+        "active_keyword_artifact_id"
+    ] == active_id
+    candidate_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+    expected_active_id = active_id
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    if case == "nonexistent":
+        candidate_id = 999999
+    elif case == "wrong-merchant":
+        other_merchant_id = client.post(
+            "/api/merchants",
+            json={"name": "Other merchant", "primary_location": "New York, NY"},
+        ).json()["id"]
+        conn.execute(
+            "UPDATE merchant_seo_artifacts SET merchant_id = ? WHERE id = ?",
+            (other_merchant_id, candidate_id),
+        )
+    elif case == "wrong-place":
+        conn.execute(
+            "UPDATE merchant_seo_artifacts SET request_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {"source": "FBR_KEYWORD_STORE", "place_id": "another-place-id"}
+                ),
+                candidate_id,
+            ),
+        )
+    elif case == "non-ready":
+        conn.execute(
+            "UPDATE merchant_seo_artifacts SET status = 'failed' WHERE id = ?",
+            (candidate_id,),
+        )
+    elif case == "malformed-payload":
+        conn.execute(
+            "UPDATE merchant_seo_artifacts SET payload_json = '{not-json' WHERE id = ?",
+            (candidate_id,),
+        )
+    elif case == "stale-head":
+        expected_active_id = candidate_id
+    conn.commit()
+    conn.close()
+    before = keyword_head_snapshot(merchant_id)
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": candidate_id,
+            "expected_active_artifact_id": expected_active_id,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == expected_status, case
+    assert expected_detail in response.json()["detail"]
+    assert keyword_head_snapshot(merchant_id) == before
+
+
+def test_keyword_activation_rejects_an_unresolved_local_falcon_batch_without_moving_the_head(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    active_id = insert_verified_skill_keyword_set(merchant_id)
+    assert client.get(f"/api/merchants/{merchant_id}/seo-targets").status_code == 200
+    candidate_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO merchant_local_falcon_scan_batches"
+        " (merchant_id, approval_id, confirmation_id, request_id, status,"
+        " scan_config_json, created_at)"
+        " VALUES (?, 991, 992, 'activation-unresolved-batch', 'submitted', '{}', ?) ",
+        (merchant_id, "2026-09-03T08:00:00Z"),
+    )
+    conn.commit()
+    conn.close()
+    before = keyword_head_snapshot(merchant_id)
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/seo-targets/activations",
+        json={
+            "artifact_id": candidate_id,
+            "expected_active_artifact_id": active_id,
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 409
+    assert "unresolved" in response.json()["detail"]
+    assert keyword_head_snapshot(merchant_id) == before
+
+
 def test_keyword_head_bootstrap_prefers_newest_trusted_skill_without_deleting_history(
     client, monkeypatch
 ):

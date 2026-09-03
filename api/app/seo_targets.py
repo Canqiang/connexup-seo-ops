@@ -244,6 +244,21 @@ class LocalFalconReconciliationRequest(BaseModel):
         return value
 
 
+class KeywordActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: StrictInt = Field(gt=0)
+    expected_active_artifact_id: StrictInt | None = Field(default=None, gt=0)
+    confirmed: StrictBool
+
+    @field_validator("confirmed")
+    @classmethod
+    def validate_confirmed(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("keyword activation must be explicitly confirmed")
+        return value
+
+
 def get_seo_coreai() -> tuple[CoreAiClient, SeoAgentIds]:
     global _client
     settings = coreai_settings()
@@ -2898,6 +2913,119 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
 @router.get("/merchants/{merchant_id}/seo-targets")
 def get_seo_targets(merchant_id: int, conn=Depends(get_db)):
     fetch_merchant(conn, merchant_id)
+    return _state(conn, merchant_id)
+
+
+@router.post("/merchants/{merchant_id}/seo-targets/activations")
+def activate_keyword_version(
+    merchant_id: int,
+    body: KeywordActivationRequest,
+    operator: str = Depends(require_operator),
+    conn=Depends(get_db),
+):
+    merchant = fetch_active_merchant(conn, merchant_id)
+    location = _location_context(conn, merchant)
+    place_id = location.get("place_id")
+    if not place_id:
+        raise HTTPException(
+            status_code=409,
+            detail="GBP Place ID is required for keyword activation",
+        )
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        locked_merchant = fetch_active_merchant(conn, merchant_id)
+        locked_location = _location_context(conn, locked_merchant)
+        locked_place_id = locked_location.get("place_id")
+        if locked_place_id != place_id:
+            raise HTTPException(
+                status_code=409,
+                detail="selected GBP location changed; refresh keyword versions",
+            )
+
+        _ensure_keyword_head(conn, merchant_id, place_id)
+        candidate = conn.execute(
+            "SELECT * FROM merchant_seo_artifacts WHERE id = ?",
+            (body.artifact_id,),
+        ).fetchone()
+        head = conn.execute(
+            "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+            (merchant_id, place_id),
+        ).fetchone()
+        if candidate is None or candidate["merchant_id"] != merchant_id:
+            raise HTTPException(status_code=404, detail="keyword artifact not found")
+        if candidate["artifact_type"] != "KEYWORD_SET":
+            raise HTTPException(
+                status_code=409,
+                detail="keyword activation target is not a keyword artifact",
+            )
+        if candidate["status"] != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact is not ready",
+            )
+        if _keyword_artifact_place_id(candidate) != place_id:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact belongs to another GBP location",
+            )
+        if head is None:
+            raise HTTPException(
+                status_code=409,
+                detail="active keyword head is not initialized",
+            )
+        try:
+            keyword_set = _parse_keyword_set(candidate["payload_json"], merchant_id)
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact payload is invalid",
+            ) from exc
+
+        generation_method = keyword_set.get("generation_method")
+        if generation_method == "UPSTREAM_DETERMINISTIC_ADAPTER":
+            activation_reason = "RESTORE_SKILL"
+        elif generation_method == "PERSISTED_FBR_READBACK":
+            activation_reason = "ADOPT_FBR"
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact source cannot be activated",
+            )
+
+        unresolved = _unresolved_local_falcon_batch(conn, merchant_id)
+        if unresolved is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Local Falcon scan batch {unresolved['id']} is unresolved; "
+                    "sync or reconcile it before activating another keyword version"
+                ),
+            )
+
+        try:
+            moved = _move_keyword_head(
+                conn,
+                merchant_id=merchant_id,
+                place_id=place_id,
+                artifact_id=candidate["id"],
+                expected_active_artifact_id=body.expected_active_artifact_id,
+                activated_by=operator,
+                activation_reason=activation_reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not moved:
+            raise HTTPException(
+                status_code=409,
+                detail="active keyword version changed; refresh and review the latest version",
+            )
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
     return _state(conn, merchant_id)
 
 
