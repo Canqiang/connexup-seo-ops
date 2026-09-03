@@ -231,12 +231,6 @@ def extract_task_plan(report_text: object, enabled_task_types: set[str]) -> Vali
     if not isinstance(report_text, str):
         return None
     candidates = list(_JSON_FENCE_RE.findall(report_text))
-    # Accept a final fence omitted by an Agent, while avoiding duplicate capture
-    # when a normal closed fence was already found.
-    if not candidates:
-        marker = re.search(r"```json\s*", report_text, re.IGNORECASE)
-        if marker:
-            candidates.append(report_text[marker.end() :].strip().strip("`").strip())
 
     valid: list[ValidatedTaskPlan] = []
     for candidate in candidates:

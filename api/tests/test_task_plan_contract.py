@@ -176,6 +176,13 @@ def test_report_without_one_valid_plan_returns_none(valid_plan):
     assert extract_task_plan("```json\n[]\n```", {"PREPARE_ONLY"}) is None
 
 
+def test_unterminated_fenced_plan_is_not_extracted(valid_plan):
+    from app.task_plan_contract import extract_task_plan
+
+    report = f"Report\n```json\n{json.dumps(valid_plan)}"
+    assert extract_task_plan(report, {"PREPARE_ONLY"}) is None
+
+
 def test_report_with_one_valid_fenced_plan_is_extracted(valid_plan):
     from app.task_plan_contract import extract_task_plan
 
