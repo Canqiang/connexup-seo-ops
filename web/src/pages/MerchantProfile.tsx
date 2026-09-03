@@ -1408,7 +1408,6 @@ export default function MerchantProfile() {
   const [seoBusy, setSeoBusy] = useState(false)
   const [seoRegenerating, setSeoRegenerating] = useState(false)
   const [localFalconBusy, setLocalFalconBusy] = useState(false)
-  const autoSeoMerchantRef = useRef<number | null>(null)
   const performanceHashFocusedRef = useRef<string | null>(null)
   const profileMutationVersionRef = useRef(0)
   const profileMutationBusyRef = useRef(false)
@@ -1676,13 +1675,6 @@ export default function MerchantProfile() {
       setSeoRegenerating(false)
     }
   }, [merchantId])
-
-  useEffect(() => {
-    if (!profile || !seoTargets || profile.locations.length === 0 || seoTargets.cycle_status !== 'empty') return
-    if (autoSeoMerchantRef.current === merchantId) return
-    autoSeoMerchantRef.current = merchantId
-    void refreshSeo()
-  }, [merchantId, profile, refreshSeo, seoTargets])
 
   if (!merchant || !profile) {
     return (

@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { api } from './api'
 import { isAcceptedLocalFalconBatchReadback, keywordIdentity } from './localFalcon'
 
 describe('desktop operator shell', () => {
@@ -34,6 +35,11 @@ describe('desktop operator shell', () => {
       cycle_status: 'ready' as const,
       active_stage: null,
       keyword_set: null,
+      active_keyword_artifact_id: null,
+      active_keyword_source: null,
+      active_keyword_activated_at: null,
+      keyword_versions: [],
+      latest_fbr_import: null,
       audit_report: null,
       ranking_report: null,
       error: null,
@@ -86,6 +92,20 @@ describe('desktop operator shell', () => {
 
   it('joins keyword reports with the same Unicode identity as the backend', () => {
     expect(keywordIdentity('Coffee  Near Me')).toBe(keywordIdentity('ＣＯＦＦＥＥ\u00a0near me'))
+  })
+
+  it('serializes a confirmed keyword version activation to the local API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const activate = (api as Partial<typeof api>).activateSeoKeywordVersion
+
+    expect(activate).toBeTypeOf('function')
+    await activate!(3, { artifact_id: 99, expected_active_artifact_id: 41, confirmed: true })
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/merchants/3/seo-targets/activations', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ artifact_id: 99, expected_active_artifact_id: 41, confirmed: true }),
+    }))
   })
 
   it('requires the configured operator session before showing the workspace', async () => {
@@ -1684,45 +1704,12 @@ describe('desktop operator shell', () => {
     )).toHaveLength(0)
   })
 
-  it('automatically reads the FBR keyword repository only when no saved snapshot exists', async () => {
+  it('does not refresh FBR keywords during page load or local polling', async () => {
     window.history.pushState({}, '', '/merchants/3/profile')
-    const fetchMock = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => ({
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
-      status: input.endsWith('/seo-targets/refresh') ? 202 : 200,
-      json: async () => input.endsWith('/seo-targets/refresh') && init?.method === 'POST'
-        ? {
-            merchant_id: 3,
-            cycle_id: 'first-fbr-read',
-            cycle_status: 'ready',
-            active_stage: null,
-            keyword_set: {
-              schema_version: 'seo_ops.keyword_set.v2',
-              merchant_id: '3',
-              market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Upper West Side' },
-              generation_method: 'PERSISTED_FBR_READBACK',
-              title: 'UWS persisted keywords',
-              summary: 'Read from FBR.',
-              keywords: [{ keyword: 'breakfast upper west side', strategy: 'LOCAL', intent: 'LOCAL', priority: 'P1', score: null, score_rank: null, local_falcon_selected: false, rationale: 'Persisted.', source_tags: ['FBR_KEYWORD_STORE'], target_surface_types: ['GBP'], target_location: 'Upper West Side' }],
-              evidence_gaps: [],
-            },
-            audit_report: null,
-            ranking_report: null,
-            local_falcon: { current_place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE' },
-            capabilities: {
-              can_regenerate: false,
-              can_sync_local_falcon: false,
-              can_approve_local_falcon: false,
-              can_generate_local_falcon: false,
-              blockers: {
-                regenerate: ['keyword_skill_unconfigured'],
-                sync_local_falcon: ['no_trusted_scored_cohort'],
-                approve_local_falcon: ['no_trusted_scored_cohort'],
-                generate_local_falcon: ['no_trusted_scored_cohort', 'scan_defaults_missing'],
-              },
-            },
-            error: null,
-          }
-        : input.endsWith('/api/merchants/3/seo-targets')
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/3/seo-targets')
           ? { merchant_id: 3, cycle_status: 'empty', active_stage: null, keyword_set: null, audit_report: null, ranking_report: null, error: null }
           : input.endsWith('/api/merchants/3/profile')
             ? {
@@ -1758,17 +1745,130 @@ describe('desktop operator shell', () => {
 
     render(<App />)
 
-    await screen.findByText('FBR 已落库 · 1 个关键词 · 评分缺失')
+    await screen.findByRole('heading', { name: 'SEO 目标关键词与排名' })
     screen.getByRole('button', { name: '从 FBR 重新读取' })
-    screen.getByText('FBR 未返回关键词评分，无法确定 Local Falcon Top 20。已停止同步，避免把全部关键词误当作 Top 20。')
-    expect((screen.getByRole('button', { name: '重新生成关键词并评分' }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: '审批并生成 Top 20 报告' }) as HTMLButtonElement).disabled).toBe(true)
-    screen.getByText('关键词生成 Skill 尚未配置，当前只能读取 FBR 已落库数据。')
-    expect(screen.queryByText('Top 20 尚未形成，不能生成 Local Falcon 报告。')).toBeNull()
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input).endsWith('/api/merchants/3/seo-targets/refresh') && (init as RequestInit | undefined)?.method === 'POST',
+    )).toHaveLength(0)
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
+      expect(fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith('/api/merchants/3/seo-targets/refresh') && (init as RequestInit | undefined)?.method === 'POST',
+      )).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps active Skill keywords after the operator reads an FBR candidate', async () => {
+    window.history.pushState({}, '', '/merchants/3/profile')
+    const activeSkillState = {
+      merchant_id: 3,
+      cycle_status: 'ready',
+      active_stage: null,
+      keyword_set_artifact_id: 41,
+      active_keyword_artifact_id: 41,
+      active_keyword_source: 'SKILL',
+      active_keyword_activated_at: '2026-09-03T00:00:00Z',
+      keyword_versions: [{ artifact_id: 41, place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE', source: 'SKILL', generation_method: 'EVIDENCE_BOUNDED_RESEARCH', keyword_count: 1, local_keyword_count: 1, organic_keyword_count: 0, scored_keyword_count: 1, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-03T00:00:00Z', is_active: true }],
+      latest_fbr_import: null,
+      local_falcon_cohort_sha256: 'a'.repeat(64),
+      keyword_set: {
+        schema_version: 'seo_ops.keyword_set.v2',
+        merchant_id: '3',
+        market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Upper West Side' },
+        generation_method: 'EVIDENCE_BOUNDED_RESEARCH',
+        title: 'Active Skill keywords',
+        summary: 'The activated Skill result.',
+        keywords: [{ keyword: 'active skill keyword', strategy: 'LOCAL', intent: 'LOCAL', priority: 'P0', score: 95, score_rank: 1, local_falcon_selected: true, rationale: 'Active.', source_tags: ['SKILL'], target_surface_types: ['GBP'], target_location: 'Upper West Side' }],
+        evidence_gaps: [],
+      },
+      audit_report: null,
+      ranking_report: null,
+      local_falcon: {
+        current_place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE',
+        status: 'not_synced',
+        last_synced_at: null,
+        last_error: null,
+        missing_keywords: [],
+        reports: [],
+        scan_defaults: { place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE', lat: 40.77, lng: -73.98, grid_size: 3, radius: 0.5, measurement: 'km', platform: 'google' },
+        scan_defaults_sha256: 'b'.repeat(64),
+      },
+      capabilities: { can_regenerate: true, can_sync_local_falcon: false, can_approve_local_falcon: true, can_generate_local_falcon: true },
+      error: null,
+    }
+    const fbrCandidateReadback = {
+      ...activeSkillState,
+      latest_fbr_import: {
+        artifact_id: 99,
+        imported_at: '2026-09-03T00:01:00Z',
+        is_active: false,
+        comparison: {
+          active_local_count: 1,
+          fbr_local_count: 1,
+          added_count: 1,
+          removed_count: 1,
+          priority_changed_count: 0,
+          target_surfaces_changed_count: 0,
+          added_keywords: ['candidate FBR keyword'],
+          removed_keywords: ['active skill keyword'],
+          changed_keywords: [],
+        },
+      },
+    }
+    const fetchMock = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => ({
+      ok: true,
+      status: input.endsWith('/seo-targets/refresh') || input.endsWith('/local-falcon-scan-batches') ? 202 : input.endsWith('/local-falcon-approvals') ? 201 : 200,
+      json: async () => input.endsWith('/api/merchants/3/seo-targets/refresh') && init?.method === 'POST'
+        ? fbrCandidateReadback
+        : input.endsWith('/api/merchants/3/local-falcon-approvals') && init?.method === 'POST'
+          ? { ...fbrCandidateReadback, local_falcon: { ...fbrCandidateReadback.local_falcon, approval: { id: 7, keyword_artifact_id: 41, cohort_sha256: 'a'.repeat(64), approved_at: '2026-09-03T00:01:01Z' } } }
+          : input.endsWith('/api/merchants/3/local-falcon-scan-batches') && init?.method === 'POST'
+            ? { ...fbrCandidateReadback, local_falcon: { ...fbrCandidateReadback.local_falcon, approval: { id: 7, keyword_artifact_id: 41, cohort_sha256: 'a'.repeat(64), approved_at: '2026-09-03T00:01:01Z' }, scan_batch: { id: 8, approval_id: 7, status: 'submitting', total_count: 1, pending_count: 1, submitting_count: 0, submitted_count: 0, completed_count: 0, unknown_count: 0, failed_count: 0, needs_reconciliation: false } } }
+        : input.endsWith('/api/merchants/3/seo-targets')
+          ? activeSkillState
+          : input.endsWith('/api/merchants/3/profile')
+            ? {
+                merchant_id: 3,
+                state: 'synced',
+                fbr_merchant_id: 'fbr-choice',
+                sync_status: 'synced',
+                last_synced_at: '2026-09-02T03:00:00Z',
+                last_error: null,
+                locations: [{ gbp_location_id: 'locations/uws', place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE', title: 'Choice Brooklyn - Upper West Side', address: '2040 Broadway, New York, NY 10023, US', additional_phones: [], address_lines: [], additional_categories: [], regular_hours: [], menu_sections: [], menu_items: [], recent_posts: [], recent_reviews: [], performance_metrics: [], search_keywords: [], synced_at: '2026-09-02T03:00:00Z' }],
+              }
+            : input.endsWith('/api/merchants/3')
+              ? { id: 3, name: 'Choice Brooklyn - Upper West Side', primary_location: '2040 Broadway, New York, NY 10023', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+              : [],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+
+    await screen.findByText('active skill keyword')
+    fireEvent.click(screen.getByRole('button', { name: '从 FBR 重新读取' }))
     await waitFor(() => {
       expect(fetchMock.mock.calls.filter(([input, init]) =>
         String(input).endsWith('/api/merchants/3/seo-targets/refresh') && (init as RequestInit | undefined)?.method === 'POST',
       )).toHaveLength(1)
+    })
+    screen.getByText('active skill keyword')
+    expect(screen.queryByText('candidate FBR keyword')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '审批并生成 Top 20 报告' }))
+    const confirmation = screen.getByRole('dialog', { name: '确认生成 Local Falcon 报告' })
+    fireEvent.click(within(confirmation).getByRole('button', { name: '确认并生成 1 个报告' }))
+    await waitFor(() => {
+      const approvalCall = fetchMock.mock.calls.find(([input, init]) =>
+        String(input).endsWith('/api/merchants/3/local-falcon-approvals') && (init as RequestInit | undefined)?.method === 'POST',
+      )
+      expect(JSON.parse(String(approvalCall?.[1]?.body))).toEqual({
+        keyword_artifact_id: 41,
+        expected_cohort_sha256: 'a'.repeat(64),
+      })
     })
   })
 
