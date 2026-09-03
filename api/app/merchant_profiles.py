@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -16,7 +17,7 @@ from .fbr_gbp import (
     fbr_gbp_client,
     normalize_gbp_location,
 )
-from .merchants import fetch_merchant
+from .merchants import fetch_active_merchant, fetch_merchant
 
 router = APIRouter(prefix="/api/merchants", tags=["merchant-profile"])
 
@@ -33,6 +34,27 @@ FIELD_COLUMNS = {
     "VERIFICATIONS": "verifications_json",
 }
 
+OPTIONAL_FIELD_LIST_KEYS = {
+    "ATTRIBUTES": ("attributes",),
+    "FOOD_MENUS": ("menus", "foodMenus"),
+    "LOCAL_POSTS": ("posts", "localPosts"),
+    "MEDIA": ("mediaItems", "media_items", "media"),
+    "CUSTOMER_MEDIA": ("mediaItems", "media_items", "media"),
+    "QUESTIONS": ("questions",),
+    "PLACE_ACTION_LINKS": ("placeActionLinks", "place_action_links"),
+    "VERIFICATIONS": ("verifications",),
+}
+
+GBP_SYNC_INTERVAL = timedelta(hours=1)
+GBP_SYNC_LEASE_TIMEOUT = timedelta(minutes=15)
+
+
+@dataclass(frozen=True)
+class GbpSyncClaim:
+    merchant_id: int
+    fbr_merchant_id: str
+    lease_started_at: str
+
 
 class FbrLinkBody(BaseModel):
     fbr_merchant_id: str = Field(min_length=1, max_length=200)
@@ -40,6 +62,43 @@ class FbrLinkBody(BaseModel):
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_now(current_time: datetime | None = None) -> datetime:
+    value = current_time or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def gbp_sync_due(link: sqlite3.Row, current_time: datetime | None = None) -> bool:
+    """Return whether a bound profile is eligible for an automatic sync."""
+    current = _utc_now(current_time)
+    status = link["sync_status"]
+    if status == "not_synced":
+        return True
+    if status == "synced":
+        anchor = _parse_timestamp(link["last_synced_at"])
+        return anchor is None or current - anchor >= GBP_SYNC_INTERVAL
+    if status == "failed":
+        anchor = _parse_timestamp(link["updated_at"])
+        return anchor is None or current - anchor >= GBP_SYNC_INTERVAL
+    if status == "syncing":
+        anchor = _parse_timestamp(link["updated_at"])
+        return anchor is None or current - anchor >= GBP_SYNC_LEASE_TIMEOUT
+    return False
 
 
 def get_fbr_client() -> FbrGbpClient | None:
@@ -361,40 +420,147 @@ def _insight_rows(payload: dict[str, Any] | None, key: str) -> list[dict[str, An
     return [value for value in values if isinstance(value, dict)]
 
 
-def _fetch_location(client: FbrGbpClient, fbr_merchant_id: str, identity: dict[str, Any], synced_at: str):
+def _has_list(payload: object, *keys: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for key in keys:
+        values = payload.get(key)
+        if isinstance(values, list):
+            return all(isinstance(value, dict) for value in values)
+    return False
+
+
+def _optional_field_payload_ready(field: str, raw: object) -> bool:
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    payload = _json_object(raw)
+    keys = OPTIONAL_FIELD_LIST_KEYS.get(field)
+    return payload is not None and keys is not None and _has_list(payload, *keys)
+
+
+def _review_payload_ready(payload: object) -> bool:
+    if not _has_list(payload, "reviews"):
+        return False
+    total = payload.get("total")
+    return isinstance(total, int) and not isinstance(total, bool) and total >= 0
+
+
+def _review_overview_payload_ready(payload: object) -> bool:
+    if not _has_list(payload, "reviews"):
+        return False
+    count = payload.get("current_month_review_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return False
+    rating = payload.get("current_month_rating")
+    if rating is not None and _rating(rating) is None:
+        return False
+    reply_rate = payload.get("reply_rate")
+    return reply_rate is None or (
+        isinstance(reply_rate, (int, float)) and not isinstance(reply_rate, bool)
+    )
+
+
+def _location_payload_meaningful(normalized: dict[str, Any]) -> bool:
+    scalar_fact = any(
+        normalized.get(key)
+        for key in (
+            "title",
+            "store_code",
+            "phone",
+            "address",
+            "website_url",
+            "primary_category",
+            "open_status",
+            "description",
+        )
+    )
+    hours = normalized.get("regular_hours")
+    meaningful_hours = isinstance(hours, list) and any(
+        isinstance(period, dict) and any(period.values()) for period in hours
+    )
+    return scalar_fact or meaningful_hours
+
+
+def _fetch_location(
+    client: FbrGbpClient,
+    fbr_merchant_id: str,
+    identity: dict[str, Any],
+    previous_snapshot: sqlite3.Row | None = None,
+    *,
+    query_time: datetime | None = None,
+):
     gbp_location_id = _safe_text(identity.get("gbp_location_id"))
     place_id = _safe_text(identity.get("place_id"))
     if not gbp_location_id:
         raise FbrPayloadError("FBR GBP location is missing gbp_location_id")
-    fields: dict[str, str | None] = {field: None for field in GBP_FIELDS}
+    previous_normalized = (
+        _json_object(previous_snapshot["normalized_json"])
+        if previous_snapshot is not None
+        else None
+    ) or {}
+    place_id = place_id or _safe_text(previous_normalized.get("place_id"))
+    google_account_id = _safe_text(identity.get("google_account_id")) or (
+        _safe_text(previous_snapshot["google_account_id"])
+        if previous_snapshot is not None
+        else None
+    )
+    source_name = _safe_text(identity.get("name")) or (
+        _safe_text(previous_snapshot["source_name"])
+        if previous_snapshot is not None
+        else None
+    )
+    source_title = _safe_text(identity.get("title")) or (
+        _safe_text(previous_snapshot["source_title"])
+        if previous_snapshot is not None
+        else None
+    )
+    fields: dict[str, str | None] = {
+        field: previous_snapshot[FIELD_COLUMNS[field]]
+        if previous_snapshot is not None
+        else None
+        for field in GBP_FIELDS
+    }
+    normalized_location: dict[str, Any] | None = None
     source_times: list[str] = []
     for field in GBP_FIELDS:
         try:
             response = client.get_field(fbr_merchant_id, gbp_location_id, field)
         except (FbrUnavailableError, FbrPayloadError):
+            if field == "LOCATION":
+                raise
             continue
         raw = response.get("value")
-        if isinstance(raw, str):
-            fields[field] = raw
+        if field == "LOCATION":
+            if not isinstance(raw, str) or not raw.strip():
+                raise FbrPayloadError("FBR LOCATION field value is invalid")
+            normalized_location = normalize_gbp_location(raw)
+            if not _location_payload_meaningful(normalized_location):
+                raise FbrPayloadError("FBR LOCATION field value is incomplete")
+        elif not _optional_field_payload_ready(field, raw):
+            continue
+        fields[field] = raw
         updated_at = _safe_text(response.get("updated_time"))
         if updated_at:
             source_times.append(updated_at)
 
-    today = datetime.now(timezone.utc).date()
+    today = _utc_now(query_time).date()
     reviews: dict[str, Any] | None = None
     review_sync_status = "unavailable"
     review_scope: str | None = None
     review_average_rating: float | None = None
     review_reply_rate: float | None = None
+    review_source_ready = False
+    persisted_review_ready = False
     try:
-        reviews = client.get_reviews(fbr_merchant_id, gbp_location_id)
-        review_sync_status = "ready"
-        review_scope = "all_synced"
+        review_payload = client.get_reviews(fbr_merchant_id, gbp_location_id)
+        if _review_payload_ready(review_payload):
+            reviews = review_payload
+            persisted_review_ready = True
     except (FbrUnavailableError, FbrPayloadError):
         pass
 
-    persisted_review_total = reviews.get("total") if isinstance(reviews, dict) else None
-    if reviews is None or persisted_review_total == 0:
+    persisted_review_total = reviews.get("total") if persisted_review_ready else None
+    if not persisted_review_ready or persisted_review_total == 0:
         try:
             overview = client.get_review_overview(
                 fbr_merchant_id,
@@ -403,31 +569,37 @@ def _fetch_location(client: FbrGbpClient, fbr_merchant_id: str, identity: dict[s
             )
         except (FbrUnavailableError, FbrPayloadError):
             overview = None
-        if isinstance(overview, dict):
+        if _review_overview_payload_ready(overview):
             overview_count = overview.get("current_month_review_count")
             overview_reviews = _first_list(overview, "reviews")
-            if isinstance(overview_count, int) and not isinstance(overview_count, bool):
-                reviews = {
-                    "total": overview_count,
-                    "reviews": [
-                        {
-                            "rating": item.get("rating"),
-                            "content": item.get("content"),
-                            "reply": item.get("reply_content"),
-                        }
-                        for item in (overview_reviews or [])
-                        if isinstance(item, dict)
-                    ],
-                }
-                review_sync_status = "ready"
-                review_scope = "recent_month"
-                review_average_rating = _rating(overview.get("current_month_rating"))
-                reply_rate = overview.get("reply_rate")
-                if isinstance(reply_rate, (int, float)) and not isinstance(reply_rate, bool):
-                    review_reply_rate = float(reply_rate)
+            reviews = {
+                "total": overview_count,
+                "reviews": [
+                    {
+                        "rating": item.get("rating"),
+                        "content": item.get("content"),
+                        "reply": item.get("reply_content"),
+                    }
+                    for item in (overview_reviews or [])
+                    if isinstance(item, dict)
+                ],
+            }
+            review_source_ready = True
+            review_sync_status = "ready"
+            review_scope = "recent_month"
+            review_average_rating = _rating(overview.get("current_month_rating"))
+            reply_rate = overview.get("reply_rate")
+            if isinstance(reply_rate, (int, float)) and not isinstance(reply_rate, bool):
+                review_reply_rate = float(reply_rate)
+    if persisted_review_ready and persisted_review_total != 0:
+        review_source_ready = True
+        review_sync_status = "ready"
+        review_scope = "all_synced"
 
     performance: dict[str, Any] | None = None
     search_keywords: dict[str, Any] | None = None
+    performance_source_ready = False
+    search_keyword_source_ready = False
     if place_id:
         try:
             performance = client.list_performance_metrics(
@@ -436,6 +608,7 @@ def _fetch_location(client: FbrGbpClient, fbr_merchant_id: str, identity: dict[s
                 from_date=(today - timedelta(days=30)).isoformat(),
                 to_date=today.isoformat(),
             )
+            performance_source_ready = _has_list(performance, "metrics")
         except (FbrUnavailableError, FbrPayloadError):
             pass
         try:
@@ -445,43 +618,66 @@ def _fetch_location(client: FbrGbpClient, fbr_merchant_id: str, identity: dict[s
                 from_month=_month_key(_months_ago(today, 2)),
                 to_month=_month_key(today),
             )
+            search_keyword_source_ready = _has_list(search_keywords, "keywords")
         except (FbrUnavailableError, FbrPayloadError):
             pass
 
-    location_raw = fields["LOCATION"]
-    normalized = normalize_gbp_location(location_raw) if location_raw else normalize_gbp_location("{}")
+    if normalized_location is None:
+        raise FbrPayloadError("FBR LOCATION field value is missing")
+    normalized = normalized_location
     menu = _menu_summary(fields["FOOD_MENUS"])
     posts = _post_summary(fields["LOCAL_POSTS"])
-    review_summary = _review_summary(reviews)
+    review_values = {
+        **_review_summary(reviews),
+        "review_sync_status": review_sync_status,
+        "review_scope": review_scope,
+        "review_average_rating": review_average_rating,
+        "review_reply_rate": review_reply_rate,
+    }
+    if not review_source_ready:
+        for key in tuple(review_values):
+            if key in previous_normalized:
+                review_values[key] = previous_normalized[key]
+    performance_metrics = _insight_rows(performance, "metrics")
+    if not performance_source_ready:
+        performance_metrics = previous_normalized.get(
+            "performance_metrics",
+            performance_metrics,
+        )
+    search_keyword_metrics = _insight_rows(search_keywords, "keywords")
+    if not search_keyword_source_ready:
+        search_keyword_metrics = previous_normalized.get(
+            "search_keywords",
+            search_keyword_metrics,
+        )
+    source_updated_at = max(source_times) if source_times else None
+    if source_updated_at is None and previous_snapshot is not None:
+        source_updated_at = previous_snapshot["source_updated_at"]
     normalized.update(
         {
             "place_id": place_id,
             "attribute_count": _attribute_count(fields["ATTRIBUTES"]),
             **menu,
             **posts,
-            **review_summary,
-            "review_sync_status": review_sync_status,
-            "review_scope": review_scope,
-            "review_average_rating": review_average_rating,
-            "review_reply_rate": review_reply_rate,
+            **review_values,
             "media_count": _collection_count(fields["MEDIA"]),
             "customer_media_count": _collection_count(fields["CUSTOMER_MEDIA"]),
             "question_count": _collection_count(fields["QUESTIONS"]),
             "place_action_link_count": _collection_count(fields["PLACE_ACTION_LINKS"]),
             "verification_count": _collection_count(fields["VERIFICATIONS"]),
-            "performance_metrics": _insight_rows(performance, "metrics"),
-            "search_keywords": _insight_rows(search_keywords, "keywords"),
+            "performance_metrics": performance_metrics,
+            "search_keywords": search_keyword_metrics,
         }
     )
     return {
         "gbp_location_id": gbp_location_id,
-        "google_account_id": _safe_text(identity.get("google_account_id")),
-        "source_name": _safe_text(identity.get("name")),
-        "source_title": _safe_text(identity.get("title")),
+        "google_account_id": google_account_id,
+        "source_name": source_name,
+        "source_title": source_title,
         "fields": fields,
         "normalized_json": json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),
-        "source_updated_at": max(source_times) if source_times else None,
-        "synced_at": synced_at,
+        "source_updated_at": source_updated_at,
+        "synced_at": None,
     }
 
 
@@ -492,7 +688,7 @@ def get_profile(merchant_id: int, conn=Depends(get_db)):
 
 @router.put("/{merchant_id}/fbr-link")
 def put_fbr_link(merchant_id: int, body: FbrLinkBody, conn=Depends(get_db)):
-    fetch_merchant(conn, merchant_id)
+    fetch_active_merchant(conn, merchant_id)
     fbr_merchant_id = body.fbr_merchant_id.strip()
     if not fbr_merchant_id:
         raise HTTPException(status_code=422, detail="FBR Merchant ID 不能为空")
@@ -511,51 +707,106 @@ def put_fbr_link(merchant_id: int, body: FbrLinkBody, conn=Depends(get_db)):
     return _profile_response(conn, merchant_id)
 
 
-@router.post("/{merchant_id}/gbp-sync")
-def sync_gbp_profile(
+def _claim_gbp_sync(
+    conn: sqlite3.Connection,
     merchant_id: int,
-    client: FbrGbpClient | None = Depends(get_fbr_client),
-    conn=Depends(get_db),
-):
-    fetch_merchant(conn, merchant_id)
+    *,
+    force: bool,
+    current_time: datetime,
+) -> GbpSyncClaim | None:
+    fetch_active_merchant(conn, merchant_id)
     link = conn.execute(
         "SELECT * FROM merchant_fbr_links WHERE merchant_id = ?",
         (merchant_id,),
     ).fetchone()
     if link is None:
         raise HTTPException(status_code=409, detail="请先绑定 FBR Merchant ID")
-    if client is None:
-        message = "FBR SEO integration is not configured"
-        conn.execute(
-            "UPDATE merchant_fbr_links SET sync_status = 'failed', last_error = ?, updated_at = ? WHERE merchant_id = ?",
-            (message, now_iso(), merchant_id),
-        )
-        conn.commit()
-        raise HTTPException(status_code=503, detail=message)
 
-    fbr_merchant_id = link["fbr_merchant_id"]
-    synced_at = now_iso()
-    conn.execute(
-        "UPDATE merchant_fbr_links SET sync_status = 'syncing', last_error = NULL, updated_at = ? WHERE merchant_id = ?",
-        (synced_at, merchant_id),
+    # A recent syncing row is an active lease. A stale one can be reclaimed by
+    # either the scheduler or a manual retry after the lease timeout.
+    if link["sync_status"] == "syncing" and not gbp_sync_due(link, current_time):
+        return None
+    if not force and not gbp_sync_due(link, current_time):
+        return None
+
+    lease_started_at = current_time.isoformat()
+    claimed = conn.execute(
+        "UPDATE merchant_fbr_links"
+        " SET sync_status = 'syncing', last_error = NULL, updated_at = ?"
+        " WHERE merchant_id = ? AND fbr_merchant_id = ?"
+        " AND sync_status = ? AND updated_at = ?"
+        " AND EXISTS (SELECT 1 FROM merchants"
+        "             WHERE merchants.id = merchant_fbr_links.merchant_id"
+        "               AND merchants.status = 'active')",
+        (
+            lease_started_at,
+            merchant_id,
+            link["fbr_merchant_id"],
+            link["sync_status"],
+            link["updated_at"],
+        ),
     )
     conn.commit()
-    try:
-        identities = client.list_locations(fbr_merchant_id)
-        snapshots = [_fetch_location(client, fbr_merchant_id, identity, synced_at) for identity in identities]
-    except (FbrUnavailableError, FbrPayloadError, FbrConfigurationError) as exc:
-        message = str(exc)
-        conn.execute(
-            "UPDATE merchant_fbr_links SET sync_status = 'failed', last_error = ?, updated_at = ? WHERE merchant_id = ?",
-            (message, now_iso(), merchant_id),
-        )
-        conn.commit()
-        raise HTTPException(
-            status_code=503,
-            detail=f"{message}; last successful data was preserved",
-        ) from exc
+    if claimed.rowcount != 1:
+        return None
+    return GbpSyncClaim(
+        merchant_id=merchant_id,
+        fbr_merchant_id=link["fbr_merchant_id"],
+        lease_started_at=lease_started_at,
+    )
 
-    conn.execute("DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?", (merchant_id,))
+
+def _claim_where_sql() -> str:
+    return (
+        " merchant_id = ? AND fbr_merchant_id = ?"
+        " AND sync_status = 'syncing' AND updated_at = ?"
+    )
+
+
+def _mark_gbp_sync_failed(
+    conn: sqlite3.Connection,
+    claim: GbpSyncClaim,
+    message: str,
+    failed_at: datetime,
+) -> None:
+    if conn.in_transaction:
+        conn.rollback()
+    conn.execute(
+        "UPDATE merchant_fbr_links"
+        " SET sync_status = 'failed', last_error = ?, updated_at = ? WHERE"
+        + _claim_where_sql(),
+        (
+            message,
+            failed_at.isoformat(),
+            claim.merchant_id,
+            claim.fbr_merchant_id,
+            claim.lease_started_at,
+        ),
+    )
+    conn.commit()
+
+
+def _persist_gbp_snapshots(
+    conn: sqlite3.Connection,
+    claim: GbpSyncClaim,
+    snapshots: list[dict[str, Any]],
+    synced_at: str,
+) -> bool:
+    # Acquire the writer lock only after all network reads have completed. The
+    # lease tuple is the fence: rebinding or a newer lease makes this a no-op.
+    conn.execute("BEGIN IMMEDIATE")
+    owned = conn.execute(
+        "SELECT 1 FROM merchant_fbr_links WHERE" + _claim_where_sql(),
+        (claim.merchant_id, claim.fbr_merchant_id, claim.lease_started_at),
+    ).fetchone()
+    if owned is None:
+        conn.rollback()
+        return False
+
+    conn.execute(
+        "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?",
+        (claim.merchant_id,),
+    )
     for snapshot in snapshots:
         fields = snapshot["fields"]
         conn.execute(
@@ -565,8 +816,8 @@ def sync_gbp_profile(
             " questions_json, place_action_links_json, verifications_json, normalized_json, source_updated_at, synced_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                merchant_id,
-                fbr_merchant_id,
+                claim.merchant_id,
+                claim.fbr_merchant_id,
                 snapshot["gbp_location_id"],
                 snapshot["google_account_id"],
                 snapshot["source_name"],
@@ -585,10 +836,120 @@ def sync_gbp_profile(
                 snapshot["synced_at"],
             ),
         )
-    conn.execute(
-        "UPDATE merchant_fbr_links SET sync_status = 'synced', last_synced_at = ?, last_error = NULL, updated_at = ?"
-        " WHERE merchant_id = ?",
-        (synced_at, synced_at, merchant_id),
+    finished = conn.execute(
+        "UPDATE merchant_fbr_links"
+        " SET sync_status = 'synced', last_synced_at = ?, last_error = NULL, updated_at = ?"
+        " WHERE" + _claim_where_sql(),
+        (
+            synced_at,
+            synced_at,
+            claim.merchant_id,
+            claim.fbr_merchant_id,
+            claim.lease_started_at,
+        ),
     )
+    if finished.rowcount != 1:
+        conn.rollback()
+        return False
     conn.commit()
+    return True
+
+
+def sync_gbp_profile_once(
+    conn: sqlite3.Connection,
+    client: FbrGbpClient | None,
+    merchant_id: int,
+    *,
+    force: bool = False,
+    current_time: datetime | None = None,
+) -> bool:
+    """Synchronize one merchant using a short CAS lease and fenced writes.
+
+    No database transaction remains open while the FBR service is called.
+    False means the profile was not due, another worker owns a fresh lease, or
+    the binding changed while the remote read was in flight.
+    """
+    current = _utc_now(current_time)
+    claim = _claim_gbp_sync(
+        conn,
+        merchant_id,
+        force=force,
+        current_time=current,
+    )
+    if claim is None:
+        return False
+
+    try:
+        if client is None:
+            raise FbrConfigurationError("FBR SEO integration is not configured")
+        previous_rows = conn.execute(
+            "SELECT * FROM merchant_gbp_profiles WHERE merchant_id = ?",
+            (claim.merchant_id,),
+        ).fetchall()
+        previous_by_location = {row["gbp_location_id"]: row for row in previous_rows}
+        identities = client.list_locations(claim.fbr_merchant_id)
+        if not identities and previous_by_location:
+            raise FbrPayloadError("FBR returned an empty GBP location list")
+        returned_location_ids = {
+            location_id
+            for identity in identities
+            if (location_id := _safe_text(identity.get("gbp_location_id")))
+        }
+        if set(previous_by_location) - returned_location_ids:
+            raise FbrPayloadError("FBR returned an incomplete GBP location list")
+        snapshots = [
+            _fetch_location(
+                client,
+                claim.fbr_merchant_id,
+                identity,
+                previous_by_location.get(_safe_text(identity.get("gbp_location_id"))),
+                query_time=current,
+            )
+            for identity in identities
+        ]
+        finished_at = current if current_time is not None else _utc_now()
+        synced_at = finished_at.isoformat()
+        for snapshot in snapshots:
+            snapshot["synced_at"] = synced_at
+        return _persist_gbp_snapshots(conn, claim, snapshots, synced_at)
+    except Exception as exc:
+        message = str(exc) or exc.__class__.__name__
+        _mark_gbp_sync_failed(
+            conn,
+            claim,
+            message,
+            current if current_time is not None else _utc_now(),
+        )
+        raise
+
+
+@router.post("/{merchant_id}/gbp-sync")
+def sync_gbp_profile(
+    merchant_id: int,
+    client: FbrGbpClient | None = Depends(get_fbr_client),
+    conn=Depends(get_db),
+):
+    try:
+        completed = sync_gbp_profile_once(
+            conn,
+            client,
+            merchant_id,
+            force=True,
+        )
+    except (FbrUnavailableError, FbrPayloadError, FbrConfigurationError) as exc:
+        message = str(exc)
+        detail = (
+            message
+            if isinstance(exc, FbrConfigurationError)
+            else f"{message}; last successful data was preserved"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=detail,
+        ) from exc
+    if not completed:
+        raise HTTPException(
+            status_code=409,
+            detail="GBP sync is already running or the FBR binding changed",
+        )
     return _profile_response(conn, merchant_id)

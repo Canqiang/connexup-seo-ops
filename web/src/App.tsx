@@ -8,11 +8,13 @@ import TaskDetail from './pages/TaskDetail'
 import RunDetail from './pages/RunDetail'
 import TasksOverview from './pages/TasksOverview'
 import MerchantProfile from './pages/MerchantProfile'
+import PerformanceDashboard from './pages/PerformanceDashboard'
 
-function NavGlyph({ name }: { name: 'merchants' | 'tasks' }) {
+function NavGlyph({ name }: { name: 'merchants' | 'tasks' | 'dashboard' }) {
   const paths = {
     merchants: <><path d="M5 20v-8h14v8M8 12V7h8v5M8 16h2M14 16h2" /></>,
     tasks: <><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" /></>,
+    dashboard: <><path d="M4 19V5M4 19h16M7 15l4-4 3 2 5-7M19 6v4h-4" /></>,
   }
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
 }
@@ -21,14 +23,19 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
   const { pathname } = useLocation()
   const merchantsActive = pathname === '/' || pathname.startsWith('/merchants/') || pathname.startsWith('/runs/')
   const tasksActive = pathname.startsWith('/tasks')
+  const dashboardActive = pathname === '/dashboard'
 
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="SEO Ops 主导航">
         <Link to="/" className="brand-mark" aria-label="SEO Ops 首页">
-          <span>CX</span>
+          <span>SEO</span>
         </Link>
         <nav className="sidebar-nav" aria-label="主要功能">
+          <Link to="/dashboard" className={dashboardActive ? 'active' : ''} aria-current={dashboardActive ? 'page' : undefined}>
+            <NavGlyph name="dashboard" />
+            <span>看板</span>
+          </Link>
           <Link to="/" className={merchantsActive ? 'active' : ''} aria-current={merchantsActive ? 'page' : undefined}>
             <NavGlyph name="merchants" />
             <span>商户</span>
@@ -38,19 +45,17 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
             <span>任务</span>
           </Link>
         </nav>
-        <div className="operator-mark" title="SEO Ops Operator">SE</div>
       </aside>
 
       <section className="workspace">
         <header className="workspace-bar">
-          <div className="workspace-context">
-            <span className="workspace-kicker">当前工作范围</span>
-            <strong>全部商户</strong>
-          </div>
-          <div className="workspace-operator">
+          <div className="workspace-operator" role="group" aria-label="操作员账户">
             <span>当前操作员</span>
-            <strong>{operator.username}</strong>
-            <button type="button" className="logout-link" onClick={() => void onLogout()}>退出</button>
+            <div className="workspace-operator-row" role="group" aria-label="当前操作员操作">
+              <strong className="workspace-operator-name" title={operator.username}>{operator.username}</strong>
+              <span className="workspace-operator-divider" aria-hidden="true" />
+              <button type="button" className="logout-link" onClick={() => void onLogout()}>退出</button>
+            </div>
           </div>
         </header>
         <Routes>
@@ -60,6 +65,7 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
           <Route path="/tasks" element={<TasksOverview />} />
           <Route path="/tasks/:id" element={<TaskDetail />} />
           <Route path="/runs/:id" element={<RunDetail />} />
+          <Route path="/dashboard" element={<PerformanceDashboard />} />
         </Routes>
       </section>
     </div>
@@ -88,7 +94,7 @@ function LoginPage({ onLogin }: { onLogin: (operator: Operator) => void }) {
   return (
     <main className="login-page" aria-label="SEO Ops 登录">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-brand">CX</div>
+        <div className="login-brand">SEO</div>
         <p className="eyebrow">CONNEXUP / INTERNAL</p>
         <h1>SEO Ops</h1>
         <p className="page-summary">内部运营控制台</p>

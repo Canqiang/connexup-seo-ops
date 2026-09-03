@@ -12,10 +12,11 @@ export default function TasksOverview() {
   const [tasks, setTasks] = useState<TaskWithMerchant[]>([])
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>('todo')
   const [categoryFilter, setCategoryFilter] = useState('')
+  const [includeArchived, setIncludeArchived] = useState(false)
   const [error, setError] = useState('')
 
   const load = useCallback(() => {
-    api.listAllTasks()
+    api.listAllTasks(includeArchived)
       .then(fresh => setTasks(prev => {
         const sortFresh = (xs: TaskWithMerchant[]) =>
           [...xs].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.id - a.id)
@@ -26,7 +27,7 @@ export default function TasksOverview() {
         return [...added, ...kept]
       }))
       .catch(e => setError((e as Error).message))
-  }, [])
+  }, [includeArchived])
 
   useEffect(load, [load])
 
@@ -72,6 +73,13 @@ export default function TasksOverview() {
             <option value="">全部类别</option>
             {Object.entries(CATEGORY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
+          <button
+            type="button"
+            className={includeArchived ? 'stat on' : 'stat'}
+            onClick={() => setIncludeArchived(value => !value)}
+          >
+            {includeArchived ? '隐藏已归档商户任务' : '显示已归档商户任务'}
+          </button>
         </div>
 
         {shown.length > 0 ? (

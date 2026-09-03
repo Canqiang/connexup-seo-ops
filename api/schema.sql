@@ -88,8 +88,13 @@ CREATE TABLE IF NOT EXISTS merchant_seo_artifacts (
   status TEXT NOT NULL CHECK (status IN ('running','ready','failed')),
   source_agent_id TEXT NOT NULL,
   coreai_run_id TEXT UNIQUE,
+  dispatch_state TEXT NOT NULL DEFAULT 'not_required'
+    CHECK (dispatch_state IN ('not_required','pending','dispatching','dispatched','unknown')),
+  dispatch_started_at TEXT,
   request_json TEXT NOT NULL,
   payload_json TEXT,
+  provenance_json TEXT,
+  verification_started_at TEXT,
   error TEXT,
   created_at TEXT NOT NULL,
   completed_at TEXT
@@ -100,6 +105,9 @@ CREATE INDEX IF NOT EXISTS idx_merchant_seo_artifacts_latest
 
 CREATE TABLE IF NOT EXISTS merchant_local_falcon_syncs (
   merchant_id INTEGER PRIMARY KEY REFERENCES merchants(id) ON DELETE CASCADE,
+  place_id TEXT,
+  keyword_artifact_id INTEGER REFERENCES merchant_seo_artifacts(id) ON DELETE SET NULL,
+  cohort_sha256 TEXT,
   status TEXT NOT NULL CHECK (status IN ('synced','failed')),
   last_attempt_at TEXT NOT NULL,
   last_synced_at TEXT,
@@ -133,6 +141,91 @@ CREATE TABLE IF NOT EXISTS merchant_local_falcon_reports (
 
 CREATE INDEX IF NOT EXISTS idx_merchant_local_falcon_latest
   ON merchant_local_falcon_reports(merchant_id, keyword, captured_at DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_local_falcon_approvals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  keyword_artifact_id INTEGER NOT NULL REFERENCES merchant_seo_artifacts(id) ON DELETE CASCADE,
+  cohort_sha256 TEXT NOT NULL CHECK (length(cohort_sha256) = 64),
+  cohort_json TEXT NOT NULL,
+  place_id TEXT NOT NULL,
+  approved_by TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  UNIQUE (merchant_id, keyword_artifact_id, cohort_sha256)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_local_falcon_approvals_latest
+  ON merchant_local_falcon_approvals(merchant_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_local_falcon_scan_confirmations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  approval_id INTEGER NOT NULL REFERENCES merchant_local_falcon_approvals(id) ON DELETE RESTRICT,
+  confirmation_request_id TEXT NOT NULL,
+  scan_config_sha256 TEXT NOT NULL CHECK (length(scan_config_sha256) = 64),
+  scan_config_json TEXT NOT NULL,
+  confirmed_by TEXT NOT NULL,
+  confirmed_at TEXT NOT NULL,
+  UNIQUE (merchant_id, confirmation_request_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_local_falcon_scan_confirmations_latest
+  ON merchant_local_falcon_scan_confirmations(merchant_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_local_falcon_scan_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  approval_id INTEGER NOT NULL REFERENCES merchant_local_falcon_approvals(id) ON DELETE RESTRICT,
+  confirmation_id INTEGER NOT NULL REFERENCES merchant_local_falcon_scan_confirmations(id) ON DELETE RESTRICT,
+  request_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('submitting','submitted','partial','completed','failed','unknown')),
+  scan_config_json TEXT NOT NULL,
+  dispatch_token TEXT,
+  dispatch_started_at TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE (confirmation_id),
+  UNIQUE (merchant_id, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_local_falcon_scan_batches_latest
+  ON merchant_local_falcon_scan_batches(merchant_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_local_falcon_scan_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL REFERENCES merchant_local_falcon_scan_batches(id) ON DELETE CASCADE,
+  keyword TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','submitting','submitted','completed','failed','unknown')),
+  ack_report_key TEXT,
+  response_json TEXT,
+  error TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (batch_id, keyword)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_local_falcon_scan_items_batch
+  ON merchant_local_falcon_scan_items(batch_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_merchant_local_falcon_scan_items_report_key
+  ON merchant_local_falcon_scan_items(ack_report_key)
+  WHERE ack_report_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS merchant_local_falcon_reconciliations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  batch_id INTEGER NOT NULL REFERENCES merchant_local_falcon_scan_batches(id) ON DELETE CASCADE,
+  item_id INTEGER REFERENCES merchant_local_falcon_scan_items(id) ON DELETE SET NULL,
+  action TEXT NOT NULL CHECK (action IN ('BIND_ACKNOWLEDGED_REPORT','CONFIRM_NOT_SUBMITTED','CLOSE_WITHOUT_RETRY')),
+  report_key TEXT,
+  reason TEXT NOT NULL,
+  details_json TEXT NOT NULL,
+  reconciled_by TEXT NOT NULL,
+  reconciled_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_local_falcon_reconciliations_batch
+  ON merchant_local_falcon_reconciliations(batch_id, id);
 
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

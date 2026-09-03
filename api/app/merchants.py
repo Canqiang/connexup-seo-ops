@@ -3,18 +3,41 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .db import get_db
 
 router = APIRouter(prefix="/api/merchants", tags=["merchants"])
 
+MERCHANT_DELETE_STATEMENTS = (
+    "DELETE FROM merchant_local_falcon_scan_items WHERE batch_id IN"
+    " (SELECT id FROM merchant_local_falcon_scan_batches WHERE merchant_id = ?)",
+    "DELETE FROM merchant_local_falcon_scan_batches WHERE merchant_id = ?",
+    "DELETE FROM merchant_local_falcon_scan_confirmations WHERE merchant_id = ?",
+    "DELETE FROM merchant_local_falcon_approvals WHERE merchant_id = ?",
+    "DELETE FROM merchant_local_falcon_reports WHERE merchant_id = ?",
+    "DELETE FROM merchant_local_falcon_syncs WHERE merchant_id = ?",
+    "DELETE FROM task_executions WHERE task_id IN"
+    " (SELECT id FROM tasks WHERE merchant_id = ?)",
+    "DELETE FROM tasks WHERE merchant_id = ?",
+    "DELETE FROM audit_snapshots WHERE merchant_id = ?",
+    "DELETE FROM runs WHERE merchant_id = ?",
+    "DELETE FROM merchant_seo_artifacts WHERE merchant_id = ?",
+    "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?",
+    "DELETE FROM merchant_fbr_links WHERE merchant_id = ?",
+)
+
 
 class MerchantCreate(BaseModel):
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
     notes: str | None = None
-    primary_location: str | None = None
-    website_url: str | None = None
+    primary_location: str = Field(min_length=1, max_length=500)
+    website_url: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("name", "primary_location", mode="before")
+    @classmethod
+    def strip_required_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class MerchantPatch(BaseModel):
@@ -35,6 +58,44 @@ def fetch_merchant(conn: sqlite3.Connection, merchant_id: int) -> sqlite3.Row:
     if row is None:
         raise HTTPException(status_code=404, detail="merchant not found")
     return row
+
+
+def fetch_active_merchant(conn: sqlite3.Connection, merchant_id: int) -> sqlite3.Row:
+    merchant = fetch_merchant(conn, merchant_id)
+    if merchant["status"] != "active":
+        raise HTTPException(status_code=409, detail="merchant is archived")
+    return merchant
+
+
+def merchant_has_active_work(conn: sqlite3.Connection, merchant_id: int) -> bool:
+    checks = (
+        (
+            "SELECT 1 FROM runs WHERE merchant_id = ? AND status = 'running' LIMIT 1",
+            (merchant_id,),
+        ),
+        (
+            "SELECT 1 FROM task_executions te JOIN tasks t ON t.id = te.task_id"
+            " WHERE t.merchant_id = ? AND te.status IN ('running', 'ready') LIMIT 1",
+            (merchant_id,),
+        ),
+        (
+            "SELECT 1 FROM merchant_seo_artifacts"
+            " WHERE merchant_id = ? AND status = 'running' LIMIT 1",
+            (merchant_id,),
+        ),
+        (
+            "SELECT 1 FROM merchant_fbr_links"
+            " WHERE merchant_id = ? AND sync_status = 'syncing' LIMIT 1",
+            (merchant_id,),
+        ),
+        (
+            "SELECT 1 FROM merchant_local_falcon_scan_batches"
+            " WHERE merchant_id = ? AND status IN ('submitting', 'submitted', 'partial', 'unknown')"
+            " LIMIT 1",
+            (merchant_id,),
+        ),
+    )
+    return any(conn.execute(sql, params).fetchone() is not None for sql, params in checks)
 
 
 LIST_SQL = """
@@ -80,11 +141,20 @@ def get_merchant(merchant_id: int, conn=Depends(get_db)):
 
 @router.patch("/{merchant_id}")
 def patch_merchant(merchant_id: int, body: MerchantPatch, conn=Depends(get_db)):
-    fetch_merchant(conn, merchant_id)
+    merchant = fetch_merchant(conn, merchant_id)
     updates = body.model_dump(exclude_unset=True)
     for field in ("name", "status"):
         if field in updates and updates[field] is None:
             raise HTTPException(status_code=422, detail=f"{field} cannot be null")
+    if (
+        updates.get("status") == "archived"
+        and merchant["status"] != "archived"
+        and merchant_has_active_work(conn, merchant_id)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="merchant has active work; resolve it before archiving",
+        )
     for field, value in updates.items():
         conn.execute(f"UPDATE merchants SET {field} = ? WHERE id = ?", (value, merchant_id))
     conn.commit()
@@ -93,9 +163,15 @@ def patch_merchant(merchant_id: int, body: MerchantPatch, conn=Depends(get_db)):
 
 @router.delete("/{merchant_id}", status_code=204)
 def delete_merchant(merchant_id: int, conn=Depends(get_db)):
-    fetch_merchant(conn, merchant_id)
-    n = conn.execute("SELECT COUNT(*) AS n FROM tasks WHERE merchant_id = ?", (merchant_id,)).fetchone()["n"]
-    if n:
-        raise HTTPException(status_code=409, detail="merchant has tasks; archive it instead")
-    conn.execute("DELETE FROM merchants WHERE id = ?", (merchant_id,))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        merchant = fetch_merchant(conn, merchant_id)
+        if merchant["status"] != "archived":
+            raise HTTPException(status_code=409, detail="archive merchant before deleting it")
+        for statement in MERCHANT_DELETE_STATEMENTS:
+            conn.execute(statement, (merchant_id,))
+        conn.execute("DELETE FROM merchants WHERE id = ?", (merchant_id,))
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()

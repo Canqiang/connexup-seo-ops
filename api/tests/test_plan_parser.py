@@ -52,7 +52,9 @@ def test_create_tasks_idempotent(client):
     from app.db import connect
     from app.plan_parser import create_tasks_from_plan, extract_plan
 
-    m = client.post("/api/merchants", json={"name": "M"}).json()
+    m = client.post(
+        "/api/merchants", json={"name": "M", "primary_location": "Mineola, NY"}
+    ).json()
     conn = connect()
     try:
         conn.execute(
@@ -92,7 +94,9 @@ def test_extract_plan_carries_expected_outcome(client):
     assert items[0]["expected_outcome"] == "E"
     assert items[1]["expected_outcome"] is None
 
-    m = client.post("/api/merchants", json={"name": "M"}).json()
+    m = client.post(
+        "/api/merchants", json={"name": "M", "primary_location": "Mineola, NY"}
+    ).json()
     conn = connect()
     try:
         conn.execute(
@@ -160,7 +164,9 @@ def test_create_tasks_persists_scheduled_start(client):
     from app.plan_parser import create_tasks_from_plan, extract_plan
 
     report = '```json\n[{"id": "a", "title": "T", "rationale": "R", "start_after_days": 1}]\n```'
-    m = client.post("/api/merchants", json={"name": "M"}).json()
+    m = client.post(
+        "/api/merchants", json={"name": "M", "primary_location": "Mineola, NY"}
+    ).json()
     conn = connect()
     try:
         conn.execute(

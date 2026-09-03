@@ -26,7 +26,26 @@ MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "website_url": "TEXT",
     },
     "runs": {"plan_approved_at": "TEXT"},
+    "merchant_seo_artifacts": {
+        "provenance_json": "TEXT",
+        "verification_started_at": "TEXT",
+        "dispatch_state": "TEXT NOT NULL DEFAULT 'not_required'",
+        "dispatch_started_at": "TEXT",
+    },
     "tasks": {"source_run_id": "INTEGER REFERENCES runs(id)", "source_key": "TEXT", "expected_outcome": "TEXT", "category": "TEXT", "scheduled_start": "TEXT"},
+    "merchant_local_falcon_scan_batches": {
+        "confirmation_id": (
+            "INTEGER REFERENCES merchant_local_falcon_scan_confirmations(id)"
+        ),
+        "dispatch_token": "TEXT",
+        "dispatch_started_at": "TEXT",
+    },
+    "merchant_local_falcon_scan_items": {"ack_report_key": "TEXT"},
+    "merchant_local_falcon_syncs": {
+        "place_id": "TEXT",
+        "keyword_artifact_id": "INTEGER REFERENCES merchant_seo_artifacts(id)",
+        "cohort_sha256": "TEXT",
+    },
 }
 
 
@@ -53,9 +72,17 @@ def init_db() -> None:
     try:
         _migrate(conn)
         conn.executescript(SCHEMA_PATH.read_text())
+        # Existing databases may already contain the scan batch table while the
+        # confirmation table is introduced by the schema above.
+        _migrate(conn)
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source_key"
             " ON tasks(source_key) WHERE source_key IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_falcon_scan_batch_confirmation"
+            " ON merchant_local_falcon_scan_batches(confirmation_id)"
+            " WHERE confirmation_id IS NOT NULL"
         )
         conn.commit()
     finally:

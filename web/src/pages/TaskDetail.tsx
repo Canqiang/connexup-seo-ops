@@ -124,7 +124,8 @@ export default function TaskDetail() {
   }
 
   const planLocked = task.status === 'todo' && task.source_run_id != null && task.source_plan_approved === false
-  const canAssign = !planLocked && (
+  const merchantArchived = merchant?.status === 'archived'
+  const canAssign = !merchantArchived && !planLocked && (
     (task.status === 'todo' && execution == null)
     || (task.status === 'doing' && execution == null)
     || (task.status === 'doing' && (execution?.status === 'failed' || execution?.status === 'returned'))
@@ -157,7 +158,7 @@ export default function TaskDetail() {
           <div className="task-identity">
             <h1 id="task-detail-title">{task.title}</h1>
           </div>
-          {(canAssign || planLocked || (task.status === 'todo' && execution == null)) && (
+          {!merchantArchived && (canAssign || planLocked || (task.status === 'todo' && execution == null)) && (
             <div className="task-actions" role="group" aria-label="任务操作">
               {planLocked && <span className="plan-lock-label">等待确认 Plan</span>}
               {canAssign && (
@@ -172,6 +173,9 @@ export default function TaskDetail() {
           )}
         </div>
       </header>
+      {merchantArchived && (
+        <p className="notice warning" role="status">商户已归档，任务已冻结；恢复在营后可继续处理。</p>
+      )}
       {error && <p className="error">{error}</p>}
 
       <div className="task-workflow-stack">
@@ -213,7 +217,7 @@ export default function TaskDetail() {
                 <span>第 {execution.attempt} 次执行 · {formatTime(execution.finished_at ?? execution.created_at)}</span>
               </div>
               <pre className="agent-output">{execution.output_text || 'Agent 未返回文本结果。'}</pre>
-              {execution.status === 'ready' && (
+              {execution.status === 'ready' && !merchantArchived && (
                 <div className="review-zone">
                   {!showReturn ? (
                     <div className="review-actions" role="group" aria-label="执行结果审批">

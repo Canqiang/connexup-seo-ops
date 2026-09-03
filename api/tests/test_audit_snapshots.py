@@ -30,7 +30,10 @@ def audit_payload(merchant_id: str = "1") -> dict:
 
 
 def create_run(client):
-    merchant = client.post("/api/merchants", json={"name": "Audit Merchant"}).json()
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": "Audit Merchant", "primary_location": "Mineola, NY"},
+    ).json()
     conn = connect()
     try:
         cursor = conn.execute(

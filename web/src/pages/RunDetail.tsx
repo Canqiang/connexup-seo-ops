@@ -51,6 +51,8 @@ export default function RunDetail() {
     )
   }
 
+  const merchantArchived = merchant?.status === 'archived'
+
   return (
     <main aria-label="分析报告" className="run-report-page">
       <header className="run-context-bar">
@@ -90,7 +92,12 @@ export default function RunDetail() {
           </div>
           {run.status === 'succeeded' && tasks.length > 0 && (
             <section className={`plan-decision ${run.plan_approved_at ? 'approved' : ''}`} aria-label="Plan 审批">
-              {run.plan_approved_at ? (
+              {merchantArchived ? (
+                <>
+                  <strong>商户已归档</strong>
+                  <p>商户已归档，Plan 与生成任务仅供查看；恢复在营后可继续审批。</p>
+                </>
+              ) : run.plan_approved_at ? (
                 <>
                   <strong>Plan 已确认</strong>
                   <p>这些任务可以交给 Agent 执行。</p>
@@ -99,9 +106,11 @@ export default function RunDetail() {
                 <>
                   <strong>等待运营确认</strong>
                   <p>确认后，这些任务才可交给 Agent 执行。</p>
-                  <button className="primary" onClick={approvePlan} disabled={approving}>
-                    {approving ? '确认中…' : '确认 Plan'}
-                  </button>
+                  {merchant?.status === 'active' && (
+                    <button className="primary" onClick={approvePlan} disabled={approving}>
+                      {approving ? '确认中…' : '确认 Plan'}
+                    </button>
+                  )}
                 </>
               )}
             </section>

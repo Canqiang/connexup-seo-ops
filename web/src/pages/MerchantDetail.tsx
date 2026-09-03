@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { api, type Merchant, type Run, type Task, type TaskStatus } from '../api'
+import { api, type Merchant, type MerchantProfile, type Run, type Task, type TaskStatus } from '../api'
 import TaskTable from '../components/TaskTable'
 import MerchantSectionNav from '../components/MerchantSectionNav'
 import { formatTime } from '../format'
@@ -16,12 +16,23 @@ const INTERVAL_OPTIONS = [
 ]
 const RUNS_PREVIEW = 3
 
+const isConnectedProfileReady = (profile: MerchantProfile) => profile.state === 'synced'
+  && profile.sync_status === 'synced'
+  && Boolean(profile.last_synced_at)
+  && profile.locations.length > 0
+
 export default function MerchantDetail() {
   const { id } = useParams()
   const location = useLocation()
   const navigate = useNavigate()
   const merchantId = Number(id)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
+  const [profileStatus, setProfileStatus] = useState<{
+    merchantId: number
+    loaded: boolean
+    profile: MerchantProfile | null
+    error: string
+  }>(() => ({ merchantId, loaded: false, profile: null, error: '' }))
   const [tasks, setTasks] = useState<Task[]>([])
   const [runs, setRuns] = useState<Run[]>([])
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null)
@@ -55,6 +66,20 @@ export default function MerchantDetail() {
 
   useEffect(load, [load])
 
+  useEffect(() => {
+    let active = true
+    void api.getMerchantProfile(merchantId)
+      .then(profile => {
+        if (!active) return
+        setProfileStatus({ merchantId, loaded: true, profile, error: '' })
+      })
+      .catch(err => {
+        if (!active) return
+        setProfileStatus({ merchantId, loaded: true, profile: null, error: (err as Error).message })
+      })
+    return () => { active = false }
+  }, [merchantId])
+
   const hasRunning = runs.some(r => r.status === 'running')
 
   useEffect(() => {
@@ -87,6 +112,14 @@ export default function MerchantDetail() {
 
   const toggleArchive = async () => {
     if (!merchant) return
+    if (merchant.status === 'active') {
+      const todoCount = tasks.filter(task => task.status === 'todo').length
+      const doingCount = tasks.filter(task => task.status === 'doing').length
+      const confirmed = window.confirm(
+        `归档后将冻结 ${todoCount} 个待办和 ${doingCount} 个进行中任务，并关闭自动分析；任务与历史记录不会删除。确认归档“${merchant.name}”？`,
+      )
+      if (!confirmed) return
+    }
     try {
       setMerchant(await api.patchMerchant(merchant.id, { status: merchant.status === 'active' ? 'archived' : 'active' }))
     } catch (err) {
@@ -94,7 +127,23 @@ export default function MerchantDetail() {
     }
   }
 
+  const deleteArchivedMerchant = async () => {
+    if (!merchant || merchant.status !== 'archived') return
+    const confirmed = window.confirm(
+      `永久删除后，该商户及其所有任务、分析记录和关联资料将无法恢复。确认删除“${merchant.name}”？`,
+    )
+    if (!confirmed) return
+    try {
+      await api.deleteMerchant(merchant.id)
+      navigate('/')
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
   const startRun = async () => {
+    const currentProfile = profileStatus.merchantId === merchantId ? profileStatus.profile : null
+    if (!profileStatus.loaded || (currentProfile?.fbr_merchant_id && !isConnectedProfileReady(currentProfile))) return
     try {
       await api.createRun(merchantId)
       setError('')
@@ -123,13 +172,31 @@ export default function MerchantDetail() {
     )
   }
 
-  const diagnosisStartFailed = Boolean((location.state as { diagnosisStartFailed?: boolean } | null)?.diagnosisStartFailed)
+  const onboardingState = location.state as {
+    diagnosisStartFailed?: boolean
+    diagnosisStartError?: string
+    profileSetupFailed?: boolean
+    profileSetupError?: string
+  } | null
+  const diagnosisStartFailed = Boolean(onboardingState?.diagnosisStartFailed)
+  const profileSetupFailed = Boolean(onboardingState?.profileSetupFailed)
+  const currentProfileStatus = profileStatus.merchantId === merchantId ? profileStatus : null
+  const merchantProfile = currentProfileStatus?.profile ?? null
+  const profileStatusLoaded = Boolean(currentProfileStatus?.loaded)
+  const profileStatusError = currentProfileStatus?.error ?? ''
+  const persistedProfileBlocked = Boolean(
+    profileStatusLoaded
+    && merchantProfile?.fbr_merchant_id
+    && !isConnectedProfileReady(merchantProfile),
+  )
+  const profileSetupBlocked = profileSetupFailed || persistedProfileBlocked
 
   const counts = STATUS_ORDER.map(s => [s, tasks.filter(t => t.status === s).length] as const)
   const visibleRuns = showAllRuns ? runs : runs.slice(0, RUNS_PREVIEW)
   const shownTasks = tasks.filter(t => statusFilter === null || t.status === statusFilter)
   const latestRun = runs[0]
   const latestRunTasks = latestRun ? tasks.filter(task => task.source_run_id === latestRun.id) : []
+  const merchantArchived = merchant.status === 'archived'
 
   const diagnosis = !latestRun
     ? {
@@ -175,7 +242,28 @@ export default function MerchantDetail() {
 
   return (
     <main aria-label="商户工作区" className="merchant-workspace-page">
-      {diagnosisStartFailed && <p className="notice warning" role="status">商户已保存，但初始诊断未能启动。</p>}
+      {profileSetupFailed && (
+        <p className="notice warning onboarding-notice" role="alert">
+          <span>商户已新建，但 FBR/GBP 初始化失败，尚未开始诊断。{onboardingState?.profileSetupError ? `原因：${onboardingState.profileSetupError}` : ''}</span>
+          <Link to={`/merchants/${merchantId}/profile`}>前往商户资料重试</Link>
+        </p>
+      )}
+      {!profileSetupFailed && persistedProfileBlocked && (
+        <p className="notice warning onboarding-notice" role="alert">
+          <span>FBR 已绑定，但 GBP 尚未同步完成，诊断暂未启动。{merchantProfile?.last_error ? `原因：${merchantProfile.last_error}` : ''}</span>
+          <Link to={`/merchants/${merchantId}/profile`}>前往商户资料重试</Link>
+        </p>
+      )}
+      {profileStatusError && (
+        <p className="notice warning onboarding-notice" role="alert">
+          <span>无法读取 FBR/GBP 状态，当前未将商户误判为已绑定，基础诊断仍可使用。原因：{profileStatusError}</span>
+        </p>
+      )}
+      {diagnosisStartFailed && (
+        <p className="notice warning onboarding-notice" role="status">
+          <span>商户已保存，但初始诊断未能启动。{onboardingState?.diagnosisStartError ? `原因：${onboardingState.diagnosisStartError}` : ''}</span>
+        </p>
+      )}
       <header className="merchant-identity-bar">
         <Link to="/" className="back-button" aria-label="返回商户列表">
           <span aria-hidden="true">←</span>
@@ -188,29 +276,35 @@ export default function MerchantDetail() {
         <div className="page-actions">
           <span className={`badge ${merchant.status}`}>{merchant.status === 'active' ? '在营' : '已归档'}</span>
           <button onClick={toggleArchive}>{merchant.status === 'active' ? '归档商户' : '恢复在营'}</button>
+          {merchantArchived && <button className="quiet" onClick={deleteArchivedMerchant}>删除商户</button>}
         </div>
       </header>
       <MerchantSectionNav merchantId={merchantId} active="operations" />
+      {merchantArchived && (
+        <p className="notice warning" role="status">商户已归档，自动分析和任务执行已暂停；历史记录仍然保留。</p>
+      )}
       {error && <p className="error">{error}</p>}
 
-      <section className="diagnosis-card" aria-label="初始诊断">
-        <div className="diagnosis-state">
-          <span className={`status-dot ${latestRun?.status ?? 'idle'}`} aria-hidden="true" />
-          <div>
-            <p className="section-code">INITIAL DIAGNOSIS</p>
-            <h2 id="diagnosis-title">{diagnosis.title}</h2>
-            <p>{diagnosis.copy}</p>
+      {profileStatusLoaded && !profileSetupBlocked && (
+        <section className="diagnosis-card" aria-label="初始诊断">
+          <div className="diagnosis-state">
+            <span className={`status-dot ${latestRun?.status ?? 'idle'}`} aria-hidden="true" />
+            <div>
+              <p className="section-code">INITIAL DIAGNOSIS</p>
+              <h2 id="diagnosis-title">{diagnosis.title}</h2>
+              <p>{diagnosis.copy}</p>
+            </div>
           </div>
-        </div>
-        {diagnosis.action === 'start' && (
-          <button className="primary" onClick={startRun} disabled={hasRunning}>{diagnosis.actionLabel}</button>
-        )}
-        {diagnosis.action === 'report' && latestRun && (
-          <button className={latestRun.plan_approved_at ? '' : 'primary'} onClick={() => navigate(`/runs/${latestRun.id}`)}>
-            {diagnosis.actionLabel}
-          </button>
-        )}
-      </section>
+          {!merchantArchived && diagnosis.action === 'start' && (
+            <button className="primary" onClick={startRun} disabled={hasRunning}>{diagnosis.actionLabel}</button>
+          )}
+          {diagnosis.action === 'report' && latestRun && (
+            <button className={latestRun.plan_approved_at ? '' : 'primary'} onClick={() => navigate(`/runs/${latestRun.id}`)}>
+              {diagnosis.actionLabel}
+            </button>
+          )}
+        </section>
+      )}
 
       <div className="ledger-strip" aria-label="商户运营摘要">
         <div><span>待办任务</span><strong>{tasks.filter(t => t.status === 'todo').length}</strong></div>
@@ -226,7 +320,7 @@ export default function MerchantDetail() {
             <h2 id="analysis-title">AI 分析</h2>
             <p>生成分析报告和待办提案，执行仍由运营人员授权。</p>
           </div>
-          {latestRun?.plan_approved_at && (
+          {profileStatusLoaded && !profileSetupBlocked && !merchantArchived && latestRun?.plan_approved_at && (
             <div className="panel-actions">
               <select
                 aria-label="自动分析周期"
@@ -295,7 +389,9 @@ export default function MerchantDetail() {
             <p className="section-code">ACTION QUEUE</p>
             <h2 id="merchant-tasks-title">任务队列</h2>
           </div>
-          <button onClick={() => setShowCreate(v => !v)}>{showCreate ? '收起' : '＋ 新建任务'}</button>
+          {!merchantArchived && (
+            <button onClick={() => setShowCreate(v => !v)}>{showCreate ? '收起' : '＋ 新建任务'}</button>
+          )}
         </div>
 
         {showCreate && (

@@ -1,11 +1,74 @@
+import json
+import os
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
 from helpers import FakeCoreAi, cleanup_override, override_coreai
+
+
+def insert_fbr_link(
+    merchant_id: int,
+    *,
+    fbr_merchant_id: str = "fbr-merchant-123",
+    sync_status: str,
+    last_synced_at: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO merchant_fbr_links"
+        " (merchant_id, fbr_merchant_id, sync_status, last_synced_at, last_error, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, '2026-09-03T00:00:00+00:00', '2026-09-03T00:00:00+00:00')",
+        (merchant_id, fbr_merchant_id, sync_status, last_synced_at, last_error),
+    )
+    conn.commit()
+    conn.close()
+
+
+def insert_gbp_profile(
+    merchant_id: int,
+    *,
+    normalized_json: str,
+    fbr_merchant_id: str = "fbr-merchant-123",
+    gbp_location_id: str = "locations/123",
+    google_account_id: str | None = "accounts/77",
+    source_name: str | None = "locations/123",
+    source_title: str | None = "George's Hakka Kitchen",
+    source_updated_at: str | None = None,
+    synced_at: str = "2026-09-03T01:02:03+00:00",
+) -> None:
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO merchant_gbp_profiles"
+        " (merchant_id, fbr_merchant_id, gbp_location_id, google_account_id, source_name, source_title,"
+        " normalized_json, source_updated_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            merchant_id,
+            fbr_merchant_id,
+            gbp_location_id,
+            google_account_id,
+            source_name,
+            source_title,
+            normalized_json,
+            source_updated_at,
+            synced_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 def insert_run(client, *, status: str, with_task: bool = False) -> tuple[int, int]:
     import os
     import sqlite3
 
-    merchant = client.post("/api/merchants", json={"name": f"plan-{status}"}).json()
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": f"plan-{status}", "primary_location": "New York, NY"},
+    ).json()
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
     conn.execute(
         "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
@@ -33,7 +96,10 @@ def test_create_run_triggers_and_stores(client):
     fake = FakeCoreAi()
     override_coreai(fake)
     try:
-        m = client.post("/api/merchants", json={"name": "Alpha", "notes": "n"}).json()
+        m = client.post(
+            "/api/merchants",
+            json={"name": "Alpha", "notes": "n", "primary_location": "New York, NY"},
+        ).json()
         res = client.post(f"/api/merchants/{m['id']}/runs")
         assert res.status_code == 201
         run = res.json()
@@ -75,11 +141,336 @@ def test_create_run_sends_us_local_diagnosis_context_and_plan_contract(client):
         cleanup_override()
 
 
+def test_create_run_includes_bounded_persisted_gbp_snapshot_context(client):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Connected merchant", "primary_location": "Operator-entered location"},
+        ).json()
+        insert_fbr_link(
+            merchant["id"],
+            sync_status="synced",
+            last_synced_at="2026-09-03T01:02:03+00:00",
+        )
+        insert_gbp_profile(
+            merchant["id"],
+            normalized_json=json.dumps(
+                {
+                    "title": "George's Hakka Kitchen",
+                    "address": "2020 Broadway, New York, NY 10023, US",
+                    "locality": "New York",
+                    "administrative_area": "NY",
+                    "postal_code": "10023",
+                    "region_code": "US",
+                    "phone": "+1 212-555-2020",
+                    "website_url": "https://george.example.com",
+                    "primary_category": "Hakka restaurant",
+                    "additional_categories": ["Chinese restaurant"],
+                    "open_status": "OPEN",
+                    "place_id": "ChIJH8iZh-5ZwokRPLzzADeSnYE",
+                    "description": "Neighborhood Hakka dishes near Broadway." + ("x" * 50_000),
+                    "regular_hours": [
+                        {
+                            "open_day": "MONDAY",
+                            "open_time": "11:30",
+                            "close_day": "MONDAY",
+                            "close_time": "21:00",
+                        }
+                    ],
+                    "access_token": "must-never-reach-core-ai",
+                    "oauth": {"refresh_token": "also-must-not-reach-core-ai"},
+                }
+            ),
+        )
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 201
+        _agent_id, input_text = fake.triggered[0]
+        assert "CONNECTED_GBP_SNAPSHOT" in input_text
+        assert "fbr-merchant-123" in input_text
+        assert "locations/123" in input_text
+        assert "accounts/77" in input_text
+        assert "ChIJH8iZh-5ZwokRPLzzADeSnYE" in input_text
+        assert "2026-09-03T01:02:03+00:00" in input_text
+        assert "2020 Broadway, New York, NY 10023, US" in input_text
+        assert "Hakka restaurant" in input_text
+        assert "MONDAY" in input_text
+        assert "must-never-reach-core-ai" not in input_text
+        assert "also-must-not-reach-core-ai" not in input_text
+        assert len(input_text) < 15_000
+    finally:
+        cleanup_override()
+
+
+def test_create_run_without_fbr_link_explicitly_uses_basic_public_diagnosis(client):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Public only", "primary_location": "New York, NY"},
+        ).json()
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 201
+        _agent_id, input_text = fake.triggered[0]
+        assert "BASIC_PUBLIC_ONLY" in input_text
+        assert "no connected GBP" in input_text
+        assert "Website: Not provided" in input_text
+        assert "missing website" in input_text
+        assert "Do not invent a website URL" in input_text
+    finally:
+        cleanup_override()
+
+
+@pytest.mark.parametrize("sync_status", ["not_synced", "syncing", "failed"])
+def test_create_run_rejects_bound_merchant_until_gbp_sync_is_current(client, sync_status):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Incomplete sync", "primary_location": "New York, NY"},
+        ).json()
+        insert_fbr_link(
+            merchant["id"],
+            sync_status=sync_status,
+            last_synced_at="2026-09-02T01:02:03+00:00",
+            last_error="upstream unavailable",
+        )
+        insert_gbp_profile(
+            merchant["id"],
+            normalized_json=json.dumps({"title": "stale-title-must-not-be-used"}),
+            synced_at="2026-09-02T01:02:03+00:00",
+        )
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 409
+        assert "同步" in response.json()["detail"]
+        assert fake.triggered == []
+    finally:
+        cleanup_override()
+
+
+def test_create_run_rejects_synced_link_without_a_persisted_snapshot(client):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Missing snapshot", "primary_location": "New York, NY"},
+        ).json()
+        insert_fbr_link(
+            merchant["id"],
+            sync_status="synced",
+            last_synced_at="2026-09-03T01:02:03+00:00",
+        )
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 409
+        assert "同步" in response.json()["detail"]
+        assert fake.triggered == []
+    finally:
+        cleanup_override()
+
+
+@pytest.mark.parametrize(
+    ("link_fbr_id", "profile_fbr_id", "link_synced_at", "profile_synced_at"),
+    [
+        (
+            "current-fbr",
+            "stale-fbr",
+            "2026-09-03T01:02:03+00:00",
+            "2026-09-03T01:02:03+00:00",
+        ),
+        (
+            "current-fbr",
+            "current-fbr",
+            "2026-09-03T01:02:03+00:00",
+            "2026-09-02T01:02:03+00:00",
+        ),
+        ("current-fbr", "current-fbr", "not-a-timestamp", "not-a-timestamp"),
+    ],
+)
+def test_create_run_rejects_snapshot_from_wrong_binding_or_sync_batch(
+    client,
+    link_fbr_id,
+    profile_fbr_id,
+    link_synced_at,
+    profile_synced_at,
+):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Stale snapshot", "primary_location": "New York, NY"},
+        ).json()
+        insert_fbr_link(
+            merchant["id"],
+            fbr_merchant_id=link_fbr_id,
+            sync_status="synced",
+            last_synced_at=link_synced_at,
+        )
+        insert_gbp_profile(
+            merchant["id"],
+            fbr_merchant_id=profile_fbr_id,
+            normalized_json=json.dumps({"title": "Stale business"}),
+            synced_at=profile_synced_at,
+        )
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 409
+        assert fake.triggered == []
+    finally:
+        cleanup_override()
+
+
+@pytest.mark.parametrize(
+    "normalized_json",
+    ["{not-json", json.dumps({"access_token": "secret-but-not-evidence"})],
+)
+def test_create_run_rejects_snapshot_without_parseable_allowlisted_facts(
+    client, normalized_json
+):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Unusable snapshot", "primary_location": "New York, NY"},
+        ).json()
+        insert_fbr_link(
+            merchant["id"],
+            sync_status="synced",
+            last_synced_at="2026-09-03T01:02:03+00:00",
+        )
+        insert_gbp_profile(merchant["id"], normalized_json=normalized_json)
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 409
+        assert fake.triggered == []
+    finally:
+        cleanup_override()
+
+
+def test_create_run_prompt_has_a_hard_size_limit_across_all_merchant_and_gbp_fields(client):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        huge = "x" * 50_000
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Oversized", "primary_location": "New York, NY"},
+        ).json()
+        conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+        conn.execute(
+            "UPDATE merchants SET name = ?, primary_location = ?, website_url = ?, notes = ?"
+            " WHERE id = ?",
+            ("Oversized " + huge, huge, huge, huge, merchant["id"]),
+        )
+        conn.commit()
+        conn.close()
+        synced_at = "2026-09-03T01:02:03+00:00"
+        insert_fbr_link(
+            merchant["id"],
+            fbr_merchant_id="fbr-" + huge,
+            sync_status="synced",
+            last_synced_at=synced_at,
+        )
+        oversized_facts = {key: huge for key in (
+            "title",
+            "address",
+            "phone",
+            "website_url",
+            "primary_category",
+            "description",
+            "place_id",
+        )}
+        oversized_facts["additional_categories"] = [huge] * 20
+        for location_number in range(10):
+            insert_gbp_profile(
+                merchant["id"],
+                fbr_merchant_id="fbr-" + huge,
+                gbp_location_id=f"locations/{location_number}-" + huge,
+                google_account_id="accounts/" + huge,
+                source_name="resource/" + huge,
+                source_title=huge,
+                source_updated_at="source-time-" + huge,
+                normalized_json=json.dumps(oversized_facts),
+                synced_at=synced_at,
+            )
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 201
+        _agent_id, input_text = fake.triggered[0]
+        assert len(input_text) <= 12_000
+        assert "CONNECTED_GBP_SNAPSHOT" in input_text
+        assert "Then return the proposed dated Plan" in input_text
+    finally:
+        cleanup_override()
+
+
+def test_concurrent_create_run_requests_reserve_before_dispatch(client):
+    class BlockingCoreAi(FakeCoreAi):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.calls = 0
+            self.calls_lock = threading.Lock()
+
+        def trigger(self, agent_id: str, input_text: str) -> dict:
+            with self.calls_lock:
+                self.calls += 1
+                call_number = self.calls
+            if call_number == 1:
+                self.started.set()
+                assert self.release.wait(timeout=3)
+            return super().trigger(agent_id, input_text)
+
+    fake = BlockingCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Concurrent", "primary_location": "New York, NY"},
+        ).json()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(
+                client.post, f"/api/merchants/{merchant['id']}/runs"
+            )
+            assert fake.started.wait(timeout=3)
+            second = client.post(f"/api/merchants/{merchant['id']}/runs")
+            fake.release.set()
+            first = first_future.result(timeout=3)
+
+        assert first.status_code == 201
+        assert second.status_code == 409
+        assert second.json()["detail"] == "a run is already in progress for this merchant"
+        assert len(fake.triggered) == 1
+    finally:
+        fake.release.set()
+        cleanup_override()
+
+
 def test_create_run_conflict_when_running(client):
     fake = FakeCoreAi()
     override_coreai(fake)
     try:
-        m = client.post("/api/merchants", json={"name": "M"}).json()
+        m = client.post(
+            "/api/merchants", json={"name": "M", "primary_location": "New York, NY"}
+        ).json()
         assert client.post(f"/api/merchants/{m['id']}/runs").status_code == 201
         assert client.post(f"/api/merchants/{m['id']}/runs").status_code == 409
     finally:
@@ -87,7 +478,9 @@ def test_create_run_conflict_when_running(client):
 
 
 def test_create_run_503_when_unconfigured(client):
-    m = client.post("/api/merchants", json={"name": "M"}).json()
+    m = client.post(
+        "/api/merchants", json={"name": "M", "primary_location": "New York, NY"}
+    ).json()
     assert client.post(f"/api/merchants/{m['id']}/runs").status_code == 503
 
 
@@ -100,10 +493,31 @@ def test_create_run_404_missing_merchant(client):
         cleanup_override()
 
 
+def test_archived_merchant_rejects_new_analysis_run(client):
+    fake = FakeCoreAi()
+    override_coreai(fake)
+    try:
+        merchant = client.post(
+            "/api/merchants",
+            json={"name": "Archived", "primary_location": "New York, NY"},
+        ).json()
+        client.patch(f"/api/merchants/{merchant['id']}", json={"status": "archived"})
+
+        response = client.post(f"/api/merchants/{merchant['id']}/runs")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "merchant is archived"
+        assert fake.triggered == []
+    finally:
+        cleanup_override()
+
+
 def test_trigger_failure_stores_failed_run(client):
     override_coreai(FakeCoreAi(fail=True))
     try:
-        m = client.post("/api/merchants", json={"name": "M"}).json()
+        m = client.post(
+            "/api/merchants", json={"name": "M", "primary_location": "New York, NY"}
+        ).json()
         res = client.post(f"/api/merchants/{m['id']}/runs")
         assert res.status_code == 201
         run = res.json()
@@ -120,7 +534,9 @@ def test_list_and_get_runs(client):
     fake = FakeCoreAi()
     override_coreai(fake)
     try:
-        m = client.post("/api/merchants", json={"name": "M"}).json()
+        m = client.post(
+            "/api/merchants", json={"name": "M", "primary_location": "New York, NY"}
+        ).json()
         run = client.post(f"/api/merchants/{m['id']}/runs").json()
         listed = client.get(f"/api/merchants/{m['id']}/runs").json()
         assert [r["id"] for r in listed] == [run["id"]]
@@ -135,7 +551,9 @@ def test_list_and_get_runs(client):
 
 
 def test_patch_merchant_interval(client):
-    m = client.post("/api/merchants", json={"name": "M"}).json()
+    m = client.post(
+        "/api/merchants", json={"name": "M", "primary_location": "New York, NY"}
+    ).json()
     assert m["auto_run_interval_days"] is None
     res = client.patch(f"/api/merchants/{m['id']}", json={"auto_run_interval_days": 7})
     assert res.json()["auto_run_interval_days"] == 7
@@ -148,7 +566,9 @@ def test_run_tasks_endpoint(client):
     import os
     import sqlite3
 
-    m = client.post("/api/merchants", json={"name": "M"}).json()
+    m = client.post(
+        "/api/merchants", json={"name": "M", "primary_location": "New York, NY"}
+    ).json()
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
     conn.execute(
         "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
@@ -198,3 +618,16 @@ def test_approve_plan_is_persisted_and_idempotent(client):
     assert second.status_code == 200
     assert second.json()["plan_approved_at"] == first.json()["plan_approved_at"]
     assert client.get(f"/api/runs/{run_id}").json()["plan_approved_at"] == first.json()["plan_approved_at"]
+
+
+def test_archived_merchant_rejects_plan_approval(client):
+    merchant_id, run_id = insert_run(client, status="succeeded", with_task=True)
+    assert client.patch(
+        f"/api/merchants/{merchant_id}", json={"status": "archived"}
+    ).status_code == 200
+
+    response = client.post(f"/api/runs/{run_id}/approve-plan")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "merchant is archived"
+    assert client.get(f"/api/runs/{run_id}").json()["plan_approved_at"] is None

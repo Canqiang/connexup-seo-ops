@@ -66,6 +66,33 @@ class CoreAiClient:
             raise CoreAiError(0, "core-ai run detail missing status")
         return body
 
+    def get_skill(self, skill_id: str) -> dict:
+        body = self._request("GET", f"/api/skills/{skill_id}")
+        if body.get("id") != skill_id or not isinstance(body.get("qualified_name"), str):
+            raise CoreAiError(0, "core-ai skill detail does not match the requested skill")
+        if not body["qualified_name"].strip():
+            raise CoreAiError(0, "core-ai skill detail is missing qualified_name")
+        return body
+
+    def get_trace(self, trace_id: str) -> dict:
+        body = self._request("GET", f"/api/traces/{trace_id}")
+        if body.get("traceId") != trace_id or not body.get("status"):
+            raise CoreAiError(0, "core-ai trace detail does not match the requested trace")
+        return body
+
+    def list_trace_spans(self, trace_id: str) -> list[dict]:
+        body = self._request("GET", f"/api/traces/{trace_id}/spans")
+        spans = body.get("spans")
+        if not isinstance(spans, list) or not all(isinstance(span, dict) for span in spans):
+            raise CoreAiError(0, "core-ai trace span list is malformed")
+        return spans
+
+    def get_trace_span(self, trace_id: str, span_id: str) -> dict:
+        body = self._request("GET", f"/api/traces/{trace_id}/spans/{span_id}")
+        if body.get("spanId") != span_id:
+            raise CoreAiError(0, "core-ai trace span detail does not match the requested span")
+        return body
+
     def call_mcp_tool(self, server_id: str, tool_name: str, arguments: dict) -> dict:
         body = self._request(
             "POST",

@@ -4,7 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def make_merchant(client):
-    return client.post("/api/merchants", json={"name": "M"}).json()
+    return client.post(
+        "/api/merchants", json={"name": "M", "primary_location": "Mineola, NY"}
+    ).json()
 
 
 def make_task(client, merchant_id, **extra):
@@ -162,13 +164,74 @@ def test_task_category_create_patch_and_invalid(client):
 
 
 def test_list_all_tasks_with_merchant_name(client):
-    a = client.post("/api/merchants", json={"name": "甲"}).json()
-    b = client.post("/api/merchants", json={"name": "乙"}).json()
+    a = client.post(
+        "/api/merchants", json={"name": "甲", "primary_location": "Mineola, NY"}
+    ).json()
+    b = client.post(
+        "/api/merchants", json={"name": "乙", "primary_location": "Mineola, NY"}
+    ).json()
     make_task(client, a["id"])
     make_task(client, b["id"])
     tasks = client.get("/api/tasks").json()
     names = {t["merchant_name"] for t in tasks}
     assert {"甲", "乙"} <= names
+
+
+def test_archived_merchant_tasks_are_preserved_but_hidden_from_default_queue(client):
+    active = client.post(
+        "/api/merchants", json={"name": "在营", "primary_location": "Mineola, NY"}
+    ).json()
+    archived = client.post(
+        "/api/merchants", json={"name": "归档", "primary_location": "Mineola, NY"}
+    ).json()
+    active_task = make_task(client, active["id"])
+    archived_task = make_task(client, archived["id"])
+
+    assert client.patch(
+        f"/api/merchants/{archived['id']}", json={"status": "archived"}
+    ).status_code == 200
+
+    default_tasks = client.get("/api/tasks").json()
+    assert [task["id"] for task in default_tasks] == [active_task["id"]]
+
+    all_tasks = client.get("/api/tasks", params={"include_archived": "true"}).json()
+    assert {task["id"] for task in all_tasks} == {active_task["id"], archived_task["id"]}
+    archived_row = next(task for task in all_tasks if task["id"] == archived_task["id"])
+    assert archived_row["merchant_status"] == "archived"
+
+    merchant_tasks = client.get(f"/api/merchants/{archived['id']}/tasks").json()
+    assert [(task["id"], task["status"]) for task in merchant_tasks] == [
+        (archived_task["id"], "todo")
+    ]
+
+    assert client.patch(
+        f"/api/merchants/{archived['id']}", json={"status": "active"}
+    ).status_code == 200
+    restored_tasks = client.get("/api/tasks").json()
+    assert {task["id"] for task in restored_tasks} == {active_task["id"], archived_task["id"]}
+
+
+def test_archived_merchant_rejects_task_creation_and_status_changes(client):
+    merchant = make_merchant(client)
+    task = make_task(client, merchant["id"])
+    assert client.patch(
+        f"/api/merchants/{merchant['id']}", json={"status": "archived"}
+    ).status_code == 200
+
+    created = client.post(
+        f"/api/merchants/{merchant['id']}/tasks", json={"title": "must not start"}
+    )
+    patched = client.patch(f"/api/tasks/{task['id']}", json={"status": "doing"})
+    batched = client.post(
+        "/api/tasks/batch", json={"ids": [task["id"]], "status": "doing"}
+    )
+
+    assert created.status_code == 409
+    assert created.json()["detail"] == "merchant is archived"
+    assert patched.status_code == 409
+    assert patched.json()["detail"] == "merchant is archived"
+    assert batched.json() == {"updated": [], "skipped": [task["id"]]}
+    assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "todo"
 
 
 def test_batch_status_transitions(client):
@@ -272,6 +335,33 @@ def test_assigning_task_to_agent_creates_a_real_core_ai_execution(client):
         assert "External writes and publication are NOT authorized" in fake.triggered[0][1]
         assert "Return only one JSON object" in fake.triggered[0][1]
         assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "doing"
+    finally:
+        app.dependency_overrides.pop(get_execution_coreai, None)
+
+
+def test_archived_merchant_rejects_agent_execution_before_contacting_core_ai(client):
+    from app.main import app
+    from app.tasks import get_execution_coreai
+    from helpers import FakeCoreAi
+
+    class CoreAiMustNotBeContacted(FakeCoreAi):
+        def get_agent(self, agent_id: str) -> dict:
+            raise AssertionError(f"unexpected Core AI call for {agent_id}")
+
+    fake = CoreAiMustNotBeContacted()
+    app.dependency_overrides[get_execution_coreai] = lambda: (fake, "agent-execution")
+    try:
+        merchant = make_merchant(client)
+        task = make_task(client, merchant["id"], title="Frozen task")
+        assert client.patch(
+            f"/api/merchants/{merchant['id']}", json={"status": "archived"}
+        ).status_code == 200
+
+        response = client.post(f"/api/tasks/{task['id']}/execute")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "merchant is archived"
+        assert fake.triggered == []
     finally:
         app.dependency_overrides.pop(get_execution_coreai, None)
 

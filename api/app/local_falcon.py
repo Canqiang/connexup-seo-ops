@@ -1,9 +1,12 @@
+import math
+import re
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .coreai import CoreAiClient
+from .keyword_identity import _keyword_identity
 
 
 LIST_FIELD_MASK = (
@@ -48,14 +51,15 @@ class LocalFalconClient:
         )
         reports = body.get("reports")
         if not isinstance(reports, list):
-            return None
-        normalized = keyword.strip().casefold()
+            raise ValueError("Local Falcon report list response is malformed")
+        normalized = _keyword_identity(keyword)
         exact = [
             report
             for report in reports
             if isinstance(report, dict)
+            and report.get("place_id") == place_id
             and isinstance(report.get("keyword"), str)
-            and report["keyword"].strip().casefold() == normalized
+            and _keyword_identity(report["keyword"]) == normalized
             and report.get("platform", "google") == "google"
         ]
         return max(exact, key=lambda report: _report_date(report.get("date")), default=None)
@@ -65,6 +69,33 @@ class LocalFalconClient:
             self._server_id,
             "getLocalFalconReport",
             {"reportKey": report_key, "fieldmask": REPORT_FIELD_MASK},
+        )
+
+    def run_scan(
+        self,
+        *,
+        place_id: str,
+        keyword: str,
+        lat: float,
+        lng: float,
+        grid_size: int,
+        radius: float,
+        measurement: Literal["mi", "km"],
+    ) -> dict:
+        return self._coreai.call_mcp_tool(
+            self._server_id,
+            "runLocalFalconScan",
+            {
+                "placeId": place_id,
+                "keyword": keyword,
+                "lat": lat,
+                "lng": lng,
+                "gridSize": str(grid_size),
+                "radius": radius,
+                "measurement": measurement,
+                "platform": "google",
+                "aiAnalysis": False,
+            },
         )
 
 
@@ -80,6 +111,8 @@ class LocalFalconGridPoint(BaseModel):
     def validate_found_rank(self):
         if self.found and self.rank is None:
             raise ValueError("found Local Falcon points require a rank")
+        if not self.found and self.rank is not None:
+            raise ValueError("unfound Local Falcon points cannot contain a rank")
         return self
 
 
@@ -94,7 +127,10 @@ class LocalFalconSnapshot(BaseModel):
     captured_at: str = Field(min_length=1, max_length=50)
     center_lat: float = Field(ge=-90, le=90)
     center_lng: float = Field(ge=-180, le=180)
-    grid_size: int = Field(ge=3, le=21)
+    # The operator UI and the persisted scan contract currently support the
+    # Local Falcon 3x3, 5x5, 7x7 and 9x9 grids. Reject larger reports instead
+    # of rendering an unreviewed shape or silently truncating it.
+    grid_size: int = Field(ge=3, le=9)
     radius: float = Field(gt=0, le=100)
     measurement: Literal["mi", "km"]
     arp: float = Field(ge=0, le=200)
@@ -112,23 +148,53 @@ class LocalFalconSnapshot(BaseModel):
         expected = self.grid_size * self.grid_size
         if len(self.grid_points) != expected:
             raise ValueError(f"Local Falcon grid requires {expected} points")
+        coordinates = [(point.lat, point.lng) for point in self.grid_points]
+        if len(set(coordinates)) != expected:
+            raise ValueError("Local Falcon grid contains a duplicate coordinate")
+        latitudes = set(point.lat for point in self.grid_points)
+        longitudes = set(point.lng for point in self.grid_points)
+        rectangle = {
+            (latitude, longitude)
+            for latitude in latitudes
+            for longitude in longitudes
+        }
+        if (
+            len(latitudes) != self.grid_size
+            or len(longitudes) != self.grid_size
+            or set(coordinates) != rectangle
+        ):
+            raise ValueError("Local Falcon points must form a complete rectangular grid")
         if self.found_in > expected:
             raise ValueError("Local Falcon found_in exceeds grid point count")
+        if self.found_in != sum(1 for point in self.grid_points if point.found):
+            raise ValueError("Local Falcon found_in does not match the grid points")
         return self
 
 
 def _float(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"Local Falcon {label} is not numeric")
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Local Falcon {label} is not numeric") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"Local Falcon {label} is not finite")
+    return result
 
 
 def _int(value: object, label: str) -> int:
-    try:
+    if isinstance(value, bool):
+        raise ValueError(f"Local Falcon {label} is not an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer():
+            return int(value)
+        raise ValueError(f"Local Falcon {label} is not an integer")
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
         return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Local Falcon {label} is not an integer") from exc
+    raise ValueError(f"Local Falcon {label} is not an integer")
 
 
 def _captured_at(value: object) -> str:
@@ -156,7 +222,9 @@ def normalize_local_falcon_report(
     for item in points:
         if not isinstance(item, dict):
             raise ValueError("Local Falcon grid point is not an object")
-        found = item.get("found") is True
+        found = item.get("found")
+        if not isinstance(found, bool):
+            raise ValueError("Local Falcon grid point found is not boolean")
         raw_rank = item.get("rank")
         rank = None if raw_rank in (None, False, "", "0", 0) else _int(raw_rank, "rank")
         normalized_points.append(
@@ -172,7 +240,10 @@ def normalize_local_falcon_report(
     if place_id != expected_place_id:
         raise ValueError("Local Falcon Place ID does not match the merchant")
     keyword = raw.get("keyword")
-    if not isinstance(keyword, str) or keyword.strip().casefold() != expected_keyword.strip().casefold():
+    if (
+        not isinstance(keyword, str)
+        or _keyword_identity(keyword) != _keyword_identity(expected_keyword)
+    ):
         raise ValueError("Local Falcon keyword does not match the accepted keyword")
 
     snapshot = LocalFalconSnapshot.model_validate(

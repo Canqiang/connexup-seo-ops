@@ -57,6 +57,87 @@ def test_get_run_returns_detail():
     assert detail["output"] == "report"
 
 
+def test_reads_skill_and_trace_span_detail_for_keyword_provenance():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if request.url.path == "/api/skills/seed-skill":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "seed-skill",
+                    "qualified_name": "fbradmin/seo-keyword-seed-generate",
+                    "version": None,
+                },
+            )
+        if request.url.path == "/api/traces/trace-1":
+            return httpx.Response(
+                200,
+                json={"traceId": "trace-1", "agentId": "agent-1", "status": "COMPLETED"},
+            )
+        if request.url.path == "/api/traces/trace-1/spans":
+            return httpx.Response(
+                200,
+                json={"spans": [{"spanId": "span-1", "name": "use_skill", "type": "TOOL"}]},
+            )
+        if request.url.path == "/api/traces/trace-1/spans/span-1":
+            return httpx.Response(
+                200,
+                json={
+                    "spanId": "span-1",
+                    "name": "use_skill",
+                    "type": "TOOL",
+                    "status": "OK",
+                    "input": '{"name":"fbradmin/seo-keyword-seed-generate"}',
+                    "output": "ToolCallResult{status=COMPLETED, toolName='use_skill'}",
+                },
+            )
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    client = make_client(handler)
+
+    assert client.get_skill("seed-skill")["qualified_name"] == (
+        "fbradmin/seo-keyword-seed-generate"
+    )
+    assert client.get_trace("trace-1")["status"] == "COMPLETED"
+    assert client.list_trace_spans("trace-1")[0]["spanId"] == "span-1"
+    assert client.get_trace_span("trace-1", "span-1")["status"] == "OK"
+    assert seen == [
+        "/api/skills/seed-skill",
+        "/api/traces/trace-1",
+        "/api/traces/trace-1/spans",
+        "/api/traces/trace-1/spans/span-1",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "response"),
+    [
+        ("get_skill", {"id": "other", "qualified_name": "x/y"}),
+        ("get_trace", {"traceId": "other", "status": "COMPLETED"}),
+        ("list_trace_spans", {"spans": {}}),
+        ("get_trace_span", {"spanId": "other", "status": "OK"}),
+    ],
+)
+def test_provenance_reads_reject_mismatched_or_malformed_contracts(method, response):
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(200, json=response)
+
+    client = make_client(handler)
+    args = {
+        "get_skill": ("expected",),
+        "get_trace": ("expected",),
+        "list_trace_spans": ("expected",),
+        "get_trace_span": ("trace", "expected"),
+    }[method]
+
+    with pytest.raises(CoreAiError):
+        getattr(client, method)(*args)
+
+
 def test_http_error_surfaces_status_and_message():
     from app.coreai import CoreAiError
 

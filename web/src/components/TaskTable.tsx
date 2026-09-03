@@ -47,7 +47,10 @@ export default function TaskTable({ tasks, showSource = true, showMerchant = fal
             return (
             <tr key={t.id} className={t.status === 'cancelled' ? 'row-cancelled' : ''}>
               {showMerchant && (
-                <td className="nowrap"><Link to={`/merchants/${t.merchant_id}`}>{t.merchant_name ?? `#${t.merchant_id}`}</Link></td>
+                <td className="nowrap">
+                  <Link to={`/merchants/${t.merchant_id}`}>{t.merchant_name ?? `#${t.merchant_id}`}</Link>
+                  {t.merchant_status === 'archived' && <span className="badge archived">商户已归档</span>}
+                </td>
               )}
               <td className="nowrap">
                 {t.category

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from .config import coreai_settings
 from .coreai import CoreAiClient, CoreAiError
 from .db import get_db
-from .merchants import fetch_merchant, now_iso
+from .merchants import fetch_active_merchant, fetch_merchant, now_iso
 
 router = APIRouter(prefix="/api", tags=["tasks"])
 
@@ -142,15 +142,17 @@ def preparation_agent_is_read_only(agent: dict) -> bool:
 
 
 @router.get("/tasks")
-def list_all_tasks(conn=Depends(get_db)):
+def list_all_tasks(include_archived: bool = False, conn=Depends(get_db)):
+    merchant_filter = "" if include_archived else " WHERE m.status = 'active'"
     rows = conn.execute(
-        "SELECT t.*, m.name AS merchant_name,"
+        "SELECT t.*, m.name AS merchant_name, m.status AS merchant_status,"
         " CASE WHEN t.source_run_id IS NULL OR r.plan_approved_at IS NOT NULL THEN 1 ELSE 0 END"
         " AS source_plan_approved,"
         " (SELECT te.status FROM task_executions te WHERE te.task_id = t.id"
         " ORDER BY te.id DESC LIMIT 1) AS execution_status FROM tasks t"
         " JOIN merchants m ON m.id = t.merchant_id"
-        " LEFT JOIN runs r ON r.id = t.source_run_id ORDER BY t.id DESC"
+        " LEFT JOIN runs r ON r.id = t.source_run_id"
+        f"{merchant_filter} ORDER BY t.id DESC"
     ).fetchall()
     return [task_dict(r) for r in rows]
 
@@ -166,8 +168,16 @@ def batch_status(body: BatchBody, conn=Depends(get_db)):
     updated: list[int] = []
     skipped: list[int] = []
     for task_id in body.ids:
-        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        if row is None or body.status not in ALLOWED_TRANSITIONS[row["status"]]:
+        row = conn.execute(
+            "SELECT t.*, m.status AS merchant_status FROM tasks t"
+            " JOIN merchants m ON m.id = t.merchant_id WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["merchant_status"] != "active"
+            or body.status not in ALLOWED_TRANSITIONS[row["status"]]
+        ):
             skipped.append(task_id)
             continue
         if body.status == "doing" and not source_plan_is_approved(conn, row):
@@ -206,7 +216,7 @@ def list_tasks(merchant_id: int, conn=Depends(get_db)):
 
 @router.post("/merchants/{merchant_id}/tasks", status_code=201)
 def create_task(merchant_id: int, body: TaskCreate, conn=Depends(get_db)):
-    fetch_merchant(conn, merchant_id)
+    fetch_active_merchant(conn, merchant_id)
     cur = conn.execute(
         "INSERT INTO tasks (merchant_id, title, description, rationale, expected_outcome, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (merchant_id, body.title, body.description, body.rationale, body.expected_outcome, body.category, now_iso()),
@@ -231,6 +241,8 @@ def get_task_execution(task_id: int, conn=Depends(get_db)):
 
 @router.post("/tasks/{task_id}/execute", status_code=201)
 def execute_task(task_id: int, coreai=Depends(get_execution_coreai), conn=Depends(get_db)):
+    requested_task = fetch_task(conn, task_id)
+    fetch_active_merchant(conn, requested_task["merchant_id"])
     client, agent_id = coreai
     try:
         agent = client.get_agent(agent_id)
@@ -240,6 +252,10 @@ def execute_task(task_id: int, coreai=Depends(get_execution_coreai), conn=Depend
         raise HTTPException(status_code=503, detail="task preparation agent is not read-only")
     conn.execute("BEGIN IMMEDIATE")
     task = fetch_task(conn, task_id)
+    merchant = fetch_merchant(conn, task["merchant_id"])
+    if merchant["status"] != "active":
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="merchant is archived")
     if task["status"] in {"done", "cancelled"}:
         conn.rollback()
         raise HTTPException(status_code=409, detail="terminal task cannot be executed")
@@ -250,7 +266,6 @@ def execute_task(task_id: int, coreai=Depends(get_execution_coreai), conn=Depend
     if previous is not None and previous["status"] in {"running", "ready", "approved"}:
         conn.rollback()
         raise HTTPException(status_code=409, detail="task already has an active execution")
-    merchant = fetch_merchant(conn, task["merchant_id"])
     attempt = 1 if previous is None else previous["attempt"] + 1
     created_at = now_iso()
     cur = conn.execute(
@@ -284,6 +299,10 @@ def execute_task(task_id: int, coreai=Depends(get_execution_coreai), conn=Depend
 def approve_task_execution(task_id: int, conn=Depends(get_db)):
     conn.execute("BEGIN IMMEDIATE")
     task = fetch_task(conn, task_id)
+    merchant = fetch_merchant(conn, task["merchant_id"])
+    if merchant["status"] != "active":
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="merchant is archived")
     if task["status"] != "doing":
         conn.rollback()
         raise HTTPException(status_code=409, detail="task is not awaiting agent review")
@@ -315,6 +334,10 @@ def approve_task_execution(task_id: int, conn=Depends(get_db)):
 def return_task_execution(task_id: int, body: ReturnExecutionBody, conn=Depends(get_db)):
     conn.execute("BEGIN IMMEDIATE")
     task = fetch_task(conn, task_id)
+    merchant = fetch_merchant(conn, task["merchant_id"])
+    if merchant["status"] != "active":
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="merchant is archived")
     if task["status"] != "doing":
         conn.rollback()
         raise HTTPException(status_code=409, detail="task is not awaiting agent review")
@@ -338,6 +361,10 @@ def return_task_execution(task_id: int, body: ReturnExecutionBody, conn=Depends(
 def patch_task(task_id: int, body: TaskPatch, conn=Depends(get_db)):
     conn.execute("BEGIN IMMEDIATE")
     task = fetch_task(conn, task_id)
+    merchant = fetch_merchant(conn, task["merchant_id"])
+    if merchant["status"] != "active":
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="merchant is archived")
     updates = body.model_dump(exclude_unset=True)
     if "title" in updates and updates["title"] is None:
         raise HTTPException(status_code=422, detail="title cannot be null")

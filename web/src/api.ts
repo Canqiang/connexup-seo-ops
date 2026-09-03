@@ -43,6 +43,7 @@ export type Task = {
   source_key: string | null
   created_at: string
   completed_at: string | null
+  merchant_status?: 'active' | 'archived'
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -244,6 +245,9 @@ export type SeoKeyword = {
   strategy: 'LOCAL' | 'ORGANIC'
   intent: 'LOCAL' | 'ORGANIC' | 'BRAND' | 'MENU' | 'NEAR_ME'
   priority: 'P0' | 'P1' | 'P2' | 'P3' | 'UNSCORED'
+  score?: number | null
+  score_rank?: number | null
+  local_falcon_selected?: boolean
   rationale: string
   source_tags: string[]
   target_surface_types: string[]
@@ -308,12 +312,74 @@ export type LocalFalconSnapshot = {
   grid_points: LocalFalconGridPoint[]
 }
 
+export type LocalFalconScanBatch = {
+  id: number
+  approval_id: number
+  request_id?: string
+  status: 'submitting' | 'submitted' | 'partial' | 'completed' | 'failed' | 'unknown'
+  scan_config?: Record<string, unknown>
+  scan_config_sha256?: string
+  total_count: number
+  pending_count: number
+  submitting_count: number
+  submitted_count: number
+  completed_count: number
+  unknown_count: number
+  failed_count: number
+  needs_reconciliation: boolean
+  can_confirm_not_submitted?: boolean
+  can_bind_acknowledged_report?: boolean
+  report_binding_blocker?: string | null
+  items?: Array<{
+    keyword: string
+    status: 'pending' | 'submitting' | 'submitted' | 'completed' | 'failed' | 'unknown'
+    error: string | null
+    updated_at: string
+  }>
+  error?: string | null
+  created_at?: string
+  completed_at?: string | null
+}
+
+export type LocalFalconReconciliationAction =
+  | 'BIND_ACKNOWLEDGED_REPORT'
+  | 'CONFIRM_NOT_SUBMITTED'
+  | 'CLOSE_WITHOUT_RETRY'
+
+export type LocalFalconReconciliationRequest = {
+  action: LocalFalconReconciliationAction
+  keyword?: string
+  report_key?: string
+  reason: string
+}
+
 export type LocalFalconState = {
+  current_place_id?: string | null
   status: 'not_synced' | 'synced' | 'failed'
   last_synced_at: string | null
   last_error: string | null
   missing_keywords: string[]
   reports: LocalFalconSnapshot[]
+  scan_defaults?: {
+    place_id: string
+    lat: number
+    lng: number
+    grid_size: number
+    radius: number
+    measurement: 'mi' | 'km'
+    platform: 'google'
+  } | null
+  scan_defaults_sha256?: string | null
+  approval?: {
+    id: number
+    keyword_artifact_id: number
+    cohort_sha256: string
+    cohort?: Array<{ keyword: string; score: number; score_rank: number }>
+    place_id?: string
+    approved_by?: string
+    approved_at: string
+  } | null
+  scan_batch?: LocalFalconScanBatch | null
 }
 
 export type SeoTargetState = {
@@ -322,10 +388,23 @@ export type SeoTargetState = {
   cycle_status: 'empty' | 'running' | 'ready' | 'failed'
   active_stage: 'KEYWORD_SET' | 'AUDIT_REPORT' | 'RANKING_REPORT' | null
   keyword_set: SeoKeywordSet | null
+  keyword_set_artifact_id?: number | null
+  local_falcon_cohort_sha256?: string | null
   audit_report: AuditReport | null
   ranking_report: SeoRankingReport | null
   local_falcon?: LocalFalconState
-  capabilities?: { can_regenerate: boolean }
+  capabilities?: {
+    can_regenerate: boolean
+    can_sync_local_falcon?: boolean
+    can_approve_local_falcon?: boolean
+    can_generate_local_falcon?: boolean
+    blockers?: {
+      regenerate?: string[]
+      sync_local_falcon?: string[]
+      approve_local_falcon?: string[]
+      generate_local_falcon?: string[]
+    }
+  }
   error: string | null
 }
 
@@ -334,11 +413,64 @@ export type Operator = {
   role: 'operator'
 }
 
+export type PerformanceMetricTotal = {
+  value: number | null
+  merchant_coverage: number
+}
+
+export type PerformanceDashboard = {
+  window: {
+    label: string
+    start: string | null
+    end: string | null
+    historical_comparison_available: false
+  }
+  coverage: {
+    active_merchants: number
+    merchants_with_performance: number
+    locations_with_performance: number
+    latest_synced_at: string | null
+  }
+  totals: {
+    total_views: PerformanceMetricTotal
+    map_views: PerformanceMetricTotal
+    search_views: PerformanceMetricTotal
+    website_clicks: PerformanceMetricTotal
+    direction_requests: PerformanceMetricTotal
+    call_clicks: PerformanceMetricTotal
+    action_events: PerformanceMetricTotal
+  }
+  trends: Array<{
+    metric_date: string
+    map_views: number
+    search_views: number
+    merchant_coverage: number
+  }>
+  merchants: Array<{
+    merchant_id: number
+    name: string
+    primary_location: string | null
+    data_status: 'ready' | 'unbound' | 'not_synced' | 'syncing' | 'failed' | 'no_performance'
+    synced_at: string | null
+    location_count: number
+    total_views: number | null
+    map_views: number | null
+    search_views: number | null
+    website_clicks: number | null
+    direction_requests: number | null
+    call_clicks: number | null
+    review_average_rating: number | null
+    review_reply_rate: number | null
+    review_scope: string | null
+  }>
+}
+
 export const api = {
   me: () => request<Operator>('/api/auth/me'),
   login: (username: string, password: string) =>
     request<Operator>('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<void>('/api/auth/logout', { method: 'POST' }),
+  getPerformanceDashboard: () => request<PerformanceDashboard>('/api/dashboard/performance'),
   listMerchants: (status?: 'active' | 'archived') =>
     request<MerchantStats[]>(`/api/merchants${status ? `?status=${status}` : ''}`),
   createMerchant: (body: { name: string; notes?: string; primary_location?: string; website_url?: string }) =>
@@ -352,6 +484,26 @@ export const api = {
     request<SeoTargetState>(`/api/merchants/${id}/seo-targets/regenerate`, { method: 'POST' }),
   syncLocalFalconReports: (id: number) =>
     request<SeoTargetState>(`/api/merchants/${id}/local-falcon-sync`, { method: 'POST' }),
+  approveLocalFalconCohort: (id: number, body: { keyword_artifact_id: number; expected_cohort_sha256: string }) =>
+    request<SeoTargetState>(`/api/merchants/${id}/local-falcon-approvals`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  createLocalFalconScanBatch: (id: number, body: {
+    approval_id: number
+    request_id: string
+    expected_scan_config_sha256: string
+    confirm_credit_spend: true
+  }) =>
+    request<SeoTargetState>(`/api/merchants/${id}/local-falcon-scan-batches`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  reconcileLocalFalconScanBatch: (id: number, batchId: number, body: LocalFalconReconciliationRequest) =>
+    request<SeoTargetState>(`/api/merchants/${id}/local-falcon-scan-batches/${batchId}/reconcile`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   bindMerchantFbr: (id: number, fbrMerchantId: string) =>
     request<MerchantProfile>(`/api/merchants/${id}/fbr-link`, {
       method: 'PUT',
@@ -361,6 +513,7 @@ export const api = {
     request<MerchantProfile>(`/api/merchants/${id}/gbp-sync`, { method: 'POST' }),
   patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'primary_location' | 'website_url' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteMerchant: (id: number) => request<void>(`/api/merchants/${id}`, { method: 'DELETE' }),
   listTasks: (merchantId: number) => request<Task[]>(`/api/merchants/${merchantId}/tasks`),
   createTask: (merchantId: number, body: { title: string; description?: string; rationale?: string; expected_outcome?: string; category?: string }) =>
     request<Task>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body) }),
@@ -377,7 +530,9 @@ export const api = {
   getRunAudit: (id: number) => requestOptional<AuditSnapshot>(`/api/runs/${id}/audit`),
   approvePlan: (id: number) => request<Run>(`/api/runs/${id}/approve-plan`, { method: 'POST' }),
   listRunTasks: (id: number) => request<Task[]>(`/api/runs/${id}/tasks`),
-  listAllTasks: () => request<(Task & { merchant_name: string })[]>('/api/tasks'),
+  listAllTasks: (includeArchived = false) => request<(Task & { merchant_name: string })[]>(
+    `/api/tasks${includeArchived ? '?include_archived=true' : ''}`,
+  ),
   batchTasks: (ids: number[], status: TaskStatus) =>
     request<{ updated: number[]; skipped: number[] }>('/api/tasks/batch', { method: 'POST', body: JSON.stringify({ ids, status }) }),
 }

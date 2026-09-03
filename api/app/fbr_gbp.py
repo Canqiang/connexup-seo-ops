@@ -287,6 +287,8 @@ def _time(value: object) -> str | None:
     data = _as_dict(value)
     hours = data.get("hours")
     minutes = data.get("minutes", 0)
+    if minutes is None:
+        minutes = 0
     if not isinstance(hours, int) or not isinstance(minutes, int):
         return None
     return f"{hours:02d}:{minutes:02d}"

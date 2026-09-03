@@ -4,7 +4,13 @@ import pytest
 
 
 def create_merchant(client):
-    response = client.post("/api/merchants", json={"name": "Only Bear Chicken & Boba"})
+    response = client.post(
+        "/api/merchants",
+        json={
+            "name": "Only Bear Chicken & Boba",
+            "primary_location": "Mineola, NY",
+        },
+    )
     assert response.status_code == 201
     return response.json()
 
@@ -24,6 +30,20 @@ def test_unbound_merchant_profile_is_explicit(client):
         "last_error": None,
         "locations": [],
     }
+
+
+def test_archived_merchant_rejects_fbr_binding(client):
+    merchant = create_merchant(client)
+    client.patch(f"/api/merchants/{merchant['id']}", json={"status": "archived"})
+
+    response = client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-must-not-bind"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "merchant is archived"
+    assert client.get(f"/api/merchants/{merchant['id']}/profile").json()["state"] == "unbound"
 
 
 def test_normalize_gbp_location_extracts_operator_facts():
@@ -99,6 +119,36 @@ def test_normalize_gbp_location_rejects_malformed_json():
 
     with pytest.raises(FbrPayloadError, match="LOCATION payload is not valid JSON"):
         normalize_gbp_location("{not-json")
+
+
+def test_normalize_gbp_location_treats_null_minutes_as_an_exact_hour():
+    from app.fbr_gbp import normalize_gbp_location
+
+    normalized = normalize_gbp_location(
+        json.dumps(
+            {
+                "regularHours": {
+                    "periods": [
+                        {
+                            "openDay": "MONDAY",
+                            "openTime": {"hours": 8, "minutes": None},
+                            "closeDay": "MONDAY",
+                            "closeTime": {"hours": 20, "minutes": None},
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    assert normalized["regular_hours"] == [
+        {
+            "open_day": "MONDAY",
+            "open_time": "08:00",
+            "close_day": "MONDAY",
+            "close_time": "20:00",
+        }
+    ]
 
 
 def test_post_summary_preserves_every_post_returned_by_fbr():
@@ -829,6 +879,7 @@ def test_failed_resync_preserves_last_successful_snapshot(client):
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
         assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        successful = client.get(f"/api/merchants/{merchant['id']}/profile").json()
         fake.fail_list = True
         failed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
         cached = client.get(f"/api/merchants/{merchant['id']}/profile")
@@ -840,4 +891,740 @@ def test_failed_resync_preserves_last_successful_snapshot(client):
     assert cached.status_code == 200
     assert cached.json()["sync_status"] == "failed"
     assert cached.json()["last_error"] == "FBR SEO service is unavailable"
+    assert cached.json()["last_synced_at"] == successful["last_synced_at"]
     assert cached.json()["locations"][0]["title"] == "George's Hakka Kitchen"
+
+
+def test_empty_location_list_on_resync_preserves_last_successful_snapshot(client):
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        successful = client.get(f"/api/merchants/{merchant['id']}/profile").json()
+        fake.list_locations = lambda _fbr_merchant_id: []
+
+        failed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+        cached = client.get(f"/api/merchants/{merchant['id']}/profile").json()
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert failed.status_code == 503
+    assert cached["sync_status"] == "failed"
+    assert cached["last_synced_at"] == successful["last_synced_at"]
+    assert cached["locations"] == successful["locations"]
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "invalid_value"),
+    [
+        ("exception", None),
+        ("empty", ""),
+        ("malformed", "{broken-json"),
+        ("scalar", "null"),
+        ("empty-object", "{}"),
+        ("empty-hours", '{"regularHours":{"periods":[{}]}}'),
+    ],
+)
+def test_location_field_failure_on_resync_preserves_last_successful_snapshot(
+    client,
+    failure_mode,
+    invalid_value,
+):
+    from app.fbr_gbp import FbrUnavailableError
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        successful = client.get(f"/api/merchants/{merchant['id']}/profile").json()
+        original_get_field = fake.get_field
+
+        def fail_location_field(fbr_merchant_id, gbp_location_id, field):
+            if field == "LOCATION":
+                if failure_mode == "exception":
+                    raise FbrUnavailableError("LOCATION is temporarily unavailable")
+                response = original_get_field(fbr_merchant_id, gbp_location_id, field)
+                return {**response, "value": invalid_value}
+            return original_get_field(fbr_merchant_id, gbp_location_id, field)
+
+        fake.get_field = fail_location_field
+        failed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+        cached = client.get(f"/api/merchants/{merchant['id']}/profile").json()
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert failed.status_code == 503
+    assert cached["sync_status"] == "failed"
+    assert cached["last_synced_at"] == successful["last_synced_at"]
+    assert cached["locations"] == successful["locations"]
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "invalid_value"),
+    [
+        ("exception", None),
+        ("empty", ""),
+        ("malformed", "{broken-json"),
+        ("scalar", "null"),
+        ("missing-list", "{}"),
+        ("invalid-list-item", '{"menus":[null]}'),
+    ],
+)
+def test_optional_field_failure_keeps_old_value_while_successful_fields_update(
+    client,
+    failure_mode,
+    invalid_value,
+):
+    from app.db import connect
+    from app.fbr_gbp import FbrUnavailableError
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        conn = connect()
+        try:
+            old_menu_json = conn.execute(
+                "SELECT food_menus_json FROM merchant_gbp_profiles"
+                " WHERE merchant_id = ? AND gbp_location_id = ?",
+                (merchant["id"], "locations/123"),
+            ).fetchone()["food_menus_json"]
+        finally:
+            conn.close()
+
+        original_get_field = fake.get_field
+
+        def partially_updated_fields(fbr_merchant_id, gbp_location_id, field):
+            if field == "FOOD_MENUS":
+                if failure_mode == "exception":
+                    raise FbrUnavailableError("FOOD_MENUS is temporarily unavailable")
+                response = original_get_field(fbr_merchant_id, gbp_location_id, field)
+                return {**response, "value": invalid_value}
+            response = original_get_field(fbr_merchant_id, gbp_location_id, field)
+            if field == "LOCATION":
+                value = json.loads(response["value"])
+                value["title"] = "George's Updated Kitchen"
+                response = {**response, "value": json.dumps(value)}
+            elif field == "LOCAL_POSTS":
+                response = {
+                    **response,
+                    "value": json.dumps(
+                        {
+                            "posts": [
+                                {
+                                    "post_id": "post-new",
+                                    "state": "LIVE",
+                                    "summary": "A newly synced post",
+                                }
+                            ]
+                        }
+                    ),
+                }
+            return response
+
+        fake.get_field = partially_updated_fields
+        refreshed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert refreshed.status_code == 200
+    location = refreshed.json()["locations"][0]
+    assert location["title"] == "George's Updated Kitchen"
+    assert location["menu_items"][0]["name"] == "Avocado sandwich"
+    assert location["recent_posts"] == [
+        {
+            "post_id": "post-new",
+            "state": "LIVE",
+            "summary": "A newly synced post",
+            "created_at": None,
+            "updated_at": None,
+            "media_count": 0,
+            "media_url": None,
+            "media_format": None,
+            "cta_type": None,
+            "cta_url": None,
+        }
+    ]
+    conn = connect()
+    try:
+        refreshed_menu_json = conn.execute(
+            "SELECT food_menus_json FROM merchant_gbp_profiles"
+            " WHERE merchant_id = ? AND gbp_location_id = ?",
+            (merchant["id"], "locations/123"),
+        ).fetchone()["food_menus_json"]
+    finally:
+        conn.close()
+    assert refreshed_menu_json == old_menu_json
+
+
+def test_incomplete_location_identity_keeps_previous_identity_values(client):
+    from app.db import connect
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        fake.list_locations = lambda _fbr_merchant_id: [
+            {
+                "gbp_location_id": "locations/123",
+                "google_account_id": " ",
+                "name": None,
+                "title": {},
+                "place_id": "",
+            }
+        ]
+
+        refreshed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+        conn = connect()
+        try:
+            row = conn.execute(
+                "SELECT google_account_id, source_name, source_title"
+                " FROM merchant_gbp_profiles"
+                " WHERE merchant_id = ? AND gbp_location_id = ?",
+                (merchant["id"], "locations/123"),
+            ).fetchone()
+        finally:
+            conn.close()
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert refreshed.status_code == 200
+    location = refreshed.json()["locations"][0]
+    assert location["google_account_id"] == "accounts/77"
+    assert location["name"] == "locations/123"
+    assert location["place_id"] == "ChIJH8iZh-5ZwokRPLzzADeSnYE"
+    assert dict(row) == {
+        "google_account_id": "accounts/77",
+        "source_name": "locations/123",
+        "source_title": "George's Hakka Kitchen",
+    }
+
+
+def test_auxiliary_source_failures_preserve_old_normalized_values(client):
+    from app.fbr_gbp import FbrUnavailableError
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        before = client.get(f"/api/merchants/{merchant['id']}/profile").json()[
+            "locations"
+        ][0]
+        original_get_field = fake.get_field
+
+        def updated_location(fbr_merchant_id, gbp_location_id, field):
+            response = original_get_field(fbr_merchant_id, gbp_location_id, field)
+            if field == "LOCATION":
+                value = json.loads(response["value"])
+                value["title"] = "George's Updated Kitchen"
+                return {**response, "value": json.dumps(value)}
+            return response
+
+        def unavailable(*_args, **_kwargs):
+            raise FbrUnavailableError("auxiliary source is temporarily unavailable")
+
+        fake.get_field = updated_location
+        fake.get_reviews = unavailable
+        fake.get_review_overview = unavailable
+        fake.list_performance_metrics = unavailable
+        fake.list_search_keyword_metrics = unavailable
+        refreshed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert refreshed.status_code == 200
+    after = refreshed.json()["locations"][0]
+    assert after["title"] == "George's Updated Kitchen"
+    preserved_keys = (
+        "review_count",
+        "recent_reviews",
+        "review_sync_status",
+        "review_scope",
+        "review_average_rating",
+        "review_reply_rate",
+        "performance_metrics",
+        "search_keywords",
+    )
+    assert {key: after[key] for key in preserved_keys} == {
+        key: before[key] for key in preserved_keys
+    }
+
+
+@pytest.mark.parametrize("invalid_list_items", [False, True])
+def test_invalid_auxiliary_payloads_preserve_old_normalized_values(
+    client,
+    invalid_list_items,
+):
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        before = client.get(f"/api/merchants/{merchant['id']}/profile").json()[
+            "locations"
+        ][0]
+        fake.get_reviews = lambda *_args, **_kwargs: (
+            {"total": 1, "reviews": [None]} if invalid_list_items else {}
+        )
+        fake.get_review_overview = lambda *_args, **_kwargs: (
+            {"current_month_review_count": 1, "reviews": [None]}
+            if invalid_list_items
+            else {}
+        )
+        fake.list_performance_metrics = lambda *_args, **_kwargs: (
+            {"metrics": [None]} if invalid_list_items else {}
+        )
+        fake.list_search_keyword_metrics = lambda *_args, **_kwargs: (
+            {"keywords": [None]} if invalid_list_items else {}
+        )
+
+        refreshed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert refreshed.status_code == 200
+    after = refreshed.json()["locations"][0]
+    preserved_keys = (
+        "review_count",
+        "recent_reviews",
+        "review_sync_status",
+        "review_scope",
+        "review_average_rating",
+        "review_reply_rate",
+        "performance_metrics",
+        "search_keywords",
+    )
+    assert {key: after[key] for key in preserved_keys} == {
+        key: before[key] for key in preserved_keys
+    }
+
+
+def test_zero_review_snapshot_with_failed_overview_preserves_previous_overview(client):
+    from app.fbr_gbp import FbrUnavailableError
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    fake.get_reviews = lambda *_args, **_kwargs: {"total": 0, "reviews": []}
+    fake.get_review_overview = lambda *_args, **_kwargs: {
+        "current_month_rating": 4.8,
+        "current_month_review_count": 17,
+        "reply_rate": 0.94,
+        "reviews": [{"rating": 5, "content": "Excellent brunch"}],
+    }
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        before = client.get(f"/api/merchants/{merchant['id']}/profile").json()[
+            "locations"
+        ][0]
+
+        def unavailable_overview(*_args, **_kwargs):
+            raise FbrUnavailableError("review overview is temporarily unavailable")
+
+        fake.get_review_overview = unavailable_overview
+        refreshed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert refreshed.status_code == 200
+    after = refreshed.json()["locations"][0]
+    preserved_keys = (
+        "review_count",
+        "recent_reviews",
+        "review_sync_status",
+        "review_scope",
+        "review_average_rating",
+        "review_reply_rate",
+    )
+    assert {key: after[key] for key in preserved_keys} == {
+        key: before[key] for key in preserved_keys
+    }
+
+
+def test_incomplete_location_list_on_resync_preserves_entire_old_snapshot(client):
+    from app.db import connect
+    from app.main import app
+    from app.merchant_profiles import get_fbr_client
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    app.dependency_overrides[get_fbr_client] = lambda: fake
+    try:
+        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        conn = connect()
+        try:
+            conn.execute(
+                "INSERT INTO merchant_gbp_profiles"
+                " (merchant_id, fbr_merchant_id, gbp_location_id, google_account_id,"
+                " source_name, source_title, location_json, attributes_json,"
+                " food_menus_json, local_posts_json, media_json, customer_media_json,"
+                " questions_json, place_action_links_json, verifications_json,"
+                " normalized_json, source_updated_at, synced_at)"
+                " SELECT merchant_id, fbr_merchant_id, 'locations/456', google_account_id,"
+                " 'locations/456', 'Second Location', location_json, attributes_json,"
+                " food_menus_json, local_posts_json, media_json, customer_media_json,"
+                " questions_json, place_action_links_json, verifications_json,"
+                " normalized_json, source_updated_at, synced_at"
+                " FROM merchant_gbp_profiles"
+                " WHERE merchant_id = ? AND gbp_location_id = 'locations/123'",
+                (merchant["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        successful = client.get(f"/api/merchants/{merchant['id']}/profile").json()
+        assert {item["gbp_location_id"] for item in successful["locations"]} == {
+            "locations/123",
+            "locations/456",
+        }
+
+        failed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
+        cached = client.get(f"/api/merchants/{merchant['id']}/profile").json()
+    finally:
+        app.dependency_overrides.pop(get_fbr_client, None)
+
+    assert failed.status_code == 503
+    assert cached["sync_status"] == "failed"
+    assert cached["last_synced_at"] == successful["last_synced_at"]
+    assert cached["locations"] == successful["locations"]
+
+
+def test_gbp_sync_records_remote_read_completion_time_when_clock_is_not_injected(
+    client,
+    monkeypatch,
+):
+    from datetime import datetime, timezone
+
+    from app.db import connect
+    from app import merchant_profiles
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    started_at = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    completed_at = datetime(2026, 9, 3, 12, 7, tzinfo=timezone.utc)
+    clock = iter((started_at, completed_at))
+
+    def fake_utc_now(current_time=None):
+        return current_time if current_time is not None else next(clock)
+
+    monkeypatch.setattr(merchant_profiles, "_utc_now", fake_utc_now)
+
+    class EmptyFirstSyncClient:
+        def list_locations(self, fbr_merchant_id):
+            assert fbr_merchant_id == "fbr-merchant-123"
+            return []
+
+    conn = connect()
+    try:
+        assert merchant_profiles.sync_gbp_profile_once(
+            conn,
+            EmptyFirstSyncClient(),
+            merchant["id"],
+            force=True,
+        ) is True
+        link = conn.execute(
+            "SELECT sync_status, last_synced_at, updated_at"
+            " FROM merchant_fbr_links WHERE merchant_id = ?",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert dict(link) == {
+        "sync_status": "synced",
+        "last_synced_at": completed_at.isoformat(),
+        "updated_at": completed_at.isoformat(),
+    }
+
+
+def test_injected_sync_time_controls_all_auxiliary_query_windows(client):
+    from datetime import datetime, timezone
+
+    from app.db import connect
+    from app.merchant_profiles import sync_gbp_profile_once
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    fake = FakeFbrGbpClient()
+    captured = {}
+    fake.get_reviews = lambda *_args, **_kwargs: {"total": 0, "reviews": []}
+
+    def review_overview(*_args, query_date, **_kwargs):
+        captured["review_date"] = query_date
+        return {"current_month_review_count": 0, "reviews": []}
+
+    def performance(*_args, from_date, to_date, **_kwargs):
+        captured["performance"] = (from_date, to_date)
+        return {"metrics": []}
+
+    def search_keywords(*_args, from_month, to_month, **_kwargs):
+        captured["search"] = (from_month, to_month)
+        return {"keywords": []}
+
+    fake.get_review_overview = review_overview
+    fake.list_performance_metrics = performance
+    fake.list_search_keyword_metrics = search_keywords
+    conn = connect()
+    try:
+        synced = sync_gbp_profile_once(
+            conn,
+            fake,
+            merchant["id"],
+            force=True,
+            current_time=datetime(2026, 1, 15, 8, 30, tzinfo=timezone.utc),
+        )
+    finally:
+        conn.close()
+
+    assert synced is True
+    assert captured == {
+        "review_date": "2026-01-15",
+        "performance": ("2025-12-16", "2026-01-15"),
+        "search": ("2025-11", "2026-01"),
+    }
+
+
+def test_reusable_gbp_sync_releases_database_transaction_during_fbr_io(client):
+    from datetime import datetime, timezone
+
+    from app.db import connect
+    from app.merchant_profiles import sync_gbp_profile_once
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    conn = connect()
+
+    class TransactionCheckingClient:
+        def list_locations(self, fbr_merchant_id):
+            assert fbr_merchant_id == "fbr-merchant-123"
+            assert conn.in_transaction is False
+            return []
+
+    try:
+        synced = sync_gbp_profile_once(
+            conn,
+            TransactionCheckingClient(),
+            merchant["id"],
+            force=True,
+            current_time=datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc),
+        )
+        row = conn.execute(
+            "SELECT sync_status, last_synced_at FROM merchant_fbr_links WHERE merchant_id = ?",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert synced is True
+    assert row["sync_status"] == "synced"
+    assert row["last_synced_at"] == "2026-09-03T12:00:00+00:00"
+
+
+def test_gbp_sync_discards_stale_result_when_fbr_binding_changes(client):
+    from datetime import datetime, timezone
+
+    from app.db import connect
+    from app.merchant_profiles import sync_gbp_profile_once
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    conn = connect()
+
+    class RebindingClient:
+        def list_locations(self, fbr_merchant_id):
+            assert fbr_merchant_id == "fbr-merchant-123"
+            other = connect()
+            try:
+                other.execute(
+                    "UPDATE merchant_fbr_links"
+                    " SET fbr_merchant_id = 'fbr-merchant-new', sync_status = 'not_synced',"
+                    " last_synced_at = NULL, last_error = NULL, updated_at = ?"
+                    " WHERE merchant_id = ?",
+                    ("2026-09-03T12:00:01+00:00", merchant["id"]),
+                )
+                other.execute(
+                    "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?",
+                    (merchant["id"],),
+                )
+                other.commit()
+            finally:
+                other.close()
+            return []
+
+    try:
+        synced = sync_gbp_profile_once(
+            conn,
+            RebindingClient(),
+            merchant["id"],
+            force=True,
+            current_time=datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc),
+        )
+        row = conn.execute(
+            "SELECT fbr_merchant_id, sync_status, last_synced_at"
+            " FROM merchant_fbr_links WHERE merchant_id = ?",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert synced is False
+    assert dict(row) == {
+        "fbr_merchant_id": "fbr-merchant-new",
+        "sync_status": "not_synced",
+        "last_synced_at": None,
+    }
+
+
+def test_gbp_sync_does_not_take_over_a_fresh_sync_lease(client):
+    from datetime import datetime, timezone
+
+    from app.db import connect
+    from app.merchant_profiles import sync_gbp_profile_once
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    conn = connect()
+    conn.execute(
+        "UPDATE merchant_fbr_links SET sync_status = 'syncing', updated_at = ?"
+        " WHERE merchant_id = ?",
+        ("2026-09-03T11:59:00+00:00", merchant["id"]),
+    )
+    conn.commit()
+
+    class MustNotBeCalled:
+        def list_locations(self, _fbr_merchant_id):
+            raise AssertionError("fresh lease must not be stolen")
+
+    try:
+        synced = sync_gbp_profile_once(
+            conn,
+            MustNotBeCalled(),
+            merchant["id"],
+            force=True,
+            current_time=datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        conn.close()
+
+    assert synced is False
+
+
+def test_manual_and_scheduled_gbp_sync_share_one_cas_lease(client):
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import connect
+    from app.merchant_profiles import sync_gbp_profile_once
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    first_conn = connect()
+    collision_results = []
+
+    class MustNotBeCalled:
+        def list_locations(self, _fbr_merchant_id):
+            raise AssertionError("the second worker must not reach FBR")
+
+    class CollidingClient:
+        def list_locations(self, _fbr_merchant_id):
+            second_conn = connect()
+            try:
+                collision_results.append(
+                    sync_gbp_profile_once(
+                        second_conn,
+                        MustNotBeCalled(),
+                        merchant["id"],
+                        current_time=(
+                            datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+                            + timedelta(minutes=1)
+                        ),
+                    )
+                )
+            finally:
+                second_conn.close()
+            return []
+
+    try:
+        completed = sync_gbp_profile_once(
+            first_conn,
+            CollidingClient(),
+            merchant["id"],
+            force=True,
+            current_time=datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        first_conn.close()
+
+    assert completed is True
+    assert collision_results == [False]

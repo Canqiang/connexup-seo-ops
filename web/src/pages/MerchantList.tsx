@@ -1,8 +1,19 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type MerchantStats } from '../api'
 import { formatTime } from '../format'
 import { RUN_STATUS_LABELS } from '../labels'
+
+const isConnectedProfileReady = (profile: {
+  state: string
+  sync_status: string | null
+  last_synced_at: string | null
+  locations: unknown[]
+}) => profile.state === 'synced'
+  && profile.sync_status === 'synced'
+  && Boolean(profile.last_synced_at)
+  && profile.locations.length > 0
+const GBP_SYNC_REQUIRED_DETAIL_PREFIX = 'GBP 资料尚未完成当前同步'
 
 export default function MerchantList() {
   const navigate = useNavigate()
@@ -11,9 +22,11 @@ export default function MerchantList() {
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [primaryLocation, setPrimaryLocation] = useState('')
+  const [fbrMerchantId, setFbrMerchantId] = useState('')
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
+  const createLockRef = useRef(false)
 
   const load = useCallback(() => {
     api.listMerchants(filter === 'all' ? undefined : filter)
@@ -25,7 +38,8 @@ export default function MerchantList() {
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim() || !primaryLocation.trim() || creating) return
+    if (!name.trim() || !primaryLocation.trim() || createLockRef.current) return
+    createLockRef.current = true
     setCreating(true)
     try {
       const merchant = await api.createMerchant({
@@ -33,17 +47,65 @@ export default function MerchantList() {
         primary_location: primaryLocation.trim(),
         website_url: websiteUrl.trim() || undefined,
       })
-      let diagnosisStartFailed = false
-      try {
-        await api.createRun(merchant.id)
-      } catch {
-        diagnosisStartFailed = true
+      const fbrId = fbrMerchantId.trim()
+      if (fbrId) {
+        try {
+          await api.bindMerchantFbr(merchant.id, fbrId)
+          const profile = await api.syncMerchantGbp(merchant.id)
+          if (!isConnectedProfileReady(profile)) {
+            throw new Error(profile.last_error || 'GBP 同步结果不完整，请在商户资料中重试')
+          }
+        } catch (err) {
+          navigate(`/merchants/${merchant.id}`, {
+            state: {
+              profileSetupFailed: true,
+              profileSetupError: (err as Error).message,
+            },
+          })
+          return
+        }
       }
-      navigate(`/merchants/${merchant.id}`, { state: { diagnosisStartFailed } })
+      let diagnosisStartFailed = false
+      let diagnosisStartError = ''
+      try {
+        const run = await api.createRun(merchant.id)
+        if (run.status === 'failed') {
+          diagnosisStartFailed = true
+          diagnosisStartError = run.error || '诊断服务未能启动'
+        }
+      } catch (err) {
+        const message = (err as Error).message
+        if (fbrId && message.startsWith(GBP_SYNC_REQUIRED_DETAIL_PREFIX)) {
+          navigate(`/merchants/${merchant.id}`, {
+            state: { profileSetupFailed: true, profileSetupError: message },
+          })
+          return
+        }
+        diagnosisStartFailed = true
+        diagnosisStartError = message
+      }
+      navigate(`/merchants/${merchant.id}`, { state: { diagnosisStartFailed, diagnosisStartError } })
     } catch (err) {
       setError((err as Error).message)
     } finally {
+      createLockRef.current = false
       setCreating(false)
+    }
+  }
+
+  const deleteArchivedMerchant = async (event: React.MouseEvent<HTMLButtonElement>, merchant: MerchantStats) => {
+    event.stopPropagation()
+    if (merchant.status !== 'archived') return
+    const confirmed = window.confirm(
+      `永久删除后，该商户及其所有任务、分析记录和关联资料将无法恢复。确认删除“${merchant.name}”？`,
+    )
+    if (!confirmed) return
+    try {
+      await api.deleteMerchant(merchant.id)
+      setMerchants(current => current.filter(item => item.id !== merchant.id))
+      setError('')
+    } catch (err) {
+      setError((err as Error).message)
     }
   }
 
@@ -71,12 +133,16 @@ export default function MerchantList() {
               <input aria-label="主要地点" value={primaryLocation} onChange={e => setPrimaryLocation(e.target.value)} placeholder="例如 Mineola, NY" required />
             </label>
             <label>
-              <span>官网</span>
-              <input aria-label="官网" type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="https://（可选）" />
+              <span>FBR Merchant ID <small>选填</small></span>
+              <input aria-label="FBR Merchant ID" value={fbrMerchantId} onChange={e => setFbrMerchantId(e.target.value)} placeholder="填写后将自动同步 GBP" />
+            </label>
+            <label>
+              <span>官网 <small>选填</small></span>
+              <input aria-label="官网" type="url" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} placeholder="没有官网可留空" />
             </label>
             <div className="merchant-create-actions">
-              <button type="submit" className="primary" disabled={creating}>{creating ? '正在保存…' : '保存并开始诊断'}</button>
-              <button type="button" className="quiet" onClick={() => setShowCreate(false)}>取消</button>
+              <button type="submit" className="primary" disabled={creating}>{creating ? '正在新建…' : '新建'}</button>
+              <button type="button" className="quiet" disabled={creating} onClick={() => setShowCreate(false)}>取消</button>
             </div>
           </form>
         )}
@@ -101,7 +167,7 @@ export default function MerchantList() {
                 <th>进行中</th>
                 <th>最近分析</th>
                 <th>自动分析</th>
-                <th aria-label="进入商户" />
+                <th className="merchant-action">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -114,6 +180,7 @@ export default function MerchantList() {
                   aria-label={`打开商户 ${m.name}`}
                   onClick={() => navigate(`/merchants/${m.id}`)}
                   onKeyDown={event => {
+                    if (event.target !== event.currentTarget) return
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault()
                       navigate(`/merchants/${m.id}`)
@@ -141,7 +208,20 @@ export default function MerchantList() {
                         : <span className="dim">未分析</span>}
                   </td>
                   <td className="dim nowrap">{m.auto_run_interval_days != null ? `每 ${m.auto_run_interval_days} 天` : '关闭'}</td>
-                  <td className="merchant-enter" aria-hidden="true">→</td>
+                  <td className="merchant-action">
+                    {m.status === 'archived'
+                      ? (
+                          <button
+                            type="button"
+                            className="merchant-delete"
+                            aria-label={`删除商户 ${m.name}`}
+                            onClick={event => deleteArchivedMerchant(event, m)}
+                          >
+                            删除
+                          </button>
+                        )
+                      : <span className="merchant-enter" aria-hidden="true">→</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>

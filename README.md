@@ -27,6 +27,14 @@
 - SEO Ops 只保存明确绑定的 FBR Merchant ID、GBP 资源 ID 和当前资料快照；不会保存或返回 Google access token / refresh token。
 - 同步失败会保留上一次成功快照，不会修改 FBR 或 Google 的任何数据。
 
+## 关键词与 Local Falcon
+
+- 页面加载和“从 FBR 重新读取”只读 FBR 已落库关键词；库为空时返回空态，不会自动启动 Agent。
+- “重新生成关键词并评分”是独立的人工操作。它只会调用由 `COREAI_KEYWORD_SKILL_AGENT_ID` 指定的专用 Agent，并在触发前校验该 Agent 同时绑定 `COREAI_KEYWORD_SEED_SKILL_ID` 与 `COREAI_KEYWORD_RANKING_SKILL_ID`。
+- 生成结果只有在 Core AI trace 能读回两项 Skill 各调用一次、均成功且顺序为 Seed → Ranking 时，才可进入候选 Top 20。Skill 目前是 Agent 指令而非独立可执行函数，因此这项校验能证明实际加载顺序，不能替代运营人员对关键词与评分的复核。
+- Local Falcon 新扫描会冻结评分 Top 20、Place ID 与扫描参数；运营人员需要先审批关键词批次，再二次确认可能消耗 credits 的提交。页面上的“只同步已有报告”不会创建新扫描。
+- `COREAI_LOCAL_FALCON_TOOL_ID` 指向 Core AI 中的 Local Falcon 工具。任何缺失评分、来源未验证、门店不匹配、参数漂移或未完成批次都会阻止付费提交。
+
 ## 内部账号
 
 所有业务接口都要求内部操作员 Session。首次运行至少配置：
