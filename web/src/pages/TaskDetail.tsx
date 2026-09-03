@@ -8,7 +8,6 @@ import {
   type TaskDetail as TaskDetailRecord,
   type TaskExecution,
   type TaskMetadataUpdate,
-  type TaskResult,
   type TaskSummary,
 } from '../api'
 import { formatTime } from '../format'
@@ -22,6 +21,18 @@ const EXECUTION_STATUS_LABELS: Record<TaskExecution['status'], string> = {
   FAILED: '准备失败',
   UNKNOWN: '结果不确定',
   CANCELLED: '已停止',
+}
+
+function executionStatusLabel(execution: TaskExecution): string {
+  if (execution.status === 'SUCCEEDED') {
+    if (execution.stage === 'PUBLICATION') return '发布完成'
+    if (execution.stage === 'VERIFICATION') return '验证完成'
+  }
+  if (execution.status === 'FAILED') {
+    if (execution.stage === 'PUBLICATION') return '发布失败'
+    if (execution.stage === 'VERIFICATION') return '验证失败'
+  }
+  return EXECUTION_STATUS_LABELS[execution.status]
 }
 
 const EXECUTION_STATUS_CLASSES: Record<TaskExecution['status'], string> = {
@@ -58,6 +69,42 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
 }
 
+function normalizeMetadataText(value: string | null | undefined): string | null {
+  const normalized = value?.trim() ?? ''
+  return normalized || null
+}
+
+function normalizeMetadataLabels(values: string[]): string[] {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))]
+}
+
+function equalLabels(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function metadataUpdateCandidate(
+  task: TaskDetailRecord,
+  assignee: string,
+  labels: string[],
+  operatorNote: string,
+): TaskMetadataUpdate | null {
+  const normalizedAssignee = normalizeMetadataText(assignee)
+  const normalizedLabels = normalizeMetadataLabels(labels)
+  const normalizedOperatorNote = normalizeMetadataText(operatorNote)
+  const assigneeChanged = normalizedAssignee !== normalizeMetadataText(task.assignee)
+  const labelsChanged = !equalLabels(normalizedLabels, normalizeMetadataLabels(task.labels))
+  const operatorNoteChanged = normalizedOperatorNote !== normalizeMetadataText(task.operator_note)
+  const shared = {
+    expected_version: task.version,
+    ...(labelsChanged ? { labels: normalizedLabels } : {}),
+    ...(operatorNoteChanged ? { operator_note: normalizedOperatorNote } : {}),
+  }
+  if (assigneeChanged) return { ...shared, assignee: normalizedAssignee }
+  if (labelsChanged) return { ...shared, labels: normalizedLabels }
+  if (operatorNoteChanged) return { expected_version: task.version, operator_note: normalizedOperatorNote }
+  return null
+}
+
 function blockerSummary(blocker: TaskBlocker | null): string {
   if (!blocker) return '可执行'
   if (blocker.code === 'UPSTREAM_NOT_DONE') {
@@ -85,7 +132,37 @@ function isActiveExecution(execution: TaskExecution | null): boolean {
   return execution !== null && ['PENDING', 'DISPATCHING', 'RUNNING'].includes(execution.status)
 }
 
-function isVerifiedPreparationResult(value: unknown): value is TaskResult {
+type VerifiedTaskResult = {
+  outcome: 'ready'
+  summary: string
+  artifact_refs: string[]
+  evidence: string[]
+  external_write_performed: false
+}
+
+type TrustedPreparation =
+  | { kind: 'reviewable'; result: VerifiedTaskResult }
+  | { kind: 'trusted-unknown-no-tool' }
+  | { kind: 'untrusted' }
+
+const PREPARATION_REQUEST_KEYS = [
+  'definition_checksum',
+  'executor_kind',
+  'llm_call_id',
+  'stage',
+  'task_id',
+  'workflow_version',
+].sort()
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isLowerHexChecksum(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+function isVerifiedPreparationResult(value: unknown): value is VerifiedTaskResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const result = value as Record<string, unknown>
   const keys = Object.keys(result).sort()
@@ -103,29 +180,69 @@ function isVerifiedPreparationResult(value: unknown): value is TaskResult {
     && result.artifact_refs.length + result.evidence.length > 0
 }
 
-function isReviewablePreparation(task: TaskDetailRecord, execution: TaskExecution | null): execution is TaskExecution {
-  if (!execution || execution.status !== 'SUCCEEDED' || execution.stage !== 'PREPARATION') return false
-  if (execution.task_id !== task.id || execution.reviewed_at !== null || execution.legacy_result) return false
-  if (execution.provider_resource_id !== null || execution.approval_id !== null || execution.artifact_id !== null) return false
-  if (!isVerifiedPreparationResult(execution.result)
-    || !/^[0-9a-f]{64}$/.test(execution.request_checksum)
-    || !execution.result_checksum
-    || !/^[0-9a-f]{64}$/.test(execution.result_checksum)) return false
-  if (execution.request.executor_kind !== 'COREAI_LLM_CALL'
+function trustedPreparation(task: TaskDetailRecord, execution: TaskExecution | null): TrustedPreparation {
+  const latest = latestExecution(task)
+  if (!execution
+    || !latest
+    || latest.id !== execution.id
+    || latest.attempt !== execution.attempt
+    || !Number.isInteger(execution.attempt)
+    || execution.attempt < 1
+    || task.task_type !== 'PREPARE_ONLY'
+    || execution.stage !== 'PREPARATION'
+    || task.execution_status !== execution.status
+    || execution.task_id !== task.id
+    || execution.reviewed_at !== null
+    || execution.legacy_result
+    || execution.coreai_run_id !== null
+    || execution.provider_resource_id !== null
+    || execution.approval_id !== null
+    || execution.artifact_id !== null
+    || !isRecord(execution.request)
+    || Object.keys(execution.request).sort().join('|') !== PREPARATION_REQUEST_KEYS.join('|')
+    || execution.request.executor_kind !== 'COREAI_LLM_CALL'
     || typeof execution.request.llm_call_id !== 'string'
-    || !execution.request.llm_call_id
+    || !execution.request.llm_call_id.trim()
     || execution.request.definition_checksum !== task.definition_checksum
+    || !isLowerHexChecksum(execution.request.definition_checksum)
     || execution.request.stage !== 'PREPARATION'
     || execution.request.task_id !== task.id
-    || execution.request.workflow_version !== task.workflow_version) return false
-  if (execution.idempotency_key !== `task:${task.id}:preparation:${execution.attempt}:${execution.request_checksum.slice(0, 16)}`) return false
-  return execution.evidence.length === execution.result.evidence.length
-    && execution.evidence.every((item, index) => item === execution.result?.evidence[index])
+    || execution.request.workflow_version !== task.workflow_version
+    || !Number.isInteger(execution.request.workflow_version)
+    || (execution.request.workflow_version as number) <= 0
+    || !isLowerHexChecksum(execution.request_checksum)
+    || execution.idempotency_key !== `task:${task.id}:preparation:${execution.attempt}:${execution.request_checksum.slice(0, 16)}`) {
+    return { kind: 'untrusted' }
+  }
+
+  if (execution.status === 'UNKNOWN'
+    && task.status === 'NEEDS_ATTENTION'
+    && execution.result === null
+    && execution.result_checksum === null
+    && Array.isArray(execution.evidence)
+    && execution.evidence.length === 0) {
+    return { kind: 'trusted-unknown-no-tool' }
+  }
+
+  if (execution.status !== 'SUCCEEDED'
+    || task.status !== 'AWAITING_APPROVAL'
+    || !isVerifiedPreparationResult(execution.result)) {
+    return { kind: 'untrusted' }
+  }
+  const result = execution.result
+  if (!isLowerHexChecksum(execution.result_checksum)
+    || !Array.isArray(execution.evidence)
+    || !execution.evidence.every(item => typeof item === 'string')
+    || execution.evidence.length !== result.evidence.length
+    || !execution.evidence.every((item, index) => item === result.evidence[index])) {
+    return { kind: 'untrusted' }
+  }
+  return { kind: 'reviewable', result }
 }
 
-function executionResultView(execution: TaskExecution) {
-  if (execution.result === null) return null
-  if (execution.stage !== 'PREPARATION' || !isVerifiedPreparationResult(execution.result)) {
+function executionResultView(execution: TaskExecution, trust: TrustedPreparation) {
+  if (execution.result === null && (trust.kind !== 'untrusted' || execution.status !== 'SUCCEEDED')) return null
+  if (trust.kind !== 'reviewable') {
     const rawResult = execution.result as unknown
     const reportedWrite = Boolean(rawResult
       && typeof rawResult === 'object'
@@ -133,7 +250,8 @@ function executionResultView(execution: TaskExecution) {
       && (rawResult as Record<string, unknown>).external_write_performed === true)
     return (
       <section className="task-unsafe-result" role="alert">
-        <strong>{reportedWrite ? '结果报告可能发生外部业务写入' : '结果结构未通过本地安全校验'}</strong>
+        <strong>无法确认是否外写</strong>
+        <p><span>{reportedWrite ? '结果报告可能发生外部业务写入' : '结果结构未通过本地安全校验'}</span></p>
         <p>{reportedWrite
           ? '该结果违反 PREPARE_ONLY 安全契约，不可审批；请人工核对事件与外部资源。'
           : '该结果不是可审的规范化 Preparation 结构；不可审批，也不能据此认定未发生外部写入。'}</p>
@@ -141,7 +259,7 @@ function executionResultView(execution: TaskExecution) {
       </section>
     )
   }
-  const result = execution.result
+  const result = trust.result
   return (
     <section className="task-result" aria-label={`Attempt ${execution.attempt} 结果`}>
       <h3>准备结果</h3>
@@ -155,18 +273,6 @@ function executionResultView(execution: TaskExecution) {
   )
 }
 
-function hasCurrentPreparationIdentity(task: TaskDetailRecord, execution: TaskExecution): boolean {
-  return /^[0-9a-f]{64}$/.test(execution.request_checksum)
-    && execution.request.executor_kind === 'COREAI_LLM_CALL'
-    && typeof execution.request.llm_call_id === 'string'
-    && Boolean(execution.request.llm_call_id)
-    && execution.request.definition_checksum === task.definition_checksum
-    && execution.request.stage === 'PREPARATION'
-    && execution.request.task_id === task.id
-    && execution.request.workflow_version === task.workflow_version
-    && execution.idempotency_key === `task:${task.id}:preparation:${execution.attempt}:${execution.request_checksum.slice(0, 16)}`
-}
-
 function isRetryablePreparation(task: TaskDetailRecord, execution: TaskExecution | null): boolean {
   if (task.status !== 'NEEDS_ATTENTION' || task.replaced_by_task_id !== null || !execution) return false
   if (task.executions.some(isActiveExecution)
@@ -178,14 +284,11 @@ function isRetryablePreparation(task: TaskDetailRecord, execution: TaskExecution
     || execution.artifact_id !== null
     || execution.reviewed_at !== null) return false
   if (execution.status === 'UNKNOWN') {
-    return execution.coreai_run_id === null
-      && execution.result === null
-      && execution.result_checksum === null
-      && execution.evidence.length === 0
-      && hasCurrentPreparationIdentity(task, execution)
+    return trustedPreparation(task, execution).kind === 'trusted-unknown-no-tool'
   }
   if (execution.status !== 'FAILED' && execution.status !== 'CANCELLED') return false
-  return execution.result === null || execution.result.external_write_performed === false
+  return execution.result === null
+    || (isRecord(execution.result) && execution.result.external_write_performed === false)
 }
 
 function resultIdentity(task: TaskDetailRecord, execution: TaskExecution) {
@@ -223,8 +326,13 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   const mountedRef = useRef(false)
   const loadEpochRef = useRef(0)
   const loadControllerRef = useRef<AbortController | null>(null)
+  const fullLoadInFlightRef = useRef(false)
   const actionControllerRef = useRef<AbortController | null>(null)
   const actionBusyRef = useRef(false)
+  const taskRef = useRef<TaskDetailRecord | null>(null)
+  const assigneeDraftRef = useRef('')
+  const labelsDraftRef = useRef<string[]>([])
+  const operatorNoteDraftRef = useRef('')
   const [task, setTask] = useState<TaskDetailRecord | null>(null)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [loading, setLoading] = useState(validTaskId)
@@ -242,12 +350,29 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   const [showReturn, setShowReturn] = useState(false)
   const [returnReason, setReturnReason] = useState('')
 
-  const acceptTask = useCallback((fresh: TaskDetailRecord) => {
+  const acceptTask = useCallback((fresh: TaskDetailRecord, preserveMetadataDraft = false) => {
     if (fresh.id !== taskId) throw new Error('任务响应与当前路由不一致')
+    const previous = taskRef.current
+    const preserveAssignee = preserveMetadataDraft && previous !== null
+      && normalizeMetadataText(assigneeDraftRef.current) !== normalizeMetadataText(previous.assignee)
+    const preserveLabels = preserveMetadataDraft && previous !== null
+      && !equalLabels(normalizeMetadataLabels(labelsDraftRef.current), normalizeMetadataLabels(previous.labels))
+    const preserveOperatorNote = preserveMetadataDraft && previous !== null
+      && normalizeMetadataText(operatorNoteDraftRef.current) !== normalizeMetadataText(previous.operator_note)
+    taskRef.current = fresh
     setTask(fresh)
-    setAssignee(fresh.assignee ?? '')
-    setLabels([...fresh.labels])
-    setOperatorNote(fresh.operator_note ?? '')
+    if (!preserveAssignee) {
+      assigneeDraftRef.current = fresh.assignee ?? ''
+      setAssignee(fresh.assignee ?? '')
+    }
+    if (!preserveLabels) {
+      labelsDraftRef.current = [...fresh.labels]
+      setLabels([...fresh.labels])
+    }
+    if (!preserveOperatorNote) {
+      operatorNoteDraftRef.current = fresh.operator_note ?? ''
+      setOperatorNote(fresh.operator_note ?? '')
+    }
   }, [taskId])
 
   const load = useCallback(() => {
@@ -256,6 +381,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
     loadControllerRef.current?.abort()
     const controller = new AbortController()
     loadControllerRef.current = controller
+    fullLoadInFlightRef.current = true
     setLoading(true)
     setError('')
     setConflict(false)
@@ -277,7 +403,28 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
         }
       })
       .finally(() => {
+        if (loadControllerRef.current === controller) fullLoadInFlightRef.current = false
         if (mountedRef.current && loadEpochRef.current === epoch) setLoading(false)
+      })
+  }, [acceptTask, taskId, validTaskId])
+
+  const poll = useCallback(() => {
+    if (!validTaskId || actionBusyRef.current || fullLoadInFlightRef.current) return
+    const epoch = ++loadEpochRef.current
+    loadControllerRef.current?.abort()
+    const controller = new AbortController()
+    loadControllerRef.current = controller
+    api.getTask(taskId, controller.signal)
+      .then(fresh => {
+        if (!mountedRef.current || loadEpochRef.current !== epoch || controller.signal.aborted) return
+        acceptTask(fresh, true)
+        setError('')
+        setConflict(false)
+      })
+      .catch(nextError => {
+        if (!isAbortError(nextError) && mountedRef.current && loadEpochRef.current === epoch) {
+          setError((nextError as Error).message)
+        }
       })
   }, [acceptTask, taskId, validTaskId])
 
@@ -287,15 +434,32 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
     return () => {
       window.clearTimeout(initialLoad)
       mountedRef.current = false
+      fullLoadInFlightRef.current = false
       loadEpochRef.current += 1
       loadControllerRef.current?.abort()
       actionControllerRef.current?.abort()
     }
   }, [load])
 
+  const latestForPolling = task ? latestExecution(task) : null
+  const shouldPoll = task !== null && (
+    ['PREPARING', 'EXECUTING', 'VERIFYING'].includes(task.status)
+    || isActiveExecution(latestForPolling)
+  )
+
+  useEffect(() => {
+    if (!shouldPoll) return
+    const timer = window.setInterval(poll, 5000)
+    return () => window.clearInterval(timer)
+  }, [poll, shouldPoll])
+
   const beginAction = () => {
     if (actionBusyRef.current) return null
     actionBusyRef.current = true
+    loadEpochRef.current += 1
+    loadControllerRef.current?.abort()
+    fullLoadInFlightRef.current = false
+    setLoading(false)
     const controller = new AbortController()
     actionControllerRef.current?.abort()
     actionControllerRef.current = controller
@@ -335,7 +499,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
 
   const saveMetadata = async () => {
     if (!task) return
-    const normalizedLabels = [...new Set(labels.map(value => value.trim()).filter(Boolean))]
+    const normalizedLabels = normalizeMetadataLabels(labels)
     if (normalizedLabels.length > 20) {
       setError('内部标签最多 20 个')
       return
@@ -344,15 +508,10 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
       setError('每个内部标签最多 50 个字符')
       return
     }
-    const body: TaskMetadataUpdate = { expected_version: task.version }
-    if (assignee !== (task.assignee ?? '')) body.assignee = assignee.trim() || null
-    if (labels.length !== task.labels.length || labels.some((value, index) => value !== task.labels[index])) {
-      body.labels = normalizedLabels
-    }
-    if (operatorNote !== (task.operator_note ?? '')) body.operator_note = operatorNote.trim() || null
-    if (Object.keys(body).length === 1) {
+    const body = metadataUpdateCandidate(task, assignee, labels, operatorNote)
+    if (!body) {
       setError('')
-      setNotice('内部元数据没有变化。')
+      setNotice('没有需要保存的变更。')
       return
     }
     const controller = beginAction()
@@ -431,7 +590,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
       if (execution.status === 'SUCCEEDED') setNotice('内容准备已完成，等待人工审批。')
       else if (execution.status === 'UNKNOWN') setNotice('本次内容准备结果不确定，需要人工判断后再重试。')
       else if (execution.status === 'FAILED') setNotice('本次内容准备失败，需要人工处理。')
-      else setNotice(`内容准备 Attempt 当前状态：${EXECUTION_STATUS_LABELS[execution.status]}。`)
+      else setNotice(`内容准备 Attempt 当前状态：${executionStatusLabel(execution)}。`)
     } catch (nextError) {
       failAction(controller, nextError)
     } finally {
@@ -506,6 +665,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   }
 
   const latest = latestExecution(task)
+  const metadataCandidate = metadataUpdateCandidate(task, assignee, labels, operatorNote)
   const canExecute = task.status === 'PENDING'
     && task.readiness === 'READY'
     && task.replaced_by_task_id === null
@@ -513,8 +673,8 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   const canCancel = ['PENDING', 'AWAITING_APPROVAL', 'NEEDS_ATTENTION'].includes(task.status)
     && !task.executions.some(isActiveExecution)
   const canRetry = isRetryablePreparation(task, latest)
-  const canReview = task.status === 'AWAITING_APPROVAL'
-    && isReviewablePreparation(task, latest)
+  const latestTrust = trustedPreparation(task, latest)
+  const canReview = latestTrust.kind === 'reviewable'
   const lifecycleSteps = [
     { key: 'PENDING', label: '接收任务' },
     { key: 'PREPARING', label: '无工具内容准备' },
@@ -621,14 +781,16 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
               <div className="empty-state">尚无内容准备 Attempt。</div>
             ) : (
               <div className="task-attempt-list">
-                {task.executions.map(execution => (
+                {task.executions.map(execution => {
+                  const trust = trustedPreparation(task, execution)
+                  return (
                   <article key={execution.id} className={`task-attempt ${execution === latest ? 'latest' : ''}`} aria-label={`Attempt ${execution.attempt}`}>
                     <header>
                       <div>
                         <strong>Attempt {execution.attempt}</strong>
                         <span>#{execution.id} · {execution.stage}</span>
                       </div>
-                      <span className={`badge ${EXECUTION_STATUS_CLASSES[execution.status]}`}>{EXECUTION_STATUS_LABELS[execution.status]}</span>
+                      <span className={`badge ${EXECUTION_STATUS_CLASSES[execution.status]}`}>{executionStatusLabel(execution)}</span>
                     </header>
                     <dl>
                       <div><dt>开始</dt><dd>{formatTime(execution.created_at)}</dd></div>
@@ -638,12 +800,14 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
                     {execution.status === 'UNKNOWN' && (
                       <section className="task-unknown-warning" role="alert">
                         <strong>结果不确定，需要人工介入</strong>
-                        {execution.stage === 'PREPARATION' ? (
-                          <p>再次准备可能重复产生模型成本，但这个阶段没有外部业务写入。</p>
+                        {trust.kind === 'trusted-unknown-no-tool' ? (
+                          <p>无工具端点不具备业务写能力，但模型调用结果未知；人工重试可能重复计费。</p>
+                        ) : execution.stage === 'PREPARATION' ? (
+                          <><b>无法确认是否外写</b><p>执行身份或资源标记不可信；不要自动重试，需人工核对。</p></>
                         ) : execution.stage === 'PUBLICATION' ? (
-                          <p>外部发布结果不确定，可能已经发生业务写入；不要重复发布，需人工核对。</p>
+                          <><b>无法确认是否外写</b><p>外部发布结果不确定，可能已经发生业务写入；不要重复发布，需人工核对。</p></>
                         ) : (
-                          <p>外部验证结果不确定，不能据此判断发布状态；不要重复发布，需人工核对。</p>
+                          <><b>无法确认是否外写</b><p>外部验证结果不确定，不能据此判断发布状态；不要重复发布，需人工核对。</p></>
                         )}
                       </section>
                     )}
@@ -654,7 +818,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
                         <pre>{execution.legacy_result.output_text}</pre>
                       </section>
                     )}
-                    {executionResultView(execution)}
+                    {executionResultView(execution, trust)}
                     {execution.review_note && <p className="task-review-note"><strong>退回原因：</strong>{execution.review_note}</p>}
                     {execution === latest && canReview && (
                       <div className="task-review-zone">
@@ -677,7 +841,8 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
                       </div>
                     )}
                   </article>
-                ))}
+                  )
+                })}
               </div>
             )}
           </section>
@@ -739,7 +904,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
           <section className="panel task-metadata" aria-labelledby="task-metadata-title">
             <div className="panel-head compact"><div><h2 id="task-metadata-title">内部元数据</h2><p>不改变执行定义或审批对象。</p></div></div>
             <div className="task-metadata-fields">
-              <label>负责人<input aria-label="负责人" maxLength={100} value={assignee} onChange={event => setAssignee(event.target.value)} disabled={busy} /></label>
+              <label>负责人<input aria-label="负责人" maxLength={100} value={assignee} onChange={event => { assigneeDraftRef.current = event.target.value; setAssignee(event.target.value) }} disabled={busy} /></label>
               <div className="task-label-field">
                 <span>内部标签</span>
                 <div className="task-label-editor" role="group" aria-label="内部标签编辑器">
@@ -749,25 +914,41 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
                         aria-label={`内部标签 ${index + 1}`}
                         rows={1}
                         value={label}
-                        onChange={event => setLabels(current => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
+                        onChange={event => setLabels(current => {
+                          const next = current.map((item, itemIndex) => itemIndex === index ? event.target.value : item)
+                          labelsDraftRef.current = next
+                          return next
+                        })}
                         disabled={busy}
                       />
                       <button
                         type="button"
                         className="quiet"
                         aria-label={`移除内部标签 ${index + 1}`}
-                        onClick={() => setLabels(current => current.filter((_, itemIndex) => itemIndex !== index))}
+                        onClick={() => setLabels(current => {
+                          const next = current.filter((_, itemIndex) => itemIndex !== index)
+                          labelsDraftRef.current = next
+                          return next
+                        })}
                         disabled={busy}
                       >移除</button>
                     </div>
                   ))}
-                  <button type="button" className="quiet" aria-label="新增内部标签" onClick={() => setLabels(current => [...current, ''])} disabled={busy || labels.length >= 20}>＋ 添加标签</button>
+                  <button type="button" className="quiet" aria-label="新增内部标签" onClick={() => setLabels(current => {
+                    const next = [...current, '']
+                    labelsDraftRef.current = next
+                    return next
+                  })} disabled={busy || labels.length >= 20}>＋ 添加标签</button>
                 </div>
                 <small>逐项编辑，保存时自动 trim / 去重，最多 20 个。</small>
               </div>
-              <label>操作人备注<textarea aria-label="操作人备注" maxLength={2000} value={operatorNote} onChange={event => setOperatorNote(event.target.value)} disabled={busy} /></label>
+              <label>操作人备注<textarea aria-label="操作人备注" maxLength={2000} value={operatorNote} onChange={event => { operatorNoteDraftRef.current = event.target.value; setOperatorNote(event.target.value) }} disabled={busy} /></label>
             </div>
-            <div className="panel-foot task-metadata-actions"><span>Task version {task.version}</span><button className="primary" type="button" onClick={() => void saveMetadata()} disabled={busy}>保存内部元数据</button></div>
+            <div className="panel-foot task-metadata-actions">
+              <span>Task version {task.version}</span>
+              {metadataCandidate === null && <small>没有需要保存的变更。</small>}
+              <button className="primary" type="button" onClick={() => void saveMetadata()} disabled={busy || metadataCandidate === null}>保存内部元数据</button>
+            </div>
           </section>
         </aside>
       </div>

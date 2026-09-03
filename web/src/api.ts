@@ -49,14 +49,6 @@ export type TaskBlocker =
   | { code: 'SCHEDULED_FOR_FUTURE'; scheduled_start: string }
   | { code: 'UPSTREAM_NOT_DONE'; task_id: number; task_key: string; task_title: string }
 
-export type TaskResult = {
-  outcome: 'ready'
-  summary: string
-  artifact_refs: string[]
-  evidence: string[]
-  external_write_performed: false
-}
-
 export type TaskExecutionRequest = Record<string, unknown> & {
   definition_checksum?: string
   executor_kind?: string
@@ -81,7 +73,7 @@ export type TaskExecution = {
   provider_resource_id: string | null
   request: TaskExecutionRequest
   evidence: string[]
-  result: TaskResult | null
+  result: unknown
   result_checksum: string | null
   legacy_result?: { unverified: true; output_text: string }
   error: string | null
@@ -174,23 +166,32 @@ export type TaskQuery = {
   scheduled_after?: string
 }
 
-export type OperatorTaskCreate = {
+type OperatorTaskCreateBase = {
   task_type: 'PREPARE_ONLY'
   title: string
   rationale: string
   expected_outcome: string
   scheduled_start: string | null
   parameters: { description?: string | null; category?: TaskCategory | null }
-  replaces_task_id?: number
-  replaces_task_version?: number
 }
 
-export type TaskMetadataUpdate = {
-  expected_version: number
-  assignee?: string | null
-  labels?: string[] | null
-  operator_note?: string | null
+type OperatorTaskReplacement =
+  | { replaces_task_id: number; replaces_task_version: number }
+  | { replaces_task_id?: never; replaces_task_version?: never }
+
+export type OperatorTaskCreate = OperatorTaskCreateBase & OperatorTaskReplacement
+
+type TaskMetadataFields = {
+  assignee: string | null
+  labels: string[] | null
+  operator_note: string | null
 }
+
+export type TaskMetadataUpdate = { expected_version: number } & (
+  | ({ assignee: TaskMetadataFields['assignee'] } & Partial<Omit<TaskMetadataFields, 'assignee'>>)
+  | ({ labels: TaskMetadataFields['labels'] } & Partial<Omit<TaskMetadataFields, 'labels'>>)
+  | ({ operator_note: TaskMetadataFields['operator_note'] } & Partial<Omit<TaskMetadataFields, 'operator_note'>>)
+)
 
 export type TaskReviewIdentity = {
   expected_version: number
@@ -575,7 +576,7 @@ export const api = {
   patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'primary_location' | 'website_url' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   listTasks: (merchantId: number, signal?: AbortSignal) =>
-    request<TaskSummary[]>(taskQueryPath({ merchant_id: merchantId }), { signal }),
+    request<TaskSummary[]>(`/api/merchants/${merchantId}/tasks`, { signal }),
   createTask: (merchantId: number, body: OperatorTaskCreate, signal?: AbortSignal) =>
     request<TaskSummary>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body), signal }),
   getTask: (id: number, signal?: AbortSignal) => request<TaskDetail>(`/api/tasks/${id}`, { signal }),

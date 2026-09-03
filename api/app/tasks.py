@@ -517,6 +517,7 @@ def _validated_reviewable_preparation(
         or execution["stage"] != "PREPARATION"
         or execution["status"] != "SUCCEEDED"
         or execution["reviewed_at"] is not None
+        or execution["coreai_run_id"] is not None
         or execution["provider_resource_id"] is not None
         or execution["approval_id"] is not None
         or execution["artifact_id"] is not None

@@ -212,6 +212,7 @@ describe('desktop operator shell', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -1101,7 +1102,7 @@ describe('desktop operator shell', () => {
       if (input === '/api/merchants/1') return response({
         id: 1, name: 'Merchant', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z',
       })
-      if (input === '/api/tasks?merchant_id=1') return response({ detail: 'task queue read failed' }, 503)
+      if (input === '/api/merchants/1/tasks') return response({ detail: 'task queue read failed' }, 503)
       if (input === '/api/merchants/1/runs') return response([{
         id: 7, merchant_id: 1, coreai_run_id: 'run-7', status: 'succeeded', trigger_kind: 'manual',
         report_text: '# Report', error: null, plan_approved_at: null,
@@ -1279,7 +1280,7 @@ describe('desktop operator shell', () => {
       status: 200,
       json: async () => input === '/api/merchants/1'
         ? { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
-        : input === '/api/tasks?merchant_id=1'
+        : input === '/api/merchants/1/tasks'
           ? [task]
           : input === '/api/tasks/37'
             ? taskDetail(task)
@@ -2257,6 +2258,35 @@ describe('desktop operator shell', () => {
     expect((screen.getByRole('textbox', { name: '操作人备注' }) as HTMLTextAreaElement).value).toBe(' Keep this exact ')
   })
 
+  it('disables normalized no-op metadata saves and never sends an empty CAS mutation', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') {
+        return response(taskDetail({
+          assignee: 'operator-a', labels: ['urgent', 'review'], operator_note: 'Check brand tone',
+        }))
+      }
+      return response([])
+    }))
+    render(<App />)
+
+    fireEvent.change(await screen.findByRole('textbox', { name: '负责人' }), { target: { value: ' operator-a ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '内部标签 1' }), { target: { value: ' urgent ' } })
+    fireEvent.click(screen.getByRole('button', { name: '新增内部标签' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '内部标签 3' }), { target: { value: ' review ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '操作人备注' }), { target: { value: ' Check brand tone ' } })
+
+    const save = screen.getByRole('button', { name: '保存内部元数据' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    expect(calls.filter(call => call.input === '/api/tasks/12' && call.init?.method === 'PATCH')).toHaveLength(0)
+    screen.getByText('没有需要保存的变更。')
+  })
+
   it('cancels a safe task with a reason and preserves its history instead of deleting it', async () => {
     window.history.pushState({}, '', '/tasks/12')
     const calls: Array<{ input: string; init?: RequestInit }> = []
@@ -2371,8 +2401,91 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     await screen.findByRole('article', { name: 'Attempt 1' })
+    screen.getByText('发布完成')
     expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
     expect(screen.queryByRole('button', { name: '退回重新准备' })).toBeNull()
+  })
+
+  it.each([
+    {
+      name: 'an extra public request key',
+      execution: () => {
+        const current = taskExecution()
+        return taskExecution({ request: { ...current.request, unexpected: 'unsafe' } })
+      },
+    },
+    {
+      name: 'a missing public request key',
+      execution: () => taskExecution({ request: {
+        definition_checksum: 'c'.repeat(64), executor_kind: 'COREAI_LLM_CALL', llm_call_id: 'preparation-call',
+        stage: 'PREPARATION', task_id: 12,
+      } }),
+    },
+    { name: 'a Core AI run marker', execution: () => taskExecution({ coreai_run_id: 'coreai-run-41' }) },
+    { name: 'a provider resource marker', execution: () => taskExecution({ provider_resource_id: 'provider-resource-41' }) },
+    { name: 'an artifact marker', execution: () => taskExecution({ artifact_id: 81 }) },
+    { name: 'an approval marker', execution: () => taskExecution({ approval_id: 71 }) },
+    { name: 'mismatched execution evidence', execution: () => taskExecution({ evidence: ['Different evidence.'] }) },
+    { name: 'a non-succeeded status', execution: () => taskExecution({ status: 'FAILED' }) },
+    { name: 'an already reviewed result', execution: () => taskExecution({ reviewed_at: '2026-09-03T03:00:00+00:00' }) },
+  ])('shows no safe claim or review control when the latest envelope has $name', async ({ execution }) => {
+    window.history.pushState({}, '', '/tasks/12')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED', executions: [execution()] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByRole('article', { name: 'Attempt 1' })
+    screen.getByText('无法确认是否外写')
+    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '退回重新准备' })).toBeNull()
+  })
+
+  it('does not trust a valid-looking result after a newer attempt exists', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const older = taskExecution()
+    const newer = taskExecution({ id: 42, attempt: 2, status: 'FAILED', result: null, result_checksum: null, idempotency_key: 'task:12:preparation:2:dddddddddddddddd' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', execution_status: 'FAILED', executions: [older, newer] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByRole('article', { name: 'Attempt 2' })
+    screen.getByText('无法确认是否外写')
+    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+  })
+
+  it.each([
+    {
+      name: 'a summary status that disagrees with the latest execution',
+      execution: () => taskExecution(),
+      detail: { execution_status: 'FAILED' },
+    },
+    {
+      name: 'a non-integer attempt identity',
+      execution: () => taskExecution({ attempt: '1' }),
+      detail: { execution_status: 'SUCCEEDED' },
+    },
+  ])('rejects $name', async ({ execution, detail }) => {
+    window.history.pushState({}, '', '/tasks/12')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'AWAITING_APPROVAL', executions: [execution()], ...detail }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('无法确认是否外写')
+    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
   })
 
   it('fails closed instead of crashing or claiming no-write for a malformed stored result', async () => {
@@ -2389,6 +2502,27 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     await screen.findByText('结果结构未通过本地安全校验')
+    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+  })
+
+  it.each([
+    ['a needs-input object', { outcome: 'needs_input', questions: ['Which location?'], external_write_performed: false }],
+    ['an array', ['unexpected']],
+    ['a scalar', 'unexpected'],
+    ['a null succeeded result', null],
+  ])('renders arbitrary JSON safely and fails closed for %s', async (_name, result) => {
+    window.history.pushState({}, '', '/tasks/12')
+    const malformed = taskExecution({ result })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED', executions: [malformed] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('无法确认是否外写')
     expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
     expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
   })
@@ -2432,6 +2566,44 @@ describe('desktop operator shell', () => {
     expect(screen.queryByText('再次准备可能重复产生模型成本，但这个阶段没有外部业务写入。')).toBeNull()
   })
 
+  it('trusts only a no-tool UNKNOWN preparation envelope for the narrow no-write explanation', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const unknown = taskExecution({
+      status: 'UNKNOWN', result: null, result_checksum: null, evidence: [],
+      finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', execution_status: 'UNKNOWN', executions: [unknown] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('无工具端点不具备业务写能力，但模型调用结果未知；人工重试可能重复计费。')
+    screen.getByRole('button', { name: '授权重新准备' })
+    expect(screen.queryByText('无法确认是否外写')).toBeNull()
+  })
+
+  it('treats an UNKNOWN preparation with a Core AI run marker as untrusted', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const unknown = taskExecution({
+      status: 'UNKNOWN', result: null, result_checksum: null, evidence: [], coreai_run_id: 'coreai-run-41',
+      finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', execution_status: 'UNKNOWN', executions: [unknown] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('无法确认是否外写')
+    expect(screen.queryByText('无工具端点不具备业务写能力，但模型调用结果未知；人工重试可能重复计费。')).toBeNull()
+    expect(screen.queryByRole('button', { name: '授权重新准备' })).toBeNull()
+  })
+
   it('does not offer retry for a legacy failed execution whose result is null', async () => {
     window.history.pushState({}, '', '/tasks/12')
     const legacy = taskExecution({
@@ -2472,7 +2644,7 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     await screen.findByText('结果不确定，需要人工介入')
-    screen.getByText('再次准备可能重复产生模型成本，但这个阶段没有外部业务写入。')
+    screen.getByText('无工具端点不具备业务写能力，但模型调用结果未知；人工重试可能重复计费。')
     fireEvent.click(screen.getByRole('button', { name: '授权重新准备' }))
     fireEvent.change(screen.getByRole('textbox', { name: '重试原因' }), { target: { value: ' No external result was returned ' } })
     fireEvent.click(screen.getByRole('button', { name: '确认重新准备' }))
@@ -2553,6 +2725,185 @@ describe('desktop operator shell', () => {
     stale.resolve(response(taskDetail({ title: 'Stale task' })))
     await act(async () => { await Promise.resolve() })
     expect(screen.queryByRole('heading', { name: 'Stale task' })).toBeNull()
+  })
+
+  it('polls an active task until another worker settles it, then stops polling', async () => {
+    vi.useFakeTimers()
+    window.history.pushState({}, '', '/tasks/12')
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const active = taskDetail({ status: 'PREPARING', version: 4, execution_status: 'RUNNING', executions: [activeExecution] })
+    const settled = taskDetail({
+      status: 'AWAITING_APPROVAL', version: 5, execution_status: 'SUCCEEDED', executions: [taskExecution()],
+      events: [...taskDetail().events, {
+        id: 92, entity_type: 'TASK', entity_id: 12, event_type: 'TASK_PREPARATION_SUCCEEDED',
+        actor_type: 'SYSTEM', actor_id: null, payload: { execution_id: 41 }, created_at: '2026-09-03T01:02:00+00:00',
+      }],
+    })
+    let taskReads = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/tasks/12') {
+        taskReads += 1
+        return response(taskReads === 1 ? active : settled)
+      }
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      return response([])
+    }))
+    render(<App />)
+
+    await vi.waitFor(() => expect(screen.getByText('准备中')).toBeTruthy())
+    expect(taskReads).toBe(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    screen.getByText('待内容审批')
+    screen.getByText('内容准备已返回可审结果')
+    expect(taskReads).toBe(2)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(taskReads).toBe(2)
+  })
+
+  it('does not let task polling abort a slow merchant read from the full detail load', async () => {
+    vi.useFakeTimers()
+    window.history.pushState({}, '', '/tasks/12')
+    const merchant = deferred<ReturnType<typeof response>>()
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const active = taskDetail({ status: 'PREPARING', version: 4, execution_status: 'RUNNING', executions: [activeExecution] })
+    let taskReads = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      if (input === '/api/auth/me') return Promise.resolve(response({ username: 'test', role: 'operator' }))
+      if (input === '/api/tasks/12') {
+        taskReads += 1
+        return Promise.resolve(response(active))
+      }
+      if (input === '/api/merchants/1') return merchant.promise
+      return Promise.resolve(response([]))
+    }))
+    render(<App />)
+
+    await vi.waitFor(() => expect(screen.getByText('准备中')).toBeTruthy())
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(taskReads).toBe(1)
+
+    merchant.resolve(response({ id: 1, name: 'Slow Merchant', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }))
+    await act(async () => { await Promise.resolve() })
+    screen.getByRole('button', { name: '返回Slow Merchant' })
+    expect((screen.getByRole('button', { name: '刷新任务状态' }) as HTMLButtonElement).disabled).toBe(false)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(taskReads).toBe(2)
+  })
+
+  it('polling preserves normalized-dirty metadata drafts while accepting authoritative task state', async () => {
+    vi.useFakeTimers()
+    window.history.pushState({}, '', '/tasks/12')
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const initial = taskDetail({
+      status: 'PREPARING', version: 4, assignee: 'operator-a', labels: ['urgent'], operator_note: 'base note',
+      execution_status: 'RUNNING', executions: [activeExecution],
+    })
+    const refreshed = taskDetail({
+      status: 'PREPARING', version: 5, assignee: 'server-owner', labels: ['server'], operator_note: 'server note',
+      execution_status: 'RUNNING', executions: [activeExecution],
+    })
+    let taskReads = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/tasks/12') {
+        taskReads += 1
+        return response(taskReads === 1 ? initial : refreshed)
+      }
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      return response([])
+    }))
+    render(<App />)
+
+    await vi.waitFor(() => expect(screen.getByRole('textbox', { name: '负责人' })).toBeTruthy())
+    fireEvent.change(screen.getByRole('textbox', { name: '负责人' }), { target: { value: ' local owner ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '内部标签 1' }), { target: { value: ' urgent ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '操作人备注' }), { target: { value: ' base note ' } })
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    screen.getByText('Task version 5')
+    expect((screen.getByRole('textbox', { name: '负责人' }) as HTMLInputElement).value).toBe(' local owner ')
+    expect((screen.getByRole('textbox', { name: '内部标签 1' }) as HTMLTextAreaElement).value).toBe('server')
+    expect((screen.getByRole('textbox', { name: '操作人备注' }) as HTMLTextAreaElement).value).toBe('server note')
+  })
+
+  it('invalidates an in-flight poll before accepting a metadata mutation readback', async () => {
+    vi.useFakeTimers()
+    window.history.pushState({}, '', '/tasks/12')
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const initial = taskDetail({
+      status: 'PREPARING', version: 4, assignee: 'server-owner', execution_status: 'RUNNING', executions: [activeExecution],
+    })
+    const updated = taskDetail({
+      status: 'PREPARING', version: 5, assignee: 'local-owner', execution_status: 'RUNNING', executions: [activeExecution],
+    })
+    const stalePoll = deferred<ReturnType<typeof response>>()
+    let taskReads = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (input === '/api/auth/me') return Promise.resolve(response({ username: 'test', role: 'operator' }))
+      if (input === '/api/merchants/1') return Promise.resolve(response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }))
+      if (input === '/api/tasks/12' && init?.method === 'PATCH') return Promise.resolve(response(taskSummary(updated)))
+      if (input === '/api/tasks/12') {
+        taskReads += 1
+        if (taskReads === 1) return Promise.resolve(response(initial))
+        if (taskReads === 2) return stalePoll.promise
+        return Promise.resolve(response(updated))
+      }
+      return Promise.resolve(response([]))
+    }))
+    render(<App />)
+
+    await vi.waitFor(() => expect(screen.getByRole('textbox', { name: '负责人' })).toBeTruthy())
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(taskReads).toBe(2)
+    fireEvent.change(screen.getByRole('textbox', { name: '负责人' }), { target: { value: 'local-owner' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存内部元数据' }))
+    await vi.waitFor(() => expect(screen.getByText('Task version 5')).toBeTruthy())
+
+    stalePoll.resolve(response(initial))
+    await act(async () => { await Promise.resolve() })
+    screen.getByText('Task version 5')
+    expect((screen.getByRole('textbox', { name: '负责人' }) as HTMLInputElement).value).toBe('local-owner')
+  })
+
+  it('ignores a deferred poll response from a task route that is no longer active', async () => {
+    vi.useFakeTimers()
+    window.history.pushState({}, '', '/tasks/12')
+    const stalePoll = deferred<ReturnType<typeof response>>()
+    let taskTwelveReads = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      if (input === '/api/auth/me') return Promise.resolve(response({ username: 'test', role: 'operator' }))
+      if (input === '/api/tasks/12') {
+        taskTwelveReads += 1
+        if (taskTwelveReads === 1) {
+          return Promise.resolve(response(taskDetail({ status: 'PREPARING', execution_status: 'RUNNING', executions: [taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })] })))
+        }
+        return stalePoll.promise
+      }
+      if (input === '/api/tasks/13') return Promise.resolve(response(taskDetail({ id: 13, task_key: 'current', title: 'Current task' })))
+      if (input === '/api/merchants/1') return Promise.resolve(response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }))
+      return Promise.resolve(response([]))
+    }))
+    render(<App />)
+
+    await vi.waitFor(() => expect(screen.getByText('准备中')).toBeTruthy())
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(taskTwelveReads).toBe(2)
+
+    act(() => {
+      window.history.pushState({}, '', '/tasks/13')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    screen.getByRole('heading', { name: 'Current task' })
+
+    stalePoll.resolve(response(taskDetail({ title: 'Stale polled task' })))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByRole('heading', { name: 'Stale polled task' })).toBeNull()
+    screen.getByRole('heading', { name: 'Current task' })
   })
 
   it('retries a failed server-filtered task query without inventing a local fallback', async () => {

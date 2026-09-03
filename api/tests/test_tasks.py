@@ -988,6 +988,44 @@ def test_review_actions_reject_incomplete_stored_preparation_result(client, acti
 
 
 @pytest.mark.parametrize("action", ["approve-execution", "return-execution"])
+def test_review_actions_reject_coreai_run_on_completed_preparation(client, action):
+    from app.db import connect
+    from helpers import FakeCoreAi
+
+    fake = FakeCoreAi()
+    fake.llm_output = verified_agent_result()
+    override_preparation_llm_call(fake)
+    try:
+        merchant = make_merchant(client)
+        task = make_task(client, merchant["id"])
+        completed = execute_current(client, task["id"])
+        assert completed.status_code == 201, completed.text
+        assert completed.json()["status"] == "SUCCEEDED"
+
+        detail = client.get(f"/api/tasks/{task['id']}").json()
+        binding = execution_binding(detail)
+        conn = connect()
+        try:
+            conn.execute(
+                "UPDATE task_executions SET coreai_run_id = ? WHERE id = ?",
+                ("unexpected-agent-run", binding["expected_execution_id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        body = dict(binding)
+        if action == "return-execution":
+            body["reason"] = "revise"
+        response = client.post(f"/api/tasks/{task['id']}/{action}", json=body)
+
+        assert response.status_code == 409
+        assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "AWAITING_APPROVAL"
+    finally:
+        clear_preparation_llm_call()
+
+
+@pytest.mark.parametrize("action", ["approve-execution", "return-execution"])
 @pytest.mark.parametrize(
     ("column", "corrupt_value"),
     [
