@@ -2603,7 +2603,7 @@ describe('关键词版本 controls', () => {
         target_surfaces_changed_count: 5,
         added_keywords: ['candidate one'],
         removed_keywords: ['active one'],
-        changed_keywords: [],
+        changed_keywords: [{ keyword: 'shared keyword', priority: { active: 'P2', fbr: 'P0' }, target_surfaces: { active: ['GBP'], fbr: ['GBP', 'LANDING_PAGE'] } }],
       },
     },
     keyword_set: {
@@ -2667,6 +2667,9 @@ describe('关键词版本 controls', () => {
     within(comparison).getByText('移除 2')
     within(comparison).getByText('优先级变化 4')
     within(comparison).getByText('落地页变化 5')
+    within(comparison).getByText('candidate one')
+    within(comparison).getByText('active one')
+    within(comparison).getByText('shared keyword')
   })
 
   it('offers Skill restore and FBR adoption only for inactive versions', async () => {
@@ -2703,6 +2706,40 @@ describe('关键词版本 controls', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/merchants/3/seo-targets/activations', expect.objectContaining({ body: JSON.stringify({ artifact_id: 99, expected_active_artifact_id: 41, confirmed: true }) })))
   })
 
+  it('uses server active ID over stale version flags after a successful FBR adoption', async () => {
+    const activatedState = activeState({
+      active_keyword_artifact_id: 99,
+      active_keyword_source: 'FBR',
+      keyword_set_artifact_id: 99,
+      keyword_set: {
+        schema_version: 'seo_ops.keyword_set.v2', merchant_id: '3',
+        market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Brooklyn' },
+        generation_method: 'PERSISTED_FBR_READBACK', title: 'Activated FBR', summary: 'Server active FBR truth.',
+        keywords: [{ keyword: 'fbr activated keyword', strategy: 'LOCAL', intent: 'LOCAL', priority: 'UNSCORED', score: null, score_rank: null, rationale: 'FBR', source_tags: ['FBR'], target_surface_types: ['GBP'], target_location: 'Brooklyn' }], evidence_gaps: [],
+      },
+      // The API metadata flags are intentionally stale: artifact 41 is still marked active.
+      keyword_versions: activeState().keyword_versions,
+    })
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => ({
+      ok: true, status: 200,
+      json: async () => input === '/api/merchants/3/seo-targets/activations' ? activatedState
+        : input === '/api/merchants/3/seo-targets' ? activeState()
+          : input === '/api/merchants/3/profile' ? profile
+            : input === '/api/merchants/3' ? { id: 3, name: 'Version Store', primary_location: 'Brooklyn, NY', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+              : { username: 'test', role: 'operator' },
+    }))
+    window.history.pushState({}, '', '/merchants/3/profile')
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+    fireEvent.click(screen.getByRole('button', { name: '采用这个 FBR 版本' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })).getByRole('button', { name: '确认采用 FBR 版本' }))
+    await screen.findByText('fbr activated keyword')
+    screen.getByText(/FBR Local · #99 · 当前版本/)
+    expect(screen.queryByText('active local truth')).toBeNull()
+  })
+
   it('reads back server truth once after a stale activation conflict', async () => {
     const serverTruth = activeState({ active_keyword_artifact_id: 32, active_keyword_source: 'SKILL', keyword_set_artifact_id: 32, keyword_versions: activeState().keyword_versions.map((version: { artifact_id: number }) => ({ ...version, is_active: version.artifact_id === 32 })) })
     let seoReads = 0
@@ -2720,7 +2757,16 @@ describe('关键词版本 controls', () => {
     await screen.findByRole('alert')
     expect(seoReads).toBe(2)
     screen.getByText(/#32.*当前版本/)
-    screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })
+    const dialog = screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认采用 FBR 版本' }))
+    await waitFor(() => expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => url === '/api/merchants/3/seo-targets/activations')).toHaveLength(2))
+    const activationBodies = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([url]) => url === '/api/merchants/3/seo-targets/activations')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+    expect(activationBodies).toEqual([
+      { artifact_id: 99, expected_active_artifact_id: 41, confirmed: true },
+      { artifact_id: 99, expected_active_artifact_id: 41, confirmed: true },
+    ])
   })
 })
 
