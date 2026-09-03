@@ -1,3 +1,18 @@
+from pathlib import Path
+
+
+def test_env_example_exposes_current_task_preparation_setting():
+    env_example = Path(__file__).parents[1] / ".env.example"
+    keys = {
+        line.partition("=")[0]
+        for line in env_example.read_text().splitlines()
+        if line and not line.startswith("#") and "=" in line
+    }
+
+    assert "COREAI_PREPARATION_LLM_CALL_ID" in keys
+    assert "COREAI_EXECUTION_AGENT_ID" not in keys
+
+
 def test_coreai_settings_none_when_unset(monkeypatch):
     for var in (
         "COREAI_BASE_URL",

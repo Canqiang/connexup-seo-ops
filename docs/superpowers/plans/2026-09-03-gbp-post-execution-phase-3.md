@@ -655,7 +655,8 @@ poll_publication_runs_once(client, settings)
 poll_verification_runs_once(client, settings)
 dispatch_verification_once(client, settings)
 dispatch_publication_once(client, settings)
-dispatch_preparation_once(client, settings.execution_agent_id)
+if settings.preparation_llm_call_id is not None:
+    dispatch_preparation_once(client, settings.preparation_llm_call_id)
 ```
 
 Each dispatch function handles at most one Task per tick. Keep database-only stale recovery active without Core AI configuration. Skip GBP functions entirely when the feature flag is false.

@@ -7,7 +7,6 @@ from .audit_snapshots import persist_audit_snapshot
 from .config import coreai_settings
 from .coreai import CoreAiClient, CoreAiError, TERMINAL_STATUSES
 from .db import connect
-from .execution_result import normalize_execution_output
 from .merchants import now_iso
 from .runs import has_running_run, start_run
 from .seo_targets import SeoAgentIds, poll_seo_targets_once
@@ -24,6 +23,10 @@ TASK_LLM_DISPATCH_STALE_AFTER = timedelta(minutes=15)
 TASK_LLM_DISPATCH_STALE_ERROR = (
     "synchronous LLM call exceeded the 15-minute dispatch recovery ceiling; "
     "outcome unknown"
+)
+TASK_LEGACY_AGENT_UNREVIEWABLE_ERROR = (
+    "historical Agent preparation completed without a trusted LLM Call envelope; "
+    "result is unreviewable"
 )
 
 
@@ -229,22 +232,32 @@ def poll_task_executions_once(client) -> None:
                 else:
                     if parsed.tzinfo is not None:
                         finished_at = completed_at
-            result_json: str | None = None
-            error: str | None = None
             if status == "COMPLETED":
-                try:
-                    result_json = normalize_execution_output(core.get("output"))
-                except ValueError as exc:
-                    error = str(exc)
+                execution_status = "UNKNOWN"
+                error = TASK_LEGACY_AGENT_UNREVIEWABLE_ERROR
+                event_type = "TASK_PREPARATION_UNKNOWN"
+                payload = {
+                    "ambiguous": True,
+                    "error": error,
+                    "execution_id": execution["id"],
+                    "reason": "legacy_agent_unreviewable",
+                }
             else:
+                execution_status = "FAILED"
                 error = core.get("error") or f"core-ai status {status}"
+                event_type = "TASK_PREPARATION_FAILED"
+                payload = {"error": error, "execution_id": execution["id"]}
 
             conn.execute("BEGIN IMMEDIATE")
             try:
                 current = conn.execute(
                     "SELECT * FROM task_executions WHERE id = ?", (execution["id"],)
                 ).fetchone()
-                if current is None or current["status"] != "RUNNING":
+                if (
+                    current is None
+                    or current["status"] != "RUNNING"
+                    or current["coreai_run_id"] != execution["coreai_run_id"]
+                ):
                     conn.rollback()
                     continue
                 task = conn.execute(
@@ -253,41 +266,23 @@ def poll_task_executions_once(client) -> None:
                 if task is None or task["status"] != "PREPARING":
                     raise RuntimeError("active preparation is detached from its PREPARING Task")
 
-                if result_json is not None:
-                    assert_transition(task["task_type"], task["status"], "AWAITING_APPROVAL")
-                    evidence_json = json.dumps(
-                        json.loads(result_json)["evidence"],
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                    execution_update = conn.execute(
-                        "UPDATE task_executions SET status = 'SUCCEEDED', result_json = ?, "
-                        "evidence_json = ?, error = NULL, finished_at = ? "
-                        "WHERE id = ? AND status = 'RUNNING'",
-                        (result_json, evidence_json, finished_at, current["id"]),
-                    )
-                    task_update = conn.execute(
-                        "UPDATE tasks SET status = 'AWAITING_APPROVAL', version = version + 1, "
-                        "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
-                        (finished_at, task["id"], task["version"]),
-                    )
-                    event_type = "TASK_PREPARATION_SUCCEEDED"
-                    payload = {"execution_id": current["id"], "to_status": "AWAITING_APPROVAL"}
-                else:
-                    assert_transition(task["task_type"], task["status"], "NEEDS_ATTENTION")
-                    execution_update = conn.execute(
-                        "UPDATE task_executions SET status = 'FAILED', error = ?, finished_at = ? "
-                        "WHERE id = ? AND status = 'RUNNING'",
-                        (error, finished_at, current["id"]),
-                    )
-                    task_update = conn.execute(
-                        "UPDATE tasks SET status = 'NEEDS_ATTENTION', version = version + 1, "
-                        "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
-                        (finished_at, task["id"], task["version"]),
-                    )
-                    event_type = "TASK_PREPARATION_FAILED"
-                    payload = {"error": error, "execution_id": current["id"]}
+                assert_transition(task["task_type"], task["status"], "NEEDS_ATTENTION")
+                execution_update = conn.execute(
+                    "UPDATE task_executions SET status = ?, error = ?, finished_at = ? "
+                    "WHERE id = ? AND status = 'RUNNING' AND coreai_run_id = ?",
+                    (
+                        execution_status,
+                        error,
+                        finished_at,
+                        current["id"],
+                        current["coreai_run_id"],
+                    ),
+                )
+                task_update = conn.execute(
+                    "UPDATE tasks SET status = 'NEEDS_ATTENTION', version = version + 1, "
+                    "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
+                    (finished_at, task["id"], task["version"]),
+                )
                 if execution_update.rowcount != 1 or task_update.rowcount != 1:
                     raise RuntimeError("task preparation state changed during polling")
                 append_task_event(

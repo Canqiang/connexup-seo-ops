@@ -437,6 +437,66 @@ def test_poll_preserves_historical_running_execution_compatibility(client):
     assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_FAILED"
 
 
+def test_poll_never_approves_historical_agent_completed_output(client):
+    from app.scheduler import poll_task_executions_once
+
+    fake = FakeCoreAi()
+    merchant = client.post(
+        "/api/merchants", json={"name": "Legacy completed task"}
+    ).json()
+    task = _operator_task(client, merchant["id"])
+    execution_id = _insert_historical_execution(
+        task,
+        status="RUNNING",
+        coreai_run_id="historical-completed-run",
+        dispatch_started_at="2026-09-03T11:59:00+00:00",
+    )
+    fake.runs["historical-completed-run"] = {
+        "status": "COMPLETED",
+        "output": (
+            '{"artifact_refs":["artifact://legacy"],'
+            '"evidence":["Legacy Agent output"],'
+            '"external_write_performed":false,"outcome":"ready",'
+            '"summary":"Looks reviewable but lacks a trusted LLM Call envelope"}'
+        ),
+        "completed_at": "2026-09-03T12:00:00+00:00",
+    }
+
+    poll_task_executions_once(fake)
+
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    execution = detail["executions"][-1]
+    assert detail["status"] == "NEEDS_ATTENTION"
+    assert execution["id"] == execution_id
+    assert execution["status"] == "UNKNOWN"
+    assert execution["result"] is None
+    assert execution["request"] == {"historical": True, "task_id": task["id"]}
+    assert "historical Agent" in execution["error"]
+    assert "unreviewable" in execution["error"]
+    assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_UNKNOWN"
+    assert detail["events"][-1]["payload"]["reason"] == "legacy_agent_unreviewable"
+    assert fake.llm_calls == []
+    assert fake.triggered == []
+
+    recovered_state = (detail["version"], len(detail["events"]))
+    poll_task_executions_once(fake)
+    reread = client.get(f"/api/tasks/{task['id']}").json()
+    assert (reread["version"], len(reread["events"])) == recovered_state
+
+    approval = client.post(
+        f"/api/tasks/{task['id']}/approve-execution",
+        json={
+            "expected_version": reread["version"],
+            "expected_execution_id": execution_id,
+            "expected_result_checksum": "0" * 64,
+        },
+    )
+    assert approval.status_code == 409
+    assert approval.json()["detail"] == "task is not awaiting preparation approval"
+    assert fake.llm_calls == []
+    assert fake.triggered == []
+
+
 def test_synchronous_llm_call_rejects_unstructured_result(client):
     from app.main import app
     from app.tasks import get_execution_coreai

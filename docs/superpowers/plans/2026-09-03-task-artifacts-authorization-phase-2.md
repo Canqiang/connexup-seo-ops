@@ -519,7 +519,7 @@ git commit -m "feat: add versioned task automation policies"
 
 **Interfaces:**
 - Produces: `claim_preparation_task(conn, now) -> PreparationClaim | None`.
-- Produces: `dispatch_preparation_once(client, agent_id) -> int`.
+- Produces: `dispatch_preparation_once(client, llm_call_id) -> int`.
 - Produces: `resolve_artifact_authorization(conn, task_id, artifact_id, now) -> sqlite3.Row | None`.
 - Changes: scheduler automatically prepares ready PENDING Tasks; matching policies can create grants, otherwise Tasks wait for a human.
 
@@ -582,7 +582,8 @@ On each tick: recover stale local dispatches, poll existing Run and Task executi
 if client is not None:
     poll_runs_once(client)
     poll_task_executions_once(client)
-    dispatch_preparation_once(client, settings.execution_agent_id)
+    if settings.preparation_llm_call_id is not None:
+        dispatch_preparation_once(client, settings.preparation_llm_call_id)
 ```
 
 - [ ] **Step 6: Run tests and commit**
