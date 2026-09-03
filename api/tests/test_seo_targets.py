@@ -2285,6 +2285,27 @@ def test_keyword_head_bootstrap_creates_one_null_head_for_an_empty_location(
     assert count == 1
 
 
+def test_keyword_head_reads_an_existing_head_without_acquiring_a_write_lock(
+    client, monkeypatch
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.row_factory = sqlite3.Row
+    seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
+    statements = []
+    conn.set_trace_callback(statements.append)
+
+    head = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
+
+    conn.set_trace_callback(None)
+    conn.close()
+
+    assert head["active_artifact_id"] is None
+    assert "BEGIN IMMEDIATE" not in statements
+
+
 def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_without_skill(
     client, monkeypatch
 ):
@@ -2418,6 +2439,45 @@ def test_state_resolves_the_bootstrapped_active_head_not_a_newer_scored_fbr_arti
     assert state["keyword_versions"][1]["score_status"] == "VERIFIED_SKILL"
     assert state["keyword_versions"][1]["is_active"] is True
     assert state["local_falcon_cohort_sha256"] is not None
+    assert state["capabilities"]["can_approve_local_falcon"] is True
+
+
+def test_state_keeps_the_active_keyword_head_when_the_latest_keyword_cycle_failed(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    monkeypatch.setenv("COREAI_LOCAL_FALCON_TOOL_ID", "local-falcon-tool")
+    active_artifact_id = insert_verified_skill_keyword_set(merchant_id)
+    active_state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, error, created_at, completed_at)"
+        " VALUES (?, 'failed-keyword-cycle', 'KEYWORD_SET', 'seo_ops.keyword_set.v2',"
+        " 'failed', 'keyword-skill-agent', ?, 'simulated keyword failure',"
+        " '2026-09-03T04:27:00Z', '2026-09-03T04:28:00Z')",
+        (
+            merchant_id,
+            json.dumps({"place_id": TEST_PLACE_ID}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+
+    assert response.status_code == 200
+    state = response.json()
+    assert state["cycle_id"] == "failed-keyword-cycle"
+    assert state["cycle_status"] == "failed"
+    assert state["error"] == "simulated keyword failure"
+    assert state["keyword_set_artifact_id"] == active_artifact_id
+    assert state["active_keyword_artifact_id"] == active_artifact_id
+    assert state["keyword_set"] == active_state["keyword_set"]
+    assert state["local_falcon_cohort_sha256"] == active_state[
+        "local_falcon_cohort_sha256"
+    ]
     assert state["capabilities"]["can_approve_local_falcon"] is True
 
 

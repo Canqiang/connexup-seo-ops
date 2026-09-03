@@ -958,6 +958,13 @@ def _ensure_keyword_head(
     merchant_id: int,
     place_id: str,
 ) -> sqlite3.Row:
+    head = conn.execute(
+        "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, place_id),
+    ).fetchone()
+    if head is not None:
+        return head
+
     owns_transaction = not conn.in_transaction
     if owns_transaction:
         conn.execute("BEGIN IMMEDIATE")
