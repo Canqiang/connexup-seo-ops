@@ -13,8 +13,14 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     task_cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
     execution_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_executions)")}
+    task_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+    ).fetchone()[0]
     marker = conn.execute(
         "SELECT COUNT(*) FROM schema_migrations WHERE name = 'task_workflow_v1'"
+    ).fetchone()[0]
+    states_marker = conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE name = 'task_workflow_states_v2'"
     ).fetchone()[0]
     foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
     conn.close()
@@ -55,7 +61,21 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
         "next_attempt_at",
         "reviewed_at",
     } <= execution_cols
+    assert all(
+        f"'{state}'" in task_sql
+        for state in (
+            "PENDING",
+            "PREPARING",
+            "AWAITING_APPROVAL",
+            "EXECUTING",
+            "VERIFYING",
+            "NEEDS_ATTENTION",
+            "DONE",
+            "CANCELLED",
+        )
+    )
     assert marker == 1
+    assert states_marker == 1
     assert foreign_key_errors == []
 
 

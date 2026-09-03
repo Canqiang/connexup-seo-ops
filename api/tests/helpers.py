@@ -10,7 +10,7 @@ class FakeCoreAi:
             "skill_ids": [],
             "subagent_ids": [],
             "sandbox_config": None,
-            "dataset_config": [],
+            "dataset_config": None,
         }
 
     def get_agent(self, agent_id: str) -> dict:

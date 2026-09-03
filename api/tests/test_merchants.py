@@ -124,9 +124,19 @@ def test_list_merchants_includes_work_stats(client):
 
     create("a")
     create("b")
-    t = create("c")
+    preparing = create("c")
+    executing = create("d")
+    verifying = create("e")
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
-    conn.execute("UPDATE tasks SET status = 'PREPARING' WHERE id = ?", (t["id"],))
+    conn.execute(
+        "UPDATE tasks SET status = 'PREPARING' WHERE id = ?", (preparing["id"],)
+    )
+    conn.execute(
+        "UPDATE tasks SET status = 'EXECUTING' WHERE id = ?", (executing["id"],)
+    )
+    conn.execute(
+        "UPDATE tasks SET status = 'VERIFYING' WHERE id = ?", (verifying["id"],)
+    )
     conn.execute(
         "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
         " VALUES (?, 'r1', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00', '2026-09-01T00:05:00+00:00')",
@@ -137,7 +147,7 @@ def test_list_merchants_includes_work_stats(client):
 
     row = [x for x in client.get("/api/merchants").json() if x["id"] == m["id"]][0]
     assert row["todo_count"] == 2
-    assert row["doing_count"] == 1
+    assert row["doing_count"] == 3
     assert row["has_running_run"] is False
     assert row["last_run_status"] == "succeeded"
     assert row["last_run_at"] == "2026-09-01T00:00:00+00:00"

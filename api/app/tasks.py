@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import (
     AwareDatetime,
     BaseModel,
@@ -17,6 +17,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from .auth import require_operator
@@ -51,7 +52,14 @@ TaskStatus = Literal[
 ]
 TaskSourceKind = Literal["AGENT", "OPERATOR", "MIGRATION"]
 TaskReadiness = Literal["READY", "BLOCKED"]
+TaskBlockerCode = Literal[
+    "MERCHANT_ARCHIVED",
+    "REVISION_INACTIVE",
+    "SCHEDULED_FOR_FUTURE",
+    "UPSTREAM_NOT_DONE",
+]
 Label = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
+Checksum = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 _execution_client: CoreAiClient | None = None
 
@@ -66,6 +74,7 @@ class OperatorTaskCreate(BaseModel):
     scheduled_start: AwareDatetime | None = None
     parameters: dict[str, object] = Field(default_factory=dict)
     replaces_task_id: int | None = Field(default=None, ge=1)
+    replaces_task_version: int | None = Field(default=None, ge=1)
 
     @field_validator("title", "rationale", "expected_outcome")
     @classmethod
@@ -74,6 +83,12 @@ class OperatorTaskCreate(BaseModel):
         if not text:
             raise ValueError("must not be blank")
         return text
+
+    @model_validator(mode="after")
+    def replacement_binding_is_complete(self):
+        if (self.replaces_task_id is None) != (self.replaces_task_version is None):
+            raise ValueError("replaces_task_id and replaces_task_version must be provided together")
+        return self
 
 
 class TaskMetadataPatch(BaseModel):
@@ -122,7 +137,21 @@ class VersionedReasonBody(BaseModel):
         return reason
 
 
-class ReturnExecutionBody(BaseModel):
+class ExecuteTaskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+
+
+class ReviewExecutionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+    expected_execution_id: int = Field(ge=1)
+    expected_result_checksum: Checksum
+
+
+class ReturnExecutionBody(ReviewExecutionBody):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(min_length=1, max_length=2000)
@@ -189,9 +218,20 @@ def execution_dict(row: sqlite3.Row) -> dict[str, Any]:
     value["request"] = request
     value["evidence"] = _json_value(value.pop("evidence_json"), list, "execution evidence")
     result_json = value.pop("result_json")
-    value["result"] = (
-        None if result_json is None else _json_value(result_json, dict, "execution result")
+    is_legacy = str(value.get("idempotency_key", "")).startswith(
+        "legacy-task-execution-"
     )
+    if is_legacy and result_json is not None:
+        value["result"] = None
+        value["legacy_result"] = {
+            "unverified": True,
+            "output_text": str(result_json),
+        }
+    else:
+        value["result"] = (
+            None if result_json is None else _json_value(result_json, dict, "execution result")
+        )
+    value["result_checksum"] = None if value["result"] is None else _checksum(value["result"])
     return value
 
 
@@ -225,16 +265,16 @@ def build_execution_input(
 
 
 def preparation_agent_is_read_only(agent: dict) -> bool:
-    capability_fields = (
-        "tools",
-        "skill_ids",
-        "subagent_ids",
-        "sandbox_config",
-        "dataset_config",
-    )
-    return agent.get("status") == "PUBLISHED" and all(
-        not agent.get(field) for field in capability_fields
-    )
+    if agent.get("status") != "PUBLISHED":
+        return False
+    for field in ("tools", "skill_ids", "subagent_ids"):
+        value = agent.get(field)
+        if field not in agent or not isinstance(value, list) or value:
+            return False
+    for field in ("sandbox_config", "dataset_config"):
+        if field not in agent or agent[field] is not None:
+            return False
+    return True
 
 
 _TASK_SELECT = (
@@ -335,9 +375,11 @@ def _parse_stored_datetime(value: object) -> datetime | None:
 def list_all_tasks(
     merchant_id: int | None = None,
     plan_id: int | None = None,
+    plan_revision: Annotated[int | None, Query(ge=1)] = None,
     task_type: Literal["PREPARE_ONLY"] | None = None,
     status: TaskStatus | None = None,
     readiness: TaskReadiness | None = None,
+    blocker_code: TaskBlockerCode | None = None,
     source_kind: TaskSourceKind | None = None,
     scheduled_before: AwareDatetime | None = None,
     scheduled_after: AwareDatetime | None = None,
@@ -348,6 +390,7 @@ def list_all_tasks(
     for column, selected in (
         ("t.merchant_id", merchant_id),
         ("t.plan_id", plan_id),
+        ("t.plan_revision", plan_revision),
         ("t.task_type", task_type),
         ("t.status", status),
         ("p.source_kind", source_kind),
@@ -368,6 +411,10 @@ def list_all_tasks(
             continue
         item = task_dict(conn, row)
         if readiness is not None and item["readiness"] != readiness:
+            continue
+        if blocker_code is not None and (
+            item["blocker"] is None or item["blocker"]["code"] != blocker_code
+        ):
             continue
         output.append(item)
     return output
@@ -405,31 +452,106 @@ def _safe_retryable_preparation(execution: sqlite3.Row | None) -> bool:
     return isinstance(result, dict) and result.get("external_write_performed") is False
 
 
-def _safe_succeeded_preparation(execution: sqlite3.Row | None) -> bool:
-    if execution is None:
-        return False
+def _validated_reviewable_preparation(
+    task: sqlite3.Row, execution: sqlite3.Row | None
+) -> tuple[sqlite3.Row, str]:
+    """Validate the full current preparation envelope while the caller holds the write lock."""
+
+    invalid = HTTPException(
+        status_code=409, detail="stored task execution is not safely reviewable"
+    )
+    if execution is None or str(execution["idempotency_key"]).startswith(
+        "legacy-task-execution-"
+    ):
+        raise invalid
     if (
-        execution["stage"] != "PREPARATION"
+        execution["task_id"] != task["id"]
+        or execution["stage"] != "PREPARATION"
         or execution["status"] != "SUCCEEDED"
+        or execution["reviewed_at"] is not None
         or execution["provider_resource_id"] is not None
         or execution["approval_id"] is not None
+        or execution["artifact_id"] is not None
     ):
-        return False
+        raise invalid
+
     try:
-        result = json.loads(normalize_execution_output(execution["result_json"]))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return False
-    return isinstance(result, dict) and result.get("external_write_performed") is False
+        request = json.loads(execution["request_json"])
+        if not isinstance(request, dict):
+            raise ValueError
+        if execution["request_json"] != _canonical_json(request):
+            raise ValueError
+        if execution["request_checksum"] != _checksum(request):
+            raise ValueError
+        if set(request) != {
+            "agent_id",
+            "definition_checksum",
+            "input",
+            "stage",
+            "task_id",
+            "workflow_version",
+        }:
+            raise ValueError
+        if (
+            not isinstance(request["agent_id"], str)
+            or not request["agent_id"]
+            or not isinstance(request["input"], str)
+            or not request["input"]
+            or type(request["task_id"]) is not int
+            or type(request["workflow_version"]) is not int
+            or request["definition_checksum"] != task["definition_checksum"]
+            or request["stage"] != "PREPARATION"
+            or request["task_id"] != task["id"]
+            or request["workflow_version"] != task["workflow_version"]
+        ):
+            raise ValueError
+
+        normalized_result_json = normalize_execution_output(execution["result_json"])
+        if execution["result_json"] != normalized_result_json:
+            raise ValueError
+        result = json.loads(normalized_result_json)
+        evidence = json.loads(execution["evidence_json"])
+        if not isinstance(evidence, list) or evidence != result["evidence"]:
+            raise ValueError
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise invalid from exc
+    return execution, _checksum(result)
+
+
+def _review_target(
+    task: sqlite3.Row,
+    execution: sqlite3.Row | None,
+    body: ReviewExecutionBody,
+) -> sqlite3.Row:
+    if (
+        task["version"] != body.expected_version
+        or execution is None
+        or execution["id"] != body.expected_execution_id
+    ):
+        raise HTTPException(
+            status_code=409, detail="task review target changed; refresh and retry"
+        )
+    validated, result_checksum = _validated_reviewable_preparation(task, execution)
+    if result_checksum != body.expected_result_checksum:
+        raise HTTPException(
+            status_code=409, detail="task review target changed; refresh and retry"
+        )
+    return validated
 
 
 def _validate_replacement(
-    conn: sqlite3.Connection, merchant_id: int, replaces_task_id: int | None
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    replaces_task_id: int | None,
+    replaces_task_version: int | None,
 ) -> sqlite3.Row | None:
     if replaces_task_id is None:
         return None
     original = conn.execute("SELECT * FROM tasks WHERE id = ?", (replaces_task_id,)).fetchone()
     if original is None:
         raise HTTPException(status_code=409, detail="replacement source task was not found")
+    if original["version"] != replaces_task_version:
+        raise HTTPException(status_code=409, detail="replacement source changed; refresh and retry")
     if original["merchant_id"] != merchant_id:
         raise HTTPException(status_code=409, detail="replacement source belongs to another merchant")
     if original["replaced_by_task_id"] is not None:
@@ -475,7 +597,12 @@ def create_task(
     conn.execute("BEGIN IMMEDIATE")
     try:
         fetch_merchant(conn, merchant_id)
-        original = _validate_replacement(conn, merchant_id, body.replaces_task_id)
+        original = _validate_replacement(
+            conn,
+            merchant_id,
+            body.replaces_task_id,
+            body.replaces_task_version,
+        )
         created_at = now_iso()
         plan_cursor = conn.execute(
             "INSERT INTO task_plans "
@@ -526,17 +653,30 @@ def create_task(
             },
         )
         if original is not None:
+            if original["status"] == "NEEDS_ATTENTION":
+                assert_transition(original["task_type"], original["status"], "CANCELLED")
             linked = conn.execute(
-                "UPDATE tasks SET replaced_by_task_id = ?, version = version + 1, updated_at = ? "
-                "WHERE id = ? AND version = ? AND replaced_by_task_id IS NULL",
-                (task_id, created_at, original["id"], original["version"]),
+                "UPDATE tasks SET status = 'CANCELLED', replaced_by_task_id = ?, "
+                "version = version + 1, updated_at = ?, "
+                "cancelled_at = COALESCE(cancelled_at, ?) "
+                "WHERE id = ? AND version = ? AND status = ? AND replaced_by_task_id IS NULL",
+                (
+                    task_id,
+                    created_at,
+                    created_at,
+                    original["id"],
+                    body.replaces_task_version,
+                    original["status"],
+                ),
             )
             if linked.rowcount != 1:
                 raise HTTPException(status_code=409, detail="replacement source changed; retry creation")
-            conn.execute(
+            new_link = conn.execute(
                 "UPDATE tasks SET replaces_task_id = ? WHERE id = ? AND replaces_task_id IS NULL",
                 (original["id"], task_id),
             )
+            if new_link.rowcount != 1:
+                raise HTTPException(status_code=409, detail="replacement task link changed")
             append_task_event(
                 conn,
                 entity_type="TASK",
@@ -544,7 +684,11 @@ def create_task(
                 event_type="TASK_REPLACED",
                 actor_type="OPERATOR",
                 actor_id=operator,
-                payload={"replacement_task_id": task_id},
+                payload={
+                    "from_status": original["status"],
+                    "replacement_task_id": task_id,
+                    "to_status": "CANCELLED",
+                },
             )
             append_task_event(
                 conn,
@@ -555,6 +699,7 @@ def create_task(
                 actor_id=operator,
                 payload={"replaces_task_id": int(original["id"])},
             )
+            refresh_plan_lifecycle(conn, int(original["plan_id"]))
         refresh_plan_lifecycle(conn, plan_id)
         conn.commit()
     except Exception:
@@ -765,19 +910,22 @@ def _blocker_message(blocker: dict[str, object]) -> str:
 
 
 def _finish_failed_dispatch(
-    conn: sqlite3.Connection, execution_id: int, task_id: int, error: str
+    conn: sqlite3.Connection,
+    execution_id: int,
+    task_id: int,
+    error: str,
+    *,
+    ambiguous: bool = False,
 ) -> sqlite3.Row:
     conn.execute("BEGIN IMMEDIATE")
     try:
-        execution = conn.execute(
-            "SELECT * FROM task_executions WHERE id = ?", (execution_id,)
-        ).fetchone()
         task = fetch_task(conn, task_id)
         finished_at = now_iso()
+        execution_status = "UNKNOWN" if ambiguous else "FAILED"
         execution_update = conn.execute(
-            "UPDATE task_executions SET status = 'FAILED', error = ?, finished_at = ? "
+            "UPDATE task_executions SET status = ?, error = ?, finished_at = ? "
             "WHERE id = ? AND status IN ('PENDING','DISPATCHING','RUNNING')",
-            (error, finished_at, execution_id),
+            (execution_status, error, finished_at, execution_id),
         )
         task_update = conn.execute(
             "UPDATE tasks SET status = 'NEEDS_ATTENTION', version = version + 1, updated_at = ? "
@@ -790,10 +938,16 @@ def _finish_failed_dispatch(
             conn,
             entity_type="TASK",
             entity_id=task_id,
-            event_type="TASK_PREPARATION_FAILED",
+            event_type=(
+                "TASK_PREPARATION_UNKNOWN" if ambiguous else "TASK_PREPARATION_FAILED"
+            ),
             actor_type="SYSTEM",
             actor_id=None,
-            payload={"error": error, "execution_id": execution_id},
+            payload={
+                "ambiguous": ambiguous,
+                "error": error,
+                "execution_id": execution_id,
+            },
         )
         refresh_plan_lifecycle(conn, int(task["plan_id"]))
         conn.commit()
@@ -806,6 +960,7 @@ def _finish_failed_dispatch(
 @router.post("/tasks/{task_id}/execute", status_code=201)
 def execute_task(
     task_id: int,
+    body: ExecuteTaskBody,
     coreai=Depends(get_execution_coreai),
     operator: str = Depends(require_operator),
     conn=Depends(get_db),
@@ -814,6 +969,8 @@ def execute_task(
     conn.execute("BEGIN IMMEDIATE")
     try:
         task = fetch_task(conn, task_id)
+        if task["version"] != body.expected_version:
+            raise HTTPException(status_code=409, detail="task changed; refresh and retry")
         if task["status"] != "PENDING":
             if task["status"] in {"DONE", "CANCELLED"}:
                 detail = "terminal task cannot be executed"
@@ -857,7 +1014,7 @@ def execute_task(
             "UPDATE tasks SET status = 'PREPARING', version = version + 1, updated_at = ?, "
             "started_at = COALESCE(started_at, ?) "
             "WHERE id = ? AND version = ? AND status = 'PENDING'",
-            (started_at, started_at, task_id, task["version"]),
+            (started_at, started_at, task_id, body.expected_version),
         )
         if claimed.rowcount != 1:
             raise HTTPException(status_code=409, detail="task changed; refresh and retry")
@@ -906,7 +1063,14 @@ def execute_task(
     try:
         core = client.trigger(agent_id, preparation_input)
     except CoreAiError as exc:
-        failed = _finish_failed_dispatch(conn, execution_id, task_id, str(exc))
+        ambiguous = exc.status_code in {0, 408} or exc.status_code >= 500
+        failed = _finish_failed_dispatch(
+            conn,
+            execution_id,
+            task_id,
+            str(exc),
+            ambiguous=ambiguous,
+        )
         return execution_dict(failed)
 
     conn.execute("BEGIN IMMEDIATE")
@@ -939,6 +1103,7 @@ def execute_task(
 @router.post("/tasks/{task_id}/approve-execution")
 def approve_task_execution(
     task_id: int,
+    body: ReviewExecutionBody,
     operator: str = Depends(require_operator),
     conn=Depends(get_db),
 ):
@@ -948,19 +1113,18 @@ def approve_task_execution(
         execution = latest_execution(conn, task_id)
         if task["status"] != "AWAITING_APPROVAL":
             raise HTTPException(status_code=409, detail="task is not awaiting preparation approval")
-        if not _safe_succeeded_preparation(execution):
-            raise HTTPException(status_code=409, detail="task has no preparation result to approve")
+        execution = _review_target(task, execution, body)
         assert_transition(task["task_type"], task["status"], "DONE")
         reviewed_at = now_iso()
         execution_update = conn.execute(
             "UPDATE task_executions SET reviewed_at = ? "
             "WHERE id = ? AND status = 'SUCCEEDED' AND reviewed_at IS NULL",
-            (reviewed_at, execution["id"]),
+            (reviewed_at, body.expected_execution_id),
         )
         task_update = conn.execute(
             "UPDATE tasks SET status = 'DONE', version = version + 1, updated_at = ?, completed_at = ? "
             "WHERE id = ? AND version = ? AND status = 'AWAITING_APPROVAL'",
-            (reviewed_at, reviewed_at, task_id, task["version"]),
+            (reviewed_at, reviewed_at, task_id, body.expected_version),
         )
         if execution_update.rowcount != 1 or task_update.rowcount != 1:
             raise HTTPException(status_code=409, detail="task review state changed; refresh and retry")
@@ -974,14 +1138,15 @@ def approve_task_execution(
             payload={"execution_id": execution["id"], "to_status": "DONE"},
         )
         refresh_plan_lifecycle(conn, int(task["plan_id"]))
+        response = {
+            "task": task_detail(conn, fetch_task(conn, task_id)),
+            "execution": execution_dict(latest_execution(conn, task_id)),
+        }
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    return {
-        "task": task_detail(conn, fetch_task(conn, task_id)),
-        "execution": execution_dict(latest_execution(conn, task_id)),
-    }
+    return response
 
 
 @router.post("/tasks/{task_id}/return-execution")
@@ -997,19 +1162,18 @@ def return_task_execution(
         execution = latest_execution(conn, task_id)
         if task["status"] != "AWAITING_APPROVAL":
             raise HTTPException(status_code=409, detail="task is not awaiting preparation approval")
-        if not _safe_succeeded_preparation(execution):
-            raise HTTPException(status_code=409, detail="task has no safe preparation result to return")
+        execution = _review_target(task, execution, body)
         assert_transition(task["task_type"], task["status"], "PENDING")
         reviewed_at = now_iso()
         execution_update = conn.execute(
             "UPDATE task_executions SET review_note = ?, reviewed_at = ? "
             "WHERE id = ? AND status = 'SUCCEEDED' AND reviewed_at IS NULL",
-            (body.reason, reviewed_at, execution["id"]),
+            (body.reason, reviewed_at, body.expected_execution_id),
         )
         task_update = conn.execute(
             "UPDATE tasks SET status = 'PENDING', version = version + 1, updated_at = ?, "
             "started_at = NULL WHERE id = ? AND version = ? AND status = 'AWAITING_APPROVAL'",
-            (reviewed_at, task_id, task["version"]),
+            (reviewed_at, task_id, body.expected_version),
         )
         if execution_update.rowcount != 1 or task_update.rowcount != 1:
             raise HTTPException(status_code=409, detail="task review state changed; refresh and retry")
@@ -1023,14 +1187,15 @@ def return_task_execution(
             payload={"execution_id": execution["id"], "reason": body.reason},
         )
         refresh_plan_lifecycle(conn, int(task["plan_id"]))
+        response = {
+            "task": task_detail(conn, fetch_task(conn, task_id)),
+            "execution": execution_dict(latest_execution(conn, task_id)),
+        }
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    return {
-        "task": task_detail(conn, fetch_task(conn, task_id)),
-        "execution": execution_dict(latest_execution(conn, task_id)),
-    }
+    return response
 
 
 __all__ = [

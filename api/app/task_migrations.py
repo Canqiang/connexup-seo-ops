@@ -13,6 +13,17 @@ from .task_plan_contract import validate_task_plan
 from .task_workflows import WORKFLOW_TEMPLATES, enabled_task_types
 
 TASK_WORKFLOW_MIGRATION = "task_workflow_v1"
+TASK_WORKFLOW_STATES_MIGRATION = "task_workflow_states_v2"
+_TASK_STATES = (
+    "PENDING",
+    "PREPARING",
+    "AWAITING_APPROVAL",
+    "EXECUTING",
+    "VERIFYING",
+    "NEEDS_ATTENTION",
+    "DONE",
+    "CANCELLED",
+)
 _TASK_KEY_RE = re.compile(r"^[a-z0-9_-]{1,80}$")
 _CATEGORIES = {"gbp", "content", "review", "citation", "technical", "other"}
 
@@ -164,7 +175,7 @@ def _create_replacement_task_tables(conn: sqlite3.Connection) -> None:
           category TEXT,
           scheduled_start TEXT,
           status TEXT NOT NULL DEFAULT 'PENDING'
-            CHECK (status IN ('PENDING','PREPARING','AWAITING_APPROVAL','NEEDS_ATTENTION','DONE','CANCELLED')),
+            CHECK (status IN ('PENDING','PREPARING','AWAITING_APPROVAL','EXECUTING','VERIFYING','NEEDS_ATTENTION','DONE','CANCELLED')),
           version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
           assignee TEXT,
           labels_json TEXT NOT NULL DEFAULT '[]',
@@ -555,10 +566,117 @@ def _create_task_workflow_indexes_and_triggers(conn: sqlite3.Connection) -> None
         conn.execute(statement)
 
 
+def _task_states_are_current(conn: sqlite3.Connection) -> bool:
+    sql = _table_sql(conn, "tasks")
+    if sql is None:
+        return False
+    normalized_sql = " ".join(sql.upper().split())
+    return all(f"'{state}'" in normalized_sql for state in _TASK_STATES)
+
+
+def _create_states_v2_task_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE _task_workflow_tasks_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+          plan_id INTEGER NOT NULL REFERENCES task_plans(id),
+          plan_revision INTEGER NOT NULL,
+          task_key TEXT NOT NULL,
+          task_type TEXT NOT NULL,
+          workflow_version INTEGER NOT NULL CHECK (workflow_version > 0),
+          parameters_json TEXT NOT NULL,
+          definition_checksum TEXT NOT NULL CHECK (length(definition_checksum) = 64),
+          title TEXT NOT NULL,
+          description TEXT,
+          rationale TEXT,
+          expected_outcome TEXT,
+          category TEXT,
+          scheduled_start TEXT,
+          status TEXT NOT NULL DEFAULT 'PENDING'
+            CHECK (status IN ('PENDING','PREPARING','AWAITING_APPROVAL','EXECUTING','VERIFYING','NEEDS_ATTENTION','DONE','CANCELLED')),
+          version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+          assignee TEXT,
+          labels_json TEXT NOT NULL DEFAULT '[]',
+          operator_note TEXT,
+          evidence_note TEXT,
+          source_run_id INTEGER REFERENCES runs(id),
+          source_key TEXT,
+          replaces_task_id INTEGER REFERENCES _task_workflow_tasks_v2(id),
+          replaced_by_task_id INTEGER REFERENCES _task_workflow_tasks_v2(id),
+          created_at TEXT NOT NULL,
+          updated_at TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          cancelled_at TEXT,
+          UNIQUE (plan_id, task_key),
+          FOREIGN KEY (plan_id, plan_revision)
+            REFERENCES task_plan_revisions(plan_id, revision)
+        )
+        """
+    )
+
+
+def _rebuild_tasks_for_states_v2(conn: sqlite3.Connection) -> None:
+    columns = (
+        "id, merchant_id, plan_id, plan_revision, task_key, task_type, "
+        "workflow_version, parameters_json, definition_checksum, title, description, "
+        "rationale, expected_outcome, category, scheduled_start, status, version, "
+        "assignee, labels_json, operator_note, evidence_note, source_run_id, source_key, "
+        "replaces_task_id, replaced_by_task_id, created_at, updated_at, started_at, "
+        "completed_at, cancelled_at"
+    )
+    _create_states_v2_task_table(conn)
+    conn.execute(
+        f"INSERT INTO _task_workflow_tasks_v2 ({columns}) SELECT {columns} FROM tasks"
+    )
+    conn.execute("DROP TABLE tasks")
+    conn.execute("ALTER TABLE _task_workflow_tasks_v2 RENAME TO tasks")
+    _create_task_workflow_indexes_and_triggers(conn)
+
+
+def migrate_task_workflow_states_v2(conn: sqlite3.Connection) -> None:
+    """Atomically widen interim Task CHECK constraints to every frozen state."""
+
+    if _migration_applied(conn, TASK_WORKFLOW_STATES_MIGRATION):
+        if not _task_states_are_current(conn):
+            raise RuntimeError(
+                "task workflow states migration marker conflicts with tasks schema"
+            )
+        return
+    if conn.in_transaction:
+        raise RuntimeError("task workflow states migration requires no active transaction")
+    if task_table_kind(conn) != "formal":
+        raise RuntimeError("task workflow states migration requires formal tasks schema")
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if not _task_states_are_current(conn):
+            _rebuild_tasks_for_states_v2(conn)
+        foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_key_errors:
+            raise RuntimeError(
+                "task workflow states migration left broken foreign keys: "
+                f"{foreign_key_errors!r}"
+            )
+        conn.execute(
+            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+            (TASK_WORKFLOW_STATES_MIGRATION, _now_iso()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def migrate_task_workflow_v1(conn: sqlite3.Connection) -> None:
     """Apply the idempotent Task workflow migration in one rebuild transaction."""
 
     if _migration_applied(conn, TASK_WORKFLOW_MIGRATION):
+        migrate_task_workflow_states_v2(conn)
         return
     if conn.in_transaction:
         raise RuntimeError("task workflow migration requires no active transaction")
@@ -592,5 +710,13 @@ def migrate_task_workflow_v1(conn: sqlite3.Connection) -> None:
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
 
+    migrate_task_workflow_states_v2(conn)
 
-__all__ = ["TASK_WORKFLOW_MIGRATION", "migrate_task_workflow_v1", "task_table_kind"]
+
+__all__ = [
+    "TASK_WORKFLOW_MIGRATION",
+    "TASK_WORKFLOW_STATES_MIGRATION",
+    "migrate_task_workflow_v1",
+    "migrate_task_workflow_states_v2",
+    "task_table_kind",
+]

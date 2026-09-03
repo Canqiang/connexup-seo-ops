@@ -336,7 +336,10 @@ def test_poll_preparation_failure_moves_task_to_attention_and_appends_event(clie
     try:
         merchant = client.post("/api/merchants", json={"name": "Task poll"}).json()
         task = _operator_task(client, merchant["id"])
-        execution = client.post(f"/api/tasks/{task['id']}/execute").json()
+        execution = client.post(
+            f"/api/tasks/{task['id']}/execute",
+            json={"expected_version": task["version"]},
+        ).json()
         fake.runs[execution["coreai_run_id"]] = {
             "status": "FAILED",
             "error": "generation failed",
@@ -364,7 +367,10 @@ def test_poll_rejects_unstructured_agent_result_and_never_marks_it_approvable(cl
     try:
         merchant = client.post("/api/merchants", json={"name": "Unsafe output"}).json()
         task = _operator_task(client, merchant["id"])
-        execution = client.post(f"/api/tasks/{task['id']}/execute").json()
+        execution = client.post(
+            f"/api/tasks/{task['id']}/execute",
+            json={"expected_version": task["version"]},
+        ).json()
         fake.runs[execution["coreai_run_id"]] = {
             "status": "COMPLETED",
             "output": "not structured JSON",

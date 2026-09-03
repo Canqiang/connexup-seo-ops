@@ -41,7 +41,7 @@ LIST_SQL = """
 SELECT m.*,
   (SELECT COUNT(*) FROM tasks t WHERE t.merchant_id = m.id AND t.status = 'PENDING') AS todo_count,
   (SELECT COUNT(*) FROM tasks t WHERE t.merchant_id = m.id
-    AND t.status IN ('PREPARING','AWAITING_APPROVAL','NEEDS_ATTENTION')) AS doing_count,
+    AND t.status IN ('PREPARING','AWAITING_APPROVAL','EXECUTING','VERIFYING','NEEDS_ATTENTION')) AS doing_count,
   EXISTS(SELECT 1 FROM runs r WHERE r.merchant_id = m.id AND r.status = 'running') AS has_running_run,
   (SELECT r.created_at FROM runs r WHERE r.merchant_id = m.id ORDER BY r.id DESC LIMIT 1) AS last_run_at,
   (SELECT r.status FROM runs r WHERE r.merchant_id = m.id ORDER BY r.id DESC LIMIT 1) AS last_run_status
