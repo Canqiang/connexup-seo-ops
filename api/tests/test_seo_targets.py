@@ -792,20 +792,43 @@ def test_refresh_reads_persisted_fbr_keywords_without_triggering_an_agent(client
     state = response.json()
     assert state["cycle_status"] == "ready"
     assert state["active_stage"] is None
-    assert state["keyword_set"]["generation_method"] == "PERSISTED_FBR_READBACK"
-    assert [item["keyword"] for item in state["keyword_set"]["keywords"]] == [
+    assert state["active_keyword_artifact_id"] is None
+    assert state["keyword_set"] is None
+    latest = state["latest_fbr_import"]
+    assert latest["artifact_id"] > 0
+    assert latest["imported_at"]
+    assert latest["is_active"] is False
+    assert latest["comparison"] == {
+        "active_local_count": 0,
+        "fbr_local_count": 2,
+        "added_count": 2,
+        "removed_count": 0,
+        "priority_changed_count": 0,
+        "target_surfaces_changed_count": 0,
+        "added_keywords": ["bakery", "breakfast upper west side"],
+        "removed_keywords": [],
+        "changed_keywords": [],
+    }
+    assert state["capabilities"]["can_sync_local_falcon"] is False
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    artifact = conn.execute(
+        "SELECT status, source_agent_id, payload_json FROM merchant_seo_artifacts"
+        " WHERE id = ?",
+        (latest["artifact_id"],),
+    ).fetchone()
+    head = conn.execute(
+        "SELECT active_artifact_id, activated_by, activation_reason, activated_at"
+        " FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()
+    conn.close()
+    assert artifact[0:2] == ("ready", "fbr-keyword-store")
+    assert [item["keyword"] for item in json.loads(artifact[2])["keywords"]] == [
         "breakfast Upper West Side",
         "bakery",
     ]
-    assert state["keyword_set"]["keywords"][0]["priority"] == "P1"
-    assert state["keyword_set"]["keywords"][0]["source_tags"] == [
-        "FBR_KEYWORD_STORE",
-        "FBR_LOCAL_KEYWORD_ID:local-keywords-uws",
-    ]
-    assert state["keyword_set"]["keywords"][0]["score"] is None
-    assert state["keyword_set"]["keywords"][0]["score_rank"] is None
-    assert state["keyword_set"]["keywords"][0]["local_falcon_selected"] is False
-    assert state["capabilities"]["can_sync_local_falcon"] is False
+    assert head == (None, None, None, None)
 
 
 def test_fbr_keyword_normalization_chooses_the_highest_semantic_duplicate_score_stably(
@@ -892,7 +915,14 @@ def test_fbr_keyword_normalization_chooses_the_highest_semantic_duplicate_score_
     response = client.post(f"/api/merchants/{merchant_id}/seo-targets/refresh")
 
     assert response.status_code == 202
-    keywords = response.json()["keyword_set"]["keywords"]
+    artifact_id = response.json()["latest_fbr_import"]["artifact_id"]
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    payload_json = conn.execute(
+        "SELECT payload_json FROM merchant_seo_artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()[0]
+    conn.close()
+    keywords = json.loads(payload_json)["keywords"]
     assert [item["keyword"] for item in keywords] == [
         "coffee near me",
         "First tied keyword",
@@ -915,6 +945,74 @@ def test_fbr_keyword_normalization_chooses_the_highest_semantic_duplicate_score_
     ]
     assert keywords[1]["score_rank"] == 2
     assert keywords[2]["score_rank"] == 3
+
+
+def test_fbr_local_candidate_comparison_uses_canonical_local_keyword_identity():
+    from app import seo_targets
+
+    comparison = seo_targets._compare_fbr_local_candidate(
+        keyword_result(
+            7,
+            [
+                {
+                    **local_keyword("  Caf\u00e9   Near Me ", priority="P1"),
+                    "target_surface_types": ["WEBSITE", "GBP", "WEBSITE"],
+                },
+                {
+                    **local_keyword("surface local", priority="P2"),
+                    "target_surface_types": ["GBP", "GBP"],
+                },
+                local_keyword("removed local", priority="P3"),
+                {
+                    **local_keyword("organic-only keyword", priority="P0"),
+                    "strategy": "ORGANIC",
+                },
+            ],
+            generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+        ),
+        keyword_result(
+            7,
+            [
+                {
+                    **local_keyword("CAF\u00c9\u3000near me", priority="P0"),
+                    "target_surface_types": ["GBP", "WEBSITE", "GBP"],
+                },
+                {
+                    **local_keyword("SURFACE  LOCAL", priority="P2"),
+                    "target_surface_types": ["WEBSITE", "GBP", "WEBSITE"],
+                },
+                local_keyword("  added   local ", priority="P3"),
+                local_keyword("\uff21\uff24\uff24\uff25\uff24\u3000local", priority="P3"),
+            ],
+            generation_method="PERSISTED_FBR_READBACK",
+        ),
+    )
+
+    assert comparison == {
+        "active_local_count": 3,
+        "fbr_local_count": 3,
+        "added_count": 1,
+        "removed_count": 1,
+        "priority_changed_count": 1,
+        "target_surfaces_changed_count": 1,
+        "added_keywords": ["added local"],
+        "removed_keywords": ["removed local"],
+        "changed_keywords": [
+            {
+                "keyword": "caf\u00e9 near me",
+                "priority": {"active": "P1", "fbr": "P0"},
+                "target_surfaces": None,
+            },
+            {
+                "keyword": "surface local",
+                "priority": None,
+                "target_surfaces": {
+                    "active": ["GBP"],
+                    "fbr": ["GBP", "WEBSITE"],
+                },
+            },
+        ],
+    }
 
 
 def test_fbr_readback_collapses_unicode_keyword_duplicates_and_keeps_first_display_text():
@@ -1097,6 +1195,63 @@ def test_refresh_never_invokes_skills_when_fbr_has_no_keywords(client, monkeypat
         "FBR has no persisted keywords for this GBP location; "
         "use the explicit regenerate action to create a new scored set"
     )
+
+
+@pytest.mark.parametrize(
+    ("case", "result", "status_code"),
+    [
+        ("unavailable", RuntimeError("FBR SEO service is unavailable"), 502),
+        (
+            "malformed",
+            {"place_id": TEST_PLACE_ID, "local_keywords": "not-a-list"},
+            502,
+        ),
+        ("empty", {"place_id": TEST_PLACE_ID, "local_keywords": []}, 409),
+        (
+            "wrong-place-id",
+            {"place_id": "a-different-place-id", "local_keywords": []},
+            502,
+        ),
+    ],
+)
+def test_refresh_failure_preserves_every_keyword_head_field(
+    client, monkeypatch, case, result, status_code
+):
+    from app import fbr_gbp
+    from app.fbr_gbp import FbrUnavailableError
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    active_artifact_id = insert_verified_skill_keyword_set(merchant_id)
+    assert client.get(f"/api/merchants/{merchant_id}/seo-targets").status_code == 200
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    before = conn.execute(
+        "SELECT active_artifact_id, activated_by, activation_reason, activated_at, updated_at"
+        " FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()
+    conn.close()
+    assert before[0] == active_artifact_id
+
+    class FailingKeywordClient:
+        def get_local_keywords(self, _place_id):
+            if isinstance(result, Exception):
+                raise FbrUnavailableError(str(result))
+            return result
+
+    monkeypatch.setattr(fbr_gbp, "fbr_gbp_client", lambda: FailingKeywordClient())
+
+    response = client.post(f"/api/merchants/{merchant_id}/seo-targets/refresh")
+
+    assert response.status_code == status_code, case
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    after = conn.execute(
+        "SELECT active_artifact_id, activated_by, activation_reason, activated_at, updated_at"
+        " FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()
+    conn.close()
+    assert after == before
 
 
 def test_regenerate_requires_a_dedicated_keyword_skill_workflow(client, monkeypatch):
@@ -2018,6 +2173,18 @@ def insert_ready_keyword_set(
     scored=True,
     generation_method="PERSISTED_FBR_READBACK",
 ):
+    if generation_method == "PERSISTED_FBR_READBACK" and scored:
+        return insert_verified_skill_keyword_set(
+            merchant_id,
+            local_keywords=[
+                local_keyword(
+                    "breakfast upper west side", score=95, priority="P0"
+                ),
+                local_keyword(
+                    "coffee near lincoln center", score=88, priority="P1"
+                ),
+            ],
+        )
     keyword_set = {
         "schema_version": "seo_ops.keyword_set.v2",
         "merchant_id": str(merchant_id),
@@ -2714,7 +2881,7 @@ def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_witho
     conn.close()
 
     assert trusted_head["active_artifact_id"] == trusted_skill_id
-    assert fallback_head["active_artifact_id"] == fallback_fbr_id
+    assert fallback_head["active_artifact_id"] is None
 
 
 def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(
@@ -2747,7 +2914,7 @@ def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(
     head = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
     conn.close()
 
-    assert head["active_artifact_id"] == valid_fbr_id
+    assert head["active_artifact_id"] is None
 
 
 def test_state_resolves_the_bootstrapped_active_head_not_a_newer_scored_fbr_artifact(
@@ -4516,7 +4683,6 @@ def test_keyword_refresh_claim_blocks_a_paid_batch_before_external_readback(
             assert release_readback.wait(timeout=5)
             return {"place_id": place_id, "local_keywords": []}
 
-    monkeypatch.setattr(fbr_gbp, "fbr_gbp_client", lambda: BlockingKeywordReadback())
     monkeypatch.setenv("COREAI_KEYWORD_SKILL_AGENT_ID", "keyword-skill-agent")
     monkeypatch.setenv("COREAI_KEYWORD_SEED_SKILL_ID", "seed-skill")
     monkeypatch.setenv("COREAI_KEYWORD_RANKING_SKILL_ID", "ranking-skill")
@@ -4547,7 +4713,8 @@ def test_keyword_refresh_claim_blocks_a_paid_batch_before_external_readback(
     ))
 
     try:
-        assert client.post(f"/api/merchants/{merchant_id}/local-falcon-sync").status_code == 200
+        sync = client.post(f"/api/merchants/{merchant_id}/local-falcon-sync")
+        assert sync.status_code == 200, sync.text
         state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
         approved = client.post(
             f"/api/merchants/{merchant_id}/local-falcon-approvals",
@@ -4563,6 +4730,9 @@ def test_keyword_refresh_claim_blocks_a_paid_batch_before_external_readback(
                 f"/api/merchants/{merchant_id}/seo-targets/refresh"
             )
 
+        monkeypatch.setattr(
+            fbr_gbp, "fbr_gbp_client", lambda: BlockingKeywordReadback()
+        )
         thread = threading.Thread(target=refresh_in_background)
         thread.start()
         assert entered_readback.wait(timeout=5)
@@ -4651,9 +4821,7 @@ def test_local_falcon_sync_rejects_an_unscored_keyword_set_instead_of_syncing_ev
         app.dependency_overrides.pop(seo_targets.get_local_falcon, None)
 
     assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "keyword scores are required before selecting the Local Falcon Top 20 cohort"
-    )
+    assert response.json()["detail"] == "generate and accept keywords before Local Falcon sync"
     assert fake.listed_keywords == []
 
 

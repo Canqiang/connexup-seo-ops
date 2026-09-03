@@ -990,16 +990,6 @@ def _ensure_keyword_head(
             ),
             None,
         )
-        if active_artifact_id is None:
-            active_artifact_id = next(
-                (
-                    row["id"]
-                    for row, keyword_set in candidates
-                    if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id)
-                ),
-                None,
-            )
-
         timestamp = now_iso()
         activation_values = (
             ("system-bootstrap", "SYSTEM_BOOTSTRAP", timestamp)
@@ -1204,6 +1194,106 @@ def _keyword_version_summaries(
             }
         )
     return summaries
+
+
+def _compare_fbr_local_candidate(
+    active_keyword_set: dict | None,
+    fbr_keyword_set: dict | None,
+) -> dict:
+    def local_keywords_by_identity(keyword_set: dict | None) -> dict[str, dict]:
+        if not isinstance(keyword_set, dict):
+            return {}
+        keywords = keyword_set.get("keywords")
+        if not isinstance(keywords, list):
+            return {}
+        by_identity: dict[str, dict] = {}
+        for item in keywords:
+            if (
+                not isinstance(item, dict)
+                or item.get("strategy") != "LOCAL"
+                or not isinstance(item.get("keyword"), str)
+                or not item["keyword"].strip()
+            ):
+                continue
+            identity = _keyword_identity(item["keyword"])
+            by_identity.setdefault(identity, item)
+        return by_identity
+
+    def normalized_surfaces(item: dict) -> list[str]:
+        values = item.get("target_surface_types")
+        if not isinstance(values, list):
+            return []
+        return sorted({value for value in values if isinstance(value, str)})
+
+    active = local_keywords_by_identity(active_keyword_set)
+    fbr = local_keywords_by_identity(fbr_keyword_set)
+    active_keys = set(active)
+    fbr_keys = set(fbr)
+    changed_keywords = []
+    priority_changed_count = 0
+    target_surfaces_changed_count = 0
+    for keyword in sorted(active_keys & fbr_keys):
+        priority = None
+        if active[keyword].get("priority") != fbr[keyword].get("priority"):
+            priority = {
+                "active": active[keyword].get("priority"),
+                "fbr": fbr[keyword].get("priority"),
+            }
+            priority_changed_count += 1
+        target_surfaces = None
+        active_surfaces = normalized_surfaces(active[keyword])
+        fbr_surfaces = normalized_surfaces(fbr[keyword])
+        if active_surfaces != fbr_surfaces:
+            target_surfaces = {"active": active_surfaces, "fbr": fbr_surfaces}
+            target_surfaces_changed_count += 1
+        if priority is not None or target_surfaces is not None:
+            changed_keywords.append(
+                {
+                    "keyword": keyword,
+                    "priority": priority,
+                    "target_surfaces": target_surfaces,
+                }
+            )
+    return {
+        "active_local_count": len(active),
+        "fbr_local_count": len(fbr),
+        "added_count": len(fbr_keys - active_keys),
+        "removed_count": len(active_keys - fbr_keys),
+        "priority_changed_count": priority_changed_count,
+        "target_surfaces_changed_count": target_surfaces_changed_count,
+        "added_keywords": sorted(fbr_keys - active_keys),
+        "removed_keywords": sorted(active_keys - fbr_keys),
+        "changed_keywords": changed_keywords,
+    }
+
+
+def _latest_fbr_keyword_import(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> tuple[sqlite3.Row | None, dict | None]:
+    for row, keyword_set in _ready_keyword_artifact_candidates(
+        conn, merchant_id, place_id
+    ):
+        if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id):
+            return row, keyword_set
+    return None, None
+
+
+def _latest_fbr_import_state(
+    row: sqlite3.Row | None,
+    keyword_set: dict | None,
+    active_keyword_set: dict | None,
+    active_artifact_id: int | None,
+) -> dict | None:
+    if row is None or keyword_set is None:
+        return None
+    return {
+        "artifact_id": row["id"],
+        "imported_at": row["completed_at"],
+        "is_active": row["id"] == active_artifact_id,
+        "comparison": _compare_fbr_local_candidate(active_keyword_set, keyword_set),
+    }
 
 
 def _ready_keyword_artifact_for_another_place(
@@ -2598,6 +2688,17 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
         if current_place_id
         else []
     )
+    latest_fbr_row, latest_fbr_payload = (
+        _latest_fbr_keyword_import(conn, merchant_id, current_place_id)
+        if current_place_id
+        else (None, None)
+    )
+    latest_fbr_import = _latest_fbr_import_state(
+        latest_fbr_row,
+        latest_fbr_payload,
+        keyword_payload,
+        active_artifact_id,
+    )
     unresolved_batch = _unresolved_local_falcon_batch(conn, merchant_id)
     regenerate_blockers = []
     if not current_place_id:
@@ -2673,6 +2774,7 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
             ),
             "keyword_set": keyword_payload,
             "keyword_versions": keyword_versions,
+            "latest_fbr_import": latest_fbr_import,
             "audit_report": None,
             "ranking_report": None,
             "local_falcon": _local_falcon_state(
@@ -2775,6 +2877,7 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
         "local_falcon_cohort_sha256": cohort_sha256,
         "keyword_set": keyword_payload,
         "keyword_versions": keyword_versions,
+        "latest_fbr_import": latest_fbr_import,
         "audit_report": payload("AUDIT_REPORT"),
         "ranking_report": payload("RANKING_REPORT"),
         "local_falcon": local_falcon,
@@ -4125,10 +4228,17 @@ def refresh_seo_targets(
             detail="FBR keyword repository is not configured",
         ) from exc
     try:
+        fbr_response = fbr_client.get_local_keywords(place_id)
+        if not isinstance(fbr_response, dict):
+            raise FbrPayloadError("FBR persisted local keyword response is invalid")
+        if fbr_response.get("place_id") != place_id:
+            raise FbrPayloadError(
+                "FBR persisted keyword Place ID does not match the selected GBP location"
+            )
         persisted = _fbr_local_keyword_set(
             merchant,
             location,
-            fbr_client.get_local_keywords(place_id),
+            fbr_response,
         )
     except (FbrPayloadError, FbrUnavailableError) as exc:
         _fail_keyword_claim(conn, artifact_id, str(exc))
