@@ -37,9 +37,16 @@ def build_input(merchant: sqlite3.Row) -> str:
             f"Website: {merchant['website_url'] or 'Not provided'}",
             f"Operator notes: {merchant['notes'] or 'None'}",
             "First report verified issues, evidence, severity, expected impact, and missing inputs.",
-            "Then return the proposed dated Plan as a JSON array in a fenced json block.",
-            "Each Plan item must include id, title, rationale, expected_outcome, category, description, and start_after_days.",
-            "Allowed categories: gbp, content, review, citation, technical, other.",
+            "Then return exactly one proposed Task Plan object in one fenced json block.",
+            "The schema_version must be seo_ops.task_plan.v1.",
+            "Plan fields: schema_version, tasks. Task fields: key, task_type, title, "
+            "rationale, expected_outcome, depends_on, scheduled_start, parameters.",
+            "Use task_type PREPARE_ONLY. PREPARE_ONLY parameter fields: description, category.",
+            "Allowed category values: gbp, content, review, citation, technical, other.",
+            "depends_on must contain Task keys from this Plan; scheduled_start must be an "
+            "ISO 8601 timestamp with timezone or null.",
+            "Do not include approval, status, execution fields, Agent IDs, tool IDs, provider IDs, "
+            "credentials, or any other fields.",
         ]
     )
 

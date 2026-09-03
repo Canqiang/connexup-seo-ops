@@ -47,8 +47,9 @@ def test_extract_plan_no_block_or_bad_json_returns_empty():
     assert extract_plan(None) == []
 
 
-def test_create_tasks_idempotent(client):
-    """通过 client fixture 拿到已初始化的库；直接用底层连接验证幂等。"""
+def test_legacy_plan_materialization_is_disabled_and_creates_no_formal_tasks(client):
+    import pytest
+
     from app.db import connect
     from app.plan_parser import create_tasks_from_plan, extract_plan
 
@@ -62,25 +63,19 @@ def test_create_tasks_idempotent(client):
         )
         run_id = conn.execute("SELECT id FROM runs").fetchone()["id"]
         items = extract_plan(VALID_REPORT)
-        assert create_tasks_from_plan(conn, m["id"], run_id, "core-r1", items) == 2
-        assert create_tasks_from_plan(conn, m["id"], run_id, "core-r1", items) == 0  # 幂等
-        conn.commit()
+        with pytest.raises(
+            RuntimeError,
+            match="legacy Plan materialization is disabled; use strict Plan persistence and approval",
+        ):
+            create_tasks_from_plan(conn, m["id"], run_id, "core-r1", items)
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     finally:
+        conn.rollback()
         conn.close()
 
-    tasks = client.get(f"/api/merchants/{m['id']}/tasks").json()
-    assert len(tasks) == 2
-    by_key = {t["source_key"]: t for t in tasks}
-    assert set(by_key) == {"plan-core-r1-item-1", "plan-core-r1-item-2"}
-    t1 = by_key["plan-core-r1-item-1"]
-    assert t1["status"] == "todo"
-    assert t1["rationale"] == "营业时间与官网不一致"
-    assert t1["source_run_id"] == run_id
 
-
-def test_extract_plan_carries_expected_outcome(client):
-    from app.db import connect
-    from app.plan_parser import create_tasks_from_plan, extract_plan
+def test_extract_plan_carries_expected_outcome():
+    from app.plan_parser import extract_plan
 
     report = (
         '```json\n'
@@ -91,23 +86,6 @@ def test_extract_plan_carries_expected_outcome(client):
     items = extract_plan(report)
     assert items[0]["expected_outcome"] == "E"
     assert items[1]["expected_outcome"] is None
-
-    m = client.post("/api/merchants", json={"name": "M"}).json()
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
-            " VALUES (?, 'core-eo', 'running', 'manual', '2026-09-01T00:00:00+00:00')",
-            (m["id"],),
-        )
-        run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-eo'").fetchone()["id"]
-        create_tasks_from_plan(conn, m["id"], run_id, "core-eo", items)
-        conn.commit()
-    finally:
-        conn.close()
-    by_key = {t["source_key"]: t for t in client.get(f"/api/merchants/{m['id']}/tasks").json()}
-    assert by_key["plan-core-eo-a"]["expected_outcome"] == "E"
-    assert by_key["plan-core-eo-b"]["expected_outcome"] is None
 
 
 def test_extract_plan_tolerates_unclosed_fence():
@@ -155,7 +133,9 @@ def test_extract_plan_start_after_days_to_scheduled_start():
     assert items[3]["scheduled_start"] is None
 
 
-def test_create_tasks_persists_scheduled_start(client):
+def test_legacy_plan_materialization_with_schedule_is_disabled(client):
+    import pytest
+
     from app.db import connect
     from app.plan_parser import create_tasks_from_plan, extract_plan
 
@@ -169,9 +149,12 @@ def test_create_tasks_persists_scheduled_start(client):
             (m["id"],),
         )
         run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-ss'").fetchone()["id"]
-        create_tasks_from_plan(conn, m["id"], run_id, "core-ss", extract_plan(report))
-        conn.commit()
+        with pytest.raises(
+            RuntimeError,
+            match="legacy Plan materialization is disabled; use strict Plan persistence and approval",
+        ):
+            create_tasks_from_plan(conn, m["id"], run_id, "core-ss", extract_plan(report))
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     finally:
+        conn.rollback()
         conn.close()
-    t = client.get(f"/api/merchants/{m['id']}/tasks").json()[0]
-    assert t["scheduled_start"] is not None

@@ -3,7 +3,30 @@ from datetime import datetime, timedelta, timezone
 
 from helpers import FakeCoreAi, cleanup_override, override_coreai
 
-REPORT_WITH_PLAN = '报告\n```json\n[{"id": "i1", "title": "T1", "rationale": "R1"}]\n```\n'
+REPORT_WITH_PLAN = "\n".join(
+    [
+        "报告",
+        "```json",
+        json.dumps(
+            {
+                "schema_version": "seo_ops.task_plan.v1",
+                "tasks": [
+                    {
+                        "key": "i1",
+                        "task_type": "PREPARE_ONLY",
+                        "title": "T1",
+                        "rationale": "R1",
+                        "expected_outcome": "E1",
+                        "depends_on": [],
+                        "scheduled_start": None,
+                        "parameters": {"description": "D1", "category": "technical"},
+                    }
+                ],
+            }
+        ),
+        "```",
+    ]
+)
 
 
 def strict_audit(merchant_id: int) -> str:
@@ -44,7 +67,7 @@ def make_merchant_with_run(client, fake, name="M"):
     return m, run
 
 
-def test_poll_marks_succeeded_and_creates_tasks(client):
+def test_poll_marks_succeeded_and_persists_draft_plan_without_tasks(client):
     from app.scheduler import poll_runs_once
 
     fake = FakeCoreAi()
@@ -57,12 +80,14 @@ def test_poll_marks_succeeded_and_creates_tasks(client):
     assert detail["status"] == "succeeded"
     assert detail["report_text"] == REPORT_WITH_PLAN
     assert detail["finished_at"] is not None
-    tasks = client.get(f"/api/merchants/{m['id']}/tasks").json()
-    assert [t["title"] for t in tasks] == ["T1"]
-    assert tasks[0]["source_run_id"] == run["id"]
+    assert client.get(f"/api/merchants/{m['id']}/tasks").json() == []
+    plan = client.get(f"/api/runs/{run['id']}/task-plan").json()
+    assert plan["current_revision"]["decision_state"] == "DRAFT"
+    assert plan["current_revision"]["payload"]["tasks"][0]["title"] == "T1"
 
-    poll_runs_once(fake)  # 再跑一轮：终态 run 不再轮询，任务不重复
-    assert len(client.get(f"/api/merchants/{m['id']}/tasks").json()) == 1
+    poll_runs_once(fake)  # 再跑一轮：终态 run 不再轮询，Plan 不重复
+    assert client.get(f"/api/runs/{run['id']}/task-plan").json()["id"] == plan["id"]
+    assert client.get(f"/api/merchants/{m['id']}/tasks").json() == []
 
 
 def test_poll_completed_without_plan_block_still_succeeds(client):

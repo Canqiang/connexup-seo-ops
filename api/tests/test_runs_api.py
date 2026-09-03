@@ -1,3 +1,5 @@
+import json
+
 from helpers import FakeCoreAi, cleanup_override, override_coreai
 
 
@@ -19,10 +21,46 @@ def insert_run(client, *, status: str, with_task: bool = False) -> tuple[int, in
     )
     run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     if with_task:
+        plan_payload = json.dumps(
+            {
+                "schema_version": "seo_ops.task_plan.v1",
+                "tasks": [
+                    {
+                        "key": f"task-{run_id}",
+                        "task_type": "PREPARE_ONLY",
+                        "title": "候选任务",
+                        "rationale": "R",
+                        "expected_outcome": "E",
+                        "depends_on": [],
+                        "scheduled_start": None,
+                        "parameters": {},
+                    }
+                ],
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         conn.execute(
-            "INSERT INTO tasks (merchant_id, title, source_run_id, source_key, created_at)"
-            " VALUES (?, '候选任务', ?, ?, '2026-09-01T00:01:00+00:00')",
-            (merchant["id"], run_id, f"plan-test-{run_id}"),
+            "INSERT INTO task_plans "
+            "(merchant_id, source_kind, source_run_id, state, latest_revision, approved_revision, created_at) "
+            "VALUES (?, 'AGENT', ?, 'OPEN', 1, 1, '2026-09-01T00:01:00+00:00')",
+            (merchant["id"], run_id),
+        )
+        plan_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO task_plan_revisions "
+            "(plan_id, revision, decision_state, schema_version, payload_json, checksum, source, created_by, created_at, decided_by, decided_at) "
+            "VALUES (?, 1, 'APPROVED', 'seo_ops.task_plan.v1', ?, ?, 'MIGRATION', 'test', "
+            "'2026-09-01T00:01:00+00:00', 'test', '2026-09-01T00:01:00+00:00')",
+            (plan_id, plan_payload, "a" * 64),
+        )
+        conn.execute(
+            "INSERT INTO tasks "
+            "(merchant_id, plan_id, plan_revision, task_key, task_type, workflow_version, "
+            "parameters_json, definition_checksum, title, status, source_run_id, source_key, created_at) "
+            "VALUES (?, ?, 1, ?, 'PREPARE_ONLY', 1, '{}', ?, '候选任务', 'PENDING', ?, ?, "
+            "'2026-09-01T00:01:00+00:00')",
+            (merchant["id"], plan_id, f"task-{run_id}", "b" * 64, run_id, f"plan-test-{run_id}"),
         )
     conn.commit()
     conn.close()
@@ -70,7 +108,14 @@ def test_create_run_sends_us_local_diagnosis_context_and_plan_contract(client):
         assert "https://onlybear.example.com" in input_text
         assert "United States local SEO" in input_text
         assert "English keywords" in input_text
-        assert "start_after_days" in input_text
+        assert "seo_ops.task_plan.v1" in input_text
+        assert (
+            "Plan fields: schema_version, tasks. Task fields: key, task_type, title, "
+            "rationale, expected_outcome, depends_on, scheduled_start, parameters."
+        ) in input_text
+        assert "PREPARE_ONLY parameter fields: description, category." in input_text
+        assert "approval, status, execution fields, Agent IDs, tool IDs, provider IDs" in input_text
+        assert "start_after_days" not in input_text
     finally:
         cleanup_override()
 
@@ -156,23 +201,17 @@ def test_run_tasks_endpoint(client):
         (m["id"],),
     )
     run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id='rt1'").fetchone()[0]
-    conn.execute(
-        "INSERT INTO tasks (merchant_id, title, source_run_id, source_key, created_at)"
-        " VALUES (?, 'from-run', ?, 'plan-rt1-a', '2026-09-01T00:06:00+00:00')",
-        (m["id"], run_id),
-    )
     conn.commit()
     conn.close()
-    client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "manual"})
 
     tasks = client.get(f"/api/runs/{run_id}/tasks").json()
-    assert [t["title"] for t in tasks] == ["from-run"]
+    assert tasks == []
     assert client.get("/api/runs/999/tasks").status_code == 404
 
 
 def test_approve_plan_rejects_non_succeeded_run(client):
-    _merchant_id, running_id = insert_run(client, status="running", with_task=True)
-    _merchant_id, failed_id = insert_run(client, status="failed", with_task=True)
+    _merchant_id, running_id = insert_run(client, status="running")
+    _merchant_id, failed_id = insert_run(client, status="failed")
 
     assert client.post(f"/api/runs/{running_id}/approve-plan").status_code == 409
     assert client.post(f"/api/runs/{failed_id}/approve-plan").status_code == 409

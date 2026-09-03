@@ -8,9 +8,11 @@ from .coreai import CoreAiClient, CoreAiError, TERMINAL_STATUSES
 from .db import connect
 from .execution_result import normalize_execution_output
 from .merchants import now_iso
-from .plan_parser import create_tasks_from_plan, extract_plan
 from .runs import has_running_run, start_run
 from .seo_targets import SeoAgentIds, poll_seo_targets_once
+from .task_plan_contract import TaskPlanValidationError, extract_task_plan
+from .task_plans import persist_agent_plan
+from .task_workflows import enabled_task_types
 
 logger = logging.getLogger("seo_ops.scheduler")
 
@@ -59,9 +61,23 @@ def poll_runs_once(client) -> None:
                     persist_audit_snapshot(conn, run, report, finished_at)
                 except ValueError:
                     logger.info("run %s returned a legacy non-Audit report", run["id"])
-                items = extract_plan(report)
-                if items:
-                    create_tasks_from_plan(conn, run["merchant_id"], run["id"], run["coreai_run_id"], items)
+                try:
+                    validated = extract_task_plan(report, enabled_task_types())
+                except TaskPlanValidationError as exc:
+                    logger.info(
+                        "run %s returned an invalid strict Task Plan: %s",
+                        run["id"],
+                        ",".join(exc.codes),
+                    )
+                else:
+                    if validated is not None:
+                        persist_agent_plan(
+                            conn,
+                            merchant_id=run["merchant_id"],
+                            run_id=run["id"],
+                            coreai_run_id=run["coreai_run_id"],
+                            validated=validated,
+                        )
             else:
                 conn.execute(
                     "UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?",
