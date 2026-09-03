@@ -2733,10 +2733,10 @@ describe('关键词版本 controls', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/merchants/3/seo-targets/activations', expect.objectContaining({ body: JSON.stringify({ artifact_id: 99, expected_active_artifact_id: 41, confirmed: true }) })))
   })
 
-  it('keeps Local Falcon eligibility language for a verified scored FBR version', async () => {
-    const verifiedFbr = { artifact_id: 98, place_id: 'place-3', source: 'FBR', generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 10, local_keyword_count: 10, organic_keyword_count: 0, scored_keyword_count: 10, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-03T00:04:00Z', is_active: false }
+  it('keeps Local Falcon eligibility for a fully scored trusted FBR version', async () => {
+    const scoredFbr = { artifact_id: 98, place_id: 'place-3', source: 'FBR', generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 10, local_keyword_count: 10, organic_keyword_count: 0, scored_keyword_count: 10, score_status: 'SCORED_UNVERIFIED', completed_at: '2026-09-03T00:04:00Z', is_active: false }
     renderWithState(activeState({
-      keyword_versions: [activeState().keyword_versions[0], verifiedFbr],
+      keyword_versions: [activeState().keyword_versions[0], scoredFbr],
       latest_fbr_import: {
         ...activeState().latest_fbr_import,
         artifact_id: 98,
@@ -2747,7 +2747,8 @@ describe('关键词版本 controls', () => {
     fireEvent.click(screen.getByRole('button', { name: '采用这个 FBR 版本' }))
 
     const dialog = screen.getByRole('dialog', { name: '确认采用 FBR 关键词版本' })
-    within(dialog).getByText('该 FBR 版本评分已验证；采用后可继续使用 Local Falcon Top 20。')
+    const eligibility = within(dialog).getByText('该 FBR 版本已有完整评分；虽非 Skill 验证评分，采用后仍可继续使用 Local Falcon Top 20。')
+    expect(eligibility.className).toBe('muted')
     expect(within(dialog).queryByText(/会停用 Local Falcon Top 20/)).toBeNull()
   })
 

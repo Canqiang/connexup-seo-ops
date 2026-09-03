@@ -64,12 +64,16 @@ function fbrActivationEligibilityCopy(scoreStatus: KeywordScoreStatus) {
     return '该 FBR 版本评分已验证；采用后可继续使用 Local Falcon Top 20。'
   }
   if (scoreStatus === 'SCORED_UNVERIFIED') {
-    return '该 FBR 版本虽有完整评分，但评分来源未验证；采用后会停用 Local Falcon Top 20，直到恢复或重新生成评分已验证的 Skill 版本。'
+    return '该 FBR 版本已有完整评分；虽非 Skill 验证评分，采用后仍可继续使用 Local Falcon Top 20。'
   }
   if (scoreStatus === 'PARTIAL') {
     return '该 FBR 版本仅有部分评分；采用后会停用 Local Falcon Top 20，直到恢复或重新生成评分已验证的 Skill 版本。'
   }
   return '采用未评分的 FBR 版本会停用 Local Falcon Top 20，直到恢复或重新生成已评分的 Skill 版本。'
+}
+
+function isFbrActivationLocalFalconEligible(scoreStatus: KeywordScoreStatus) {
+  return scoreStatus === 'VERIFIED_SKILL' || scoreStatus === 'SCORED_UNVERIFIED'
 }
 
 function FieldHelp({
@@ -1345,7 +1349,7 @@ function KeywordRanking({
             <div className="keyword-version-confirm-copy">
               <p>将采用 #{selectedVersion.version.artifact_id}，并以确认时的当前活动版本 #{selectedVersion.expectedActiveArtifactId ?? '无'} 作为冲突校验。</p>
               {selectedVersion.version.source === 'FBR' && (
-                <p className={selectedVersion.version.score_status === 'VERIFIED_SKILL' ? 'muted' : 'credit-warning'}>{fbrActivationEligibilityCopy(selectedVersion.version.score_status)}</p>
+                <p className={isFbrActivationLocalFalconEligible(selectedVersion.version.score_status) ? 'muted' : 'credit-warning'}>{fbrActivationEligibilityCopy(selectedVersion.version.score_status)}</p>
               )}
               {activationError && <p className="scan-confirm-error" role="alert">{activationError}</p>}
             </div>
