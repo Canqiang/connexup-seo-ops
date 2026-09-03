@@ -600,13 +600,12 @@ def approve_plan(
             },
         )
         refresh_plan_lifecycle(conn, plan_id)
+        result = _plan_view(conn, _fetch_plan(conn, plan_id))
+        result["tasks"] = _tasks_in_payload_order(conn, plan_id, validated.payload)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-
-    result = _plan_view(conn, _fetch_plan(conn, plan_id))
-    result["tasks"] = _tasks_in_payload_order(conn, plan_id, validated.payload)
     return result
 
 

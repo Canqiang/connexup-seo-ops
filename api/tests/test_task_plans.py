@@ -323,6 +323,126 @@ def test_operator_edits_then_atomically_approves_exact_revision(client):
         conn.close()
 
 
+def test_approval_response_stays_bound_to_approved_revision_when_a_later_draft_commits(
+    client,
+):
+    from app.db import connect
+    from app.task_plans import ApprovePlanBody, approve_plan
+
+    _merchant, _run, draft_plan = create_draft_plan(client, two_wave_plan_payload())
+    plan_id = draft_plan["id"]
+    approved_checksum = draft_plan["current_revision"]["checksum"]
+    later_payload = two_wave_plan_payload(draft_title="Later concurrent draft")
+    later_json = json.dumps(
+        later_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    later_checksum = hashlib.sha256(later_json.encode()).hexdigest()
+    conn = connect()
+
+    class CommitInterleavingConnection:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.interleaved = False
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+        def commit(self):
+            self.wrapped.commit()
+            if self.interleaved:
+                return
+            self.interleaved = True
+            later = connect()
+            try:
+                later.execute("BEGIN IMMEDIATE")
+                later.execute(
+                    "INSERT INTO task_plan_revisions "
+                    "(plan_id, revision, decision_state, schema_version, payload_json, "
+                    "checksum, source, created_by, created_at) "
+                    "VALUES (?, 2, 'DRAFT', 'seo_ops.task_plan.v1', ?, ?, "
+                    "'OPERATOR', 'other-operator', '2026-09-03T12:00:00+00:00')",
+                    (plan_id, later_json, later_checksum),
+                )
+                changed = later.execute(
+                    "UPDATE task_plans SET latest_revision = 2 "
+                    "WHERE id = ? AND latest_revision = 1",
+                    (plan_id,),
+                )
+                assert changed.rowcount == 1
+                later.commit()
+            finally:
+                later.close()
+
+    interleaving = CommitInterleavingConnection(conn)
+    try:
+        response = approve_plan(
+            plan_id,
+            ApprovePlanBody(revision=1, checksum=approved_checksum),
+            operator="test",
+            conn=interleaving,
+        )
+    finally:
+        conn.close()
+
+    assert interleaving.interleaved is True
+    assert response["latest_revision"] == 1
+    assert response["approved_revision"] == 1
+    assert response["current_revision"]["revision"] == 1
+    assert response["current_revision"]["checksum"] == approved_checksum
+    assert [task["task_key"] for task in response["tasks"]] == ["draft", "review"]
+
+    reread = client.get(f"/api/task-plans/{plan_id}").json()
+    assert reread["latest_revision"] == 2
+    assert reread["current_revision"]["checksum"] == later_checksum
+
+
+def test_approval_response_read_failure_rolls_back_decision_tasks_and_events(
+    client, monkeypatch
+):
+    from fastapi import HTTPException
+
+    from app import task_plans
+    from app.db import connect
+
+    _merchant, run, draft_plan = create_draft_plan(client, two_wave_plan_payload())
+
+    def fail_response_read(_conn, _plan_id, _payload):
+        raise HTTPException(status_code=500, detail="injected approval response failure")
+
+    monkeypatch.setattr(task_plans, "_tasks_in_payload_order", fail_response_read)
+
+    response = client.post(
+        f"/api/task-plans/{draft_plan['id']}/approve",
+        json={
+            "revision": 1,
+            "checksum": draft_plan["current_revision"]["checksum"],
+        },
+    )
+
+    assert response.status_code == 500
+    conn = connect()
+    try:
+        plan = conn.execute(
+            "SELECT approved_revision FROM task_plans WHERE id = ?", (draft_plan["id"],)
+        ).fetchone()
+        revision = conn.execute(
+            "SELECT decision_state FROM task_plan_revisions "
+            "WHERE plan_id = ? AND revision = 1",
+            (draft_plan["id"],),
+        ).fetchone()
+        source_run = conn.execute(
+            "SELECT plan_approved_at FROM runs WHERE id = ?", (run["id"],)
+        ).fetchone()
+        assert plan["approved_revision"] is None
+        assert revision["decision_state"] == "DRAFT"
+        assert source_run["plan_approved_at"] is None
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_dependencies").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_stale_draft_revision_and_approval_checksum_return_conflict(client):
     from app.db import connect
 
