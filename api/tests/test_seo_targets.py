@@ -1433,13 +1433,20 @@ def test_stale_keyword_dispatch_fails_closed_without_automatic_retrigger_and_all
     assert latest["coreai_run_id"] == "explicit-manual-retry-run"
 
 
-def test_skill_only_regeneration_accepts_observed_adapter_and_finishes_payable(
+def test_skill_activation_accepts_observed_adapter_and_finishes_payable_atomically(
     client, monkeypatch
 ):
     from app import seo_targets
     from app.coreai import CoreAiClient
 
     merchant_id = create_uws_merchant(client, monkeypatch)
+    previous_artifact_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="previous-active-skill",
+        keyword="previous active keyword",
+    )
+    previous_state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
+    assert previous_state["active_keyword_artifact_id"] == previous_artifact_id
     monkeypatch.setenv("COREAI_KEYWORD_SKILL_AGENT_ID", "keyword-skill-agent")
     monkeypatch.setenv("COREAI_KEYWORD_SEED_SKILL_ID", "seed-skill")
     monkeypatch.setenv("COREAI_KEYWORD_RANKING_SKILL_ID", "ranking-skill")
@@ -1556,6 +1563,10 @@ def test_skill_only_regeneration_accepts_observed_adapter_and_finishes_payable(
             self.triggered.append(agent_id)
             raise AssertionError("keyword-only regeneration must not launch downstream Agents")
 
+    statements = []
+    polling_conn = seo_targets.connect()
+    polling_conn.set_trace_callback(statements.append)
+    monkeypatch.setattr(seo_targets, "connect", lambda: polling_conn)
     fake = CompletedSkillRun()
     seo_targets.poll_seo_targets_once(
         fake,
@@ -1563,26 +1574,56 @@ def test_skill_only_regeneration_accepts_observed_adapter_and_finishes_payable(
     )
 
     state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
+    new_artifact_id = state["active_keyword_artifact_id"]
     assert state["cycle_status"] == "ready"
     assert state["audit_report"] is None
     assert state["ranking_report"] is None
-    assert state["keyword_set"] is None
-    assert state["active_keyword_artifact_id"] is None
-    assert state["local_falcon_cohort_sha256"] is None
-    assert state["capabilities"]["can_approve_local_falcon"] is False
-    assert state["capabilities"]["can_generate_local_falcon"] is False
+    assert new_artifact_id != previous_artifact_id
+    assert state["keyword_set"]["keywords"][0]["keyword"] == (
+        "breakfast upper west side"
+    )
+    assert state["local_falcon_cohort_sha256"] is not None
+    assert state["capabilities"]["can_approve_local_falcon"] is True
     assert state["keyword_versions"][0]["source"] == "SKILL"
     assert state["keyword_versions"][0]["score_status"] == "VERIFIED_SKILL"
+    assert state["keyword_versions"][0]["is_active"] is True
     assert fake.triggered == []
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
-    provenance = json.loads(
-        conn.execute(
-            "SELECT provenance_json FROM merchant_seo_artifacts"
-            " WHERE merchant_id = ? AND coreai_run_id = 'verified-skill-only-run'",
-            (merchant_id,),
-        ).fetchone()[0]
-    )
+    artifact = conn.execute(
+        "SELECT status, request_json, provenance_json, error FROM merchant_seo_artifacts"
+        " WHERE merchant_id = ? AND coreai_run_id = 'verified-skill-only-run'",
+        (merchant_id,),
+    ).fetchone()
+    head = conn.execute(
+        "SELECT active_artifact_id, activated_by, activation_reason"
+        " FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()
     conn.close()
+    request = json.loads(artifact[1])
+    provenance = json.loads(artifact[2])
+    assert artifact[0] == "ready"
+    assert request["expected_active_artifact_id"] == previous_artifact_id
+    assert artifact[3] is None
+    assert head == (new_artifact_id, "system-skill-workflow", "SKILL_GENERATION")
+    ready_update = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith("UPDATE merchant_seo_artifacts")
+        and "status = 'ready'" in statement
+    )
+    head_update = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith("UPDATE merchant_keyword_heads")
+    )
+    commit = next(
+        index
+        for index, statement in enumerate(statements)
+        if index > head_update and statement == "COMMIT"
+    )
+    assert ready_update < head_update < commit
+    assert "COMMIT" not in statements[ready_update:head_update]
     assert provenance["status"] == "VERIFIED"
     assert [item["qualified_name"] for item in provenance["skill_instruction_loads"]] == [
         "fbradmin/seo-keyword-seed-generate",
@@ -2156,6 +2197,326 @@ def insert_verified_skill_keyword_set(
     artifact_id = cursor.lastrowid
     conn.close()
     return artifact_id
+
+
+def insert_running_skill_keyword_set(
+    merchant_id,
+    *,
+    expected_active_artifact_id,
+    cycle_id,
+    run_id,
+):
+    from app import seo_targets
+
+    conn = seo_targets.connect()
+    merchant = seo_targets.fetch_merchant(conn, merchant_id)
+    request = seo_targets.build_keyword_request(conn, merchant)
+    request["expected_active_artifact_id"] = expected_active_artifact_id
+    request["output_schema_version"] = "seo_ops.keyword_workflow_result.v1"
+    request["execution_spec"]["action"] = "REGENERATE_KEYWORD_SET_WITH_SKILLS"
+    request["workflow"] = {
+        "seed_skill_id": "seed-skill",
+        "ranking_skill_id": "ranking-skill",
+        "seed_skill": {
+            "id": "seed-skill",
+            "qualified_name": "fbradmin/seo-keyword-seed-generate",
+            "version": None,
+            "updated_at": "2026-09-02T06:00:00Z",
+        },
+        "ranking_skill": {
+            "id": "ranking-skill",
+            "qualified_name": "fbradmin/seo-keyword-ranking-optimize",
+            "version": None,
+            "updated_at": "2026-09-02T06:00:00Z",
+        },
+        "stages": ["SEED", "RANK_AND_PRIORITIZE"],
+    }
+    seo_targets._insert_running_artifact(
+        conn,
+        merchant_id=merchant_id,
+        cycle_id=cycle_id,
+        artifact_type="KEYWORD_SET",
+        schema_version="seo_ops.keyword_set.v2",
+        agent_id="keyword-skill-agent",
+        run_id=run_id,
+        request=request,
+    )
+    artifact_id = conn.execute(
+        "SELECT id FROM merchant_seo_artifacts WHERE coreai_run_id = ?",
+        (run_id,),
+    ).fetchone()["id"]
+    conn.commit()
+    conn.close()
+    return artifact_id
+
+
+class KeywordSkillPollClient:
+    def __init__(self, output, *, trace_status="COMPLETED", trace_agent="keyword-skill-agent"):
+        self.output = output
+        self.trace_status = trace_status
+        self.trace_agent = trace_agent
+
+    def get_run(self, run_id):
+        return {
+            "status": "COMPLETED",
+            "output": self.output,
+            "completed_at": "2026-09-03T07:00:04Z",
+            "trace_id": f"{run_id}-trace",
+        }
+
+    def get_trace(self, trace_id):
+        return {
+            "traceId": trace_id,
+            "agentId": self.trace_agent,
+            "status": self.trace_status,
+        }
+
+    def list_trace_spans(self, _trace_id):
+        return [
+            {"spanId": "seed-span", "name": "use_skill", "type": "TOOL"},
+            {"spanId": "ranking-span", "name": "use_skill", "type": "TOOL"},
+        ]
+
+    def get_trace_span(self, _trace_id, span_id):
+        name, started_at, completed_at = {
+            "seed-span": (
+                "fbradmin/seo-keyword-seed-generate",
+                "2026-09-03T07:00:00Z",
+                "2026-09-03T07:00:01Z",
+            ),
+            "ranking-span": (
+                "fbradmin/seo-keyword-ranking-optimize",
+                "2026-09-03T07:00:02Z",
+                "2026-09-03T07:00:03Z",
+            ),
+        }[span_id]
+        return {
+            "spanId": span_id,
+            "name": "use_skill",
+            "type": "TOOL",
+            "status": "OK",
+            "input": json.dumps({"name": name}),
+            "output": "ToolCallResult{status=COMPLETED, toolName='use_skill'}",
+            "startedAt": started_at,
+            "completedAt": completed_at,
+        }
+
+
+def active_keyword_artifact_id(merchant_id):
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    artifact_id = conn.execute(
+        "SELECT active_artifact_id FROM merchant_keyword_heads"
+        " WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()[0]
+    conn.close()
+    return artifact_id
+
+
+@pytest.mark.parametrize(
+    ("case", "output_factory", "trace_agent"),
+    [
+        ("invalid-output", lambda _merchant_id: "not JSON", "keyword-skill-agent"),
+        (
+            "location-mismatch",
+            lambda merchant_id: keyword_workflow_result(
+                {
+                    **mark_deterministic_local_ranks(
+                        keyword_result(
+                            merchant_id,
+                            [local_keyword("wrong place", score=91, priority="P0")],
+                            generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+                        )
+                    ),
+                    "market": {
+                        "country_code": "US",
+                        "language": "en-US",
+                        "search_engine": "GOOGLE",
+                        "location_name": "Another location",
+                    },
+                }
+            ),
+            "keyword-skill-agent",
+        ),
+        (
+            "missing-score-rank",
+            lambda merchant_id: keyword_workflow_result(
+                keyword_result(
+                    merchant_id,
+                    [local_keyword("unscored local keyword")],
+                    generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+                )
+            ),
+            "keyword-skill-agent",
+        ),
+        (
+            "failed-provenance",
+            lambda merchant_id: keyword_workflow_result(
+                mark_deterministic_local_ranks(
+                    keyword_result(
+                        merchant_id,
+                        [local_keyword("valid output", score=92, priority="P0")],
+                        generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+                    )
+                )
+            ),
+            "wrong-agent",
+        ),
+    ],
+)
+def test_skill_completion_validation_failure_preserves_the_active_keyword_head(
+    client,
+    monkeypatch,
+    case,
+    output_factory,
+    trace_agent,
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    previous_artifact_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id=f"{case}-previous",
+    )
+    assert client.get(f"/api/merchants/{merchant_id}/seo-targets").json()[
+        "active_keyword_artifact_id"
+    ] == previous_artifact_id
+    artifact_id = insert_running_skill_keyword_set(
+        merchant_id,
+        expected_active_artifact_id=previous_artifact_id,
+        cycle_id=case,
+        run_id=f"{case}-run",
+    )
+
+    seo_targets.poll_seo_targets_once(
+        KeywordSkillPollClient(output_factory(merchant_id), trace_agent=trace_agent),
+        seo_targets.SeoAgentIds("keyword-skill-agent", "", ""),
+    )
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    artifact = conn.execute(
+        "SELECT status, error FROM merchant_seo_artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()
+    conn.close()
+    assert artifact[0] == "failed"
+    assert artifact[1]
+    assert active_keyword_artifact_id(merchant_id) == previous_artifact_id
+
+
+def test_skill_provenance_pending_preserves_the_active_keyword_head(client, monkeypatch):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    previous_artifact_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="pending-provenance-previous",
+    )
+    client.get(f"/api/merchants/{merchant_id}/seo-targets")
+    payload = mark_deterministic_local_ranks(
+        keyword_result(
+            merchant_id,
+            [local_keyword("pending provenance", score=92, priority="P0")],
+            generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+        )
+    )
+    artifact_id = insert_running_skill_keyword_set(
+        merchant_id,
+        expected_active_artifact_id=previous_artifact_id,
+        cycle_id="pending-provenance",
+        run_id="pending-provenance-run",
+    )
+
+    seo_targets.poll_seo_targets_once(
+        KeywordSkillPollClient(
+            keyword_workflow_result(payload),
+            trace_status="RUNNING",
+        ),
+        seo_targets.SeoAgentIds("keyword-skill-agent", "", ""),
+    )
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    artifact = conn.execute(
+        "SELECT status, verification_started_at, error"
+        " FROM merchant_seo_artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()
+    conn.close()
+    assert artifact[0] == "running"
+    assert artifact[1] is not None
+    assert "not completed" in artifact[2]
+    assert active_keyword_artifact_id(merchant_id) == previous_artifact_id
+
+
+def test_skill_activation_conflict_preserves_ready_history_and_the_newer_head(
+    client, monkeypatch
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    previous_artifact_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="stale-expected-previous",
+        keyword="previous keyword",
+    )
+    client.get(f"/api/merchants/{merchant_id}/seo-targets")
+    payload = mark_deterministic_local_ranks(
+        keyword_result(
+            merchant_id,
+            [local_keyword("late valid result", score=99, priority="P0")],
+            generation_method="UPSTREAM_DETERMINISTIC_ADAPTER",
+        )
+    )
+    concurrently_selected_id = insert_verified_skill_keyword_set(
+        merchant_id,
+        cycle_id="concurrently-selected",
+        keyword="concurrently selected keyword",
+    )
+    artifact_id = insert_running_skill_keyword_set(
+        merchant_id,
+        expected_active_artifact_id=previous_artifact_id,
+        cycle_id="stale-expected-result",
+        run_id="stale-expected-result-run",
+    )
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "UPDATE merchant_keyword_heads SET active_artifact_id = ?, activated_by = ?,"
+        " activation_reason = 'RESTORE_SKILL', activated_at = ?, updated_at = ?"
+        " WHERE merchant_id = ? AND place_id = ?",
+        (
+            concurrently_selected_id,
+            "concurrent-operator",
+            "2026-09-03T06:59:00Z",
+            "2026-09-03T06:59:00Z",
+            merchant_id,
+            TEST_PLACE_ID,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    seo_targets.poll_seo_targets_once(
+        KeywordSkillPollClient(keyword_workflow_result(payload)),
+        seo_targets.SeoAgentIds("keyword-skill-agent", "", ""),
+    )
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    artifact = conn.execute(
+        "SELECT status, payload_json, provenance_json, error"
+        " FROM merchant_seo_artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()
+    conn.close()
+    assert artifact[0] == "ready"
+    assert json.loads(artifact[1])["keywords"][0]["keyword"] == "late valid result"
+    assert json.loads(artifact[2])["status"] == "VERIFIED"
+    assert artifact[3] == (
+        "keyword activation conflict: active version changed while Skill generation was running"
+    )
+    assert active_keyword_artifact_id(merchant_id) == concurrently_selected_id
+    state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
+    assert state["cycle_status"] == "ready"
+    assert state["error"] == artifact[3]
 
 
 def insert_unscored_fbr_keyword_inventory(
