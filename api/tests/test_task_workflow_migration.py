@@ -81,10 +81,10 @@ def _seed_legacy_database(path, *, unapproved_execution=False):
         [
             (1, "Manual todo", "todo description", "todo rationale", "todo outcome", "content", None, "todo", "todo evidence", None, "manual-todo", "2026-08-03T00:00:00+00:00", None),
             (2, "Manual done", "done description", "done rationale", "done outcome", "review", None, "done", "done evidence", None, "manual-done", "2026-08-03T01:00:00+00:00", "2026-08-04T00:00:00+00:00"),
-            (3, "Ambiguous doing", None, None, None, "unsupported", "2026-08-11T00:00:00", "doing", None, None, "ambiguous", "2026-08-03T02:00:00+00:00", None),
+            (3, "Ambiguous doing", None, None, None, "unsupported", None, "doing", None, None, "ambiguous", "2026-08-03T02:00:00+00:00", None),
             (4, "Returned task", "returned description", "returned rationale", "returned outcome", "gbp", None, "doing", "returned evidence", None, "returned", "2026-08-03T03:00:00+00:00", None),
             (5, "Failed task", "failed description", "failed rationale", "failed outcome", "technical", None, "doing", "failed evidence", None, "failed", "2026-08-03T04:00:00+00:00", None),
-            (10, "Approved running", "running description", "running rationale", "running outcome", "citation", "2026-08-10T00:00:00+00:00", "doing", "running evidence", 10, "running", "2026-08-05T00:00:00+00:00", None),
+            (10, "Approved running", "running description", "running rationale", "running outcome", "citation", "2026-08-10T00:00:00-04:00", "doing", "running evidence", 10, "running", "2026-08-05T00:00:00+00:00", None),
             (11, "Approved ready", "ready description", "ready rationale", "ready outcome", "other", None, "doing", "ready evidence", 10, "ready", "2026-08-05T01:00:00+00:00", None),
             (20, "Draft first", "draft first description", "draft first rationale", "draft first outcome", "content", None, "todo", None, 20, "draft-first", "2026-08-06T00:00:00+00:00", None),
             (21, "Draft second", None, "draft second rationale", "draft second outcome", None, None, "todo", None, 20, "draft-second", "2026-08-06T01:00:00+00:00", None),
@@ -116,6 +116,25 @@ def legacy_task_db(tmp_path):
     path = tmp_path / "legacy-task.db"
     _seed_legacy_database(path)
     return path
+
+
+def _legacy_failure_snapshot(conn):
+    return {
+        "merchants": conn.execute("SELECT * FROM merchants ORDER BY id").fetchall(),
+        "runs": conn.execute("SELECT * FROM runs ORDER BY id").fetchall(),
+        "tasks": conn.execute("SELECT * FROM tasks ORDER BY id").fetchall(),
+        "task_executions": conn.execute(
+            "SELECT * FROM task_executions ORDER BY id"
+        ).fetchall(),
+        "sqlite_sequence": conn.execute(
+            "SELECT * FROM sqlite_sequence ORDER BY name"
+        ).fetchall(),
+        "sqlite_master": conn.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('table','index','trigger') "
+            "AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name"
+        ).fetchall(),
+    }
 
 
 WORKFLOW_TABLES = (
@@ -628,6 +647,175 @@ def test_migrated_json_shaped_text_is_legacy_and_never_retryable(
         assert response.status_code == 409
         reread = client.get("/api/tasks/12").json()
         assert (reread["status"], reread["version"], len(reread["events"])) == before
+
+
+def test_valid_aware_and_null_scheduled_starts_survive_migration_exactly(
+    legacy_task_db, monkeypatch
+):
+    monkeypatch.setenv("SEO_OPS_DB", str(legacy_task_db))
+    from app.db import init_db
+
+    init_db()
+
+    conn = sqlite3.connect(legacy_task_db)
+    conn.row_factory = sqlite3.Row
+    migrated = {
+        row["source_key"]: row["scheduled_start"]
+        for row in conn.execute(
+            "SELECT source_key, scheduled_start FROM tasks "
+            "WHERE source_key IN ('running', 'ambiguous')"
+        )
+    }
+    run_payload = json.loads(
+        conn.execute(
+            "SELECT r.payload_json FROM task_plan_revisions r "
+            "JOIN task_plans p ON p.id = r.plan_id WHERE p.source_run_id = 10"
+        ).fetchone()[0]
+    )
+    run_schedule = {
+        item["key"]: item["scheduled_start"] for item in run_payload["tasks"]
+    }
+    execution_ids = [
+        row[0]
+        for row in conn.execute("SELECT id FROM task_executions ORDER BY id").fetchall()
+    ]
+    conn.close()
+
+    assert migrated == {
+        "ambiguous": None,
+        "running": "2026-08-10T00:00:00-04:00",
+    }
+    assert run_schedule == {
+        "ready": None,
+        "running": "2026-08-10T00:00:00-04:00",
+    }
+    assert execution_ids == [99, 100, 101, 102, 103]
+
+
+@pytest.mark.parametrize(
+    "scheduled_start",
+    [
+        pytest.param("not-an-instant", id="malformed"),
+        pytest.param("2026-08-11T00:00:00", id="timezone-naive"),
+    ],
+)
+def test_invalid_non_null_scheduled_start_aborts_without_normalizing_source_to_null(
+    tmp_path, monkeypatch, scheduled_start
+):
+    path = tmp_path / "invalid-scheduled-start.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "UPDATE tasks SET scheduled_start = ? WHERE id = 3", (scheduled_start,)
+    )
+    conn.commit()
+    before = _legacy_failure_snapshot(conn)
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+
+    with pytest.raises(RuntimeError, match="scheduled_start"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert _legacy_failure_snapshot(conn) == before
+    assert conn.execute(
+        "SELECT scheduled_start FROM tasks WHERE id = 3"
+    ).fetchone()[0] == scheduled_start
+    conn.close()
+
+
+def test_mixed_merchant_run_group_aborts_without_cross_merchant_plan(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "mixed-merchant-run.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO merchants (id, name, created_at) "
+        "VALUES (2, 'Other Merchant', '2026-08-01T00:00:00+00:00')"
+    )
+    conn.execute("UPDATE tasks SET merchant_id = 2 WHERE id = 11")
+    conn.commit()
+    before = _legacy_failure_snapshot(conn)
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+
+    with pytest.raises(RuntimeError, match="run 10.*merchant"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert _legacy_failure_snapshot(conn) == before
+    assert conn.execute(
+        "SELECT id, merchant_id FROM tasks WHERE source_run_id = 10 ORDER BY id"
+    ).fetchall() == [(10, 1), (11, 2)]
+    conn.close()
+
+
+def test_orphan_execution_aborts_before_swap_when_foreign_keys_were_disabled(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "orphan-execution.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+    conn.execute(
+        "INSERT INTO task_executions "
+        "(id, task_id, coreai_run_id, status, attempt, created_at) "
+        "VALUES (107, 999, 'orphan-run', 'failed', 1, "
+        "'2026-08-08T00:00:00+00:00')"
+    )
+    conn.commit()
+    before = _legacy_failure_snapshot(conn)
+    source_execution_ids = [
+        row[0]
+        for row in conn.execute("SELECT id FROM task_executions ORDER BY id").fetchall()
+    ]
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+
+    with pytest.raises(RuntimeError, match="execution.*missing task 999"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert _legacy_failure_snapshot(conn) == before
+    assert [
+        row[0]
+        for row in conn.execute("SELECT id FROM task_executions ORDER BY id").fetchall()
+    ] == source_execution_ids
+    assert conn.execute("SELECT COUNT(*) FROM task_executions").fetchone()[0] == len(
+        source_execution_ids
+    )
+    conn.close()
+
+
+def test_execution_copy_id_or_count_mismatch_aborts_before_source_swap(
+    legacy_task_db, monkeypatch
+):
+    from app import task_migrations
+
+    conn = sqlite3.connect(legacy_task_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    before = _legacy_failure_snapshot(conn)
+    original_materialize = task_migrations._materialize_execution
+
+    def omit_one_execution(target, execution):
+        if execution["id"] != 101:
+            original_materialize(target, execution)
+
+    monkeypatch.setattr(
+        task_migrations, "_materialize_execution", omit_one_execution
+    )
+
+    with pytest.raises(RuntimeError, match="preserve exact IDs and count"):
+        task_migrations.migrate_task_workflow_v1(conn)
+
+    assert _legacy_failure_snapshot(conn) == before
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    conn.close()
 
 
 def test_second_init_is_an_idempotent_no_op(legacy_task_db, monkeypatch):

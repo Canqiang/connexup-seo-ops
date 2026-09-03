@@ -237,13 +237,21 @@ def _task_key(task: dict[str, Any], used: set[str]) -> str:
 
 
 def _scheduled_start(value: Any) -> str | None:
-    if not isinstance(value, str) or not value:
+    if value is None:
         return None
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(
+            "legacy scheduled_start must be a timezone-aware ISO instant or NULL"
+        )
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return None
-    return value if parsed.tzinfo is not None else None
+        raise RuntimeError(
+            "legacy scheduled_start must be a timezone-aware ISO instant or NULL"
+        ) from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RuntimeError("legacy scheduled_start must include a timezone offset")
+    return value
 
 
 def _plan_item(task: dict[str, Any], used: set[str]) -> dict[str, object]:
@@ -325,6 +333,23 @@ def _legacy_executions_for_task(
     return _fetch_dicts(
         conn, "SELECT * FROM task_executions WHERE task_id = ? ORDER BY id", (task_id,)
     )
+
+
+def _validate_legacy_execution_owners(
+    conn: sqlite3.Connection, tasks: list[dict[str, Any]]
+) -> list[int]:
+    task_ids = {int(task["id"]) for task in tasks}
+    if not _table_exists(conn, "task_executions"):
+        return []
+    executions = conn.execute(
+        "SELECT id, task_id FROM task_executions ORDER BY id"
+    ).fetchall()
+    for execution_id, task_id in executions:
+        if int(task_id) not in task_ids:
+            raise RuntimeError(
+                f"legacy execution {execution_id} references missing task {task_id}"
+            )
+    return [int(row[0]) for row in executions]
 
 
 def _task_status(task: dict[str, Any], executions: list[dict[str, Any]]) -> str:
@@ -435,6 +460,7 @@ def _materialize_execution(conn: sqlite3.Connection, execution: dict[str, Any]) 
 
 def _convert_legacy_runs_and_tasks(conn: sqlite3.Connection) -> None:
     tasks = _fetch_dicts(conn, "SELECT * FROM tasks ORDER BY id")
+    source_execution_ids = _validate_legacy_execution_owners(conn, tasks)
     manual_tasks = [task for task in tasks if task.get("source_run_id") is None]
     run_ids = sorted({int(task["source_run_id"]) for task in tasks if task.get("source_run_id") is not None})
 
@@ -456,6 +482,16 @@ def _convert_legacy_runs_and_tasks(conn: sqlite3.Connection) -> None:
         if not run_rows:
             raise RuntimeError(f"legacy task references missing run {run_id}")
         run = run_rows[0]
+        mismatched_task_ids = [
+            int(task["id"])
+            for task in run_tasks
+            if int(task["merchant_id"]) != int(run["merchant_id"])
+        ]
+        if mismatched_task_ids:
+            raise RuntimeError(
+                f"legacy run {run_id} merchant {run['merchant_id']} does not match "
+                f"task merchant for tasks {mismatched_task_ids}"
+            )
         approved = run.get("plan_approved_at") is not None
         if not approved:
             execution_count = sum(
@@ -476,6 +512,17 @@ def _convert_legacy_runs_and_tasks(conn: sqlite3.Connection) -> None:
         if approved:
             for task, item in zip(run_tasks, items, strict=True):
                 _materialize_task(conn, task=task, plan_id=plan_id, item=item)
+
+    migrated_execution_ids = [
+        int(row[0])
+        for row in conn.execute(
+            "SELECT id FROM _task_workflow_task_executions ORDER BY id"
+        ).fetchall()
+    ]
+    if migrated_execution_ids != source_execution_ids:
+        raise RuntimeError(
+            "legacy task execution migration did not preserve exact IDs and count"
+        )
 
 
 def _swap_replacement_tables(conn: sqlite3.Connection) -> None:
