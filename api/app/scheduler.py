@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -10,9 +11,10 @@ from .execution_result import normalize_execution_output
 from .merchants import now_iso
 from .runs import has_running_run, start_run
 from .seo_targets import SeoAgentIds, poll_seo_targets_once
+from .task_events import append_task_event
 from .task_plan_contract import TaskPlanValidationError, extract_task_plan
-from .task_plans import persist_agent_plan
-from .task_workflows import enabled_task_types
+from .task_plans import persist_agent_plan, refresh_plan_lifecycle
+from .task_workflows import assert_transition, enabled_task_types
 
 logger = logging.getLogger("seo_ops.scheduler")
 
@@ -92,7 +94,8 @@ def poll_task_executions_once(client) -> None:
     conn = connect()
     try:
         executions = conn.execute(
-            "SELECT * FROM task_executions WHERE status = 'running' AND coreai_run_id IS NOT NULL"
+            "SELECT * FROM task_executions WHERE stage = 'PREPARATION' "
+            "AND status = 'RUNNING' AND coreai_run_id IS NOT NULL ORDER BY id"
         ).fetchall()
         for execution in executions:
             try:
@@ -113,25 +116,81 @@ def poll_task_executions_once(client) -> None:
                 else:
                     if parsed.tzinfo is not None:
                         finished_at = completed_at
+            result_json: str | None = None
+            error: str | None = None
             if status == "COMPLETED":
                 try:
-                    output = normalize_execution_output(core.get("output"))
+                    result_json = normalize_execution_output(core.get("output"))
                 except ValueError as exc:
-                    conn.execute(
-                        "UPDATE task_executions SET status = 'failed', error = ?, finished_at = ? WHERE id = ?",
-                        (str(exc), finished_at, execution["id"]),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE task_executions SET status = 'ready', output_text = ?, finished_at = ? WHERE id = ?",
-                        (output, finished_at, execution["id"]),
-                    )
+                    error = str(exc)
             else:
-                conn.execute(
-                    "UPDATE task_executions SET status = 'failed', error = ?, finished_at = ? WHERE id = ?",
-                    (core.get("error") or f"core-ai status {status}", finished_at, execution["id"]),
+                error = core.get("error") or f"core-ai status {status}"
+
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current = conn.execute(
+                    "SELECT * FROM task_executions WHERE id = ?", (execution["id"],)
+                ).fetchone()
+                if current is None or current["status"] != "RUNNING":
+                    conn.rollback()
+                    continue
+                task = conn.execute(
+                    "SELECT * FROM tasks WHERE id = ?", (current["task_id"],)
+                ).fetchone()
+                if task is None or task["status"] != "PREPARING":
+                    raise RuntimeError("active preparation is detached from its PREPARING Task")
+
+                if result_json is not None:
+                    assert_transition(task["task_type"], task["status"], "AWAITING_APPROVAL")
+                    evidence_json = json.dumps(
+                        json.loads(result_json)["evidence"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    execution_update = conn.execute(
+                        "UPDATE task_executions SET status = 'SUCCEEDED', result_json = ?, "
+                        "evidence_json = ?, error = NULL, finished_at = ? "
+                        "WHERE id = ? AND status = 'RUNNING'",
+                        (result_json, evidence_json, finished_at, current["id"]),
+                    )
+                    task_update = conn.execute(
+                        "UPDATE tasks SET status = 'AWAITING_APPROVAL', version = version + 1, "
+                        "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
+                        (finished_at, task["id"], task["version"]),
+                    )
+                    event_type = "TASK_PREPARATION_SUCCEEDED"
+                    payload = {"execution_id": current["id"], "to_status": "AWAITING_APPROVAL"}
+                else:
+                    assert_transition(task["task_type"], task["status"], "NEEDS_ATTENTION")
+                    execution_update = conn.execute(
+                        "UPDATE task_executions SET status = 'FAILED', error = ?, finished_at = ? "
+                        "WHERE id = ? AND status = 'RUNNING'",
+                        (error, finished_at, current["id"]),
+                    )
+                    task_update = conn.execute(
+                        "UPDATE tasks SET status = 'NEEDS_ATTENTION', version = version + 1, "
+                        "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
+                        (finished_at, task["id"], task["version"]),
+                    )
+                    event_type = "TASK_PREPARATION_FAILED"
+                    payload = {"error": error, "execution_id": current["id"]}
+                if execution_update.rowcount != 1 or task_update.rowcount != 1:
+                    raise RuntimeError("task preparation state changed during polling")
+                append_task_event(
+                    conn,
+                    entity_type="TASK",
+                    entity_id=int(task["id"]),
+                    event_type=event_type,
+                    actor_type="SYSTEM",
+                    actor_id=None,
+                    payload=payload,
                 )
-            conn.commit()
+                refresh_plan_lifecycle(conn, int(task["plan_id"]))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
     finally:
         conn.close()
 

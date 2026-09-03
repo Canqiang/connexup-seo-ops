@@ -89,13 +89,17 @@ def test_delete_merchant_without_tasks(client):
 
 def test_delete_merchant_with_tasks_conflicts(client):
     m = client.post("/api/merchants", json={"name": "Busy"}).json()
-    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
-    conn.execute(
-        "INSERT INTO tasks (merchant_id, title, created_at) VALUES (?, 't', '2026-08-31T00:00:00+00:00')",
-        (m["id"],),
+    response = client.post(
+        f"/api/merchants/{m['id']}/tasks",
+        json={
+            "task_type": "PREPARE_ONLY",
+            "title": "Prepare work",
+            "rationale": "Work is required",
+            "expected_outcome": "Reviewable work",
+            "parameters": {},
+        },
     )
-    conn.commit()
-    conn.close()
+    assert response.status_code == 201
     assert client.delete(f"/api/merchants/{m['id']}").status_code == 409
 
 
@@ -104,11 +108,25 @@ def test_list_merchants_includes_work_stats(client):
     import sqlite3
 
     m = client.post("/api/merchants", json={"name": "S"}).json()
-    client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "a"})
-    client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "b"})
-    t = client.post(f"/api/merchants/{m['id']}/tasks", json={"title": "c"}).json()
-    client.patch(f"/api/tasks/{t['id']}", json={"status": "doing"})
+    def create(title):
+        response = client.post(
+            f"/api/merchants/{m['id']}/tasks",
+            json={
+                "task_type": "PREPARE_ONLY",
+                "title": title,
+                "rationale": "Work is required",
+                "expected_outcome": "Reviewable work",
+                "parameters": {},
+            },
+        )
+        assert response.status_code == 201
+        return response.json()
+
+    create("a")
+    create("b")
+    t = create("c")
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute("UPDATE tasks SET status = 'PREPARING' WHERE id = ?", (t["id"],))
     conn.execute(
         "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
         " VALUES (?, 'r1', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00', '2026-09-01T00:05:00+00:00')",

@@ -309,3 +309,72 @@ def test_auto_scan_continues_after_corrupt_merchant_timestamp(client):
     runs = client.get(f"/api/merchants/{good['id']}/runs").json()
     assert runs[0]["trigger_kind"] == "auto"
     assert runs[0]["status"] == "running"
+
+
+def _operator_task(client, merchant_id):
+    response = client.post(
+        f"/api/merchants/{merchant_id}/tasks",
+        json={
+            "task_type": "PREPARE_ONLY",
+            "title": "Prepare evidence",
+            "rationale": "Evidence is needed",
+            "expected_outcome": "A reviewable evidence bundle",
+            "parameters": {"description": "Read-only preparation"},
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_poll_preparation_failure_moves_task_to_attention_and_appends_event(client):
+    from app.main import app
+    from app.scheduler import poll_task_executions_once
+    from app.tasks import get_execution_coreai
+
+    fake = FakeCoreAi()
+    app.dependency_overrides[get_execution_coreai] = lambda: (fake, "agent-execution")
+    try:
+        merchant = client.post("/api/merchants", json={"name": "Task poll"}).json()
+        task = _operator_task(client, merchant["id"])
+        execution = client.post(f"/api/tasks/{task['id']}/execute").json()
+        fake.runs[execution["coreai_run_id"]] = {
+            "status": "FAILED",
+            "error": "generation failed",
+            "completed_at": "2026-09-03T12:00:00+00:00",
+        }
+
+        poll_task_executions_once(fake)
+
+        detail = client.get(f"/api/tasks/{task['id']}").json()
+        assert detail["status"] == "NEEDS_ATTENTION"
+        assert detail["executions"][-1]["status"] == "FAILED"
+        assert detail["executions"][-1]["error"] == "generation failed"
+        assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_FAILED"
+    finally:
+        app.dependency_overrides.pop(get_execution_coreai, None)
+
+
+def test_poll_rejects_unstructured_agent_result_and_never_marks_it_approvable(client):
+    from app.main import app
+    from app.scheduler import poll_task_executions_once
+    from app.tasks import get_execution_coreai
+
+    fake = FakeCoreAi()
+    app.dependency_overrides[get_execution_coreai] = lambda: (fake, "agent-execution")
+    try:
+        merchant = client.post("/api/merchants", json={"name": "Unsafe output"}).json()
+        task = _operator_task(client, merchant["id"])
+        execution = client.post(f"/api/tasks/{task['id']}/execute").json()
+        fake.runs[execution["coreai_run_id"]] = {
+            "status": "COMPLETED",
+            "output": "not structured JSON",
+        }
+
+        poll_task_executions_once(fake)
+
+        detail = client.get(f"/api/tasks/{task['id']}").json()
+        assert detail["status"] == "NEEDS_ATTENTION"
+        assert detail["executions"][-1]["status"] == "FAILED"
+        assert "structured JSON" in detail["executions"][-1]["error"]
+    finally:
+        app.dependency_overrides.pop(get_execution_coreai, None)
