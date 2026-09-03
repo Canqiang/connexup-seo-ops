@@ -990,6 +990,15 @@ def _ensure_keyword_head(
             ),
             None,
         )
+        if active_artifact_id is None:
+            active_artifact_id = next(
+                (
+                    row["id"]
+                    for row, keyword_set in candidates
+                    if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id)
+                ),
+                None,
+            )
         timestamp = now_iso()
         activation_values = (
             ("system-bootstrap", "SYSTEM_BOOTSTRAP", timestamp)
@@ -1529,9 +1538,9 @@ def _claim_keyword_cycle(
                 status_code=409,
                 detail="GBP Place ID is required for keyword lookup",
             )
+        keyword_head = _ensure_keyword_head(conn, merchant["id"], place_id)
         expected_active_artifact_id = None
         if operation == "regenerate":
-            keyword_head = _ensure_keyword_head(conn, merchant["id"], place_id)
             expected_active_artifact_id = keyword_head["active_artifact_id"]
         cycle_id = str(uuid4())
         claim_request = {

@@ -1068,6 +1068,17 @@ def test_refresh_records_scored_fbr_keywords_without_replacing_the_active_head(
         cycle_id="previous-verified-skill-cycle",
     )
     monkeypatch.setenv("COREAI_LOCAL_FALCON_TOOL_ID", "local-falcon-tool")
+    previous_state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    head_before = conn.execute(
+        "SELECT merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+        " activated_at, updated_at FROM merchant_keyword_heads"
+        " WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()
+    conn.close()
+    assert previous_state["active_keyword_artifact_id"] == previous_artifact_id
+    assert head_before[2] == previous_artifact_id
 
     class RankedKeywordClient:
         def get_local_keywords(self, place_id):
@@ -1099,12 +1110,18 @@ def test_refresh_records_scored_fbr_keywords_without_replacing_the_active_head(
     state = response.json()
     assert state["keyword_set_artifact_id"] == previous_artifact_id
     assert state["active_keyword_artifact_id"] == previous_artifact_id
-    assert [item["keyword"] for item in state["keyword_set"]["keywords"]] == [
-        "verified breakfast keyword"
-    ]
+    assert state["keyword_set"] == previous_state["keyword_set"]
+    assert state["latest_fbr_import"]["artifact_id"] > previous_artifact_id
+    assert state["latest_fbr_import"]["is_active"] is False
     assert state["capabilities"]["can_sync_local_falcon"] is True
 
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    head_after = conn.execute(
+        "SELECT merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+        " activated_at, updated_at FROM merchant_keyword_heads"
+        " WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, TEST_PLACE_ID),
+    ).fetchone()
     fbr_payload = json.loads(
         conn.execute(
             "SELECT payload_json FROM merchant_seo_artifacts"
@@ -1113,6 +1130,7 @@ def test_refresh_records_scored_fbr_keywords_without_replacing_the_active_head(
         ).fetchone()[0]
     )
     conn.close()
+    assert head_after == head_before
     keywords = fbr_payload["keywords"]
     assert [item["keyword"] for item in keywords] == [
         f"ranked keyword {index:02d}" for index in range(20, -1, -1)
@@ -2881,7 +2899,7 @@ def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_witho
     conn.close()
 
     assert trusted_head["active_artifact_id"] == trusted_skill_id
-    assert fallback_head["active_artifact_id"] is None
+    assert fallback_head["active_artifact_id"] == fallback_fbr_id
 
 
 def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(
@@ -2914,7 +2932,7 @@ def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(
     head = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
     conn.close()
 
-    assert head["active_artifact_id"] is None
+    assert head["active_artifact_id"] == valid_fbr_id
 
 
 def test_state_resolves_the_bootstrapped_active_head_not_a_newer_scored_fbr_artifact(
@@ -4821,7 +4839,9 @@ def test_local_falcon_sync_rejects_an_unscored_keyword_set_instead_of_syncing_ev
         app.dependency_overrides.pop(seo_targets.get_local_falcon, None)
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "generate and accept keywords before Local Falcon sync"
+    assert response.json()["detail"] == (
+        "keyword scores are required before selecting the Local Falcon Top 20 cohort"
+    )
     assert fake.listed_keywords == []
 
 
