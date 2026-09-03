@@ -1750,14 +1750,78 @@ describe('desktop operator shell', () => {
     expect(fetchMock.mock.calls.filter(([input, init]) =>
       String(input).endsWith('/api/merchants/3/seo-targets/refresh') && (init as RequestInit | undefined)?.method === 'POST',
     )).toHaveLength(0)
+  })
+
+  it('polls running SEO state with GET and never refreshes FBR keywords', async () => {
+    window.history.pushState({}, '', '/merchants/3/profile')
+    const seoState = {
+      merchant_id: 3,
+      cycle_status: 'running',
+      active_stage: 'KEYWORD_SET',
+      keyword_set: null,
+      audit_report: null,
+      ranking_report: null,
+      error: null,
+    }
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input.endsWith('/api/merchants/3/seo-targets')
+        ? seoState
+        : input.endsWith('/api/merchants/3/profile')
+          ? {
+              merchant_id: 3,
+              state: 'synced',
+              fbr_merchant_id: 'fbr-choice',
+              sync_status: 'synced',
+              last_synced_at: '2026-09-02T03:00:00Z',
+              last_error: null,
+              locations: [{
+                gbp_location_id: 'locations/uws',
+                place_id: 'ChIJH8iZh-5ZwokRPLzzADeSnYE',
+                title: 'Choice Brooklyn - Upper West Side',
+                address: '2040 Broadway, New York, NY 10023, US',
+                additional_phones: [],
+                address_lines: [],
+                additional_categories: [],
+                regular_hours: [],
+                menu_sections: [],
+                menu_items: [],
+                recent_posts: [],
+                recent_reviews: [],
+                performance_metrics: [],
+                search_keywords: [],
+                synced_at: '2026-09-02T03:00:00Z',
+              }],
+            }
+          : input.endsWith('/api/merchants/3')
+            ? { id: 3, name: 'Choice Brooklyn - Upper West Side', primary_location: '2040 Broadway, New York, NY 10023', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+            : [],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const seoReads = () => fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === '/api/merchants/3/seo-targets' && !(init as RequestInit | undefined)?.method,
+    ).length
+    const refreshPosts = () => fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === '/api/merchants/3/seo-targets/refresh' && (init as RequestInit | undefined)?.method === 'POST',
+    ).length
+
     vi.useFakeTimers()
     try {
+      render(<App />)
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000)
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
       })
-      expect(fetchMock.mock.calls.filter(([input, init]) =>
-        String(input).endsWith('/api/merchants/3/seo-targets/refresh') && (init as RequestInit | undefined)?.method === 'POST',
-      )).toHaveLength(0)
+      screen.getByRole('heading', { name: 'SEO 目标关键词与排名' })
+      expect(seoReads()).toBeGreaterThanOrEqual(2)
+      const readsBeforeInterval = seoReads()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000)
+      })
+      expect(seoReads()).toBeGreaterThan(readsBeforeInterval)
+      expect(refreshPosts()).toBe(0)
     } finally {
       vi.useRealTimers()
     }
