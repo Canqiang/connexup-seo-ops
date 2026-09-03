@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { api, type Merchant, type Run, type Task, type TaskStatus } from '../api'
+import { api, type Merchant, type Run, type Task, type TaskPlan, type TaskStatus } from '../api'
 import TaskTable from '../components/TaskTable'
 import MerchantSectionNav from '../components/MerchantSectionNav'
 import { formatTime } from '../format'
 import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
 import { formatRunDuration, runResult } from '../runPresentation'
+import { isTaskPlan } from '../taskPlan'
 
 const STATUS_RANK: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2, cancelled: 3 }
 const STATUS_ORDER: TaskStatus[] = ['todo', 'doing', 'done', 'cancelled']
@@ -24,6 +25,8 @@ export default function MerchantDetail() {
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [runs, setRuns] = useState<Run[]>([])
+  const [latestTaskPlan, setLatestTaskPlan] = useState<TaskPlan | null>(null)
+  const [planLoadedForRun, setPlanLoadedForRun] = useState<number | null>(null)
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null)
   const [showAllRuns, setShowAllRuns] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
@@ -50,7 +53,30 @@ export default function MerchantDetail() {
         return [...added, ...kept]
       }))
       .catch(e => setError((e as Error).message))
-    api.listRuns(merchantId).then(setRuns).catch(e => setError((e as Error).message))
+    api.listRuns(merchantId)
+      .then(freshRuns => {
+        setRuns(freshRuns)
+        const latest = freshRuns[0]
+        if (!latest || latest.status !== 'succeeded') {
+          setLatestTaskPlan(null)
+          setPlanLoadedForRun(latest?.id ?? 0)
+          return
+        }
+        api.getRunTaskPlan(latest.id)
+          .then(freshPlan => {
+            if (freshPlan !== null && !isTaskPlan(freshPlan)) {
+              throw new Error('Task Plan 响应格式无效')
+            }
+            setLatestTaskPlan(isTaskPlan(freshPlan) ? freshPlan : null)
+            setPlanLoadedForRun(latest.id)
+          })
+          .catch(e => {
+            setLatestTaskPlan(null)
+            setPlanLoadedForRun(latest.id)
+            setError((e as Error).message)
+          })
+      })
+      .catch(e => setError((e as Error).message))
   }, [merchantId])
 
   useEffect(load, [load])
@@ -129,7 +155,8 @@ export default function MerchantDetail() {
   const visibleRuns = showAllRuns ? runs : runs.slice(0, RUNS_PREVIEW)
   const shownTasks = tasks.filter(t => statusFilter === null || t.status === statusFilter)
   const latestRun = runs[0]
-  const latestRunTasks = latestRun ? tasks.filter(task => task.source_run_id === latestRun.id) : []
+  const latestPlanLoaded = Boolean(latestRun && planLoadedForRun === latestRun.id)
+  const latestPlanTaskCount = latestTaskPlan?.current_revision.payload.tasks.length ?? 0
 
   const diagnosis = !latestRun
     ? {
@@ -152,25 +179,39 @@ export default function MerchantDetail() {
             action: 'start' as const,
             actionLabel: '重新开始诊断',
           }
-        : latestRunTasks.length === 0
+        : !latestPlanLoaded
+          ? {
+              title: '正在读取 Task Plan',
+              copy: '报告已经返回，正在读取持久化的 Plan revision。',
+              action: null,
+              actionLabel: '',
+            }
+        : !latestTaskPlan
           ? {
               title: '诊断完成，但未生成 Plan',
-              copy: '报告已经返回，但没有生成可执行任务；建议重新分析。',
+              copy: '报告已经返回，但没有持久化的可编辑 Task Plan；建议重新分析。',
               action: 'start' as const,
               actionLabel: '重新分析',
             }
-          : latestRun.plan_approved_at
+          : latestTaskPlan.current_revision.decision_state === 'APPROVED'
             ? {
                 title: 'Plan 已确认',
-                copy: `${latestRunTasks.length} 项任务已进入运营队列，Agent 可按任务状态执行。`,
+                copy: `${latestPlanTaskCount} 项任务已进入运营队列，Agent 可按任务状态执行。`,
                 action: 'report' as const,
                 actionLabel: '查看诊断报告',
               }
+            : latestTaskPlan.current_revision.decision_state === 'REJECTED'
+              ? {
+                  title: 'Plan 已拒绝',
+                  copy: `Revision ${latestTaskPlan.current_revision.revision} 已拒绝，不会物化正式 Task。`,
+                  action: 'report' as const,
+                  actionLabel: '查看诊断报告',
+                }
             : {
                 title: '诊断完成，Plan 草案待确认',
-                copy: `Agent 已提出 ${latestRunTasks.length} 项任务；确认后才会进入执行。`,
-                action: 'report' as const,
-                actionLabel: '查看并确认 Plan',
+                copy: `Revision ${latestTaskPlan.current_revision.revision} 包含 ${latestPlanTaskCount} 项任务；完整批准后才会物化。`,
+                action: 'plan' as const,
+                actionLabel: '查看并编辑 Plan',
               }
 
   return (
@@ -206,7 +247,12 @@ export default function MerchantDetail() {
           <button className="primary" onClick={startRun} disabled={hasRunning}>{diagnosis.actionLabel}</button>
         )}
         {diagnosis.action === 'report' && latestRun && (
-          <button className={latestRun.plan_approved_at ? '' : 'primary'} onClick={() => navigate(`/runs/${latestRun.id}`)}>
+          <button className={latestTaskPlan?.current_revision.decision_state === 'APPROVED' ? '' : 'primary'} onClick={() => navigate(`/runs/${latestRun.id}`)}>
+            {diagnosis.actionLabel}
+          </button>
+        )}
+        {diagnosis.action === 'plan' && latestTaskPlan && (
+          <button className="primary" onClick={() => navigate(`/task-plans/${latestTaskPlan.id}`)}>
             {diagnosis.actionLabel}
           </button>
         )}
@@ -226,7 +272,7 @@ export default function MerchantDetail() {
             <h2 id="analysis-title">AI 分析</h2>
             <p>生成分析报告和待办提案，执行仍由运营人员授权。</p>
           </div>
-          {latestRun?.plan_approved_at && (
+          {latestTaskPlan?.approved_revision != null && (
             <div className="panel-actions">
               <select
                 aria-label="自动分析周期"

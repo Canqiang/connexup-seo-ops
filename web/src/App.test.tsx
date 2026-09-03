@@ -4,6 +4,55 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
+const PLAN_CHECKSUM_1 = 'a'.repeat(64)
+const PLAN_CHECKSUM_2 = 'b'.repeat(64)
+
+function planItem(key: string, depends_on: string[] = []) {
+  return {
+    key,
+    task_type: 'PREPARE_ONLY' as const,
+    title: `${key} title`,
+    rationale: `${key} rationale`,
+    expected_outcome: `${key} outcome`,
+    depends_on,
+    scheduled_start: null,
+    parameters: {},
+  }
+}
+
+function planView(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 7,
+    merchant_id: 1,
+    source_kind: 'AGENT',
+    source_run_id: 1,
+    state: 'OPEN',
+    latest_revision: 1,
+    approved_revision: null,
+    created_at: '2026-09-01T00:01:00Z',
+    closed_at: null,
+    current_revision: {
+      id: 17,
+      plan_id: 7,
+      revision: 1,
+      decision_state: 'DRAFT',
+      schema_version: 'seo_ops.task_plan.v1',
+      checksum: PLAN_CHECKSUM_1,
+      source: 'AGENT',
+      created_by: 'run-1',
+      created_at: '2026-09-01T00:01:00Z',
+      decided_by: null,
+      decided_at: null,
+      decision_reason: null,
+      payload: {
+        schema_version: 'seo_ops.task_plan.v1',
+        tasks: [planItem('draft'), planItem('review', ['draft'])],
+      },
+    },
+    ...overrides,
+  }
+}
+
 describe('desktop operator shell', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/tasks')
@@ -844,7 +893,7 @@ describe('desktop operator shell', () => {
     expect(within(status).queryAllByRole('button')).toHaveLength(1)
   })
 
-  it('turns a completed diagnosis into a single Plan approval action', async () => {
+  it('uses the persisted Plan to show a completed diagnosis even before formal Tasks exist', async () => {
     window.history.pushState({}, '', '/merchants/1')
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
@@ -865,32 +914,18 @@ describe('desktop operator shell', () => {
               finished_at: '2026-09-01T00:01:00Z',
             }]
           : input.endsWith('/api/merchants/1/tasks')
-            ? [{
-                id: 11,
-                merchant_id: 1,
-                title: '补全 GBP 营业时间',
-                description: null,
-                rationale: '营业时间缺失',
-                expected_outcome: '减少误访',
-                category: 'gbp',
-                scheduled_start: null,
-                status: 'todo',
-                evidence_note: null,
-                source_run_id: 7,
-                source_plan_approved: false,
-                source_key: 'hours',
-                created_at: '2026-09-01T00:01:00Z',
-                completed_at: null,
-              }]
+            ? []
+            : input.endsWith('/api/runs/7/task-plan')
+              ? planView({ source_run_id: 7 })
             : [],
     })))
     render(<App />)
 
     const status = await screen.findByRole('region', { name: '初始诊断' })
     within(status).getByRole('heading', { name: '诊断完成，Plan 草案待确认' })
-    within(status).getByRole('button', { name: '查看并确认 Plan' })
+    within(status).getByRole('button', { name: '查看并编辑 Plan' })
     expect(within(status).queryAllByRole('button')).toHaveLength(1)
-    screen.getByText('等待确认 Plan')
+    expect(screen.queryByRole('link', { name: 'draft title' })).toBeNull()
     expect(screen.queryByRole('button', { name: '开始' })).toBeNull()
   })
 
@@ -1172,7 +1207,7 @@ describe('desktop operator shell', () => {
     expect(screen.queryByRole('textbox', { name: '执行证据' })).toBeNull()
   })
 
-  it('makes the report primary and keeps generated tasks in a compact side list', async () => {
+  it('keeps draft Plan items out of the formal task list and opens the Plan workspace', async () => {
     window.history.pushState({}, '', '/runs/1')
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
       ok: input !== '/api/runs/1/audit',
@@ -1189,26 +1224,11 @@ describe('desktop operator shell', () => {
             created_at: '2026-09-01T00:00:00Z',
             finished_at: '2026-09-01T00:01:00Z',
           }
-        : input === '/api/runs/1/tasks'
-          ? [{
-              id: 11,
-              merchant_id: 1,
-              title: '补全 GBP 营业时间',
-              description: null,
-              rationale: '营业时间缺失',
-              expected_outcome: '减少误访',
-              category: 'gbp',
-              scheduled_start: null,
-              status: 'todo',
-              evidence_note: null,
-              source_run_id: 1,
-              source_key: 'hours',
-              created_at: '2026-09-01T00:01:00Z',
-              completed_at: null,
-            }]
-          : input === '/api/runs/1/audit'
-            ? { detail: 'accepted audit not found' }
-            : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' },
+        : input === '/api/runs/1/task-plan'
+          ? planView()
+        : input === '/api/runs/1/audit'
+          ? { detail: 'accepted audit not found' }
+          : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' },
     })))
     render(<App />)
 
@@ -1216,61 +1236,235 @@ describe('desktop operator shell', () => {
     screen.getByRole('heading', { name: '09-01 08:00 分析报告' })
     const report = screen.getByRole('region', { name: '报告正文' })
     const tasks = screen.getByRole('complementary', { name: '本次生成任务' })
-    screen.getByRole('link', { name: '补全 GBP 营业时间' })
+    const planLink = screen.getByRole('link', { name: '查看并编辑 Plan' })
+    expect(planLink.getAttribute('href')).toBe('/task-plans/7')
+    within(tasks).getByText(/Revision 1/)
+    within(tasks).getByText('2 项')
     screen.getByText('1 分钟')
     expect(report.compareDocumentPosition(tasks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'draft title' })).toBeNull()
     expect(screen.queryByRole('table', { name: '任务列表' })).toBeNull()
     expect(screen.queryByText('分析 #1')).toBeNull()
   })
 
-  it('approves a generated Plan from the report before its tasks can execute', async () => {
+  it('loads canonical formal Tasks only after a Plan revision is approved', async () => {
     window.history.pushState({}, '', '/runs/1')
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
-      const approvedAt = init?.method === 'POST' ? '2026-09-01T00:02:00Z' : null
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/runs/1/audit') {
         return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({ detail: 'accepted audit not found' }) }
       }
-      const data = input === '/api/runs/1' || input === '/api/runs/1/approve-plan'
+      const data = input === '/api/runs/1'
         ? {
             id: 1,
             merchant_id: 1,
             coreai_run_id: 'run-1',
             status: 'succeeded',
             trigger_kind: 'manual',
-            report_text: '# 诊断报告',
+            report_text: '# 报告',
             error: null,
-            plan_approved_at: approvedAt,
+            plan_approved_at: '2026-09-01T00:02:00Z',
             created_at: '2026-09-01T00:00:00Z',
             finished_at: '2026-09-01T00:01:00Z',
           }
-        : input === '/api/runs/1/tasks'
-          ? [{
-              id: 11,
-              merchant_id: 1,
-              title: '补全 GBP 营业时间',
-              description: null,
-              rationale: '营业时间缺失',
-              expected_outcome: '减少误访',
-              category: 'gbp',
-              scheduled_start: null,
-              status: 'todo',
-              evidence_note: null,
-              source_run_id: 1,
-              source_key: 'hours',
-              created_at: '2026-09-01T00:01:00Z',
-              completed_at: null,
-            }]
-          : { id: 1, name: '新商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
-      return { ok: true, status: init?.method === 'POST' ? 200 : 200, json: async () => data }
+        : input === '/api/runs/1/task-plan'
+          ? planView({
+              approved_revision: 1,
+              current_revision: { ...planView().current_revision, decision_state: 'APPROVED' },
+            })
+          : input === '/api/tasks?plan_id=7'
+            ? [{
+                id: 11,
+                merchant_id: 1,
+                plan_id: 7,
+                plan_revision: 1,
+                task_key: 'draft',
+                task_type: 'PREPARE_ONLY',
+                title: '正式准备任务',
+                category: 'content',
+                status: 'PENDING',
+                source_run_id: 1,
+              }]
+            : { id: 1, name: '冒烟商户', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }
+      return { ok: true, status: 200, json: async () => data }
     }))
     render(<App />)
 
-    const decision = await screen.findByRole('region', { name: 'Plan 审批' })
-    within(decision).getByText('确认后，这些任务才可交给 Agent 执行。')
-    fireEvent.click(within(decision).getByRole('button', { name: '确认 Plan' }))
+    await screen.findByText('Plan Revision 1 已批准')
+    screen.getByRole('link', { name: '正式准备任务' })
+    expect(screen.queryByRole('button', { name: '确认 Plan' })).toBeNull()
+  })
 
-    await within(decision).findByText('Plan 已确认')
-    expect(within(decision).queryByRole('button', { name: '确认 Plan' })).toBeNull()
+  it('edits, adds, saves, and approves only the returned complete Plan revision', async () => {
+    window.history.pushState({}, '', '/task-plans/7')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    let savedPlan = planView()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/api/auth/me') {
+        return { ok: true, status: 200, json: async () => ({ username: 'test', role: 'operator' }) }
+      }
+      if (input === '/api/task-plans/7/draft' && init?.method === 'PUT') {
+        calls.push({ input, init })
+        const body = JSON.parse(String(init.body))
+        savedPlan = planView({
+          latest_revision: 2,
+          current_revision: {
+            ...planView().current_revision,
+            id: 18,
+            revision: 2,
+            checksum: PLAN_CHECKSUM_2,
+            source: 'OPERATOR',
+            payload: body.plan,
+          },
+        })
+        return { ok: true, status: 200, json: async () => savedPlan }
+      }
+      if (input === '/api/task-plans/7/approve' && init?.method === 'POST') {
+        calls.push({ input, init })
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ...savedPlan,
+            approved_revision: 2,
+            current_revision: { ...savedPlan.current_revision, decision_state: 'APPROVED' },
+            tasks: [],
+          }),
+        }
+      }
+      return { ok: true, status: 200, json: async () => planView() }
+    }))
+    render(<App />)
+
+    fireEvent.change(await screen.findByRole('textbox', { name: '任务标题 draft' }), {
+      target: { value: 'Draft the weekly post' },
+    })
+    expect((screen.getByRole('button', { name: '批准当前 Plan' }) as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: '添加 Task' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Task key new-task' }), { target: { value: 'publish' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '任务标题 publish' }), { target: { value: 'Publish the weekly post' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '任务理由 publish' }), { target: { value: 'Keep the profile current' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '预期结果 publish' }), { target: { value: 'One reviewed post draft' } })
+    const dependencies = screen.getByRole('listbox', { name: '前置任务 publish' }) as HTMLSelectElement
+    const reviewOption = within(dependencies).getByRole('option', { name: 'review' }) as HTMLOptionElement
+    reviewOption.selected = true
+    fireEvent.change(dependencies)
+
+    fireEvent.click(screen.getByRole('button', { name: '保存 Plan 草稿' }))
+    await screen.findByText('已保存 Revision 2')
+    const draftCall = calls.find(call => call.input.endsWith('/draft'))!
+    const draftBody = JSON.parse(String(draftCall.init?.body))
+    expect(draftBody.expected_revision).toBe(1)
+    expect(draftBody.removals).toEqual([])
+    expect(draftBody.plan.tasks.map((item: { key: string }) => item.key)).toEqual(['draft', 'review', 'publish'])
+    expect(draftBody.plan.tasks[2].depends_on).toEqual(['review'])
+
+    fireEvent.click(screen.getByRole('button', { name: '批准当前 Plan' }))
+    await screen.findByText('当前 Revision 已批准')
+    const approveCall = calls.find(call => call.input.endsWith('/approve'))!
+    expect(JSON.parse(String(approveCall.init?.body))).toEqual({ revision: 2, checksum: PLAN_CHECKSUM_2 })
+  })
+
+  it('keeps an existing Task pending removal until a reason is saved, and can reject the whole Plan', async () => {
+    window.history.pushState({}, '', '/task-plans/7')
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/api/auth/me') {
+        return { ok: true, status: 200, json: async () => ({ username: 'test', role: 'operator' }) }
+      }
+      calls.push({ input, init })
+      if (input.endsWith('/draft') && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => planView({
+            latest_revision: 2,
+            current_revision: {
+              ...planView().current_revision,
+              revision: 2,
+              checksum: PLAN_CHECKSUM_2,
+              payload: body.plan,
+            },
+          }),
+        }
+      }
+      if (input.endsWith('/reject') && init?.method === 'POST') {
+        return { ok: true, status: 200, json: async () => planView({ state: 'REJECTED', current_revision: { ...planView().current_revision, decision_state: 'REJECTED' } }) }
+      }
+      return { ok: true, status: 200, json: async () => planView() }
+    }))
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '标记删除 draft' }))
+    screen.getByText('待删除')
+    expect((screen.getByRole('button', { name: '保存 Plan 草稿' }) as HTMLButtonElement).disabled).toBe(true)
+    screen.getByText('任务 review 仍依赖待删除任务 draft，请先调整前置任务')
+    fireEvent.change(screen.getByRole('textbox', { name: '删除原因 draft' }), {
+      target: { value: 'This draft step is covered elsewhere.' },
+    })
+    expect((screen.getByRole('button', { name: '保存 Plan 草稿' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '清除全部前置任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存 Plan 草稿' }))
+    await screen.findByText('已保存 Revision 2')
+    const body = JSON.parse(String(calls.find(call => call.input.endsWith('/draft'))?.init?.body))
+    expect(body.removals).toEqual([{ key: 'draft', reason: 'This draft step is covered elsewhere.' }])
+    expect(body.plan.tasks).toEqual([expect.objectContaining({ key: 'review', depends_on: [] })])
+
+    fireEvent.change(screen.getByRole('textbox', { name: '拒绝原因' }), { target: { value: 'This Plan is outside the current cycle.' } })
+    fireEvent.click(screen.getByRole('button', { name: '拒绝整个 Plan' }))
+    await screen.findByText('当前 Revision 已拒绝')
+    const rejectCall = calls.find(call => call.input.endsWith('/reject'))!
+    expect(JSON.parse(String(rejectCall.init?.body))).toEqual({
+      expected_revision: 2,
+      reason: 'This Plan is outside the current cycle.',
+    })
+  })
+
+  it('disables save and approval when local dependency edits create a cycle', async () => {
+    window.history.pushState({}, '', '/task-plans/7')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input === '/api/auth/me' ? { username: 'test', role: 'operator' } : planView(),
+    })))
+    render(<App />)
+
+    const dependencies = await screen.findByRole('listbox', { name: '前置任务 draft' }) as HTMLSelectElement
+    const reviewOption = within(dependencies).getByRole('option', { name: 'review' }) as HTMLOptionElement
+    reviewOption.selected = true
+    fireEvent.change(dependencies)
+
+    await screen.findByText('Plan 存在循环依赖：draft、review')
+    expect((screen.getByRole('button', { name: '保存 Plan 草稿' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '批准当前 Plan' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('preserves a 409 conflict and prevents approval with the stale checksum', async () => {
+    window.history.pushState({}, '', '/task-plans/7')
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/api/auth/me') {
+        return { ok: true, status: 200, json: async () => ({ username: 'test', role: 'operator' }) }
+      }
+      if (input === '/api/task-plans/7/approve' && init?.method === 'POST') {
+        return {
+          ok: false,
+          status: 409,
+          statusText: 'Conflict',
+          json: async () => ({ detail: 'plan revision changed; refresh and retry' }),
+        }
+      }
+      return { ok: true, status: 200, json: async () => planView() }
+    }))
+    render(<App />)
+
+    const approve = await screen.findByRole('button', { name: '批准当前 Plan' }) as HTMLButtonElement
+    expect(approve.disabled).toBe(false)
+    fireEvent.click(approve)
+
+    await screen.findByText('plan revision changed; refresh and retry')
+    expect(approve.disabled).toBe(true)
+    screen.getByRole('button', { name: '重新载入服务器 Plan' })
   })
 
   it('renders an accepted Audit snapshot as decisions instead of raw JSON or legacy Markdown', async () => {

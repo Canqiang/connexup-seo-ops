@@ -1,3 +1,7 @@
+import type { TaskPlan, TaskPlanPayload } from './taskPlan'
+
+export type { TaskPlan, TaskPlanItem, TaskPlanPayload, TaskPlanRevision } from './taskPlan'
+
 export type Merchant = {
   id: number
   name: string
@@ -45,12 +49,87 @@ export type Task = {
   completed_at: string | null
 }
 
+export type TaskWorkflowStatus =
+  | 'PENDING'
+  | 'PREPARING'
+  | 'AWAITING_APPROVAL'
+  | 'EXECUTING'
+  | 'VERIFYING'
+  | 'DONE'
+  | 'NEEDS_ATTENTION'
+  | 'CANCELLED'
+
+export type PlanTaskSummary = {
+  id: number
+  merchant_id: number
+  plan_id: number
+  plan_revision: number
+  task_key: string
+  task_type: 'PREPARE_ONLY'
+  title: string
+  category: string | null
+  status: TaskWorkflowStatus
+  source_run_id: number | null
+}
+
+const PLAN_VALIDATION_LABELS: Record<string, string> = {
+  cycle: '存在循环依赖',
+  duplicate_dependency: '存在重复依赖',
+  duplicate_edge: '存在重复依赖边',
+  duplicate_key: '存在重复 Task key',
+  missing_dependency: '引用了不存在的前置任务',
+  parameters: 'Task 参数不符合当前类型约束',
+  parameters_size: 'Task 参数超过大小限制',
+  parameters_too_large: 'Task 参数超过大小限制',
+  plan_size: 'Plan 超过大小限制',
+  plan_too_large: 'Plan 超过大小限制',
+  scheduled_start: '计划时间格式不正确',
+  self_dependency: 'Task 不能依赖自身',
+  task_count: 'Task 数量必须为 1–50',
+  task_type_disabled: 'Task 类型当前未启用',
+  task_key: 'Task key 格式不正确',
+  unknown_field: '包含不支持的字段',
+}
+
+function errorDetail(body: unknown, status: number, statusText: string): string {
+  if (body && typeof body === 'object' && 'detail' in body) {
+    const detail = (body as { detail: unknown }).detail
+    if (typeof detail === 'string') return detail
+    if (detail && typeof detail === 'object' && 'codes' in detail) {
+      const codes = (detail as { codes: unknown }).codes
+      if (Array.isArray(codes)) {
+        const labels = codes.map(code => PLAN_VALIDATION_LABELS[String(code)] ?? String(code))
+        return `Plan 校验失败：${labels.join('；')}`
+      }
+    }
+    if (Array.isArray(detail)) {
+      const messages = detail.flatMap(item => {
+        if (!item || typeof item !== 'object') return []
+        const issue = item as { loc?: unknown; msg?: unknown }
+        const location = Array.isArray(issue.loc) ? issue.loc.map(String).join('.') : 'request'
+        return typeof issue.msg === 'string' ? [`${location}：${issue.msg}`] : []
+      })
+      if (messages.length > 0) return `请求校验失败：${messages.join('；')}`
+    }
+  }
+  return `${status} ${statusText}`
+}
+
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    const detail = body && typeof body.detail === 'string' ? body.detail : `${res.status} ${res.statusText}`
-    throw new Error(detail)
+    throw new ApiError(res.status, errorDetail(body, res.status, res.statusText))
   }
   if (res.status === 204) return undefined as T
   return res.json()
@@ -61,8 +140,7 @@ async function requestOptional<T>(path: string): Promise<T | null> {
   if (res.status === 404) return null
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    const detail = body && typeof body.detail === 'string' ? body.detail : `${res.status} ${res.statusText}`
-    throw new Error(detail)
+    throw new ApiError(res.status, errorDetail(body, res.status, res.statusText))
   }
   return res.json()
 }
@@ -375,8 +453,21 @@ export const api = {
   createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),
   getRun: (id: number) => request<Run>(`/api/runs/${id}`),
   getRunAudit: (id: number) => requestOptional<AuditSnapshot>(`/api/runs/${id}/audit`),
-  approvePlan: (id: number) => request<Run>(`/api/runs/${id}/approve-plan`, { method: 'POST' }),
-  listRunTasks: (id: number) => request<Task[]>(`/api/runs/${id}/tasks`),
+  getRunTaskPlan: (id: number) => requestOptional<TaskPlan>(`/api/runs/${id}/task-plan`),
+  getTaskPlan: (id: number) => request<TaskPlan>(`/api/task-plans/${id}`),
+  replaceTaskPlanDraft: (
+    id: number,
+    body: {
+      expected_revision: number
+      plan: TaskPlanPayload
+      removals: Array<{ key: string; reason: string }>
+    },
+  ) => request<TaskPlan>(`/api/task-plans/${id}/draft`, { method: 'PUT', body: JSON.stringify(body) }),
+  approveTaskPlan: (id: number, body: { revision: number; checksum: string }) =>
+    request<TaskPlan>(`/api/task-plans/${id}/approve`, { method: 'POST', body: JSON.stringify(body) }),
+  rejectTaskPlan: (id: number, body: { expected_revision: number; reason: string }) =>
+    request<TaskPlan>(`/api/task-plans/${id}/reject`, { method: 'POST', body: JSON.stringify(body) }),
+  listPlanTasks: (id: number) => request<PlanTaskSummary[]>(`/api/tasks?plan_id=${id}`),
   listAllTasks: () => request<(Task & { merchant_name: string })[]>('/api/tasks'),
   batchTasks: (ids: number[], status: TaskStatus) =>
     request<{ updated: number[]; skipped: number[] }>('/api/tasks/batch', { method: 'POST', body: JSON.stringify({ ids, status }) }),

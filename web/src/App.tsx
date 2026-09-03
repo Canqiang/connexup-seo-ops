@@ -8,6 +8,7 @@ import TaskDetail from './pages/TaskDetail'
 import RunDetail from './pages/RunDetail'
 import TasksOverview from './pages/TasksOverview'
 import MerchantProfile from './pages/MerchantProfile'
+import PlanReview from './pages/PlanReview'
 
 function NavGlyph({ name }: { name: 'merchants' | 'tasks' }) {
   const paths = {
@@ -19,7 +20,10 @@ function NavGlyph({ name }: { name: 'merchants' | 'tasks' }) {
 
 function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: () => Promise<void> }) {
   const { pathname } = useLocation()
-  const merchantsActive = pathname === '/' || pathname.startsWith('/merchants/') || pathname.startsWith('/runs/')
+  const merchantsActive = pathname === '/'
+    || pathname.startsWith('/merchants/')
+    || pathname.startsWith('/runs/')
+    || pathname.startsWith('/task-plans/')
   const tasksActive = pathname.startsWith('/tasks')
 
   return (
@@ -60,6 +64,7 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
           <Route path="/tasks" element={<TasksOverview />} />
           <Route path="/tasks/:id" element={<TaskDetail />} />
           <Route path="/runs/:id" element={<RunDetail />} />
+          <Route path="/task-plans/:id" element={<PlanReview />} />
         </Routes>
       </section>
     </div>

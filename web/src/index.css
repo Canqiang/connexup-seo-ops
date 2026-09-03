@@ -2090,3 +2090,329 @@ pre {
   white-space: pre-wrap;
   overflow-x: auto;
 }
+
+/* Task Plan 审批：用稳定波次台账表达依赖，整版决策保持独立。 */
+.plan-review-page {
+  --plan-rule: #c8d6e1;
+  max-width: none;
+  padding: 22px 28px 96px;
+}
+.plan-review-page .plan-identity-bar {
+  min-height: 104px;
+  display: grid;
+  grid-template-columns: auto minmax(300px, 1fr) auto;
+  align-items: center;
+  gap: 22px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  background: #fff;
+  border: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-identity-copy {
+  min-width: 0;
+  padding-left: 22px;
+  border-left: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-identity-copy h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+.plan-review-page .plan-identity-copy p {
+  max-width: 760px;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+.plan-review-page .plan-machine-identity {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  border: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-machine-identity > div {
+  min-width: 92px;
+  padding: 8px 11px;
+}
+.plan-review-page .plan-machine-identity > div + div { border-left: 1px solid var(--plan-rule); }
+.plan-review-page .plan-machine-identity dt {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+.plan-review-page .plan-machine-identity dd {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--ink);
+  font: 650 11px/1.35 ui-monospace, "SF Mono", Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-review-page .plan-message {
+  min-height: 44px;
+  margin: 0 0 16px;
+  padding: 9px 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 0;
+}
+.plan-review-page .plan-message.success {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border: 1px solid #b9dacd;
+}
+.plan-review-page .plan-load-state {
+  min-height: 240px;
+  padding: 42px;
+  display: grid;
+  place-content: center;
+  justify-items: start;
+  background: #fff;
+  border: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-load-state p { margin: 4px 0 14px; }
+.plan-review-page .plan-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+.plan-review-page .plan-wave-ledger {
+  min-width: 0;
+  background: #fff;
+  border: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-ledger-head {
+  min-height: 80px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-ledger-head h2,
+.plan-review-page .plan-decision-summary h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.plan-review-page .plan-ledger-head p,
+.plan-review-page .plan-decision-summary > p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.plan-review-page .plan-wave {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  border-bottom: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-wave-marker {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 20px;
+  background: #f8fafb;
+  border-right: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-wave-marker::after {
+  content: "";
+  position: absolute;
+  top: 48px;
+  bottom: -1px;
+  left: 28px;
+  width: 1px;
+  background: var(--plan-rule);
+}
+.plan-review-page .plan-wave:last-of-type .plan-wave-marker::after { display: none; }
+.plan-review-page .plan-wave-marker span {
+  position: relative;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--brand-ink);
+  border: 1px solid var(--brand-ink);
+  font: 700 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.plan-review-page .plan-wave-content { min-width: 0; }
+.plan-review-page .plan-wave-content > header {
+  min-height: 48px;
+  padding: 11px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fbfcfd;
+  border-bottom: 1px solid #e4ebf0;
+}
+.plan-review-page .plan-wave-content > header h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+.plan-review-page .plan-wave-content > header span { color: var(--muted); font-size: 11px; }
+.plan-review-page .plan-task-editor { padding: 16px; }
+.plan-review-page .plan-task-editor + .plan-task-editor { border-top: 1px solid #e4ebf0; }
+.plan-review-page .plan-task-head {
+  min-height: 34px;
+  margin-bottom: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.plan-review-page .plan-task-head > div { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.plan-review-page .plan-task-key {
+  color: var(--ink);
+  font: 700 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.plan-review-page .plan-task-type,
+.plan-review-page .plan-change-mark,
+.plan-review-page .plan-remove-mark {
+  padding: 2px 7px;
+  color: var(--ink-2);
+  background: var(--paper);
+  border: 1px solid var(--plan-rule);
+  font-size: 10px;
+}
+.plan-review-page .plan-change-mark { color: #94510c; background: var(--accent-soft); border-color: #e6bb86; }
+.plan-review-page .plan-remove-mark { color: var(--bad); background: var(--bad-soft); border-color: #dfaaa5; }
+.plan-review-page .danger-link { color: var(--bad); }
+.plan-review-page .plan-task-fields {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.65fr) minmax(260px, 1.35fr);
+  gap: 13px 16px;
+}
+.plan-review-page .plan-task-fields label,
+.plan-review-page .plan-removal-editor label,
+.plan-review-page .plan-reject-zone label {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.plan-review-page .plan-task-fields input,
+.plan-review-page .plan-task-fields textarea,
+.plan-review-page .plan-task-fields select,
+.plan-review-page .plan-removal-editor textarea,
+.plan-review-page .plan-reject-zone textarea {
+  width: 100%;
+  min-width: 0;
+  border-color: var(--plan-rule);
+  border-radius: 2px;
+  resize: vertical;
+}
+.plan-review-page .plan-task-fields input[readonly] { color: var(--ink-2); background: #f3f6f8; }
+.plan-review-page .plan-task-fields select[multiple] { min-height: 78px; }
+.plan-review-page .plan-task-fields small { color: var(--muted); font-size: 9.5px; font-weight: 400; }
+.plan-review-page .plan-dependency-help {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.plan-review-page .plan-dependency-help button { padding: 1px 5px; border: 0; font-size: 9.5px; }
+.plan-review-page .plan-field-title { grid-column: 2; }
+.plan-review-page .plan-removal-editor {
+  padding: 13px 14px;
+  background: var(--bad-soft);
+  border: 1px solid #e7bbb7;
+}
+.plan-review-page .plan-removal-editor p { margin: 0 0 10px; color: var(--ink-2); font-size: 11.5px; }
+.plan-review-page .plan-removed-row {
+  padding: 16px 16px 16px 58px;
+  background: #fffafa;
+  border-bottom: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-removed-row .plan-task-editor { padding: 0; }
+.plan-review-page .plan-decision-rail {
+  position: sticky;
+  top: 84px;
+  background: #fff;
+  border: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-decision-summary { padding: 18px; border-bottom: 1px solid var(--plan-rule); }
+.plan-review-page .plan-decision-summary dl {
+  margin: 16px 0 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 1px solid var(--plan-rule);
+}
+.plan-review-page .plan-decision-summary dl > div { padding: 9px; text-align: center; }
+.plan-review-page .plan-decision-summary dl > div + div { border-left: 1px solid var(--plan-rule); }
+.plan-review-page .plan-decision-summary dt { color: var(--muted); font-size: 9px; }
+.plan-review-page .plan-decision-summary dd { margin: 2px 0 0; color: var(--ink); font-size: 15px; font-weight: 700; }
+.plan-review-page .plan-validation {
+  padding: 14px 18px;
+  color: var(--bad);
+  background: var(--bad-soft);
+  border-bottom: 1px solid #dfaaa5;
+}
+.plan-review-page .plan-validation strong { font-size: 12px; }
+.plan-review-page .plan-validation ul { margin: 7px 0 0; padding-left: 18px; font-size: 11px; }
+.plan-review-page .plan-dirty-note,
+.plan-review-page .plan-conflict-note {
+  margin: 0;
+  padding: 12px 18px;
+  color: #8e4d0d;
+  background: var(--accent-soft);
+  border-bottom: 1px solid #e6c18e;
+  font-size: 11.5px;
+}
+.plan-review-page .plan-conflict-note { color: var(--bad); background: var(--bad-soft); border-color: #dfaaa5; }
+.plan-review-page .plan-primary-actions { padding: 16px 18px; display: grid; gap: 8px; }
+.plan-review-page .plan-primary-actions button { width: 100%; min-height: 40px; border-radius: 2px; }
+.plan-review-page .plan-reject-zone { padding: 16px 18px 18px; border-top: 1px solid var(--plan-rule); }
+.plan-review-page .plan-reject-zone h3 { margin: 0 0 10px; color: var(--ink); font-size: 13px; }
+.plan-review-page .plan-reject-zone textarea { min-height: 84px; }
+.plan-review-page .danger-button {
+  width: 100%;
+  margin-top: 9px;
+  color: var(--bad);
+  border-color: #d8a09b;
+  border-radius: 2px;
+}
+.plan-review-page .plan-review-link,
+.run-report-page .plan-review-link {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 11px;
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 650;
+}
+.run-report-page .plan-review-link:hover { color: #fff; background: #9d5712; text-decoration: none; }
+
+@media (max-width: 1050px) {
+  .plan-review-page .plan-identity-bar { grid-template-columns: auto minmax(0, 1fr); }
+  .plan-review-page .plan-machine-identity { grid-column: 1 / -1; width: 100%; grid-template-columns: repeat(4, 1fr); }
+  .plan-review-page .plan-review-layout { grid-template-columns: minmax(0, 1fr); }
+  .plan-review-page .plan-decision-rail { position: static; }
+}
+
+@media (max-width: 720px) {
+  .plan-review-page { padding: 14px 12px 64px; }
+  .plan-review-page .plan-identity-bar { grid-template-columns: minmax(0, 1fr); }
+  .plan-review-page .plan-identity-copy { padding: 14px 0 0; border-top: 1px solid var(--plan-rule); border-left: 0; }
+  .plan-review-page .plan-machine-identity { grid-template-columns: 1fr 1fr; }
+  .plan-review-page .plan-machine-identity > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--plan-rule); }
+  .plan-review-page .plan-machine-identity > div:nth-child(4) { border-top: 1px solid var(--plan-rule); }
+  .plan-review-page .plan-task-fields { grid-template-columns: minmax(0, 1fr); }
+  .plan-review-page .plan-field-title { grid-column: auto; }
+}
