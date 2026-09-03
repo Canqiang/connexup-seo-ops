@@ -103,7 +103,10 @@ def _revision_payload(revision: sqlite3.Row) -> dict[str, object]:
 
 
 def _validated_revision(revision: sqlite3.Row) -> ValidatedTaskPlan:
-    validated = _validate_plan(_revision_payload(revision))
+    try:
+        validated = validate_task_plan(_revision_payload(revision), enabled_task_types())
+    except TaskPlanValidationError as exc:
+        raise HTTPException(status_code=409, detail="stored plan revision is invalid") from exc
     if (
         validated.canonical_json != revision["payload_json"]
         or validated.checksum != revision["checksum"]
@@ -131,7 +134,7 @@ def _approved_items(
     ).fetchone()
     if revision is None:
         raise HTTPException(status_code=409, detail="approved plan revision not found")
-    return _item_map(_revision_payload(revision))
+    return _item_map(_validated_revision(revision).payload)
 
 
 def _assert_active_task_anchors(
@@ -163,11 +166,11 @@ def _assert_active_task_anchors(
 
 
 def _validated_removals(
-    previous: sqlite3.Row,
+    previous: ValidatedTaskPlan,
     candidate: ValidatedTaskPlan,
     removals: list[DraftRemoval],
 ) -> list[dict[str, str]]:
-    previous_keys = [str(item["key"]) for item in _plan_items(_revision_payload(previous))]
+    previous_keys = [str(item["key"]) for item in _plan_items(previous.payload)]
     candidate_keys = set(_item_map(candidate.payload))
     removed_keys = [key for key in previous_keys if key not in candidate_keys]
     submitted_keys = [removal.key for removal in removals]
@@ -474,7 +477,8 @@ def replace_draft(
         ).fetchone()
         if current is None:
             raise HTTPException(status_code=409, detail="plan revision changed; refresh and retry")
-        audited_removals = _validated_removals(current, validated, body.removals)
+        current_validated = _validated_revision(current)
+        audited_removals = _validated_removals(current_validated, validated, body.removals)
         _assert_active_task_anchors(conn, plan, validated)
         if current["decision_state"] == "DRAFT" and current["checksum"] == validated.checksum:
             conn.commit()

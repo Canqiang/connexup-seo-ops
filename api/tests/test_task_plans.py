@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 
@@ -82,6 +83,37 @@ def create_draft_plan(client, payload=STRICT_PLAN):
     response = client.get(f"/api/runs/{run['id']}/task-plan")
     assert response.status_code == 200
     return merchant, run, response.json()
+
+
+def rewrite_revision_definition(
+    plan_id: int,
+    revision: int,
+    *,
+    payload_json: str | None = None,
+    checksum: str | None = None,
+) -> None:
+    from app.db import connect
+
+    conn = connect()
+    try:
+        conn.execute("DROP TRIGGER trg_task_plan_revisions_definition_immutable")
+        updates: list[str] = []
+        values: list[str | int] = []
+        if payload_json is not None:
+            updates.append("payload_json = ?")
+            values.append(payload_json)
+        if checksum is not None:
+            updates.append("checksum = ?")
+            values.append(checksum)
+        values.extend((plan_id, revision))
+        conn.execute(
+            f"UPDATE task_plan_revisions SET {', '.join(updates)} "
+            "WHERE plan_id = ? AND revision = ?",
+            values,
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def test_completed_run_persists_draft_plan_without_tasks(client):
@@ -370,6 +402,127 @@ def test_current_draft_is_idempotent_but_reverting_to_old_checksum_creates_revis
         conn.close()
 
 
+def test_draft_rejects_invalid_current_revision_as_data_conflict(client):
+    from app.db import connect
+
+    _merchant, _run, draft_plan = create_draft_plan(client)
+    invalid = {
+        "schema_version": "seo_ops.task_plan.v1",
+        "tasks": [{**STRICT_PLAN["tasks"][0], "unexpected": True}],
+    }
+    payload_json = json.dumps(invalid, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    rewrite_revision_definition(
+        draft_plan["id"],
+        1,
+        payload_json=payload_json,
+        checksum=hashlib.sha256(payload_json.encode()).hexdigest(),
+    )
+
+    response = client.put(
+        f"/api/task-plans/{draft_plan['id']}/draft",
+        json={"expected_revision": 1, "plan": STRICT_PLAN},
+    )
+
+    assert response.status_code == 409
+    conn = connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_plan_revisions WHERE plan_id = ?", (draft_plan["id"],)
+        ).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_draft_rejects_noncanonical_current_revision(client):
+    from app.db import connect
+
+    _merchant, _run, draft_plan = create_draft_plan(client)
+    rewrite_revision_definition(
+        draft_plan["id"],
+        1,
+        payload_json=json.dumps(STRICT_PLAN, ensure_ascii=False, indent=2),
+    )
+
+    response = client.put(
+        f"/api/task-plans/{draft_plan['id']}/draft",
+        json={"expected_revision": 1, "plan": STRICT_PLAN},
+    )
+
+    assert response.status_code == 409
+    conn = connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_plan_revisions WHERE plan_id = ?", (draft_plan["id"],)
+        ).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_draft_rejects_current_revision_checksum_mismatch(client):
+    from app.db import connect
+
+    _merchant, _run, draft_plan = create_draft_plan(client)
+    rewrite_revision_definition(draft_plan["id"], 1, checksum="f" * 64)
+
+    response = client.put(
+        f"/api/task-plans/{draft_plan['id']}/draft",
+        json={"expected_revision": 1, "plan": STRICT_PLAN},
+    )
+
+    assert response.status_code == 409
+    conn = connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_plan_revisions WHERE plan_id = ?", (draft_plan["id"],)
+        ).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_draft_revalidates_prior_approved_revision_before_replacement(client):
+    from app.db import connect
+
+    _merchant, _run, draft_plan = create_draft_plan(client, two_wave_plan_payload())
+    approved = client.post(
+        f"/api/task-plans/{draft_plan['id']}/approve",
+        json={"revision": 1, "checksum": draft_plan["current_revision"]["checksum"]},
+    )
+    assert approved.status_code == 200
+    edited = client.put(
+        f"/api/task-plans/{draft_plan['id']}/draft",
+        json={"expected_revision": 1, "plan": two_wave_plan_payload()},
+    )
+    assert edited.status_code == 200
+    rewrite_revision_definition(
+        draft_plan["id"],
+        1,
+        payload_json=json.dumps(two_wave_plan_payload(), ensure_ascii=False, indent=2),
+    )
+    conn = connect()
+    try:
+        before_events = conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]
+    finally:
+        conn.close()
+
+    response = client.put(
+        f"/api/task-plans/{draft_plan['id']}/draft",
+        json={"expected_revision": 2, "plan": two_wave_plan_payload()},
+    )
+
+    assert response.status_code == 409
+    conn = connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_plan_revisions WHERE plan_id = ?", (draft_plan["id"],)
+        ).fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == before_events
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     "plan,removals",
     [
@@ -607,6 +760,61 @@ def test_approval_rechecks_task_anchor_that_advanced_after_draft_save(client):
             "SELECT decision_state FROM task_plan_revisions WHERE plan_id = ? AND revision = 2",
             (draft_plan["id"],),
         ).fetchone()[0] == "DRAFT"
+    finally:
+        conn.close()
+
+
+def test_retained_started_task_stays_revision_active_after_later_approval(client):
+    from app.db import connect
+    from app.task_workflows import assert_transition, task_blocker
+
+    _merchant, _run, draft_plan = create_draft_plan(client, two_wave_plan_payload())
+    first_approval = client.post(
+        f"/api/task-plans/{draft_plan['id']}/approve",
+        json={"revision": 1, "checksum": draft_plan["current_revision"]["checksum"]},
+    )
+    assert first_approval.status_code == 200
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET status = 'NEEDS_ATTENTION' "
+            "WHERE plan_id = ? AND task_key = 'draft'",
+            (draft_plan["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    replacement = two_wave_plan_payload()
+    replacement["tasks"][1]["title"] = "Revised review"
+    edited = client.put(
+        f"/api/task-plans/{draft_plan['id']}/draft",
+        json={"expected_revision": 1, "plan": replacement},
+    )
+    assert edited.status_code == 200
+
+    second_approval = client.post(
+        f"/api/task-plans/{draft_plan['id']}/approve",
+        json={"revision": 2, "checksum": edited.json()["current_revision"]["checksum"]},
+    )
+
+    assert second_approval.status_code == 200
+    conn = connect()
+    try:
+        retained = conn.execute(
+            "SELECT * FROM tasks WHERE plan_id = ? AND task_key = 'draft'", (draft_plan["id"],)
+        ).fetchone()
+        revised = conn.execute(
+            "SELECT * FROM tasks WHERE plan_id = ? AND task_key = 'review'", (draft_plan["id"],)
+        ).fetchone()
+        assert retained["status"] == "NEEDS_ATTENTION"
+        assert retained["plan_revision"] == 1
+        assert revised["title"] == "Revised review"
+        assert revised["plan_revision"] == 2
+        assert task_blocker(conn, retained) is None
+        assert_transition("PREPARE_ONLY", "NEEDS_ATTENTION", "PENDING")
+        conn.execute("UPDATE tasks SET status = 'PENDING' WHERE id = ?", (retained["id"],))
+        recovered = conn.execute("SELECT * FROM tasks WHERE id = ?", (retained["id"],)).fetchone()
+        assert task_blocker(conn, recovered) is None
     finally:
         conn.close()
 

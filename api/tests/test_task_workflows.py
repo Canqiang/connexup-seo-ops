@@ -1,7 +1,33 @@
+import hashlib
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+
+def canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def workflow_item(key: str) -> dict:
+    return {
+        "key": key,
+        "task_type": "PREPARE_ONLY",
+        "title": f"Prepare {key}",
+        "rationale": f"The {key} work is required.",
+        "expected_outcome": f"A reviewable {key} result.",
+        "depends_on": [],
+        "scheduled_start": None,
+        "parameters": {"description": f"Prepare {key} only.", "category": "content"},
+    }
+
+
+def workflow_payload(*keys: str) -> dict:
+    return {
+        "schema_version": "seo_ops.task_plan.v1",
+        "tasks": [workflow_item(key) for key in keys],
+    }
 
 
 @pytest.fixture()
@@ -18,6 +44,13 @@ def db():
             id INTEGER PRIMARY KEY,
             approved_revision INTEGER
         );
+        CREATE TABLE task_plan_revisions (
+            plan_id INTEGER NOT NULL,
+            revision INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            PRIMARY KEY (plan_id, revision)
+        );
         CREATE TABLE tasks (
             id INTEGER PRIMARY KEY,
             merchant_id INTEGER NOT NULL,
@@ -25,6 +58,7 @@ def db():
             plan_revision INTEGER NOT NULL,
             task_key TEXT NOT NULL,
             task_type TEXT NOT NULL,
+            definition_checksum TEXT,
             title TEXT NOT NULL,
             status TEXT NOT NULL,
             scheduled_start TEXT
@@ -183,6 +217,12 @@ def test_archived_merchant_blocks_before_other_conditions(seed_task_graph, db):
 def test_inactive_approved_revision_blocks_before_schedule(seed_task_graph, db):
     from app.task_workflows import task_blocker
 
+    payload_json = canonical_json(workflow_payload("other"))
+    db.execute(
+        "INSERT INTO task_plan_revisions (plan_id, revision, payload_json, checksum) "
+        "VALUES (1, 2, ?, ?)",
+        (payload_json, hashlib.sha256(payload_json.encode()).hexdigest()),
+    )
     db.execute("UPDATE task_plans SET approved_revision = 2 WHERE id = 1")
     db.execute(
         "UPDATE tasks SET scheduled_start = ? WHERE id = 20",
@@ -191,6 +231,46 @@ def test_inactive_approved_revision_blocks_before_schedule(seed_task_graph, db):
     db.commit()
     task = db.execute("SELECT * FROM tasks WHERE id = 20").fetchone()
     assert task_blocker(db, task) == {"code": "REVISION_INACTIVE"}
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing", "malformed-json", "noncanonical", "checksum-mismatch"],
+)
+def test_retained_revision_data_corruption_fails_closed(db, corruption):
+    from app.task_workflows import TaskWorkflowDataError, task_blocker
+
+    item = workflow_item("retained")
+    db.execute(
+        "INSERT INTO tasks "
+        "(id, merchant_id, plan_id, plan_revision, task_key, task_type, "
+        "definition_checksum, title, status) "
+        "VALUES (40, 1, 1, 1, 'retained', 'PREPARE_ONLY', ?, 'Retained', 'PENDING')",
+        (hashlib.sha256(canonical_json(item).encode()).hexdigest(),),
+    )
+    db.execute("UPDATE task_plans SET approved_revision = 2 WHERE id = 1")
+    if corruption != "missing":
+        payload = workflow_payload("retained")
+        canonical = canonical_json(payload)
+        if corruption == "malformed-json":
+            payload_json = "{broken"
+            checksum = "a" * 64
+        elif corruption == "noncanonical":
+            payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+            checksum = hashlib.sha256(canonical.encode()).hexdigest()
+        else:
+            payload_json = canonical
+            checksum = "f" * 64
+        db.execute(
+            "INSERT INTO task_plan_revisions (plan_id, revision, payload_json, checksum) "
+            "VALUES (1, 2, ?, ?)",
+            (payload_json, checksum),
+        )
+    db.commit()
+    task = db.execute("SELECT * FROM tasks WHERE id = 40").fetchone()
+
+    with pytest.raises(TaskWorkflowDataError, match="approved revision"):
+        task_blocker(db, task)
 
 
 def test_future_schedule_blocks_with_exact_scheduled_time(seed_task_graph, db):

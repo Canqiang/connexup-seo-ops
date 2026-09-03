@@ -7,12 +7,16 @@ transition or mark a task complete outside that lifecycle.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
+
+from .task_plan_contract import TaskPlanValidationError, validate_task_plan
 
 
 @dataclass(frozen=True)
@@ -108,7 +112,42 @@ def _revision_active(conn: sqlite3.Connection, task: Any) -> bool:
     ).fetchone()
     if plan is None or plan["approved_revision"] is None:
         return False
-    return plan["approved_revision"] == _value(task, "plan_revision")
+    if plan["approved_revision"] == _value(task, "plan_revision"):
+        return True
+    if not _row_keys(task).issuperset({"task_key", "definition_checksum"}):
+        raise TaskWorkflowDataError("retained task lacks revision identity")
+    if not _table_has_columns(
+        conn,
+        "task_plan_revisions",
+        {"plan_id", "revision", "payload_json", "checksum"},
+    ):
+        raise TaskWorkflowDataError("approved revision storage is unavailable")
+    revision = conn.execute(
+        "SELECT payload_json, checksum FROM task_plan_revisions "
+        "WHERE plan_id = ? AND revision = ?",
+        (_value(task, "plan_id"), plan["approved_revision"]),
+    ).fetchone()
+    if revision is None:
+        raise TaskWorkflowDataError("approved revision is missing")
+    try:
+        payload = json.loads(revision["payload_json"])
+        validated = validate_task_plan(payload, enabled_task_types())
+    except (TypeError, ValueError, json.JSONDecodeError, TaskPlanValidationError) as exc:
+        raise TaskWorkflowDataError("approved revision is invalid") from exc
+    if (
+        validated.canonical_json != revision["payload_json"]
+        or validated.checksum != revision["checksum"]
+    ):
+        raise TaskWorkflowDataError("approved revision checksum is inconsistent")
+    for item in validated.payload["tasks"]:
+        if item["key"] != _value(task, "task_key"):
+            continue
+        item_json = json.dumps(
+            item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        definition_checksum = hashlib.sha256(item_json.encode("utf-8")).hexdigest()
+        return definition_checksum == _value(task, "definition_checksum")
+    return False
 
 
 def _parse_datetime(value: Any) -> datetime | None:
