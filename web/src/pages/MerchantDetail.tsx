@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, type Merchant, type Run, type Task, type TaskPlan, type TaskStatus } from '../api'
 import TaskTable from '../components/TaskTable'
@@ -17,16 +17,32 @@ const INTERVAL_OPTIONS = [
 ]
 const RUNS_PREVIEW = 3
 
+type PlanReadState = 'idle' | 'loading' | 'ready' | 'missing' | 'error'
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 export default function MerchantDetail() {
   const { id } = useParams()
+  return <MerchantDetailPage key={id ?? 'invalid'} merchantId={Number(id)} />
+}
+
+function MerchantDetailPage({ merchantId }: { merchantId: number }) {
+  const validMerchantId = Number.isInteger(merchantId) && merchantId > 0
   const location = useLocation()
   const navigate = useNavigate()
-  const merchantId = Number(id)
+  const mountedRef = useRef(false)
+  const loadEpochRef = useRef(0)
+  const loadControllerRef = useRef<AbortController | null>(null)
+  const planEpochRef = useRef(0)
+  const planControllerRef = useRef<AbortController | null>(null)
+  const latestRunIdRef = useRef<number | null>(null)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [runs, setRuns] = useState<Run[]>([])
   const [latestTaskPlan, setLatestTaskPlan] = useState<TaskPlan | null>(null)
-  const [planLoadedForRun, setPlanLoadedForRun] = useState<number | null>(null)
+  const [planState, setPlanState] = useState<PlanReadState>('idle')
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null)
   const [showAllRuns, setShowAllRuns] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
@@ -35,51 +51,122 @@ export default function MerchantDetail() {
   const [expectedOutcome, setExpectedOutcome] = useState('')
   const [category, setCategory] = useState('other')
   const [description, setDescription] = useState('')
-  const [error, setError] = useState('')
+  const [merchantError, setMerchantError] = useState(validMerchantId ? '' : '商户 ID 无效')
+  const [tasksError, setTasksError] = useState('')
+  const [runsError, setRunsError] = useState('')
+  const [planError, setPlanError] = useState('')
+  const [actionError, setActionError] = useState('')
+
+  const clearPlan = useCallback((state: PlanReadState, runId: number | null) => {
+    planEpochRef.current += 1
+    planControllerRef.current?.abort()
+    latestRunIdRef.current = runId
+    setLatestTaskPlan(null)
+    setPlanState(state)
+    setPlanError('')
+  }, [])
+
+  const loadLatestPlan = useCallback(async (runId: number) => {
+    const epoch = ++planEpochRef.current
+    planControllerRef.current?.abort()
+    const controller = new AbortController()
+    planControllerRef.current = controller
+    latestRunIdRef.current = runId
+    setLatestTaskPlan(null)
+    setPlanState('loading')
+    setPlanError('')
+    try {
+      const freshPlan = await api.getRunTaskPlan(runId, controller.signal)
+      if (!mountedRef.current
+        || planEpochRef.current !== epoch
+        || latestRunIdRef.current !== runId
+        || controller.signal.aborted) return
+      if (freshPlan === null) {
+        setPlanState('missing')
+        return
+      }
+      if (!isTaskPlan(freshPlan)
+        || freshPlan.current_revision.plan_id !== freshPlan.id
+        || freshPlan.source_run_id !== runId) {
+        throw new Error('Task Plan 响应格式或来源无效')
+      }
+      setLatestTaskPlan(freshPlan)
+      setPlanState('ready')
+    } catch (error) {
+      if (isAbortError(error)
+        || !mountedRef.current
+        || planEpochRef.current !== epoch
+        || latestRunIdRef.current !== runId) return
+      setLatestTaskPlan(null)
+      setPlanState('error')
+      setPlanError((error as Error).message)
+    }
+  }, [])
 
   const load = useCallback(() => {
-    api.getMerchant(merchantId)
-      .then(m => { setMerchant(m); setError('') })
-      .catch(e => setError((e as Error).message))
-    api.listTasks(merchantId)
-      .then(fresh => setTasks(prev => {
-        // 排序只在首次加载时算；之后就地更新，行不因状态变化跳位
-        const sortFresh = (xs: Task[]) =>
-          [...xs].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.id - a.id)
-        if (prev.length === 0) return sortFresh(fresh)
-        const byId = new Map(fresh.map(f => [f.id, f]))
-        const kept = prev.filter(p => byId.has(p.id)).map(p => byId.get(p.id)!)
-        const added = sortFresh(fresh.filter(f => !prev.some(p => p.id === f.id)))
-        return [...added, ...kept]
-      }))
-      .catch(e => setError((e as Error).message))
-    api.listRuns(merchantId)
+    if (!mountedRef.current) return
+    const epoch = ++loadEpochRef.current
+    loadControllerRef.current?.abort()
+    const controller = new AbortController()
+    loadControllerRef.current = controller
+    const current = () => mountedRef.current && loadEpochRef.current === epoch && !controller.signal.aborted
+
+    api.getMerchant(merchantId, controller.signal)
+      .then(fresh => {
+        if (!current()) return
+        if (fresh.id !== merchantId) throw new Error('商户响应与当前路由不一致')
+        setMerchant(fresh)
+        setMerchantError('')
+      })
+      .catch(error => {
+        if (!isAbortError(error) && current()) setMerchantError((error as Error).message)
+      })
+    api.listTasks(merchantId, controller.signal)
+      .then(fresh => {
+        if (!current()) return
+        setTasks(prev => {
+          // 排序只在首次加载时算；之后就地更新，行不因状态变化跳位
+          const sortFresh = (xs: Task[]) =>
+            [...xs].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.id - a.id)
+          if (prev.length === 0) return sortFresh(fresh)
+          const byId = new Map(fresh.map(f => [f.id, f]))
+          const kept = prev.filter(p => byId.has(p.id)).map(p => byId.get(p.id)!)
+          const added = sortFresh(fresh.filter(f => !prev.some(p => p.id === f.id)))
+          return [...added, ...kept]
+        })
+      })
+      .then(() => { if (current()) setTasksError('') })
+      .catch(error => {
+        if (!isAbortError(error) && current()) setTasksError((error as Error).message)
+      })
+    api.listRuns(merchantId, controller.signal)
       .then(freshRuns => {
+        if (!current()) return
         setRuns(freshRuns)
+        setRunsError('')
         const latest = freshRuns[0]
         if (!latest || latest.status !== 'succeeded') {
-          setLatestTaskPlan(null)
-          setPlanLoadedForRun(latest?.id ?? 0)
+          clearPlan('idle', latest?.id ?? null)
           return
         }
-        api.getRunTaskPlan(latest.id)
-          .then(freshPlan => {
-            if (freshPlan !== null && !isTaskPlan(freshPlan)) {
-              throw new Error('Task Plan 响应格式无效')
-            }
-            setLatestTaskPlan(isTaskPlan(freshPlan) ? freshPlan : null)
-            setPlanLoadedForRun(latest.id)
-          })
-          .catch(e => {
-            setLatestTaskPlan(null)
-            setPlanLoadedForRun(latest.id)
-            setError((e as Error).message)
-          })
+        void loadLatestPlan(latest.id)
       })
-      .catch(e => setError((e as Error).message))
-  }, [merchantId])
+      .catch(error => {
+        if (!isAbortError(error) && current()) setRunsError((error as Error).message)
+      })
+  }, [clearPlan, loadLatestPlan, merchantId])
 
-  useEffect(load, [load])
+  useEffect(() => {
+    mountedRef.current = true
+    if (validMerchantId) load()
+    return () => {
+      mountedRef.current = false
+      loadEpochRef.current += 1
+      planEpochRef.current += 1
+      loadControllerRef.current?.abort()
+      planControllerRef.current?.abort()
+    }
+  }, [load, merchantId, validMerchantId])
 
   const hasRunning = runs.some(r => r.status === 'running')
 
@@ -105,9 +192,10 @@ export default function MerchantDetail() {
       setExpectedOutcome('')
       setDescription('')
       setShowCreate(false)
+      setActionError('')
       load()
     } catch (err) {
-      setError((err as Error).message)
+      setActionError((err as Error).message)
     }
   }
 
@@ -115,17 +203,18 @@ export default function MerchantDetail() {
     if (!merchant) return
     try {
       setMerchant(await api.patchMerchant(merchant.id, { status: merchant.status === 'active' ? 'archived' : 'active' }))
+      setActionError('')
     } catch (err) {
-      setError((err as Error).message)
+      setActionError((err as Error).message)
     }
   }
 
   const startRun = async () => {
     try {
       await api.createRun(merchantId)
-      setError('')
+      setActionError('')
     } catch (err) {
-      setError((err as Error).message)
+      setActionError((err as Error).message)
     } finally {
       load()
     }
@@ -134,9 +223,9 @@ export default function MerchantDetail() {
   const changeInterval = async (value: string) => {
     try {
       setMerchant(await api.patchMerchant(merchantId, { auto_run_interval_days: value === '' ? null : Number(value) }))
-      setError('')
+      setActionError('')
     } catch (err) {
-      setError((err as Error).message)
+      setActionError((err as Error).message)
     }
   }
 
@@ -144,7 +233,7 @@ export default function MerchantDetail() {
     return (
       <main aria-label="商户工作区">
         <p className="breadcrumb"><Link to="/">← 商户列表</Link></p>
-        {error ? <p className="error">{error}</p> : <p>加载中…</p>}
+        {merchantError ? <p className="error">{merchantError}</p> : <p>加载中…</p>}
       </main>
     )
   }
@@ -155,7 +244,6 @@ export default function MerchantDetail() {
   const visibleRuns = showAllRuns ? runs : runs.slice(0, RUNS_PREVIEW)
   const shownTasks = tasks.filter(t => statusFilter === null || t.status === statusFilter)
   const latestRun = runs[0]
-  const latestPlanLoaded = Boolean(latestRun && planLoadedForRun === latestRun.id)
   const latestPlanTaskCount = latestTaskPlan?.current_revision.payload.tasks.length ?? 0
 
   const diagnosis = !latestRun
@@ -179,20 +267,34 @@ export default function MerchantDetail() {
             action: 'start' as const,
             actionLabel: '重新开始诊断',
           }
-        : !latestPlanLoaded
+        : planState === 'loading'
           ? {
               title: '正在读取 Task Plan',
               copy: '报告已经返回，正在读取持久化的 Plan revision。',
               action: null,
               actionLabel: '',
             }
-        : !latestTaskPlan
+        : planState === 'error'
+          ? {
+              title: '无法读取 Task Plan',
+              copy: planError,
+              action: 'retry-plan' as const,
+              actionLabel: '重试读取 Plan',
+            }
+        : planState === 'missing'
           ? {
               title: '诊断完成，但未生成 Plan',
               copy: '报告已经返回，但没有持久化的可编辑 Task Plan；建议重新分析。',
               action: 'start' as const,
               actionLabel: '重新分析',
             }
+          : !latestTaskPlan
+            ? {
+                title: '正在读取 Task Plan',
+                copy: '报告已经返回，正在读取持久化的 Plan revision。',
+                action: null,
+                actionLabel: '',
+              }
           : latestTaskPlan.current_revision.decision_state === 'APPROVED'
             ? {
                 title: 'Plan 已确认',
@@ -232,7 +334,10 @@ export default function MerchantDetail() {
         </div>
       </header>
       <MerchantSectionNav merchantId={merchantId} active="operations" />
-      {error && <p className="error">{error}</p>}
+      {merchantError && <p className="error">{merchantError}</p>}
+      {tasksError && <p className="error">{tasksError}</p>}
+      {runsError && <p className="error">{runsError}</p>}
+      {actionError && <p className="error">{actionError}</p>}
 
       <section className="diagnosis-card" aria-label="初始诊断">
         <div className="diagnosis-state">
@@ -253,6 +358,11 @@ export default function MerchantDetail() {
         )}
         {diagnosis.action === 'plan' && latestTaskPlan && (
           <button className="primary" onClick={() => navigate(`/task-plans/${latestTaskPlan.id}`)}>
+            {diagnosis.actionLabel}
+          </button>
+        )}
+        {diagnosis.action === 'retry-plan' && latestRun && (
+          <button className="primary" onClick={() => void loadLatestPlan(latestRun.id)}>
             {diagnosis.actionLabel}
           </button>
         )}

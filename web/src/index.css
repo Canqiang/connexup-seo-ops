@@ -1803,6 +1803,16 @@ tr.row-cancelled td.grow a { text-decoration: line-through; text-decoration-colo
 .plan-decision strong { display: block; color: var(--ink); font-size: 14px; }
 .plan-decision p { margin: 5px 0 12px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .plan-decision.approved p { margin-bottom: 0; }
+.run-report-page .plan-load-error {
+  margin: 14px;
+  padding: 14px 16px;
+  border: 1px solid #e1aaa5;
+  border-left: 3px solid var(--bad);
+  background: var(--bad-soft);
+}
+.run-report-page .plan-load-error strong { color: var(--bad); }
+.run-report-page .plan-load-error p { margin: 4px 0 12px; color: var(--ink-2); font-size: 12.5px; }
+.run-report-page .plan-load-error button { min-height: 34px; }
 .plan-lock-label {
   display: inline-block;
   margin-right: 6px;

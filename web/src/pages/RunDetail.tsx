@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import { api, type AuditSnapshot, type Merchant, type PlanTaskSummary, type Run, type TaskPlan, type TaskWorkflowStatus } from '../api'
@@ -31,53 +31,169 @@ const WORKFLOW_STATUS_CLASSES: Record<TaskWorkflowStatus, string> = {
   CANCELLED: 'cancelled',
 }
 
+type PlanReadState = 'loading' | 'ready' | 'missing' | 'error'
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function currentPlanTasks(plan: TaskPlan, rows: PlanTaskSummary[]): PlanTaskSummary[] {
+  const seen = new Set<string>()
+  for (const row of rows) {
+    if (seen.has(row.task_key)) throw new Error(`正式 Task 数据包含重复 key：${row.task_key}`)
+    seen.add(row.task_key)
+    if (row.plan_id !== plan.id) throw new Error('正式 Task 数据与当前 Plan 不一致')
+  }
+  const byKey = new Map(rows.map(row => [row.task_key, row]))
+  return plan.current_revision.payload.tasks.flatMap(item => {
+    const row = byKey.get(item.key)
+    return row ? [row] : []
+  })
+}
+
 export default function RunDetail() {
   const { id } = useParams()
-  const runId = Number(id)
+  return <RunDetailPage key={id ?? 'invalid'} runId={Number(id)} />
+}
+
+function RunDetailPage({ runId }: { runId: number }) {
+  const validRunId = Number.isInteger(runId) && runId > 0
+  const mountedRef = useRef(false)
+  const planEpochRef = useRef(0)
+  const planControllerRef = useRef<AbortController | null>(null)
   const [run, setRun] = useState<Run | null>(null)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [tasks, setTasks] = useState<PlanTaskSummary[]>([])
+  const [tasksLoading, setTasksLoading] = useState(false)
   const [plan, setPlan] = useState<TaskPlan | null>(null)
-  const [planLoaded, setPlanLoaded] = useState(false)
+  const [planState, setPlanState] = useState<PlanReadState>(validRunId ? 'loading' : 'error')
   const [audit, setAudit] = useState<AuditSnapshot | null>(null)
-  const [error, setError] = useState('')
+  const [runError, setRunError] = useState(validRunId ? '' : '分析 ID 无效')
+  const [merchantError, setMerchantError] = useState('')
+  const [planError, setPlanError] = useState(validRunId ? '' : '分析 ID 无效')
+  const [taskError, setTaskError] = useState('')
+  const [auditError, setAuditError] = useState('')
+
+  const loadPlan = useCallback(async () => {
+    const epoch = ++planEpochRef.current
+    planControllerRef.current?.abort()
+    const controller = new AbortController()
+    planControllerRef.current = controller
+    setPlan(null)
+    setTasks([])
+    setTasksLoading(false)
+    setPlanState('loading')
+    setPlanError('')
+    setTaskError('')
+    try {
+      const fresh = await api.getRunTaskPlan(runId, controller.signal)
+      if (!mountedRef.current || planEpochRef.current !== epoch || controller.signal.aborted) return
+      if (fresh === null) {
+        setPlanState('missing')
+        return
+      }
+      if (!isTaskPlan(fresh)
+        || fresh.current_revision.plan_id !== fresh.id
+        || fresh.source_run_id !== runId) {
+        throw new Error('Task Plan 响应格式或来源无效')
+      }
+      setPlan(fresh)
+      setPlanState('ready')
+
+      if (fresh.current_revision.decision_state !== 'APPROVED') return
+      if (fresh.approved_revision !== fresh.current_revision.revision) {
+        setTaskError('当前批准 revision 身份不一致，未载入正式 Task')
+        return
+      }
+      setTasksLoading(true)
+      try {
+        const rows = await api.listPlanTasks(fresh.id, controller.signal)
+        if (!mountedRef.current || planEpochRef.current !== epoch || controller.signal.aborted) return
+        setTasks(currentPlanTasks(fresh, rows))
+      } catch (error) {
+        if (isAbortError(error) || !mountedRef.current || planEpochRef.current !== epoch) return
+        setTasks([])
+        setTaskError((error as Error).message)
+      } finally {
+        if (mountedRef.current && planEpochRef.current === epoch) setTasksLoading(false)
+      }
+    } catch (error) {
+      if (isAbortError(error) || !mountedRef.current || planEpochRef.current !== epoch) return
+      setPlan(null)
+      setTasks([])
+      setPlanState('error')
+      setPlanError((error as Error).message)
+    }
+  }, [runId])
 
   useEffect(() => {
-    api.getRun(runId)
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      planEpochRef.current += 1
+      planControllerRef.current?.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!validRunId) return
+    const runController = new AbortController()
+    const auditController = new AbortController()
+    let runAccepted = false
+
+    api.getRun(runId, runController.signal)
       .then(fresh => {
+        if (!mountedRef.current || runController.signal.aborted) return null
+        if (fresh.id !== runId) throw new Error('分析响应与当前路由不一致')
+        runAccepted = true
         setRun(fresh)
-        return api.getMerchant(fresh.merchant_id)
+        setRunError('')
+        return api.getMerchant(fresh.merchant_id, runController.signal)
+          .then(freshMerchant => ({ freshMerchant, expectedId: fresh.merchant_id }))
       })
-      .then(setMerchant)
-      .catch(e => setError((e as Error).message))
-    api.getRunTaskPlan(runId)
-      .then(freshPlan => {
-        if (freshPlan !== null && !isTaskPlan(freshPlan)) {
-          throw new Error('Task Plan 响应格式无效')
-        }
-        const validPlan = isTaskPlan(freshPlan) ? freshPlan : null
-        setPlan(validPlan)
-        setPlanLoaded(true)
-        if (validPlan?.approved_revision != null) {
-          return api.listPlanTasks(validPlan.id).then(setTasks)
-        }
-        setTasks([])
+      .then(result => {
+        if (!result || !mountedRef.current || runController.signal.aborted) return
+        if (result.freshMerchant.id !== result.expectedId) throw new Error('商户响应与分析记录不一致')
+        setMerchant(result.freshMerchant)
+        setMerchantError('')
       })
-      .catch(e => {
-        setPlanLoaded(true)
-        setError((e as Error).message)
+      .catch(error => {
+        if (isAbortError(error) || !mountedRef.current || runController.signal.aborted) return
+        if (runAccepted) setMerchantError((error as Error).message)
+        else setRunError((error as Error).message)
       })
-    api.getRunAudit(runId).then(setAudit).catch(e => setError((e as Error).message))
-  }, [runId])
+
+    api.getRunAudit(runId, auditController.signal)
+      .then(fresh => {
+        if (!mountedRef.current || auditController.signal.aborted) return
+        if (fresh !== null && fresh.run_id !== runId) throw new Error('Audit 响应与当前分析不一致')
+        setAudit(fresh)
+        setAuditError('')
+      })
+      .catch(error => {
+        if (isAbortError(error) || !mountedRef.current || auditController.signal.aborted) return
+        setAuditError((error as Error).message)
+      })
+
+    const planTimer = window.setTimeout(() => void loadPlan(), 0)
+    return () => {
+      window.clearTimeout(planTimer)
+      runController.abort()
+      auditController.abort()
+    }
+  }, [loadPlan, runId, validRunId])
 
   if (!run) {
     return (
       <main aria-label="分析报告">
         <p className="breadcrumb"><Link to="/">← 商户台账</Link></p>
-        {error ? <p className="error">{error}</p> : <p>加载中…</p>}
+        {runError ? <p className="error">{runError}</p> : <p>加载中…</p>}
       </main>
     )
   }
+
+  const decision = plan?.current_revision.decision_state
+  const draftCount = plan?.current_revision.payload.tasks.length ?? 0
 
   return (
     <main aria-label="分析报告" className="run-report-page">
@@ -99,7 +215,9 @@ export default function RunDetail() {
           <span>{formatRunDuration(run.created_at, run.finished_at)}</span>
         </div>
       </header>
-      {error && <p className="error">{error}</p>}
+      {runError && <p className="error">{runError}</p>}
+      {merchantError && <p className="error">{merchantError}</p>}
+      {auditError && <p className="error">{auditError}</p>}
       {run.error && <p className="error">{run.error}</p>}
 
       <div className="run-review-grid">
@@ -114,36 +232,49 @@ export default function RunDetail() {
         <aside className="panel run-task-panel" aria-labelledby="run-tasks-title">
           <div className="panel-head compact">
             <h2 id="run-tasks-title">本次生成任务</h2>
-            <span className="result-count">{plan?.current_revision.payload.tasks.length ?? 0} 项</span>
+            <span className="result-count">{tasks.length} 项</span>
           </div>
-          {run.status === 'succeeded' && !planLoaded && (
+          {run.status === 'succeeded' && planState === 'loading' && (
             <div className="empty-state compact-empty">正在读取 Task Plan…</div>
           )}
-          {run.status === 'succeeded' && planLoaded && plan && (
-            <section className={`plan-decision ${plan.current_revision.decision_state === 'APPROVED' ? 'approved' : ''}`} aria-label="Plan 审批">
+          {run.status === 'succeeded' && planState === 'error' && (
+            <section className="plan-load-error" role="alert" aria-label="Task Plan 读取失败">
+              <strong>无法读取 Task Plan</strong>
+              <p>{planError}</p>
+              <button type="button" onClick={() => void loadPlan()}>重试读取 Plan</button>
+            </section>
+          )}
+          {run.status === 'succeeded' && planState === 'ready' && plan && (
+            <section className={`plan-decision ${decision === 'APPROVED' ? 'approved' : ''}`} aria-label="Plan 审批">
               <strong>
-                {plan.current_revision.decision_state === 'APPROVED'
+                {decision === 'APPROVED'
                   ? `Plan Revision ${plan.current_revision.revision} 已批准`
-                  : plan.current_revision.decision_state === 'REJECTED'
+                  : decision === 'REJECTED'
                     ? `Plan Revision ${plan.current_revision.revision} 已拒绝`
                     : `Plan Revision ${plan.current_revision.revision} 待审批`}
               </strong>
               <p>
-                {plan.current_revision.decision_state === 'DRAFT'
+                {decision === 'DRAFT'
                   ? plan.approved_revision == null
-                    ? '尚未物化正式 Task；请先逐项审阅并保存完整 Plan。'
-                    : `Revision ${plan.approved_revision} 仍生效；新草稿批准前不会改写现有 Task。`
-                  : plan.current_revision.decision_state === 'APPROVED'
+                    ? `当前 Plan 草稿包含 ${draftCount} 项；尚未物化正式 Task。`
+                    : `当前 Plan 草稿包含 ${draftCount} 项；Revision ${plan.approved_revision} 的历史 Task 请到任务队列查看。`
+                  : decision === 'APPROVED'
                     ? '完整 revision 已冻结，正式 Task 已进入运营队列。'
-                    : '该 revision 未获批准，不会创建正式 Task。'}
+                    : `当前 Plan 包含 ${draftCount} 项；该 revision 未获批准，不会创建正式 Task。`}
               </p>
               <Link className="plan-review-link" to={`/task-plans/${plan.id}`}>查看并编辑 Plan</Link>
             </section>
           )}
-          {run.status === 'succeeded' && planLoaded && !plan && (
+          {run.status === 'succeeded' && planState === 'missing' && (
             <div className="empty-state compact-empty">本次分析没有生成可编辑 Task Plan。</div>
           )}
-          {plan?.approved_revision != null && tasks.length > 0 ? (
+          {taskError && (
+            <section className="plan-load-error" role="alert" aria-label="正式 Task 读取失败">
+              <p>{taskError}</p>
+              <button type="button" onClick={() => void loadPlan()}>重试读取 Plan</button>
+            </section>
+          )}
+          {decision === 'APPROVED' && tasks.length > 0 ? (
             <ul className="generated-task-list">
               {tasks.map(task => (
                 <li key={task.id}>
@@ -160,8 +291,10 @@ export default function RunDetail() {
                 </li>
               ))}
             </ul>
-          ) : plan?.approved_revision != null ? (
-            <div className="empty-state compact-empty">已批准 Plan 正在载入正式 Task。</div>
+          ) : decision === 'APPROVED' && tasksLoading ? (
+            <div className="empty-state compact-empty">正在载入当前批准 revision 的正式 Task。</div>
+          ) : decision === 'APPROVED' && !taskError ? (
+            <div className="empty-state compact-empty">当前批准 revision 暂无可显示的正式 Task。</div>
           ) : null}
           <div className="panel-foot">
             <Link to={`/merchants/${run.merchant_id}`} className="panel-link">查看商户任务 →</Link>

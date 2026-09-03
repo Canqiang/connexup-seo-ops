@@ -135,8 +135,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-async function requestOptional<T>(path: string): Promise<T | null> {
-  const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' } })
+async function requestOptional<T>(path: string, init?: RequestInit): Promise<T | null> {
+  const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
   if (res.status === 404) return null
   if (!res.ok) {
     const body = await res.json().catch(() => null)
@@ -421,7 +421,7 @@ export const api = {
     request<MerchantStats[]>(`/api/merchants${status ? `?status=${status}` : ''}`),
   createMerchant: (body: { name: string; notes?: string; primary_location?: string; website_url?: string }) =>
     request<Merchant>('/api/merchants', { method: 'POST', body: JSON.stringify(body) }),
-  getMerchant: (id: number) => request<Merchant>(`/api/merchants/${id}`),
+  getMerchant: (id: number, signal?: AbortSignal) => request<Merchant>(`/api/merchants/${id}`, { signal }),
   getMerchantProfile: (id: number) => request<MerchantProfile>(`/api/merchants/${id}/profile`),
   getSeoTargets: (id: number) => request<SeoTargetState>(`/api/merchants/${id}/seo-targets`),
   refreshSeoTargets: (id: number) =>
@@ -439,7 +439,7 @@ export const api = {
     request<MerchantProfile>(`/api/merchants/${id}/gbp-sync`, { method: 'POST' }),
   patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'primary_location' | 'website_url' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  listTasks: (merchantId: number) => request<Task[]>(`/api/merchants/${merchantId}/tasks`),
+  listTasks: (merchantId: number, signal?: AbortSignal) => request<Task[]>(`/api/merchants/${merchantId}/tasks`, { signal }),
   createTask: (merchantId: number, body: { title: string; description?: string; rationale?: string; expected_outcome?: string; category?: string }) =>
     request<Task>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body) }),
   getTask: (id: number) => request<Task>(`/api/tasks/${id}`),
@@ -449,12 +449,12 @@ export const api = {
   returnTaskExecution: (id: number, reason: string) => request<TaskExecution>(`/api/tasks/${id}/return-execution`, { method: 'POST', body: JSON.stringify({ reason }) }),
   patchTask: (id: number, body: Partial<Pick<Task, 'title' | 'description' | 'rationale' | 'expected_outcome' | 'category' | 'evidence_note' | 'status'>>) =>
     request<Task>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  listRuns: (merchantId: number) => request<Run[]>(`/api/merchants/${merchantId}/runs`),
+  listRuns: (merchantId: number, signal?: AbortSignal) => request<Run[]>(`/api/merchants/${merchantId}/runs`, { signal }),
   createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),
-  getRun: (id: number) => request<Run>(`/api/runs/${id}`),
-  getRunAudit: (id: number) => requestOptional<AuditSnapshot>(`/api/runs/${id}/audit`),
-  getRunTaskPlan: (id: number) => requestOptional<TaskPlan>(`/api/runs/${id}/task-plan`),
-  getTaskPlan: (id: number) => request<TaskPlan>(`/api/task-plans/${id}`),
+  getRun: (id: number, signal?: AbortSignal) => request<Run>(`/api/runs/${id}`, { signal }),
+  getRunAudit: (id: number, signal?: AbortSignal) => requestOptional<AuditSnapshot>(`/api/runs/${id}/audit`, { signal }),
+  getRunTaskPlan: (id: number, signal?: AbortSignal) => requestOptional<TaskPlan>(`/api/runs/${id}/task-plan`, { signal }),
+  getTaskPlan: (id: number, signal?: AbortSignal) => request<TaskPlan>(`/api/task-plans/${id}`, { signal }),
   replaceTaskPlanDraft: (
     id: number,
     body: {
@@ -462,12 +462,13 @@ export const api = {
       plan: TaskPlanPayload
       removals: Array<{ key: string; reason: string }>
     },
-  ) => request<TaskPlan>(`/api/task-plans/${id}/draft`, { method: 'PUT', body: JSON.stringify(body) }),
-  approveTaskPlan: (id: number, body: { revision: number; checksum: string }) =>
-    request<TaskPlan>(`/api/task-plans/${id}/approve`, { method: 'POST', body: JSON.stringify(body) }),
-  rejectTaskPlan: (id: number, body: { expected_revision: number; reason: string }) =>
-    request<TaskPlan>(`/api/task-plans/${id}/reject`, { method: 'POST', body: JSON.stringify(body) }),
-  listPlanTasks: (id: number) => request<PlanTaskSummary[]>(`/api/tasks?plan_id=${id}`),
+    signal?: AbortSignal,
+  ) => request<TaskPlan>(`/api/task-plans/${id}/draft`, { method: 'PUT', body: JSON.stringify(body), signal }),
+  approveTaskPlan: (id: number, body: { revision: number; checksum: string }, signal?: AbortSignal) =>
+    request<TaskPlan>(`/api/task-plans/${id}/approve`, { method: 'POST', body: JSON.stringify(body), signal }),
+  rejectTaskPlan: (id: number, body: { expected_revision: number; reason: string }, signal?: AbortSignal) =>
+    request<TaskPlan>(`/api/task-plans/${id}/reject`, { method: 'POST', body: JSON.stringify(body), signal }),
+  listPlanTasks: (id: number, signal?: AbortSignal) => request<PlanTaskSummary[]>(`/api/tasks?plan_id=${id}`, { signal }),
   listAllTasks: () => request<(Task & { merchant_name: string })[]>('/api/tasks'),
   batchTasks: (ids: number[], status: TaskStatus) =>
     request<{ updated: number[]; skipped: number[] }>('/api/tasks/batch', { method: 'POST', body: JSON.stringify({ ids, status }) }),

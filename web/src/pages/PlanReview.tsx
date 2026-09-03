@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, ApiError, type TaskPlan, type TaskPlanItem, type TaskPlanPayload } from '../api'
-import { executionWaves, taskPlanSnapshot, taskPlanValidationErrors } from '../taskPlan'
+import { executionWaves, isTaskPlan, taskPlanSnapshot, taskPlanValidationErrors } from '../taskPlan'
 
 type EditorTask = TaskPlanItem & {
   editorId: string
@@ -59,6 +59,7 @@ function PlanTaskEditor({
   item,
   activeTasks,
   changed,
+  disabled,
   removalReason,
   onChange,
   onMarkRemoval,
@@ -69,6 +70,7 @@ function PlanTaskEditor({
   item: EditorTask
   activeTasks: EditorTask[]
   changed: boolean
+  disabled: boolean
   removalReason: string | undefined
   onChange: (editorId: string, patch: Partial<TaskPlanItem>) => void
   onMarkRemoval: (editorId: string) => void
@@ -97,15 +99,15 @@ function PlanTaskEditor({
           {pendingRemoval && <span className="plan-remove-mark">待删除</span>}
         </div>
         {pendingRemoval ? (
-          <button type="button" className="quiet" onClick={() => onUndoRemoval(item.editorId)} aria-label={`撤销删除 ${displayKey}`}>
+          <button type="button" className="quiet" disabled={disabled} onClick={() => onUndoRemoval(item.editorId)} aria-label={`撤销删除 ${displayKey}`}>
             撤销删除
           </button>
         ) : item.persistedKey ? (
-          <button type="button" className="quiet danger-link" onClick={() => onMarkRemoval(item.editorId)} aria-label={`标记删除 ${displayKey}`}>
+          <button type="button" className="quiet danger-link" disabled={disabled} onClick={() => onMarkRemoval(item.editorId)} aria-label={`标记删除 ${displayKey}`}>
             标记删除
           </button>
         ) : (
-          <button type="button" className="quiet danger-link" onClick={() => onRemoveNew(item.editorId)} aria-label={`移除新增任务 ${displayKey}`}>
+          <button type="button" className="quiet danger-link" disabled={disabled} onClick={() => onRemoveNew(item.editorId)} aria-label={`移除新增任务 ${displayKey}`}>
             移除新增任务
           </button>
         )}
@@ -123,6 +125,7 @@ function PlanTaskEditor({
               rows={3}
               maxLength={2000}
               required
+              disabled={disabled}
             />
           </label>
         </div>
@@ -134,6 +137,7 @@ function PlanTaskEditor({
               aria-label={`Task key ${displayKey}`}
               value={item.key}
               readOnly={Boolean(item.persistedKey)}
+              disabled={disabled}
               onChange={event => onChange(item.editorId, { key: event.target.value })}
             />
           </label>
@@ -142,6 +146,7 @@ function PlanTaskEditor({
             <input
               aria-label={`任务标题 ${displayKey}`}
               value={item.title}
+              disabled={disabled}
               onChange={event => onChange(item.editorId, { title: event.target.value })}
             />
           </label>
@@ -150,6 +155,7 @@ function PlanTaskEditor({
             <textarea
               aria-label={`任务理由 ${displayKey}`}
               value={item.rationale}
+              disabled={disabled}
               onChange={event => onChange(item.editorId, { rationale: event.target.value })}
               rows={3}
             />
@@ -159,6 +165,7 @@ function PlanTaskEditor({
             <textarea
               aria-label={`预期结果 ${displayKey}`}
               value={item.expected_outcome}
+              disabled={disabled}
               onChange={event => onChange(item.editorId, { expected_outcome: event.target.value })}
               rows={3}
             />
@@ -169,6 +176,7 @@ function PlanTaskEditor({
               multiple
               aria-label={`前置任务 ${displayKey}`}
               value={item.depends_on}
+              disabled={disabled}
               onChange={event => onChange(item.editorId, {
                 depends_on: Array.from(event.currentTarget.selectedOptions, option => option.value),
               })}
@@ -180,7 +188,7 @@ function PlanTaskEditor({
             <span className="plan-dependency-help">
               <small>按住 Command 或 Ctrl 可多选；不能选择自身或重复依赖。</small>
               {item.depends_on.length > 0 && (
-                <button type="button" className="quiet" onClick={() => onChange(item.editorId, { depends_on: [] })}>
+                <button type="button" className="quiet" disabled={disabled} onClick={() => onChange(item.editorId, { depends_on: [] })}>
                   清除全部前置任务
                 </button>
               )}
@@ -191,6 +199,7 @@ function PlanTaskEditor({
             <input
               aria-label={`计划开始时间 ${displayKey}`}
               value={item.scheduled_start ?? ''}
+              disabled={disabled}
               placeholder="2026-09-05T13:00:00Z"
               onChange={event => onChange(item.editorId, { scheduled_start: event.target.value || null })}
             />
@@ -201,6 +210,7 @@ function PlanTaskEditor({
             <textarea
               aria-label={`任务描述 ${displayKey}`}
               value={parameterText(item, 'description')}
+              disabled={disabled}
               onChange={event => updateParameter('description', event.target.value)}
               rows={3}
               maxLength={4000}
@@ -211,6 +221,7 @@ function PlanTaskEditor({
             <select
               aria-label={`任务类别 ${displayKey}`}
               value={parameterText(item, 'category')}
+              disabled={disabled}
               onChange={event => updateParameter('category', event.target.value)}
             >
               {CATEGORY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -222,21 +233,41 @@ function PlanTaskEditor({
   )
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 export default function PlanReview() {
   const { id } = useParams()
-  const planId = Number(id)
+  return <PlanReviewWorkspace key={id ?? 'invalid'} planId={Number(id)} />
+}
+
+function PlanReviewWorkspace({ planId }: { planId: number }) {
+  const validPlanId = Number.isInteger(planId) && planId > 0
   const nextEditorId = useRef(1)
+  const mountedRef = useRef(false)
+  const identityEpochRef = useRef(0)
+  const loadEpochRef = useRef(0)
+  const loadControllerRef = useRef<AbortController | null>(null)
+  const mutationControllerRef = useRef<AbortController | null>(null)
+  const mutationInFlightRef = useRef(false)
+  const editEpochRef = useRef(0)
   const [plan, setPlan] = useState<TaskPlan | null>(null)
   const [tasks, setTasks] = useState<EditorTask[]>([])
   const [savedSnapshot, setSavedSnapshot] = useState('')
   const [removalReasons, setRemovalReasons] = useState<Record<string, string>>({})
   const [rejectReason, setRejectReason] = useState('')
-  const [busy, setBusy] = useState<BusyAction>('load')
-  const [error, setError] = useState('')
+  const [busy, setBusy] = useState<BusyAction>(validPlanId ? 'load' : null)
+  const [error, setError] = useState(validPlanId ? '' : 'Plan ID 无效')
   const [notice, setNotice] = useState('')
   const [conflicted, setConflicted] = useState(false)
 
-  const applyServerPlan = useCallback((fresh: TaskPlan) => {
+  const isCurrentIdentity = useCallback((epoch: number) => (
+    mountedRef.current && identityEpochRef.current === epoch
+  ), [])
+
+  const applyServerPlan = useCallback((fresh: TaskPlan, epoch: number) => {
+    if (!isCurrentIdentity(epoch) || !isTaskPlan(fresh) || fresh.id !== planId || fresh.current_revision.plan_id !== planId) return false
     const payload = fresh.current_revision.payload
     setPlan(fresh)
     setTasks(payload.tasks.map((item, index) => cloneTask(
@@ -246,29 +277,56 @@ export default function PlanReview() {
     setSavedSnapshot(taskPlanSnapshot(payload))
     setRemovalReasons({})
     setConflicted(false)
-  }, [])
+    editEpochRef.current += 1
+    return true
+  }, [isCurrentIdentity, planId])
 
   const load = useCallback(async () => {
-    if (!Number.isInteger(planId) || planId < 1) {
-      setError('Plan ID 无效')
-      setBusy(null)
-      return
-    }
+    const identityEpoch = identityEpochRef.current
+    const loadEpoch = ++loadEpochRef.current
+    loadControllerRef.current?.abort()
+    const controller = new AbortController()
+    loadControllerRef.current = controller
+    if (!validPlanId || !mountedRef.current) return
     setBusy('load')
+    setPlan(null)
+    setTasks([])
+    setSavedSnapshot('')
+    setRemovalReasons({})
+    setRejectReason('')
+    setError('')
+    setNotice('')
+    setConflicted(false)
     try {
-      applyServerPlan(await api.getTaskPlan(planId))
+      const fresh = await api.getTaskPlan(planId, controller.signal)
+      if (!isCurrentIdentity(identityEpoch) || loadEpochRef.current !== loadEpoch || controller.signal.aborted) return
+      if (!applyServerPlan(fresh, identityEpoch)) {
+        setError('Task Plan 响应与当前路由不一致')
+        return
+      }
       setError('')
       setNotice('')
     } catch (loadError) {
+      if (isAbortError(loadError) || !isCurrentIdentity(identityEpoch) || loadEpochRef.current !== loadEpoch) return
       setError((loadError as Error).message)
     } finally {
-      setBusy(null)
+      if (isCurrentIdentity(identityEpoch) && loadEpochRef.current === loadEpoch) setBusy(null)
     }
-  }, [applyServerPlan, planId])
+  }, [applyServerPlan, isCurrentIdentity, planId, validPlanId])
 
   useEffect(() => {
+    mountedRef.current = true
+    identityEpochRef.current += 1
     const timer = window.setTimeout(() => void load(), 0)
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(timer)
+      mountedRef.current = false
+      identityEpochRef.current += 1
+      loadEpochRef.current += 1
+      loadControllerRef.current?.abort()
+      mutationControllerRef.current?.abort()
+      mutationInFlightRef.current = false
+    }
   }, [load])
 
   const activeTasks = useMemo(
@@ -323,13 +381,32 @@ export default function PlanReview() {
     [plan],
   )
 
-  const markConflict = (actionError: unknown) => {
+  const markConflict = (actionError: unknown, epoch: number) => {
+    if (!isCurrentIdentity(epoch)) return
     if (actionError instanceof ApiError && actionError.status === 409) setConflicted(true)
     setError((actionError as Error).message)
     setNotice('')
   }
 
+  const beginMutation = (action: Exclude<BusyAction, 'load' | null>) => {
+    if (mutationInFlightRef.current || !mountedRef.current) return null
+    mutationInFlightRef.current = true
+    const controller = new AbortController()
+    mutationControllerRef.current = controller
+    setBusy(action)
+    return { controller, epoch: identityEpochRef.current }
+  }
+
+  const finishMutation = (controller: AbortController, epoch: number) => {
+    if (mutationControllerRef.current !== controller) return
+    mutationControllerRef.current = null
+    mutationInFlightRef.current = false
+    if (isCurrentIdentity(epoch)) setBusy(null)
+  }
+
   const updateTask = (editorId: string, patch: Partial<TaskPlanItem>) => {
+    if (mutationInFlightRef.current) return
+    editEpochRef.current += 1
     setTasks(current => {
       const currentTask = current.find(task => task.editorId === editorId)
       if (!currentTask) return current
@@ -346,6 +423,8 @@ export default function PlanReview() {
   }
 
   const addTask = () => {
+    if (mutationInFlightRef.current) return
+    editEpochRef.current += 1
     const existing = new Set(tasks.map(task => task.key))
     let suffix = 1
     let key = 'new-task'
@@ -369,8 +448,11 @@ export default function PlanReview() {
   }
 
   const save = async () => {
-    if (!plan || conflicted || validationErrors.length > 0 || !dirty) return
-    setBusy('save')
+    if (!plan || plan.id !== planId || conflicted || validationErrors.length > 0 || !dirty) return
+    const mutation = beginMutation('save')
+    if (!mutation) return
+    const sourcePlan = plan
+    const sourceEditEpoch = editEpochRef.current
     try {
       const removals = tasks.flatMap(task => {
         const reason = removalReasons[task.editorId]
@@ -378,55 +460,79 @@ export default function PlanReview() {
           ? [{ key: task.persistedKey, reason: reason.trim() }]
           : []
       })
-      const fresh = await api.replaceTaskPlanDraft(plan.id, {
-        expected_revision: plan.current_revision.revision,
+      const fresh = await api.replaceTaskPlanDraft(sourcePlan.id, {
+        expected_revision: sourcePlan.current_revision.revision,
         plan: payload,
         removals,
-      })
-      applyServerPlan(fresh)
+      }, mutation.controller.signal)
+      if (!isCurrentIdentity(mutation.epoch) || mutation.controller.signal.aborted) return
+      if (editEpochRef.current !== sourceEditEpoch) {
+        setConflicted(true)
+        setError('保存期间本地 Plan 已变化，服务器响应未覆盖当前编辑')
+        return
+      }
+      if (!applyServerPlan(fresh, mutation.epoch)) {
+        setConflicted(true)
+        setError('Task Plan 响应与当前路由不一致')
+        return
+      }
       setError('')
       setNotice(`已保存 Revision ${fresh.current_revision.revision}`)
     } catch (saveError) {
-      markConflict(saveError)
+      if (!isAbortError(saveError)) markConflict(saveError, mutation.epoch)
     } finally {
-      setBusy(null)
+      finishMutation(mutation.controller, mutation.epoch)
     }
   }
 
   const approve = async () => {
-    if (!plan || dirty || conflicted || validationErrors.length > 0 || plan.current_revision.decision_state !== 'DRAFT') return
-    setBusy('approve')
+    if (!plan || plan.id !== planId || dirty || conflicted || validationErrors.length > 0 || plan.current_revision.decision_state !== 'DRAFT') return
+    const mutation = beginMutation('approve')
+    if (!mutation) return
+    const sourcePlan = plan
     try {
-      const fresh = await api.approveTaskPlan(plan.id, {
-        revision: plan.current_revision.revision,
-        checksum: plan.current_revision.checksum,
-      })
-      applyServerPlan(fresh)
+      const fresh = await api.approveTaskPlan(sourcePlan.id, {
+        revision: sourcePlan.current_revision.revision,
+        checksum: sourcePlan.current_revision.checksum,
+      }, mutation.controller.signal)
+      if (!isCurrentIdentity(mutation.epoch) || mutation.controller.signal.aborted) return
+      if (!applyServerPlan(fresh, mutation.epoch)) {
+        setConflicted(true)
+        setError('Task Plan 响应与当前路由不一致')
+        return
+      }
       setError('')
       setNotice('当前 Revision 已批准')
     } catch (approveError) {
-      markConflict(approveError)
+      if (!isAbortError(approveError)) markConflict(approveError, mutation.epoch)
     } finally {
-      setBusy(null)
+      finishMutation(mutation.controller, mutation.epoch)
     }
   }
 
   const reject = async () => {
-    if (!plan || dirty || conflicted || !rejectReason.trim() || rejectReason.trim().length > 2000 || plan.current_revision.decision_state !== 'DRAFT') return
-    setBusy('reject')
+    if (!plan || plan.id !== planId || dirty || conflicted || !rejectReason.trim() || rejectReason.trim().length > 2000 || plan.current_revision.decision_state !== 'DRAFT') return
+    const mutation = beginMutation('reject')
+    if (!mutation) return
+    const sourcePlan = plan
     try {
-      const fresh = await api.rejectTaskPlan(plan.id, {
-        expected_revision: plan.current_revision.revision,
+      const fresh = await api.rejectTaskPlan(sourcePlan.id, {
+        expected_revision: sourcePlan.current_revision.revision,
         reason: rejectReason.trim(),
-      })
-      applyServerPlan(fresh)
+      }, mutation.controller.signal)
+      if (!isCurrentIdentity(mutation.epoch) || mutation.controller.signal.aborted) return
+      if (!applyServerPlan(fresh, mutation.epoch)) {
+        setConflicted(true)
+        setError('Task Plan 响应与当前路由不一致')
+        return
+      }
       setRejectReason('')
       setError('')
       setNotice('当前 Revision 已拒绝')
     } catch (rejectError) {
-      markConflict(rejectError)
+      if (!isAbortError(rejectError)) markConflict(rejectError, mutation.epoch)
     } finally {
-      setBusy(null)
+      finishMutation(mutation.controller, mutation.epoch)
     }
   }
 
@@ -445,6 +551,7 @@ export default function PlanReview() {
   }
 
   const currentDecision = plan.current_revision.decision_state
+  const mutationLocked = busy === 'save' || busy === 'approve' || busy === 'reject'
   const canSave = dirty && !conflicted && validationErrors.length === 0 && !busy
   const canApprove = !dirty && !conflicted && validationErrors.length === 0 && currentDecision === 'DRAFT' && !busy
   const backTo = plan.source_run_id ? `/runs/${plan.source_run_id}` : `/merchants/${plan.merchant_id}`
@@ -471,7 +578,7 @@ export default function PlanReview() {
       {error && (
         <div className="plan-message error" role="alert">
           <span>{error}</span>
-          {conflicted && <button type="button" onClick={() => void load()}>重新载入服务器 Plan</button>}
+          {conflicted && <button type="button" onClick={() => void load()} disabled={Boolean(busy)}>重新载入服务器 Plan</button>}
         </div>
       )}
       {notice && <p className="plan-message success" role="status">{notice}</p>}
@@ -483,7 +590,7 @@ export default function PlanReview() {
               <h2 id="plan-wave-title">执行波次</h2>
               <p>同一波可并行准备；下一波必须等待全部前置 Task 完成。</p>
             </div>
-            <button type="button" onClick={addTask} disabled={activeTasks.length >= 50}>添加 Task</button>
+            <button type="button" onClick={addTask} disabled={mutationLocked || activeTasks.length >= 50}>添加 Task</button>
           </header>
 
           {waves.map((wave, waveIndex) => (
@@ -508,16 +615,31 @@ export default function PlanReview() {
                       item={item}
                       activeTasks={activeTasks}
                       changed={changed}
+                      disabled={mutationLocked}
                       removalReason={removalReasons[item.editorId]}
                       onChange={updateTask}
-                      onMarkRemoval={editorId => setRemovalReasons(current => ({ ...current, [editorId]: '' }))}
+                      onMarkRemoval={editorId => {
+                        if (mutationInFlightRef.current) return
+                        editEpochRef.current += 1
+                        setRemovalReasons(current => ({ ...current, [editorId]: '' }))
+                      }}
                       onUndoRemoval={editorId => setRemovalReasons(current => {
+                        if (mutationInFlightRef.current) return current
+                        editEpochRef.current += 1
                         const next = { ...current }
                         delete next[editorId]
                         return next
                       })}
-                      onRemoveNew={editorId => setTasks(current => current.filter(task => task.editorId !== editorId))}
-                      onRemovalReason={(editorId, reason) => setRemovalReasons(current => ({ ...current, [editorId]: reason }))}
+                      onRemoveNew={editorId => {
+                        if (mutationInFlightRef.current) return
+                        editEpochRef.current += 1
+                        setTasks(current => current.filter(task => task.editorId !== editorId))
+                      }}
+                      onRemovalReason={(editorId, reason) => {
+                        if (mutationInFlightRef.current) return
+                        editEpochRef.current += 1
+                        setRemovalReasons(current => ({ ...current, [editorId]: reason }))
+                      }}
                     />
                   )
                 })}
@@ -531,16 +653,27 @@ export default function PlanReview() {
                 item={item}
                 activeTasks={activeTasks}
                 changed
+                disabled={mutationLocked}
                 removalReason={removalReasons[item.editorId]}
                 onChange={updateTask}
                 onMarkRemoval={() => {}}
                 onUndoRemoval={editorId => setRemovalReasons(current => {
+                  if (mutationInFlightRef.current) return current
+                  editEpochRef.current += 1
                   const next = { ...current }
                   delete next[editorId]
                   return next
                 })}
-                onRemoveNew={editorId => setTasks(current => current.filter(task => task.editorId !== editorId))}
-                onRemovalReason={(editorId, reason) => setRemovalReasons(current => ({ ...current, [editorId]: reason }))}
+                onRemoveNew={editorId => {
+                  if (mutationInFlightRef.current) return
+                  editEpochRef.current += 1
+                  setTasks(current => current.filter(task => task.editorId !== editorId))
+                }}
+                onRemovalReason={(editorId, reason) => {
+                  if (mutationInFlightRef.current) return
+                  editEpochRef.current += 1
+                  setRemovalReasons(current => ({ ...current, [editorId]: reason }))
+                }}
               />
             </section>
           ))}
@@ -585,9 +718,12 @@ export default function PlanReview() {
               <textarea
                 aria-label="拒绝原因"
                 value={rejectReason}
-                onChange={event => setRejectReason(event.target.value)}
+                onChange={event => {
+                  if (!mutationInFlightRef.current) setRejectReason(event.target.value)
+                }}
                 rows={4}
                 maxLength={2000}
+                disabled={mutationLocked}
               />
             </label>
             <button
