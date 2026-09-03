@@ -82,8 +82,24 @@ function equalLabels(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
+type MetadataSnapshot = {
+  version: number
+  assignee: string | null
+  labels: string[]
+  operatorNote: string | null
+}
+
+function metadataSnapshot(task: TaskDetailRecord): MetadataSnapshot {
+  return {
+    version: task.version,
+    assignee: normalizeMetadataText(task.assignee),
+    labels: normalizeMetadataLabels(task.labels),
+    operatorNote: normalizeMetadataText(task.operator_note),
+  }
+}
+
 function metadataUpdateCandidate(
-  task: TaskDetailRecord,
+  base: MetadataSnapshot,
   assignee: string,
   labels: string[],
   operatorNote: string,
@@ -91,17 +107,17 @@ function metadataUpdateCandidate(
   const normalizedAssignee = normalizeMetadataText(assignee)
   const normalizedLabels = normalizeMetadataLabels(labels)
   const normalizedOperatorNote = normalizeMetadataText(operatorNote)
-  const assigneeChanged = normalizedAssignee !== normalizeMetadataText(task.assignee)
-  const labelsChanged = !equalLabels(normalizedLabels, normalizeMetadataLabels(task.labels))
-  const operatorNoteChanged = normalizedOperatorNote !== normalizeMetadataText(task.operator_note)
+  const assigneeChanged = normalizedAssignee !== base.assignee
+  const labelsChanged = !equalLabels(normalizedLabels, base.labels)
+  const operatorNoteChanged = normalizedOperatorNote !== base.operatorNote
   const shared = {
-    expected_version: task.version,
+    expected_version: base.version,
     ...(labelsChanged ? { labels: normalizedLabels } : {}),
     ...(operatorNoteChanged ? { operator_note: normalizedOperatorNote } : {}),
   }
   if (assigneeChanged) return { ...shared, assignee: normalizedAssignee }
   if (labelsChanged) return { ...shared, labels: normalizedLabels }
-  if (operatorNoteChanged) return { expected_version: task.version, operator_note: normalizedOperatorNote }
+  if (operatorNoteChanged) return { expected_version: base.version, operator_note: normalizedOperatorNote }
   return null
 }
 
@@ -143,7 +159,7 @@ type VerifiedTaskResult = {
 type TrustedPreparation =
   | { kind: 'reviewable'; result: VerifiedTaskResult }
   | { kind: 'trusted-unknown-no-tool' }
-  | { kind: 'untrusted' }
+  | { kind: 'untrusted'; reason: 'precheck' | 'server' }
 
 const PREPARATION_REQUEST_KEYS = [
   'definition_checksum',
@@ -212,7 +228,7 @@ function trustedPreparation(task: TaskDetailRecord, execution: TaskExecution | n
     || (execution.request.workflow_version as number) <= 0
     || !isLowerHexChecksum(execution.request_checksum)
     || execution.idempotency_key !== `task:${task.id}:preparation:${execution.attempt}:${execution.request_checksum.slice(0, 16)}`) {
-    return { kind: 'untrusted' }
+    return { kind: 'untrusted', reason: 'precheck' }
   }
 
   if (execution.status === 'UNKNOWN'
@@ -221,13 +237,15 @@ function trustedPreparation(task: TaskDetailRecord, execution: TaskExecution | n
     && execution.result_checksum === null
     && Array.isArray(execution.evidence)
     && execution.evidence.length === 0) {
-    return { kind: 'trusted-unknown-no-tool' }
+    return execution.preparation_trust === 'UNKNOWN_NO_TOOL'
+      ? { kind: 'trusted-unknown-no-tool' }
+      : { kind: 'untrusted', reason: 'server' }
   }
 
   if (execution.status !== 'SUCCEEDED'
     || task.status !== 'AWAITING_APPROVAL'
     || !isVerifiedPreparationResult(execution.result)) {
-    return { kind: 'untrusted' }
+    return { kind: 'untrusted', reason: 'precheck' }
   }
   const result = execution.result
   if (!isLowerHexChecksum(execution.result_checksum)
@@ -235,14 +253,17 @@ function trustedPreparation(task: TaskDetailRecord, execution: TaskExecution | n
     || !execution.evidence.every(item => typeof item === 'string')
     || execution.evidence.length !== result.evidence.length
     || !execution.evidence.every((item, index) => item === result.evidence[index])) {
-    return { kind: 'untrusted' }
+    return { kind: 'untrusted', reason: 'precheck' }
+  }
+  if (execution.preparation_trust !== 'REVIEWABLE') {
+    return { kind: 'untrusted', reason: 'server' }
   }
   return { kind: 'reviewable', result }
 }
 
 function executionResultView(execution: TaskExecution, trust: TrustedPreparation) {
   if (execution.result === null && (trust.kind !== 'untrusted' || execution.status !== 'SUCCEEDED')) return null
-  if (trust.kind !== 'reviewable') {
+  if (trust.kind === 'untrusted') {
     const rawResult = execution.result as unknown
     const reportedWrite = Boolean(rawResult
       && typeof rawResult === 'object'
@@ -251,14 +272,21 @@ function executionResultView(execution: TaskExecution, trust: TrustedPreparation
     return (
       <section className="task-unsafe-result" role="alert">
         <strong>无法确认是否外写</strong>
-        <p><span>{reportedWrite ? '结果报告可能发生外部业务写入' : '结果结构未通过本地安全校验'}</span></p>
+        <p><span>{reportedWrite
+          ? '结果报告可能发生外部业务写入'
+          : trust.reason === 'precheck'
+            ? '公开结果预检未通过'
+            : '服务端未确认此结果可审'}</span></p>
         <p>{reportedWrite
           ? '该结果违反 PREPARE_ONLY 安全契约，不可审批；请人工核对事件与外部资源。'
-          : '该结果不是可审的规范化 Preparation 结构；不可审批，也不能据此认定未发生外部写入。'}</p>
+          : trust.reason === 'precheck'
+            ? '公开字段未通过浏览器预检；不可审批，也不能据此认定未发生外部写入。'
+            : '只有服务端能校验已隐藏的请求输入与 checksum；当前结果不可审批，也不能据此认定未发生外部写入。'}</p>
         <pre>{JSON.stringify(rawResult, null, 2)}</pre>
       </section>
     )
   }
+  if (trust.kind !== 'reviewable') return null
   const result = trust.result
   return (
     <section className="task-result" aria-label={`Attempt ${execution.attempt} 结果`}>
@@ -268,27 +296,34 @@ function executionResultView(execution: TaskExecution, trust: TrustedPreparation
         <div><h4>Artifact refs</h4>{result.artifact_refs.length > 0 ? <ul>{result.artifact_refs.map((ref, index) => <li key={`${index}:${ref}`}><code>{ref}</code></li>)}</ul> : <p>无</p>}</div>
         <div><h4>Evidence</h4>{result.evidence.length > 0 ? <ul>{result.evidence.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul> : <p>无</p>}</div>
       </div>
-      <p className="task-no-write-mark">已校验：无外部业务写入</p>
+      <p className="task-no-write-mark">服务端已校验：无外部业务写入</p>
     </section>
   )
 }
 
 function isRetryablePreparation(task: TaskDetailRecord, execution: TaskExecution | null): boolean {
   if (task.status !== 'NEEDS_ATTENTION' || task.replaced_by_task_id !== null || !execution) return false
-  if (task.executions.some(isActiveExecution)
+  const latest = latestExecution(task)
+  if (!latest
+    || latest.id !== execution.id
+    || latest.attempt !== execution.attempt
+    || task.execution_status !== execution.status
+    || task.task_type !== 'PREPARE_ONLY'
+    || task.executions.some(isActiveExecution)
     || execution.stage !== 'PREPARATION'
     || execution.idempotency_key.startsWith('legacy-task-execution-')
     || execution.legacy_result
+    || execution.coreai_run_id !== null
     || execution.provider_resource_id !== null
     || execution.approval_id !== null
     || execution.artifact_id !== null
     || execution.reviewed_at !== null) return false
   if (execution.status === 'UNKNOWN') {
-    return trustedPreparation(task, execution).kind === 'trusted-unknown-no-tool'
+    return execution.preparation_trust === 'UNKNOWN_NO_TOOL'
+      && trustedPreparation(task, execution).kind === 'trusted-unknown-no-tool'
   }
   if (execution.status !== 'FAILED' && execution.status !== 'CANCELLED') return false
-  return execution.result === null
-    || (isRecord(execution.result) && execution.result.external_write_performed === false)
+  return execution.preparation_trust === 'RETRYABLE'
 }
 
 function resultIdentity(task: TaskDetailRecord, execution: TaskExecution) {
@@ -326,6 +361,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   const mountedRef = useRef(false)
   const loadEpochRef = useRef(0)
   const loadControllerRef = useRef<AbortController | null>(null)
+  const pollControllerRef = useRef<AbortController | null>(null)
   const fullLoadInFlightRef = useRef(false)
   const actionControllerRef = useRef<AbortController | null>(null)
   const actionBusyRef = useRef(false)
@@ -333,6 +369,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   const assigneeDraftRef = useRef('')
   const labelsDraftRef = useRef<string[]>([])
   const operatorNoteDraftRef = useRef('')
+  const metadataBaseRef = useRef<MetadataSnapshot | null>(null)
   const [task, setTask] = useState<TaskDetailRecord | null>(null)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [loading, setLoading] = useState(validTaskId)
@@ -340,6 +377,8 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   const [error, setError] = useState(validTaskId ? '' : '任务 ID 无效')
   const [notice, setNotice] = useState('')
   const [conflict, setConflict] = useState(false)
+  const [metadataConflict, setMetadataConflict] = useState('')
+  const [metadataEditBase, setMetadataEditBase] = useState<MetadataSnapshot | null>(null)
   const [assignee, setAssignee] = useState('')
   const [labels, setLabels] = useState<string[]>([])
   const [operatorNote, setOperatorNote] = useState('')
@@ -352,15 +391,38 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
 
   const acceptTask = useCallback((fresh: TaskDetailRecord, preserveMetadataDraft = false) => {
     if (fresh.id !== taskId) throw new Error('任务响应与当前路由不一致')
-    const previous = taskRef.current
-    const preserveAssignee = preserveMetadataDraft && previous !== null
-      && normalizeMetadataText(assigneeDraftRef.current) !== normalizeMetadataText(previous.assignee)
-    const preserveLabels = preserveMetadataDraft && previous !== null
-      && !equalLabels(normalizeMetadataLabels(labelsDraftRef.current), normalizeMetadataLabels(previous.labels))
-    const preserveOperatorNote = preserveMetadataDraft && previous !== null
-      && normalizeMetadataText(operatorNoteDraftRef.current) !== normalizeMetadataText(previous.operator_note)
+    const base = metadataBaseRef.current
+    const preserveAssignee = preserveMetadataDraft && base !== null
+      && normalizeMetadataText(assigneeDraftRef.current) !== base.assignee
+    const preserveLabels = preserveMetadataDraft && base !== null
+      && !equalLabels(normalizeMetadataLabels(labelsDraftRef.current), base.labels)
+    const preserveOperatorNote = preserveMetadataDraft && base !== null
+      && normalizeMetadataText(operatorNoteDraftRef.current) !== base.operatorNote
+    const freshMetadata = metadataSnapshot(fresh)
+    const conflictingFields = base === null ? [] : [
+      preserveAssignee && freshMetadata.assignee !== base.assignee ? '负责人' : null,
+      preserveLabels && !equalLabels(freshMetadata.labels, base.labels) ? '内部标签' : null,
+      preserveOperatorNote && freshMetadata.operatorNote !== base.operatorNote ? '操作人备注' : null,
+    ].filter((field): field is string => field !== null)
     taskRef.current = fresh
     setTask(fresh)
+    if (!preserveAssignee && !preserveLabels && !preserveOperatorNote) {
+      metadataBaseRef.current = freshMetadata
+      setMetadataEditBase(freshMetadata)
+      setMetadataConflict('')
+    } else if (base !== null) {
+      const nextBase = {
+        version: base.version,
+        assignee: preserveAssignee ? base.assignee : freshMetadata.assignee,
+        labels: preserveLabels ? base.labels : freshMetadata.labels,
+        operatorNote: preserveOperatorNote ? base.operatorNote : freshMetadata.operatorNote,
+      }
+      metadataBaseRef.current = nextBase
+      setMetadataEditBase(nextBase)
+      if (conflictingFields.length > 0) {
+        setMetadataConflict(current => current || `远端${conflictingFields.join('、')}已变化；本地草稿已保留，请刷新任务后重新核对。`)
+      }
+    }
     if (!preserveAssignee) {
       assigneeDraftRef.current = fresh.assignee ?? ''
       setAssignee(fresh.assignee ?? '')
@@ -379,6 +441,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
     if (!validTaskId) return
     const epoch = ++loadEpochRef.current
     loadControllerRef.current?.abort()
+    pollControllerRef.current = null
     const controller = new AbortController()
     loadControllerRef.current = controller
     fullLoadInFlightRef.current = true
@@ -409,10 +472,10 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   }, [acceptTask, taskId, validTaskId])
 
   const poll = useCallback(() => {
-    if (!validTaskId || actionBusyRef.current || fullLoadInFlightRef.current) return
+    if (!validTaskId || actionBusyRef.current || fullLoadInFlightRef.current || pollControllerRef.current !== null) return
     const epoch = ++loadEpochRef.current
-    loadControllerRef.current?.abort()
     const controller = new AbortController()
+    pollControllerRef.current = controller
     loadControllerRef.current = controller
     api.getTask(taskId, controller.signal)
       .then(fresh => {
@@ -426,6 +489,10 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
           setError((nextError as Error).message)
         }
       })
+      .finally(() => {
+        if (pollControllerRef.current === controller) pollControllerRef.current = null
+        if (loadControllerRef.current === controller) loadControllerRef.current = null
+      })
   }, [acceptTask, taskId, validTaskId])
 
   useEffect(() => {
@@ -435,6 +502,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
       window.clearTimeout(initialLoad)
       mountedRef.current = false
       fullLoadInFlightRef.current = false
+      pollControllerRef.current = null
       loadEpochRef.current += 1
       loadControllerRef.current?.abort()
       actionControllerRef.current?.abort()
@@ -458,6 +526,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
     actionBusyRef.current = true
     loadEpochRef.current += 1
     loadControllerRef.current?.abort()
+    pollControllerRef.current = null
     fullLoadInFlightRef.current = false
     setLoading(false)
     const controller = new AbortController()
@@ -508,7 +577,12 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
       setError('每个内部标签最多 50 个字符')
       return
     }
-    const body = metadataUpdateCandidate(task, assignee, labels, operatorNote)
+    if (metadataConflict) {
+      setError('远端元数据已变化；请刷新任务后重新核对本地草稿。')
+      return
+    }
+    const base = metadataBaseRef.current ?? metadataSnapshot(task)
+    const body = metadataUpdateCandidate(base, assignee, labels, operatorNote)
     if (!body) {
       setError('')
       setNotice('没有需要保存的变更。')
@@ -665,7 +739,8 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   }
 
   const latest = latestExecution(task)
-  const metadataCandidate = metadataUpdateCandidate(task, assignee, labels, operatorNote)
+  const metadataBase = metadataEditBase ?? metadataSnapshot(task)
+  const metadataCandidate = metadataUpdateCandidate(metadataBase, assignee, labels, operatorNote)
   const canExecute = task.status === 'PENDING'
     && task.readiness === 'READY'
     && task.replaced_by_task_id === null
@@ -716,6 +791,12 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
         <section className="task-action-message error" role="alert">
           <span>{error}</span>
           {conflict && <button type="button" onClick={load} disabled={busy}>刷新任务</button>}
+        </section>
+      )}
+      {metadataConflict && (
+        <section className="task-action-message error" role="alert">
+          <span>{metadataConflict}</span>
+          <button type="button" onClick={load} disabled={busy || loading}>刷新任务</button>
         </section>
       )}
       {notice && <p className="task-action-message success" role="status">{notice}</p>}
@@ -947,7 +1028,8 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
             <div className="panel-foot task-metadata-actions">
               <span>Task version {task.version}</span>
               {metadataCandidate === null && <small>没有需要保存的变更。</small>}
-              <button className="primary" type="button" onClick={() => void saveMetadata()} disabled={busy || metadataCandidate === null}>保存内部元数据</button>
+              {metadataCandidate !== null && metadataBase.version !== task.version && <small>本地编辑基于 Task version {metadataBase.version}。</small>}
+              <button className="primary" type="button" onClick={() => void saveMetadata()} disabled={busy || metadataCandidate === null || Boolean(metadataConflict)}>保存内部元数据</button>
             </div>
           </section>
         </aside>

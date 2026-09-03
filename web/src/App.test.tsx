@@ -159,6 +159,7 @@ function taskExecution(overrides: Record<string, unknown> = {}) {
     dispatch_started_at: '2026-09-03T01:01:00+00:00',
     coreai_run_id: null,
     provider_resource_id: null,
+    preparation_trust: 'REVIEWABLE',
     error: null,
     review_note: null,
     next_attempt_at: null,
@@ -2331,7 +2332,7 @@ describe('desktop operator shell', () => {
         return response(result, 201)
       }
       if (input === '/api/tasks/12/approve-execution') {
-        current = taskDetail({ status: 'DONE', version: 6, execution_status: 'SUCCEEDED', completed_at: '2026-09-03T02:03:00+00:00', executions: [{ ...result, reviewed_at: '2026-09-03T02:03:00+00:00' }] })
+        current = taskDetail({ status: 'DONE', version: 6, execution_status: 'SUCCEEDED', completed_at: '2026-09-03T02:03:00+00:00', executions: [{ ...result, preparation_trust: 'UNTRUSTED', reviewed_at: '2026-09-03T02:03:00+00:00' }] })
         return response({ task: current, execution: current.executions[0] })
       }
       if (input === '/api/tasks/12') return response(current)
@@ -2345,6 +2346,7 @@ describe('desktop operator shell', () => {
     expect(calls.filter(call => call.input === '/api/tasks/12/execute')).toHaveLength(1)
     expect(JSON.parse(String(calls.find(call => call.input === '/api/tasks/12/execute')?.init?.body))).toEqual({ expected_version: 3 })
     screen.getByText('Prepared a reviewable draft.')
+    screen.getByText('服务端已校验：无外部业务写入')
     screen.getByText('人工批准只会完成这个内容准备 Task；不会发布，也不会验证外部资源。')
     fireEvent.click(screen.getByRole('button', { name: '批准准备结果' }))
     await screen.findByText('已完成')
@@ -2365,7 +2367,7 @@ describe('desktop operator shell', () => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
       if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
       if (input === '/api/tasks/12/return-execution') {
-        current = taskDetail({ status: 'PENDING', version: 6, execution_status: 'SUCCEEDED', executions: [{ ...execution, reviewed_at: '2026-09-03T02:03:00+00:00', review_note: 'Use approved menu facts' }] })
+        current = taskDetail({ status: 'PENDING', version: 6, execution_status: 'SUCCEEDED', executions: [{ ...execution, preparation_trust: 'UNTRUSTED', reviewed_at: '2026-09-03T02:03:00+00:00', review_note: 'Use approved menu facts' }] })
         return response({ task: current, execution: current.executions[0] })
       }
       if (input === '/api/tasks/12') return response(current)
@@ -2389,7 +2391,7 @@ describe('desktop operator shell', () => {
 
   it('never offers PREPARE_ONLY review actions for a succeeded publication attempt', async () => {
     window.history.pushState({}, '', '/tasks/12')
-    const publication = taskExecution({ stage: 'PUBLICATION' })
+    const publication = taskExecution({ stage: 'PUBLICATION', preparation_trust: 'UNTRUSTED' })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
       if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
@@ -2411,23 +2413,23 @@ describe('desktop operator shell', () => {
       name: 'an extra public request key',
       execution: () => {
         const current = taskExecution()
-        return taskExecution({ request: { ...current.request, unexpected: 'unsafe' } })
+        return taskExecution({ preparation_trust: 'UNTRUSTED', request: { ...current.request, unexpected: 'unsafe' } })
       },
     },
     {
       name: 'a missing public request key',
-      execution: () => taskExecution({ request: {
+      execution: () => taskExecution({ preparation_trust: 'UNTRUSTED', request: {
         definition_checksum: 'c'.repeat(64), executor_kind: 'COREAI_LLM_CALL', llm_call_id: 'preparation-call',
         stage: 'PREPARATION', task_id: 12,
       } }),
     },
-    { name: 'a Core AI run marker', execution: () => taskExecution({ coreai_run_id: 'coreai-run-41' }) },
-    { name: 'a provider resource marker', execution: () => taskExecution({ provider_resource_id: 'provider-resource-41' }) },
-    { name: 'an artifact marker', execution: () => taskExecution({ artifact_id: 81 }) },
-    { name: 'an approval marker', execution: () => taskExecution({ approval_id: 71 }) },
-    { name: 'mismatched execution evidence', execution: () => taskExecution({ evidence: ['Different evidence.'] }) },
-    { name: 'a non-succeeded status', execution: () => taskExecution({ status: 'FAILED' }) },
-    { name: 'an already reviewed result', execution: () => taskExecution({ reviewed_at: '2026-09-03T03:00:00+00:00' }) },
+    { name: 'a Core AI run marker', execution: () => taskExecution({ coreai_run_id: 'coreai-run-41', preparation_trust: 'UNTRUSTED' }) },
+    { name: 'a provider resource marker', execution: () => taskExecution({ provider_resource_id: 'provider-resource-41', preparation_trust: 'UNTRUSTED' }) },
+    { name: 'an artifact marker', execution: () => taskExecution({ artifact_id: 81, preparation_trust: 'UNTRUSTED' }) },
+    { name: 'an approval marker', execution: () => taskExecution({ approval_id: 71, preparation_trust: 'UNTRUSTED' }) },
+    { name: 'mismatched execution evidence', execution: () => taskExecution({ evidence: ['Different evidence.'], preparation_trust: 'UNTRUSTED' }) },
+    { name: 'a non-succeeded status', execution: () => taskExecution({ status: 'FAILED', preparation_trust: 'UNTRUSTED' }) },
+    { name: 'an already reviewed result', execution: () => taskExecution({ reviewed_at: '2026-09-03T03:00:00+00:00', preparation_trust: 'UNTRUSTED' }) },
   ])('shows no safe claim or review control when the latest envelope has $name', async ({ execution }) => {
     window.history.pushState({}, '', '/tasks/12')
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
@@ -2440,15 +2442,33 @@ describe('desktop operator shell', () => {
 
     await screen.findByRole('article', { name: 'Attempt 1' })
     screen.getByText('无法确认是否外写')
-    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '退回重新准备' })).toBeNull()
+  })
+
+  it('does not elevate a valid public envelope when the server-derived preparation trust is untrusted', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const hiddenEnvelopeFailure = taskExecution({ preparation_trust: 'UNTRUSTED' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED', executions: [hiddenEnvelopeFailure] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('服务端未确认此结果可审')
+    screen.getByText('无法确认是否外写')
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
     expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
     expect(screen.queryByRole('button', { name: '退回重新准备' })).toBeNull()
   })
 
   it('does not trust a valid-looking result after a newer attempt exists', async () => {
     window.history.pushState({}, '', '/tasks/12')
-    const older = taskExecution()
-    const newer = taskExecution({ id: 42, attempt: 2, status: 'FAILED', result: null, result_checksum: null, idempotency_key: 'task:12:preparation:2:dddddddddddddddd' })
+    const older = taskExecution({ preparation_trust: 'UNTRUSTED' })
+    const newer = taskExecution({ id: 42, attempt: 2, status: 'FAILED', result: null, result_checksum: null, evidence: [], idempotency_key: 'task:12:preparation:2:dddddddddddddddd', preparation_trust: 'RETRYABLE' })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
       if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
@@ -2459,7 +2479,7 @@ describe('desktop operator shell', () => {
 
     await screen.findByRole('article', { name: 'Attempt 2' })
     screen.getByText('无法确认是否外写')
-    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
   })
 
   it.each([
@@ -2484,7 +2504,7 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     await screen.findByText('无法确认是否外写')
-    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
     expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
   })
 
@@ -2492,6 +2512,7 @@ describe('desktop operator shell', () => {
     window.history.pushState({}, '', '/tasks/12')
     const malformed = taskExecution({
       result: { outcome: 'ready', summary: 'Missing result arrays', external_write_performed: false },
+      preparation_trust: 'UNTRUSTED',
     })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
@@ -2501,8 +2522,8 @@ describe('desktop operator shell', () => {
     }))
     render(<App />)
 
-    await screen.findByText('结果结构未通过本地安全校验')
-    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    await screen.findByText('公开结果预检未通过')
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
     expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
   })
 
@@ -2513,7 +2534,7 @@ describe('desktop operator shell', () => {
     ['a null succeeded result', null],
   ])('renders arbitrary JSON safely and fails closed for %s', async (_name, result) => {
     window.history.pushState({}, '', '/tasks/12')
-    const malformed = taskExecution({ result })
+    const malformed = taskExecution({ result, preparation_trust: 'UNTRUSTED' })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
       if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
@@ -2523,7 +2544,7 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     await screen.findByText('无法确认是否外写')
-    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
     expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
   })
 
@@ -2535,6 +2556,7 @@ describe('desktop operator shell', () => {
         evidence: ['Provider accepted a write.'], external_write_performed: true,
       },
       evidence: ['Provider accepted a write.'],
+      preparation_trust: 'UNTRUSTED',
     })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
@@ -2545,13 +2567,13 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     await screen.findByText('结果报告可能发生外部业务写入')
-    expect(screen.queryByText('已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
     expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
   })
 
   it('does not offer preparation retry or no-write reassurance for publication uncertainty', async () => {
     window.history.pushState({}, '', '/tasks/12')
-    const publication = taskExecution({ stage: 'PUBLICATION', status: 'UNKNOWN', result: null, result_checksum: null })
+    const publication = taskExecution({ stage: 'PUBLICATION', status: 'UNKNOWN', result: null, result_checksum: null, preparation_trust: 'UNTRUSTED' })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
       if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
@@ -2570,6 +2592,7 @@ describe('desktop operator shell', () => {
     window.history.pushState({}, '', '/tasks/12')
     const unknown = taskExecution({
       status: 'UNKNOWN', result: null, result_checksum: null, evidence: [],
+      preparation_trust: 'UNKNOWN_NO_TOOL',
       finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
     })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
@@ -2585,10 +2608,31 @@ describe('desktop operator shell', () => {
     expect(screen.queryByText('无法确认是否外写')).toBeNull()
   })
 
+  it('does not elevate valid-looking UNKNOWN public data when server-derived trust is untrusted', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const unknown = taskExecution({
+      status: 'UNKNOWN', result: null, result_checksum: null, evidence: [],
+      preparation_trust: 'UNTRUSTED',
+      finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', execution_status: 'UNKNOWN', executions: [unknown] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByText('无法确认是否外写')
+    expect(screen.queryByText('无工具端点不具备业务写能力，但模型调用结果未知；人工重试可能重复计费。')).toBeNull()
+    expect(screen.queryByRole('button', { name: '授权重新准备' })).toBeNull()
+  })
+
   it('treats an UNKNOWN preparation with a Core AI run marker as untrusted', async () => {
     window.history.pushState({}, '', '/tasks/12')
     const unknown = taskExecution({
       status: 'UNKNOWN', result: null, result_checksum: null, evidence: [], coreai_run_id: 'coreai-run-41',
+      preparation_trust: 'UNTRUSTED',
       finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
     })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
@@ -2609,6 +2653,7 @@ describe('desktop operator shell', () => {
     const legacy = taskExecution({
       status: 'FAILED', result: null, result_checksum: null,
       idempotency_key: 'legacy-task-execution-41',
+      preparation_trust: 'UNTRUSTED',
     })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
@@ -2622,11 +2667,36 @@ describe('desktop operator shell', () => {
     expect(screen.queryByRole('button', { name: '授权重新准备' })).toBeNull()
   })
 
+  it.each([
+    { preparationTrust: 'RETRYABLE', coreaiRunId: null, shouldOfferRetry: true },
+    { preparationTrust: 'UNTRUSTED', coreaiRunId: null, shouldOfferRetry: false },
+    { preparationTrust: 'RETRYABLE', coreaiRunId: 'unexpected-coreai-run', shouldOfferRetry: false },
+  ])('gates failed preparation retry on server trust $preparationTrust and run marker $coreaiRunId', async ({ preparationTrust, coreaiRunId, shouldOfferRetry }) => {
+    window.history.pushState({}, '', '/tasks/12')
+    const failed = taskExecution({
+      status: 'FAILED', result: null, result_checksum: null, evidence: [], preparation_trust: preparationTrust,
+      coreai_run_id: coreaiRunId,
+      finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider rejected the request',
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'NEEDS_ATTENTION', execution_status: 'FAILED', executions: [failed] }))
+      return response([])
+    }))
+    render(<App />)
+
+    await screen.findByRole('article', { name: 'Attempt 1' })
+    if (shouldOfferRetry) screen.getByRole('button', { name: '授权重新准备' })
+    else expect(screen.queryByRole('button', { name: '授权重新准备' })).toBeNull()
+  })
+
   it('requires an explicit retry reason after UNKNOWN and warns about duplicate model cost without implying a write', async () => {
     window.history.pushState({}, '', '/tasks/12')
     const calls: Array<{ input: string; init?: RequestInit }> = []
     const unknown = taskExecution({
       status: 'UNKNOWN', result: null, result_checksum: null, evidence: [],
+      preparation_trust: 'UNKNOWN_NO_TOOL',
       finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
     })
     let current = taskDetail({ status: 'NEEDS_ATTENTION', version: 7, execution_status: 'UNKNOWN', executions: [unknown] })
@@ -2635,7 +2705,7 @@ describe('desktop operator shell', () => {
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
       if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
       if (input === '/api/tasks/12/retry-preparation') {
-        current = taskDetail({ status: 'PENDING', version: 8, execution_status: 'UNKNOWN', executions: [unknown] })
+        current = taskDetail({ status: 'PENDING', version: 8, execution_status: 'UNKNOWN', executions: [{ ...unknown, preparation_trust: 'UNTRUSTED' }] })
         return response(taskSummary(current))
       }
       if (input === '/api/tasks/12') return response(current)
@@ -2681,6 +2751,7 @@ describe('desktop operator shell', () => {
     const calls: Array<{ input: string; init?: RequestInit }> = []
     const unknown = taskExecution({
       status: 'UNKNOWN', result: null, result_checksum: null, evidence: [],
+      preparation_trust: 'UNKNOWN_NO_TOOL',
       finished_at: '2026-09-03T02:00:00+00:00', error: 'Provider response was ambiguous',
     })
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
@@ -2730,7 +2801,7 @@ describe('desktop operator shell', () => {
   it('polls an active task until another worker settles it, then stops polling', async () => {
     vi.useFakeTimers()
     window.history.pushState({}, '', '/tasks/12')
-    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, evidence: [], preparation_trust: 'UNTRUSTED', finished_at: null })
     const active = taskDetail({ status: 'PREPARING', version: 4, execution_status: 'RUNNING', executions: [activeExecution] })
     const settled = taskDetail({
       status: 'AWAITING_APPROVAL', version: 5, execution_status: 'SUCCEEDED', executions: [taskExecution()],
@@ -2767,7 +2838,7 @@ describe('desktop operator shell', () => {
     vi.useFakeTimers()
     window.history.pushState({}, '', '/tasks/12')
     const merchant = deferred<ReturnType<typeof response>>()
-    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, evidence: [], preparation_trust: 'UNTRUSTED', finished_at: null })
     const active = taskDetail({ status: 'PREPARING', version: 4, execution_status: 'RUNNING', executions: [activeExecution] })
     let taskReads = 0
     vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
@@ -2794,10 +2865,45 @@ describe('desktop operator shell', () => {
     expect(taskReads).toBe(2)
   })
 
-  it('polling preserves normalized-dirty metadata drafts while accepting authoritative task state', async () => {
+  it('keeps one slow poll alive across later intervals and stops after that poll settles the task', async () => {
     vi.useFakeTimers()
     window.history.pushState({}, '', '/tasks/12')
-    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const slowPoll = deferred<ReturnType<typeof response>>()
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, evidence: [], preparation_trust: 'UNTRUSTED', finished_at: null })
+    const active = taskDetail({ status: 'PREPARING', version: 4, execution_status: 'RUNNING', executions: [activeExecution] })
+    const settled = taskDetail({ status: 'AWAITING_APPROVAL', version: 5, execution_status: 'SUCCEEDED', executions: [taskExecution()] })
+    const pollSignals: AbortSignal[] = []
+    let taskReads = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (input === '/api/auth/me') return Promise.resolve(response({ username: 'test', role: 'operator' }))
+      if (input === '/api/tasks/12') {
+        taskReads += 1
+        if (taskReads === 1) return Promise.resolve(response(active))
+        pollSignals.push(init?.signal as AbortSignal)
+        return slowPoll.promise
+      }
+      if (input === '/api/merchants/1') return Promise.resolve(response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' }))
+      return Promise.resolve(response([]))
+    }))
+    render(<App />)
+
+    await vi.waitFor(() => expect(screen.getByText('准备中')).toBeTruthy())
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(taskReads).toBe(2)
+    expect(pollSignals).toHaveLength(1)
+    expect(pollSignals[0].aborted).toBe(false)
+
+    slowPoll.resolve(response(settled))
+    await act(async () => { await Promise.resolve() })
+    screen.getByText('待内容审批')
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(taskReads).toBe(2)
+  })
+
+  it('preserves a dirty metadata draft but blocks saving when polling sees the edited field change remotely', async () => {
+    vi.useFakeTimers()
+    window.history.pushState({}, '', '/tasks/12')
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, evidence: [], preparation_trust: 'UNTRUSTED', finished_at: null })
     const initial = taskDetail({
       status: 'PREPARING', version: 4, assignee: 'operator-a', labels: ['urgent'], operator_note: 'base note',
       execution_status: 'RUNNING', executions: [activeExecution],
@@ -2807,8 +2913,11 @@ describe('desktop operator shell', () => {
       execution_status: 'RUNNING', executions: [activeExecution],
     })
     let taskReads = 0
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
       if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/tasks/12' && init?.method === 'PATCH') return response(taskSummary(refreshed))
       if (input === '/api/tasks/12') {
         taskReads += 1
         return response(taskReads === 1 ? initial : refreshed)
@@ -2828,12 +2937,68 @@ describe('desktop operator shell', () => {
     expect((screen.getByRole('textbox', { name: '负责人' }) as HTMLInputElement).value).toBe(' local owner ')
     expect((screen.getByRole('textbox', { name: '内部标签 1' }) as HTMLTextAreaElement).value).toBe('server')
     expect((screen.getByRole('textbox', { name: '操作人备注' }) as HTMLTextAreaElement).value).toBe('server note')
+    screen.getByText('远端负责人已变化；本地草稿已保留，请刷新任务后重新核对。')
+
+    const save = screen.getByRole('button', { name: '保存内部元数据' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    await act(async () => { await Promise.resolve() })
+    expect(calls.filter(call => call.input === '/api/tasks/12' && call.init?.method === 'PATCH')).toHaveLength(0)
+    expect((screen.getByRole('textbox', { name: '负责人' }) as HTMLInputElement).value).toBe(' local owner ')
+  })
+
+  it('keeps the original metadata CAS version when polling changes only runtime state', async () => {
+    vi.useFakeTimers()
+    window.history.pushState({}, '', '/tasks/12')
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, evidence: [], preparation_trust: 'UNTRUSTED', finished_at: null })
+    const initial = taskDetail({
+      status: 'PREPARING', version: 4, assignee: null,
+      execution_status: 'RUNNING', executions: [activeExecution],
+    })
+    const refreshed = taskDetail({
+      status: 'PREPARING', version: 5, assignee: null,
+      execution_status: 'RUNNING', executions: [activeExecution],
+    })
+    const calls: Array<{ input: string; init?: RequestInit }> = []
+    let taskReads = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      calls.push({ input, init })
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/tasks/12' && init?.method === 'PATCH') return response({ detail: 'task changed; refresh and retry' }, 409)
+      if (input === '/api/tasks/12') {
+        taskReads += 1
+        return response(taskReads === 1 ? initial : refreshed)
+      }
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active', notes: null, primary_location: null, website_url: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+      return response([])
+    }))
+    render(<App />)
+
+    await vi.waitFor(() => expect(screen.getByRole('textbox', { name: '负责人' })).toBeTruthy())
+    const assignee = screen.getByRole('textbox', { name: '负责人' })
+    fireEvent.change(assignee, { target: { value: ' local owner ' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    screen.getByText('Task version 5')
+    expect(screen.queryByText(/远端负责人已变化/)).toBeNull()
+
+    const save = screen.getByRole('button', { name: '保存内部元数据' }) as HTMLButtonElement
+    expect(save.disabled).toBe(false)
+    fireEvent.click(save)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    screen.getByText('任务已变更，请刷新后再操作。')
+    const patchCall = calls.find(call => call.input === '/api/tasks/12' && call.init?.method === 'PATCH')
+    expect(JSON.parse(String(patchCall?.init?.body))).toEqual({ expected_version: 4, assignee: 'local owner' })
+    expect((assignee as HTMLInputElement).value).toBe(' local owner ')
   })
 
   it('invalidates an in-flight poll before accepting a metadata mutation readback', async () => {
     vi.useFakeTimers()
     window.history.pushState({}, '', '/tasks/12')
-    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })
+    const activeExecution = taskExecution({ status: 'RUNNING', result: null, result_checksum: null, evidence: [], preparation_trust: 'UNTRUSTED', finished_at: null })
     const initial = taskDetail({
       status: 'PREPARING', version: 4, assignee: 'server-owner', execution_status: 'RUNNING', executions: [activeExecution],
     })
@@ -2879,7 +3044,7 @@ describe('desktop operator shell', () => {
       if (input === '/api/tasks/12') {
         taskTwelveReads += 1
         if (taskTwelveReads === 1) {
-          return Promise.resolve(response(taskDetail({ status: 'PREPARING', execution_status: 'RUNNING', executions: [taskExecution({ status: 'RUNNING', result: null, result_checksum: null, finished_at: null })] })))
+          return Promise.resolve(response(taskDetail({ status: 'PREPARING', execution_status: 'RUNNING', executions: [taskExecution({ status: 'RUNNING', result: null, result_checksum: null, evidence: [], preparation_trust: 'UNTRUSTED', finished_at: null })] })))
         }
         return stalePoll.promise
       }

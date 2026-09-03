@@ -37,6 +37,12 @@ export type TaskExecutionStatus =
   | 'UNKNOWN'
   | 'CANCELLED'
 
+export type TaskPreparationTrust =
+  | 'REVIEWABLE'
+  | 'UNKNOWN_NO_TOOL'
+  | 'RETRYABLE'
+  | 'UNTRUSTED'
+
 export type TaskBlockerCode =
   | 'MERCHANT_ARCHIVED'
   | 'REVISION_INACTIVE'
@@ -71,6 +77,7 @@ export type TaskExecution = {
   dispatch_started_at: string | null
   coreai_run_id: string | null
   provider_resource_id: string | null
+  preparation_trust: TaskPreparationTrust
   request: TaskExecutionRequest
   evidence: string[]
   result: unknown

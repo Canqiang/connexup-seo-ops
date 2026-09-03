@@ -156,23 +156,38 @@ def return_current(client, task_id, reason):
 def insert_execution(task_id, *, stage="PREPARATION", status="FAILED", **values):
     from app.db import connect
 
-    request_json = json.dumps({"task_id": task_id}, separators=(",", ":"), sort_keys=True)
-    checksum = hashlib.sha256(request_json.encode()).hexdigest()
     conn = connect()
     try:
+        task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        attempt = values.get("attempt", 1)
+        request_json = json.dumps(
+            {
+                "definition_checksum": task["definition_checksum"],
+                "executor_kind": "COREAI_LLM_CALL",
+                "input": "Test-only content preparation request.",
+                "llm_call_id": "test-preparation-call",
+                "stage": stage,
+                "task_id": task_id,
+                "workflow_version": task["workflow_version"],
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        checksum = hashlib.sha256(request_json.encode()).hexdigest()
         conn.execute(
             "INSERT INTO task_executions "
             "(task_id, stage, status, attempt, request_json, request_checksum, idempotency_key, "
-            "provider_resource_id, result_json, evidence_json, created_at, finished_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "coreai_run_id, provider_resource_id, result_json, evidence_json, created_at, finished_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 stage,
                 status,
-                values.get("attempt", 1),
+                attempt,
                 request_json,
                 checksum,
-                f"test:{task_id}:{stage}:{values.get('attempt', 1)}",
+                f"task:{task_id}:preparation:{attempt}:{checksum[:16]}",
+                values.get("coreai_run_id"),
                 values.get("provider_resource_id"),
                 values.get("result_json"),
                 values.get("evidence_json", "[]"),
@@ -827,6 +842,7 @@ def test_synchronous_llm_call_success_is_approvable_and_unlocks_downstream(clien
         review = tasks["review"]
         started = execute_current(client, draft["id"]).json()
         assert started["status"] == "SUCCEEDED"
+        assert started["preparation_trust"] == "REVIEWABLE"
         assert started["coreai_run_id"] is None
         assert started["request"] == {
             "definition_checksum": draft["definition_checksum"],
@@ -861,12 +877,43 @@ def test_synchronous_llm_call_success_is_approvable_and_unlocks_downstream(clien
         awaiting = client.get(f"/api/tasks/{draft['id']}").json()
         assert awaiting["status"] == "AWAITING_APPROVAL"
         assert awaiting["executions"][-1]["status"] == "SUCCEEDED"
+        assert awaiting["executions"][-1]["preparation_trust"] == "REVIEWABLE"
         approved = approve_current(client, draft["id"])
         assert approved.status_code == 200
         assert approved.json()["task"]["status"] == "DONE"
+        assert approved.json()["task"]["executions"][-1]["preparation_trust"] == "UNTRUSTED"
+        assert approved.json()["execution"]["preparation_trust"] == "UNTRUSTED"
         assert approved.json()["execution"]["reviewed_at"] is not None
         assert client.get(f"/api/tasks/{review['id']}").json()["readiness"] == "READY"
         assert client.get(f"/api/task-plans/{plan['id']}").json()["state"] == "OPEN"
+    finally:
+        clear_preparation_llm_call()
+
+
+@pytest.mark.parametrize("action", ["approve-execution", "return-execution"])
+def test_review_mutations_reject_response_only_preparation_trust(client, action):
+    from helpers import FakeCoreAi
+
+    fake = FakeCoreAi()
+    override_preparation_llm_call(fake)
+    try:
+        merchant = make_merchant(client)
+        task = make_task(client, merchant["id"])
+        assert execute_current(client, task["id"]).status_code == 201
+        before = client.get(f"/api/tasks/{task['id']}").json()
+        body = {**execution_binding(before), "preparation_trust": "REVIEWABLE"}
+        if action == "return-execution":
+            body["reason"] = "revise"
+
+        response = client.post(f"/api/tasks/{task['id']}/{action}", json=body)
+
+        assert response.status_code == 422
+        after = client.get(f"/api/tasks/{task['id']}").json()
+        assert (after["status"], after["version"]) == (
+            before["status"],
+            before["version"],
+        )
+        assert after["executions"][-1]["reviewed_at"] is None
     finally:
         clear_preparation_llm_call()
 
@@ -900,6 +947,8 @@ def test_return_resets_to_pending_with_event_and_allows_a_new_attempt(client):
         returned = return_current(client, task["id"], "Use the approved menu copy")
         assert returned.status_code == 200
         assert returned.json()["task"]["status"] == "PENDING"
+        assert returned.json()["task"]["executions"][-1]["preparation_trust"] == "UNTRUSTED"
+        assert returned.json()["execution"]["preparation_trust"] == "UNTRUSTED"
         assert returned.json()["execution"]["status"] == "SUCCEEDED"
         assert returned.json()["execution"]["review_note"].startswith("Use the approved")
         assert returned.json()["task"]["events"][-1]["event_type"] == "TASK_PREPARATION_RETURNED"
@@ -1027,6 +1076,149 @@ def test_review_actions_reject_coreai_run_on_completed_preparation(client, actio
 
 @pytest.mark.parametrize("action", ["approve-execution", "return-execution"])
 @pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_hidden_input",
+        "blank_hidden_input",
+        "blank_llm_call_id",
+        "mismatched_checksum",
+    ],
+)
+def test_hidden_request_corruption_is_serialized_untrusted_and_rejected_by_review(
+    client, action, corruption
+):
+    from app.db import connect
+    from helpers import FakeCoreAi
+
+    fake = FakeCoreAi()
+    fake.llm_output = verified_agent_result()
+    override_preparation_llm_call(fake)
+    try:
+        merchant = make_merchant(client)
+        task = make_task(client, merchant["id"])
+        completed = execute_current(client, task["id"])
+        assert completed.status_code == 201, completed.text
+        binding = execution_binding(client.get(f"/api/tasks/{task['id']}").json())
+
+        conn = connect()
+        try:
+            stored = conn.execute(
+                "SELECT request_json FROM task_executions WHERE id = ?",
+                (binding["expected_execution_id"],),
+            ).fetchone()
+            request = json.loads(stored["request_json"])
+            if corruption in {
+                "missing_hidden_input",
+                "blank_hidden_input",
+                "blank_llm_call_id",
+            }:
+                if corruption == "missing_hidden_input":
+                    request.pop("input")
+                elif corruption == "blank_hidden_input":
+                    request["input"] = "   "
+                else:
+                    request["llm_call_id"] = "   "
+                request_json = json.dumps(
+                    request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                request_checksum = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+            else:
+                request_json = stored["request_json"]
+                request_checksum = "0" * 64
+            conn.execute(
+                "UPDATE task_executions SET request_json = ?, request_checksum = ?, "
+                "idempotency_key = ? WHERE id = ?",
+                (
+                    request_json,
+                    request_checksum,
+                    f"task:{task['id']}:preparation:1:{request_checksum[:16]}",
+                    binding["expected_execution_id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        detail = client.get(f"/api/tasks/{task['id']}")
+        assert detail.status_code == 200, detail.text
+        execution = detail.json()["executions"][-1]
+        assert set(execution["request"]) == {
+            "definition_checksum",
+            "executor_kind",
+            "llm_call_id",
+            "stage",
+            "task_id",
+            "workflow_version",
+        }
+        assert execution["preparation_trust"] == "UNTRUSTED"
+
+        body = dict(binding)
+        if action == "return-execution":
+            body["reason"] = "revise"
+        reviewed = client.post(f"/api/tasks/{task['id']}/{action}", json=body)
+        assert reviewed.status_code == 409
+        assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "AWAITING_APPROVAL"
+    finally:
+        clear_preparation_llm_call()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("definition_checksum", "f" * 64), ("workflow_version", 2)],
+)
+def test_unknown_trust_and_retry_bind_hidden_request_to_current_task(
+    client, field, value
+):
+    from app.db import connect
+    from helpers import FakeCoreAi
+
+    fake = FakeCoreAi(fail=True)
+    override_preparation_llm_call(fake)
+    try:
+        merchant = make_merchant(client)
+        task = make_task(client, merchant["id"])
+        unknown = execute_current(client, task["id"])
+        assert unknown.status_code == 201, unknown.text
+
+        conn = connect()
+        try:
+            stored = conn.execute(
+                "SELECT request_json FROM task_executions WHERE id = ?",
+                (unknown.json()["id"],),
+            ).fetchone()
+            request = json.loads(stored["request_json"])
+            request[field] = value
+            request_json = json.dumps(
+                request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            checksum = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+            conn.execute(
+                "UPDATE task_executions SET request_json = ?, request_checksum = ?, "
+                "idempotency_key = ? WHERE id = ?",
+                (
+                    request_json,
+                    checksum,
+                    f"task:{task['id']}:preparation:1:{checksum[:16]}",
+                    unknown.json()["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        detail = client.get(f"/api/tasks/{task['id']}").json()
+        assert detail["executions"][-1]["preparation_trust"] == "UNTRUSTED"
+        retried = client.post(
+            f"/api/tasks/{task['id']}/retry-preparation",
+            json={"expected_version": detail["version"], "reason": "retry"},
+        )
+        assert retried.status_code == 409
+    finally:
+        clear_preparation_llm_call()
+
+
+@pytest.mark.parametrize("action", ["approve-execution", "return-execution"])
+@pytest.mark.parametrize(
     ("column", "corrupt_value"),
     [
         ("request_json", '{ "task_id": 1 }'),
@@ -1123,6 +1315,25 @@ def test_retry_preparation_requires_failed_read_only_preparation_and_expected_ve
     ).status_code == 409
 
 
+@pytest.mark.parametrize("status", ["FAILED", "CANCELLED"])
+def test_retry_preparation_rejects_coreai_run_marker_for_terminal_attempt(
+    client, status
+):
+    merchant = make_merchant(client)
+    task = make_task(client, merchant["id"])
+    insert_execution(
+        task["id"], status=status, coreai_run_id="unexpected-coreai-run"
+    )
+    attention = client.get(f"/api/tasks/{task['id']}").json()
+
+    assert attention["executions"][-1]["preparation_trust"] == "UNTRUSTED"
+    response = client.post(
+        f"/api/tasks/{task['id']}/retry-preparation",
+        json={"expected_version": attention["version"], "reason": "retry"},
+    )
+    assert response.status_code == 409
+
+
 def test_retry_preparation_rejects_when_any_older_attempt_is_still_active(client):
     merchant = make_merchant(client)
     task = make_task(client, merchant["id"])
@@ -1143,7 +1354,11 @@ def test_retry_preparation_rejects_when_any_older_attempt_is_still_active(client
     [
         {"stage": "PUBLICATION", "status": "UNKNOWN"},
         {"stage": "VERIFICATION", "status": "FAILED"},
-        {"stage": "PREPARATION", "status": "UNKNOWN"},
+        {
+            "stage": "PREPARATION",
+            "status": "UNKNOWN",
+            "coreai_run_id": "ambiguous-coreai-run",
+        },
         {"stage": "PREPARATION", "status": "FAILED", "provider_resource_id": "provider-1"},
         {
             "stage": "PREPARATION",
@@ -1189,6 +1404,7 @@ def test_unknown_retry_requires_exact_write_free_llm_call_envelope(
         task = make_task(client, merchant["id"])
         unknown = execute_current(client, task["id"]).json()
         assert unknown["status"] == "UNKNOWN"
+        assert unknown["preparation_trust"] == "UNKNOWN_NO_TOOL"
         detail = client.get(f"/api/tasks/{task['id']}").json()
         conn = connect()
         try:
@@ -1214,6 +1430,8 @@ def test_unknown_retry_requires_exact_write_free_llm_call_envelope(
         finally:
             conn.close()
 
+        corrupted = client.get(f"/api/tasks/{task['id']}").json()
+        assert corrupted["executions"][-1]["preparation_trust"] == "UNTRUSTED"
         response = client.post(
             f"/api/tasks/{task['id']}/retry-preparation",
             json={
@@ -1329,7 +1547,9 @@ def test_definite_llm_call_rejection_is_failed_and_retryable(client, status_code
         response = execute_current(client, task["id"])
         assert response.status_code == 201
         assert response.json()["status"] == "FAILED"
+        assert response.json()["preparation_trust"] == "RETRYABLE"
         detail = client.get(f"/api/tasks/{task['id']}").json()
+        assert detail["executions"][-1]["preparation_trust"] == "RETRYABLE"
         assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_FAILED"
         retry = client.post(
             f"/api/tasks/{task['id']}/retry-preparation",

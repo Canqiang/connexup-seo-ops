@@ -52,6 +52,7 @@ TaskStatus = Literal[
 ]
 TaskSourceKind = Literal["AGENT", "OPERATOR", "MIGRATION"]
 TaskReadiness = Literal["READY", "BLOCKED"]
+PreparationTrust = Literal["REVIEWABLE", "UNKNOWN_NO_TOOL", "RETRYABLE", "UNTRUSTED"]
 TaskBlockerCode = Literal[
     "MERCHANT_ARCHIVED",
     "REVISION_INACTIVE",
@@ -212,7 +213,9 @@ def _active_execution(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | N
     ).fetchone()
 
 
-def execution_dict(row: sqlite3.Row) -> dict[str, Any]:
+def execution_dict(
+    row: sqlite3.Row, *, preparation_trust: PreparationTrust = "UNTRUSTED"
+) -> dict[str, Any]:
     value = dict(row)
     value.pop("dispatch_token", None)
     request = _json_value(value.pop("request_json"), dict, "execution request")
@@ -234,6 +237,7 @@ def execution_dict(row: sqlite3.Row) -> dict[str, Any]:
             None if result_json is None else _json_value(result_json, dict, "execution result")
         )
     value["result_checksum"] = None if value["result"] is None else _checksum(value["result"])
+    value["preparation_trust"] = preparation_trust
     return value
 
 
@@ -331,11 +335,16 @@ def task_detail(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     value = task_dict(conn, row)
     value["upstream"] = _dependency_views(conn, int(row["id"]), upstream=True)
     value["downstream"] = _dependency_views(conn, int(row["id"]), upstream=False)
+    execution_rows = conn.execute(
+        "SELECT * FROM task_executions WHERE task_id = ? ORDER BY id", (row["id"],)
+    ).fetchall()
+    current_execution = execution_rows[-1] if execution_rows else None
     value["executions"] = [
-        execution_dict(execution)
-        for execution in conn.execute(
-            "SELECT * FROM task_executions WHERE task_id = ? ORDER BY id", (row["id"],)
-        ).fetchall()
+        execution_dict(
+            execution,
+            preparation_trust=_preparation_trust(row, execution, current_execution),
+        )
+        for execution in execution_rows
     ]
     value["events"] = []
     for event in conn.execute(
@@ -418,7 +427,9 @@ def list_tasks(merchant_id: int, conn=Depends(get_db)):
     return [task_dict(conn, row) for row in rows]
 
 
-def _safe_retryable_preparation(execution: sqlite3.Row | None) -> bool:
+def _safe_retryable_preparation(
+    task: sqlite3.Row, execution: sqlite3.Row | None
+) -> bool:
     if execution is None:
         return False
     if str(execution["idempotency_key"]).startswith("legacy-task-execution-"):
@@ -426,22 +437,22 @@ def _safe_retryable_preparation(execution: sqlite3.Row | None) -> bool:
     if execution["stage"] != "PREPARATION":
         return False
     if (
-        execution["provider_resource_id"] is not None
+        execution["coreai_run_id"] is not None
+        or execution["provider_resource_id"] is not None
         or execution["approval_id"] is not None
         or execution["artifact_id"] is not None
         or execution["reviewed_at"] is not None
     ):
         return False
+    try:
+        _validated_task_llm_call_request(task, execution)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
     if execution["status"] == "UNKNOWN":
         if (
-            execution["coreai_run_id"] is not None
-            or execution["result_json"] is not None
+            execution["result_json"] is not None
             or execution["evidence_json"] != "[]"
         ):
-            return False
-        try:
-            _validated_llm_call_request(execution)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return False
         return True
     if execution["status"] not in {"FAILED", "CANCELLED"}:
@@ -476,12 +487,12 @@ def _validated_llm_call_request(execution: sqlite3.Row) -> dict[str, Any]:
     if (
         request["executor_kind"] != "COREAI_LLM_CALL"
         or not isinstance(request["llm_call_id"], str)
-        or not request["llm_call_id"]
+        or not request["llm_call_id"].strip()
         or not isinstance(request["definition_checksum"], str)
         or len(request["definition_checksum"]) != 64
         or any(char not in "0123456789abcdef" for char in request["definition_checksum"])
         or not isinstance(request["input"], str)
-        or not request["input"]
+        or not request["input"].strip()
         or request["stage"] != "PREPARATION"
         or type(request["task_id"]) is not int
         or request["task_id"] < 1
@@ -496,6 +507,20 @@ def _validated_llm_call_request(execution: sqlite3.Row) -> dict[str, Any]:
         f"{execution['request_checksum'][:16]}"
     )
     if execution["idempotency_key"] != expected_idempotency_key:
+        raise ValueError
+    return request
+
+
+def _validated_task_llm_call_request(
+    task: sqlite3.Row, execution: sqlite3.Row
+) -> dict[str, Any]:
+    request = _validated_llm_call_request(execution)
+    if (
+        request["definition_checksum"] != task["definition_checksum"]
+        or request["stage"] != "PREPARATION"
+        or request["task_id"] != task["id"]
+        or request["workflow_version"] != task["workflow_version"]
+    ):
         raise ValueError
     return request
 
@@ -525,14 +550,7 @@ def _validated_reviewable_preparation(
         raise invalid
 
     try:
-        request = _validated_llm_call_request(execution)
-        if (
-            request["definition_checksum"] != task["definition_checksum"]
-            or request["stage"] != "PREPARATION"
-            or request["task_id"] != task["id"]
-            or request["workflow_version"] != task["workflow_version"]
-        ):
-            raise ValueError
+        _validated_task_llm_call_request(task, execution)
 
         normalized_result_json = normalize_execution_output(execution["result_json"])
         if execution["result_json"] != normalized_result_json:
@@ -544,6 +562,43 @@ def _validated_reviewable_preparation(
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise invalid from exc
     return execution, _checksum(result)
+
+
+def _preparation_trust(
+    task: sqlite3.Row,
+    execution: sqlite3.Row,
+    current_execution: sqlite3.Row | None,
+) -> PreparationTrust:
+    if (
+        current_execution is None
+        or execution["id"] != current_execution["id"]
+        or execution["task_id"] != task["id"]
+        or task["task_type"] != "PREPARE_ONLY"
+    ):
+        return "UNTRUSTED"
+    if task["status"] == "AWAITING_APPROVAL":
+        try:
+            _validated_reviewable_preparation(task, execution)
+        except HTTPException:
+            return "UNTRUSTED"
+        return "REVIEWABLE"
+    if task["status"] == "NEEDS_ATTENTION" and _safe_retryable_preparation(task, execution):
+        if execution["status"] == "UNKNOWN":
+            return "UNKNOWN_NO_TOOL"
+        if execution["status"] in {"FAILED", "CANCELLED"}:
+            return "RETRYABLE"
+    return "UNTRUSTED"
+
+
+def _execution_response(
+    conn: sqlite3.Connection, execution: sqlite3.Row
+) -> dict[str, Any]:
+    task = fetch_task(conn, int(execution["task_id"]))
+    current_execution = latest_execution(conn, int(execution["task_id"]))
+    return execution_dict(
+        execution,
+        preparation_trust=_preparation_trust(task, execution, current_execution),
+    )
 
 
 def _review_target(
@@ -587,7 +642,7 @@ def _validate_replacement(
     if original["status"] == "CANCELLED":
         return original
     if original["status"] == "NEEDS_ATTENTION" and _safe_retryable_preparation(
-        latest_execution(conn, int(original["id"]))
+        original, latest_execution(conn, int(original["id"]))
     ):
         return original
     raise HTTPException(status_code=409, detail="replacement source is not safely stopped")
@@ -743,11 +798,14 @@ def get_task(task_id: int, conn=Depends(get_db)):
 
 @router.get("/tasks/{task_id}/execution")
 def get_task_execution(task_id: int, conn=Depends(get_db)):
-    fetch_task(conn, task_id)
+    task = fetch_task(conn, task_id)
     execution = latest_execution(conn, task_id)
     if execution is None:
         raise HTTPException(status_code=404, detail="execution not found")
-    return execution_dict(execution)
+    return execution_dict(
+        execution,
+        preparation_trust=_preparation_trust(task, execution, execution),
+    )
 
 
 _FORBIDDEN_PATCH_FIELDS = {
@@ -898,7 +956,7 @@ def retry_preparation(
         if (
             task["status"] != "NEEDS_ATTENTION"
             or _active_execution(conn, task_id) is not None
-            or not _safe_retryable_preparation(execution)
+            or not _safe_retryable_preparation(task, execution)
         ):
             raise HTTPException(
                 status_code=409,
@@ -1101,7 +1159,7 @@ def execute_task(
             dispatch_token=dispatch_token,
             ambiguous=ambiguous,
         )
-        return execution_dict(failed)
+        return _execution_response(conn, failed)
     try:
         result_json = normalize_execution_output(output)
     except ValueError as exc:
@@ -1112,7 +1170,7 @@ def execute_task(
             str(exc),
             dispatch_token=dispatch_token,
         )
-        return execution_dict(failed)
+        return _execution_response(conn, failed)
 
     evidence_json = _canonical_json(json.loads(result_json)["evidence"])
     finished_at = now_iso()
@@ -1150,8 +1208,9 @@ def execute_task(
     except Exception:
         conn.rollback()
         raise
-    return execution_dict(
-        conn.execute("SELECT * FROM task_executions WHERE id = ?", (execution_id,)).fetchone()
+    return _execution_response(
+        conn,
+        conn.execute("SELECT * FROM task_executions WHERE id = ?", (execution_id,)).fetchone(),
     )
 
 
@@ -1195,7 +1254,7 @@ def approve_task_execution(
         refresh_plan_lifecycle(conn, int(task["plan_id"]))
         response = {
             "task": task_detail(conn, fetch_task(conn, task_id)),
-            "execution": execution_dict(latest_execution(conn, task_id)),
+            "execution": _execution_response(conn, latest_execution(conn, task_id)),
         }
         conn.commit()
     except Exception:
@@ -1244,7 +1303,7 @@ def return_task_execution(
         refresh_plan_lifecycle(conn, int(task["plan_id"]))
         response = {
             "task": task_detail(conn, fetch_task(conn, task_id)),
-            "execution": execution_dict(latest_execution(conn, task_id)),
+            "execution": _execution_response(conn, latest_execution(conn, task_id)),
         }
         conn.commit()
     except Exception:
