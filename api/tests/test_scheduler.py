@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -326,61 +327,179 @@ def _operator_task(client, merchant_id):
     return response.json()
 
 
-def test_poll_preparation_failure_moves_task_to_attention_and_appends_event(client):
-    from app.main import app
-    from app.scheduler import poll_task_executions_once
-    from app.tasks import get_execution_coreai
+def _insert_historical_execution(
+    task: dict, *, status: str, coreai_run_id: str | None, dispatch_started_at: str
+) -> int:
+    from app.db import connect
 
-    fake = FakeCoreAi()
-    app.dependency_overrides[get_execution_coreai] = lambda: (fake, "agent-execution")
+    request_json = json.dumps(
+        {"historical": True, "task_id": task["id"]},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    request_checksum = hashlib.sha256(request_json.encode()).hexdigest()
+    conn = connect()
     try:
-        merchant = client.post("/api/merchants", json={"name": "Task poll"}).json()
-        task = _operator_task(client, merchant["id"])
-        execution = client.post(
-            f"/api/tasks/{task['id']}/execute",
-            json={"expected_version": task["version"]},
-        ).json()
-        fake.runs[execution["coreai_run_id"]] = {
-            "status": "FAILED",
-            "error": "generation failed",
-            "completed_at": "2026-09-03T12:00:00+00:00",
-        }
-
-        poll_task_executions_once(fake)
-
-        detail = client.get(f"/api/tasks/{task['id']}").json()
-        assert detail["status"] == "NEEDS_ATTENTION"
-        assert detail["executions"][-1]["status"] == "FAILED"
-        assert detail["executions"][-1]["error"] == "generation failed"
-        assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_FAILED"
+        conn.execute(
+            "UPDATE tasks SET status = 'PREPARING', version = version + 1 WHERE id = ?",
+            (task["id"],),
+        )
+        cursor = conn.execute(
+            "INSERT INTO task_executions "
+            "(task_id, stage, status, attempt, request_json, request_checksum, "
+            "idempotency_key, coreai_run_id, dispatch_token, dispatch_started_at, "
+            "evidence_json, created_at) VALUES "
+            "(?, 'PREPARATION', ?, 1, ?, ?, ?, ?, ?, ?, '[]', ?)",
+            (
+                task["id"],
+                status,
+                request_json,
+                request_checksum,
+                f"historical:{task['id']}",
+                coreai_run_id,
+                f"dispatch-{task['id']}",
+                dispatch_started_at,
+                dispatch_started_at,
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
     finally:
-        app.dependency_overrides.pop(get_execution_coreai, None)
+        conn.close()
 
 
-def test_poll_rejects_unstructured_agent_result_and_never_marks_it_approvable(client):
-    from app.main import app
+def _insert_llm_dispatch(task: dict, dispatch_started_at: str) -> int:
+    from app.db import connect
+
+    request = {
+        "definition_checksum": task["definition_checksum"],
+        "executor_kind": "COREAI_LLM_CALL",
+        "input": "Prepare without external writes",
+        "llm_call_id": "llm-call-preparation",
+        "stage": "PREPARATION",
+        "task_id": task["id"],
+        "workflow_version": task["workflow_version"],
+    }
+    request_json = json.dumps(request, sort_keys=True, separators=(",", ":"))
+    request_checksum = hashlib.sha256(request_json.encode()).hexdigest()
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET status = 'PREPARING', version = version + 1 WHERE id = ?",
+            (task["id"],),
+        )
+        cursor = conn.execute(
+            "INSERT INTO task_executions "
+            "(task_id, stage, status, attempt, request_json, request_checksum, "
+            "idempotency_key, dispatch_token, dispatch_started_at, evidence_json, created_at) "
+            "VALUES (?, 'PREPARATION', 'DISPATCHING', 1, ?, ?, ?, ?, ?, '[]', ?)",
+            (
+                task["id"],
+                request_json,
+                request_checksum,
+                f"task:{task['id']}:preparation:1:{request_checksum[:16]}",
+                f"dispatch-{task['id']}",
+                dispatch_started_at,
+                dispatch_started_at,
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def test_poll_preserves_historical_running_execution_compatibility(client):
     from app.scheduler import poll_task_executions_once
+
+    fake = FakeCoreAi()
+    merchant = client.post("/api/merchants", json={"name": "Task poll"}).json()
+    task = _operator_task(client, merchant["id"])
+    execution_id = _insert_historical_execution(
+        task,
+        status="RUNNING",
+        coreai_run_id="historical-run",
+        dispatch_started_at="2026-09-03T11:59:00+00:00",
+    )
+    fake.runs["historical-run"] = {
+        "status": "FAILED",
+        "error": "generation failed",
+        "completed_at": "2026-09-03T12:00:00+00:00",
+    }
+
+    poll_task_executions_once(fake)
+
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    assert detail["status"] == "NEEDS_ATTENTION"
+    assert detail["executions"][-1]["id"] == execution_id
+    assert detail["executions"][-1]["status"] == "FAILED"
+    assert detail["executions"][-1]["error"] == "generation failed"
+    assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_FAILED"
+
+
+def test_synchronous_llm_call_rejects_unstructured_result(client):
+    from app.main import app
     from app.tasks import get_execution_coreai
 
     fake = FakeCoreAi()
-    app.dependency_overrides[get_execution_coreai] = lambda: (fake, "agent-execution")
+    fake.llm_output = "not structured JSON"
+    app.dependency_overrides[get_execution_coreai] = lambda: (
+        fake,
+        "llm-call-preparation",
+    )
     try:
         merchant = client.post("/api/merchants", json={"name": "Unsafe output"}).json()
         task = _operator_task(client, merchant["id"])
-        execution = client.post(
+        response = client.post(
             f"/api/tasks/{task['id']}/execute",
             json={"expected_version": task["version"]},
-        ).json()
-        fake.runs[execution["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": "not structured JSON",
-        }
+        )
 
-        poll_task_executions_once(fake)
-
+        assert response.status_code == 201
+        assert response.json()["status"] == "FAILED"
+        assert len(fake.llm_calls) == 1
         detail = client.get(f"/api/tasks/{task['id']}").json()
         assert detail["status"] == "NEEDS_ATTENTION"
         assert detail["executions"][-1]["status"] == "FAILED"
         assert "structured JSON" in detail["executions"][-1]["error"]
     finally:
         app.dependency_overrides.pop(get_execution_coreai, None)
+
+
+def test_poll_marks_only_stale_llm_dispatch_unknown_without_redispatch(client):
+    from app.scheduler import poll_task_executions_once
+
+    merchant = client.post("/api/merchants", json={"name": "Stale dispatch"}).json()
+    stale_task = _operator_task(client, merchant["id"])
+    fresh_task = _operator_task(client, merchant["id"])
+    stale_at = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()
+    fresh_at = (datetime.now(timezone.utc) - timedelta(minutes=14)).isoformat()
+    stale_execution_id = _insert_llm_dispatch(stale_task, stale_at)
+    fresh_execution_id = _insert_llm_dispatch(fresh_task, fresh_at)
+    fake = FakeCoreAi()
+
+    poll_task_executions_once(fake)
+
+    stale = client.get(f"/api/tasks/{stale_task['id']}").json()
+    assert stale["status"] == "NEEDS_ATTENTION"
+    assert stale["executions"][-1]["id"] == stale_execution_id
+    assert stale["executions"][-1]["status"] == "UNKNOWN"
+    assert stale["events"][-1]["event_type"] == "TASK_PREPARATION_UNKNOWN"
+    recovered_state = (stale["version"], len(stale["events"]))
+    poll_task_executions_once(fake)
+    stale_again = client.get(f"/api/tasks/{stale_task['id']}").json()
+    assert (stale_again["version"], len(stale_again["events"])) == recovered_state
+    retry = client.post(
+        f"/api/tasks/{stale_task['id']}/retry-preparation",
+        json={
+            "expected_version": stale_again["version"],
+            "reason": "Human accepts possible duplicate model cost",
+        },
+    )
+    assert retry.status_code == 200
+    assert retry.json()["status"] == "PENDING"
+    fresh = client.get(f"/api/tasks/{fresh_task['id']}").json()
+    assert fresh["status"] == "PREPARING"
+    assert fresh["executions"][-1]["id"] == fresh_execution_id
+    assert fresh["executions"][-1]["status"] == "DISPATCHING"
+    assert fake.llm_calls == []

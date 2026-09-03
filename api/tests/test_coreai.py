@@ -36,6 +36,52 @@ def test_trigger_missing_run_id_raises():
         make_client(handler).trigger("a", "x")
 
 
+def test_llm_call_posts_only_input_with_bounded_long_timeout_and_returns_output():
+    seen = {}
+
+    def handler(request):
+        import json
+
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        seen["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200, json={"output": '{"outcome":"ready"}'})
+
+    output = make_client(handler).llm_call("prepare-v1", "prepare this")
+
+    assert output == '{"outcome":"ready"}'
+    assert seen == {
+        "method": "POST",
+        "url": "https://core.test/api/llm/prepare-v1/call",
+        "body": {"input": "prepare this"},
+        "timeout": {
+            "connect": 660.0,
+            "read": 660.0,
+            "write": 660.0,
+            "pool": 660.0,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"output": None},
+        {"output": ["not", "text"]},
+    ],
+)
+def test_llm_call_rejects_missing_or_non_text_output(response):
+    from app.coreai import CoreAiError
+
+    def handler(request):
+        return httpx.Response(200, json=response)
+
+    with pytest.raises(CoreAiError, match="output"):
+        make_client(handler).llm_call("prepare-v1", "prepare this")
+
+
 def test_get_agent_reads_back_the_exact_published_capabilities():
     def handler(request):
         assert request.method == "GET"

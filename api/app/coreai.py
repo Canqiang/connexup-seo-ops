@@ -3,6 +3,7 @@ import json
 import httpx
 
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}
+LLM_CALL_TIMEOUT_SECONDS = 660.0
 
 
 class CoreAiError(Exception):
@@ -27,9 +28,21 @@ class CoreAiClient:
             transport=transport,
         )
 
-    def _request(self, method: str, path: str, json_body: dict | None = None) -> dict:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        json_body: dict | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict:
         try:
-            res = self._client.request(method, path, json=json_body)
+            if timeout is None:
+                res = self._client.request(method, path, json=json_body)
+            else:
+                res = self._client.request(
+                    method, path, json=json_body, timeout=timeout
+                )
         except httpx.HTTPError as e:
             raise CoreAiError(0, f"core-ai request failed: {e}") from e
         if res.status_code >= 400:
@@ -53,6 +66,18 @@ class CoreAiClient:
         if not body.get("run_id"):
             raise CoreAiError(0, "core-ai trigger response missing run_id")
         return body
+
+    def llm_call(self, llm_call_id: str, input_text: str) -> str:
+        body = self._request(
+            "POST",
+            f"/api/llm/{llm_call_id}/call",
+            {"input": input_text},
+            timeout=LLM_CALL_TIMEOUT_SECONDS,
+        )
+        output = body.get("output")
+        if not isinstance(output, str):
+            raise CoreAiError(0, "core-ai LLM call response missing text output")
+        return output
 
     def get_agent(self, agent_id: str) -> dict:
         body = self._request("GET", f"/api/agents/{agent_id}")

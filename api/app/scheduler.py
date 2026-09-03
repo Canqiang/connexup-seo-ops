@@ -20,6 +20,11 @@ logger = logging.getLogger("seo_ops.scheduler")
 
 POLL_INTERVAL_SECONDS = 30
 SCAN_EVERY_TICKS = 120  # 120 * 30s = 1 小时
+TASK_LLM_DISPATCH_STALE_AFTER = timedelta(minutes=15)
+TASK_LLM_DISPATCH_STALE_ERROR = (
+    "synchronous LLM call exceeded the 15-minute dispatch recovery ceiling; "
+    "outcome unknown"
+)
 
 
 def poll_runs_once(client) -> None:
@@ -90,9 +95,117 @@ def poll_runs_once(client) -> None:
         conn.close()
 
 
+def _recover_stale_task_dispatches(conn) -> None:
+    from .tasks import _validated_llm_call_request
+
+    now = datetime.now(timezone.utc)
+    candidates = conn.execute(
+        "SELECT * FROM task_executions WHERE stage = 'PREPARATION' "
+        "AND status = 'DISPATCHING' AND coreai_run_id IS NULL ORDER BY id"
+    ).fetchall()
+    for candidate in candidates:
+        try:
+            dispatch_started_at = datetime.fromisoformat(candidate["dispatch_started_at"])
+            request = _validated_llm_call_request(candidate)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "stale task dispatch %s has an invalid recovery envelope; left untouched",
+                candidate["id"],
+            )
+            continue
+        if (
+            dispatch_started_at.tzinfo is None
+            or now - dispatch_started_at < TASK_LLM_DISPATCH_STALE_AFTER
+        ):
+            continue
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = conn.execute(
+                "SELECT * FROM task_executions WHERE id = ?", (candidate["id"],)
+            ).fetchone()
+            if (
+                current is None
+                or current["status"] != "DISPATCHING"
+                or current["coreai_run_id"] is not None
+                or current["dispatch_token"] != candidate["dispatch_token"]
+                or current["dispatch_started_at"] != candidate["dispatch_started_at"]
+            ):
+                conn.rollback()
+                continue
+            current_started_at = datetime.fromisoformat(current["dispatch_started_at"])
+            current_request = _validated_llm_call_request(current)
+            if (
+                current_started_at.tzinfo is None
+                or now - current_started_at < TASK_LLM_DISPATCH_STALE_AFTER
+            ):
+                conn.rollback()
+                continue
+            task = conn.execute(
+                "SELECT * FROM tasks WHERE id = ?", (current["task_id"],)
+            ).fetchone()
+            if (
+                task is None
+                or task["status"] != "PREPARING"
+                or current_request != request
+                or current_request["task_id"] != task["id"]
+                or current_request["workflow_version"] != task["workflow_version"]
+                or current_request["definition_checksum"] != task["definition_checksum"]
+            ):
+                conn.rollback()
+                logger.warning(
+                    "stale task dispatch %s is detached from its exact PREPARING Task; left untouched",
+                    current["id"],
+                )
+                continue
+
+            assert_transition(task["task_type"], task["status"], "NEEDS_ATTENTION")
+            finished_at = now_iso()
+            execution_update = conn.execute(
+                "UPDATE task_executions SET status = 'UNKNOWN', error = ?, finished_at = ? "
+                "WHERE id = ? AND status = 'DISPATCHING' AND coreai_run_id IS NULL "
+                "AND dispatch_token = ? AND dispatch_started_at = ?",
+                (
+                    TASK_LLM_DISPATCH_STALE_ERROR,
+                    finished_at,
+                    current["id"],
+                    current["dispatch_token"],
+                    current["dispatch_started_at"],
+                ),
+            )
+            task_update = conn.execute(
+                "UPDATE tasks SET status = 'NEEDS_ATTENTION', version = version + 1, "
+                "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
+                (finished_at, task["id"], task["version"]),
+            )
+            if execution_update.rowcount != 1 or task_update.rowcount != 1:
+                conn.rollback()
+                continue
+            append_task_event(
+                conn,
+                entity_type="TASK",
+                entity_id=int(task["id"]),
+                event_type="TASK_PREPARATION_UNKNOWN",
+                actor_type="SYSTEM",
+                actor_id=None,
+                payload={
+                    "ambiguous": True,
+                    "error": TASK_LLM_DISPATCH_STALE_ERROR,
+                    "execution_id": current["id"],
+                    "reason": "stale_dispatch_timeout",
+                },
+            )
+            refresh_plan_lifecycle(conn, int(task["plan_id"]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def poll_task_executions_once(client) -> None:
     conn = connect()
     try:
+        _recover_stale_task_dispatches(conn)
         executions = conn.execute(
             "SELECT * FROM task_executions WHERE stage = 'PREPARATION' "
             "AND status = 'RUNNING' AND coreai_run_id IS NOT NULL ORDER BY id"

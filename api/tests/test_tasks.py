@@ -103,14 +103,17 @@ def verified_agent_result(summary="Prepared a reviewable artifact"):
     )
 
 
-def override_preparation_agent(fake):
+def override_preparation_llm_call(fake):
     from app.main import app
     from app.tasks import get_execution_coreai
 
-    app.dependency_overrides[get_execution_coreai] = lambda: (fake, "agent-execution")
+    app.dependency_overrides[get_execution_coreai] = lambda: (
+        fake,
+        "llm-call-preparation",
+    )
 
 
-def clear_preparation_agent():
+def clear_preparation_llm_call():
     from app.main import app
     from app.tasks import get_execution_coreai
 
@@ -435,26 +438,35 @@ def test_attention_required_upstream_does_not_auto_cancel_its_downstream(client)
 
 def test_active_and_done_tasks_cannot_be_cancelled(client):
     from helpers import FakeCoreAi
-    from app.scheduler import poll_task_executions_once
 
-    fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    class BlockingCoreAi(FakeCoreAi):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def llm_call(self, llm_call_id, input_text):
+            self.started.set()
+            assert self.release.wait(timeout=3)
+            return super().llm_call(llm_call_id, input_text)
+
+    fake = BlockingCoreAi()
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
-        started = execute_current(client, task["id"])
-        preparing = client.get(f"/api/tasks/{task['id']}").json()
-        assert client.post(
-            f"/api/tasks/{task['id']}/cancel",
-            json={"expected_version": preparing["version"], "reason": "stop"},
-        ).status_code == 409
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            execute_future = pool.submit(execute_current, client, task["id"])
+            assert fake.started.wait(timeout=3)
+            preparing = client.get(f"/api/tasks/{task['id']}").json()
+            assert client.post(
+                f"/api/tasks/{task['id']}/cancel",
+                json={"expected_version": preparing["version"], "reason": "stop"},
+            ).status_code == 409
+            fake.release.set()
+            assert execute_future.result(timeout=3).status_code == 201
 
-        fake.runs[started.json()["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": verified_agent_result(),
-        }
-        poll_task_executions_once(fake)
-        awaiting = client.get(f"/api/tasks/{task['id']}").json()
+        preparing = client.get(f"/api/tasks/{task['id']}").json()
         approve_current(client, task["id"])
         done = client.get(f"/api/tasks/{task['id']}").json()
         assert done["status"] == "DONE"
@@ -462,9 +474,10 @@ def test_active_and_done_tasks_cannot_be_cancelled(client):
             f"/api/tasks/{task['id']}/cancel",
             json={"expected_version": done["version"], "reason": "too late"},
         ).status_code == 409
-        assert awaiting["status"] == "AWAITING_APPROVAL"
+        assert preparing["status"] == "AWAITING_APPROVAL"
     finally:
-        clear_preparation_agent()
+        fake.release.set()
+        clear_preparation_llm_call()
 
 
 def test_replacement_requires_safe_same_merchant_source_and_links_both_directions(client):
@@ -537,7 +550,7 @@ def test_replacement_requires_safe_same_merchant_source_and_links_both_direction
     from helpers import FakeCoreAi
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         assert client.post(
             f"/api/tasks/{attention_source['id']}/execute",
@@ -545,7 +558,7 @@ def test_replacement_requires_safe_same_merchant_source_and_links_both_direction
         ).status_code == 409
         assert fake.triggered == []
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 @pytest.mark.parametrize(
@@ -618,7 +631,7 @@ def test_historical_replaced_attention_task_cannot_retry_or_execute(client):
     assert retry.json()["detail"] == "replaced task cannot be reactivated"
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         execute = client.post(
             f"/api/tasks/{source['id']}/execute",
@@ -626,9 +639,9 @@ def test_historical_replaced_attention_task_cannot_retry_or_execute(client):
         )
         assert execute.status_code == 409
         assert execute.json()["detail"] == "replaced task cannot be reactivated"
-        assert fake.triggered == []
+        assert fake.llm_calls == []
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
     reread = client.get(f"/api/tasks/{source['id']}").json()
     assert (reread["status"], reread["version"], len(reread["events"])) == state
@@ -637,15 +650,6 @@ def test_historical_replaced_attention_task_cannot_retry_or_execute(client):
 def test_pathological_pending_replaced_task_execute_never_contacts_core_ai(client):
     from app.db import connect
     from helpers import FakeCoreAi
-
-    class CountingCoreAi(FakeCoreAi):
-        def __init__(self):
-            super().__init__()
-            self.agent_reads = 0
-
-        def get_agent(self, agent_id):
-            self.agent_reads += 1
-            return super().get_agent(agent_id)
 
     merchant = make_merchant(client)
     source = make_task(client, merchant["id"], title="Pathological source")
@@ -668,8 +672,8 @@ def test_pathological_pending_replaced_task_execute_never_contacts_core_ai(clien
         len(before["events"]),
         len(before["executions"]),
     )
-    fake = CountingCoreAi()
-    override_preparation_agent(fake)
+    fake = FakeCoreAi()
+    override_preparation_llm_call(fake)
     try:
         response = client.post(
             f"/api/tasks/{source['id']}/execute",
@@ -677,10 +681,9 @@ def test_pathological_pending_replaced_task_execute_never_contacts_core_ai(clien
         )
         assert response.status_code == 409
         assert response.json()["detail"] == "replaced task cannot be reactivated"
-        assert fake.agent_reads == 0
-        assert fake.triggered == []
+        assert fake.llm_calls == []
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
     reread = client.get(f"/api/tasks/{source['id']}").json()
     assert (
@@ -694,42 +697,23 @@ def test_pathological_pending_replaced_task_execute_never_contacts_core_ai(clien
 def test_blocked_task_never_contacts_core_ai(client):
     from helpers import FakeCoreAi
 
-    class CountingCoreAi(FakeCoreAi):
-        def __init__(self):
-            super().__init__()
-            self.agent_reads = 0
-
-        def get_agent(self, agent_id):
-            self.agent_reads += 1
-            return super().get_agent(agent_id)
-
-    fake = CountingCoreAi()
-    override_preparation_agent(fake)
+    fake = FakeCoreAi()
+    override_preparation_llm_call(fake)
     try:
         _merchant, _plan, tasks = make_graph(client)
         response = execute_current(client, tasks["review"]["id"])
         assert response.status_code == 409
         assert response.json()["detail"] == "task is blocked by an upstream task"
-        assert fake.agent_reads == 0
-        assert fake.triggered == []
+        assert fake.llm_calls == []
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 def test_future_scheduled_task_never_contacts_core_ai(client):
     from helpers import FakeCoreAi
 
-    class CountingCoreAi(FakeCoreAi):
-        def __init__(self):
-            super().__init__()
-            self.agent_reads = 0
-
-        def get_agent(self, agent_id):
-            self.agent_reads += 1
-            return super().get_agent(agent_id)
-
-    fake = CountingCoreAi()
-    override_preparation_agent(fake)
+    fake = FakeCoreAi()
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         scheduled = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
@@ -737,73 +721,9 @@ def test_future_scheduled_task_never_contacts_core_ai(client):
         response = execute_current(client, task["id"])
         assert response.status_code == 409
         assert response.json()["detail"] == "task is scheduled for the future"
-        assert fake.agent_reads == 0
-        assert fake.triggered == []
+        assert fake.llm_calls == []
     finally:
-        clear_preparation_agent()
-
-
-def test_execute_rejects_capability_enabled_preparation_agent_without_triggering_it(client):
-    from helpers import FakeCoreAi
-
-    fake = FakeCoreAi()
-    fake.agent_definition["tools"] = [{"id": "builtin:builtin-all", "type": "BUILTIN"}]
-    override_preparation_agent(fake)
-    try:
-        merchant = make_merchant(client)
-        task = make_task(client, merchant["id"])
-        response = execute_current(client, task["id"])
-        assert response.status_code == 503
-        assert response.json()["detail"] == "task preparation agent is not read-only"
-        assert fake.triggered == []
-        detail = client.get(f"/api/tasks/{task['id']}").json()
-        assert detail["status"] == "NEEDS_ATTENTION"
-        assert detail["executions"][-1]["status"] == "FAILED"
-    finally:
-        clear_preparation_agent()
-
-
-@pytest.mark.parametrize(
-    ("field", "unsafe_value"),
-    [
-        ("tools", "missing"),
-        ("tools", None),
-        ("tools", [{"id": "builtin:builtin-all"}]),
-        ("skill_ids", "missing"),
-        ("skill_ids", None),
-        ("skill_ids", ["skill-1"]),
-        ("subagent_ids", "missing"),
-        ("subagent_ids", None),
-        ("subagent_ids", ["agent-2"]),
-        ("sandbox_config", "missing"),
-        ("sandbox_config", []),
-        ("sandbox_config", {"mode": "read-only"}),
-        ("dataset_config", "missing"),
-        ("dataset_config", []),
-        ("dataset_config", {"dataset_ids": []}),
-    ],
-)
-def test_execute_requires_complete_exact_empty_capability_metadata(
-    client, field, unsafe_value
-):
-    from helpers import FakeCoreAi
-
-    fake = FakeCoreAi()
-    if unsafe_value == "missing":
-        fake.agent_definition.pop(field)
-    else:
-        fake.agent_definition[field] = unsafe_value
-    override_preparation_agent(fake)
-    try:
-        merchant = make_merchant(client)
-        task = make_task(client, merchant["id"])
-
-        response = execute_current(client, task["id"])
-
-        assert response.status_code == 503
-        assert fake.triggered == []
-    finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 def test_concurrent_execute_requests_create_one_active_preparation(client):
@@ -815,13 +735,13 @@ def test_concurrent_execute_requests_create_one_active_preparation(client):
             self.started = threading.Event()
             self.release = threading.Event()
 
-        def trigger(self, agent_id, input_text):
+        def llm_call(self, llm_call_id, input_text):
             self.started.set()
             assert self.release.wait(timeout=3)
-            return super().trigger(agent_id, input_text)
+            return super().llm_call(llm_call_id, input_text)
 
     fake = BlockingCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"], title="Concurrent dispatch")
@@ -841,22 +761,22 @@ def test_concurrent_execute_requests_create_one_active_preparation(client):
             first = first_future.result(timeout=3)
         assert first.status_code == 201
         assert second.status_code == 409
-        assert len(fake.triggered) == 1
+        assert len(fake.llm_calls) == 1
         detail = client.get(f"/api/tasks/{task['id']}").json()
-        assert detail["status"] == "PREPARING"
+        assert detail["status"] == "AWAITING_APPROVAL"
         assert len(detail["executions"]) == 1
         assert detail["executions"][0]["stage"] == "PREPARATION"
-        assert detail["executions"][0]["status"] == "RUNNING"
+        assert detail["executions"][0]["status"] == "SUCCEEDED"
     finally:
         fake.release.set()
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 def test_execute_rejects_stale_task_version_before_contacting_core_ai(client):
     from helpers import FakeCoreAi
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
@@ -868,31 +788,76 @@ def test_execute_rejects_stale_task_version_before_contacting_core_ai(client):
 
         assert response.status_code == 409
         assert response.json()["detail"] == "task changed; refresh and retry"
-        assert fake.triggered == []
+        assert fake.llm_calls == []
         detail = client.get(f"/api/tasks/{task['id']}").json()
         assert detail["status"] == "PENDING"
         assert detail["executions"] == []
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
-def test_poll_success_approval_completes_prepare_only_and_unlocks_downstream(client):
-    from app.scheduler import poll_task_executions_once
+def test_execute_requires_preparation_llm_call_id_before_claim(client, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.test")
+    monkeypatch.setenv("COREAI_API_KEY", "secret")
+    monkeypatch.setenv("COREAI_AGENT_ID", "analysis-agent")
+    monkeypatch.setenv("COREAI_EXECUTION_AGENT_ID", "deprecated-task-agent")
+    monkeypatch.delenv("COREAI_PREPARATION_LLM_CALL_ID", raising=False)
+    merchant = make_merchant(client)
+    task = make_task(client, merchant["id"])
+
+    response = execute_current(client, task["id"])
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "task preparation LLM call not configured"
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    assert detail["status"] == "PENDING"
+    assert detail["executions"] == []
+
+
+def test_synchronous_llm_call_success_is_approvable_and_unlocks_downstream(client):
+    from app.db import connect
     from helpers import FakeCoreAi
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    fake.llm_output = verified_agent_result("Draft prepared")
+    override_preparation_llm_call(fake)
     try:
         _merchant, plan, tasks = make_graph(client)
         draft = tasks["draft"]
         review = tasks["review"]
         started = execute_current(client, draft["id"]).json()
-        fake.runs[started["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": verified_agent_result("Draft prepared"),
-            "completed_at": "2026-09-03T08:30:00+00:00",
+        assert started["status"] == "SUCCEEDED"
+        assert started["coreai_run_id"] is None
+        assert started["request"] == {
+            "definition_checksum": draft["definition_checksum"],
+            "executor_kind": "COREAI_LLM_CALL",
+            "llm_call_id": "llm-call-preparation",
+            "stage": "PREPARATION",
+            "task_id": draft["id"],
+            "workflow_version": 1,
         }
-        poll_task_executions_once(fake)
+        assert len(fake.llm_calls) == 1
+        assert fake.llm_calls[0][0] == "llm-call-preparation"
+        conn = connect()
+        try:
+            persisted = conn.execute(
+                "SELECT request_json, request_checksum, idempotency_key "
+                "FROM task_executions WHERE id = ?",
+                (started["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        request = json.loads(persisted["request_json"])
+        assert request["input"] == fake.llm_calls[0][1]
+        assert persisted["request_json"] == json.dumps(
+            request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        assert persisted["request_checksum"] == hashlib.sha256(
+            persisted["request_json"].encode("utf-8")
+        ).hexdigest()
+        assert persisted["idempotency_key"].endswith(
+            persisted["request_checksum"][:16]
+        )
         awaiting = client.get(f"/api/tasks/{draft['id']}").json()
         assert awaiting["status"] == "AWAITING_APPROVAL"
         assert awaiting["executions"][-1]["status"] == "SUCCEEDED"
@@ -903,47 +868,35 @@ def test_poll_success_approval_completes_prepare_only_and_unlocks_downstream(cli
         assert client.get(f"/api/tasks/{review['id']}").json()["readiness"] == "READY"
         assert client.get(f"/api/task-plans/{plan['id']}").json()["state"] == "OPEN"
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 def test_final_prepare_only_approval_closes_implicit_plan(client):
-    from app.scheduler import poll_task_executions_once
     from helpers import FakeCoreAi
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
-        started = execute_current(client, task["id"]).json()
-        fake.runs[started["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": verified_agent_result(),
-        }
-        poll_task_executions_once(fake)
+        assert execute_current(client, task["id"]).json()["status"] == "SUCCEEDED"
         assert approve_current(client, task["id"]).status_code == 200
         plan = client.get(f"/api/task-plans/{task['plan_id']}").json()
         assert plan["state"] == "CLOSED"
         assert plan["closed_at"] is not None
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 def test_return_resets_to_pending_with_event_and_allows_a_new_attempt(client):
-    from app.scheduler import poll_task_executions_once
     from helpers import FakeCoreAi
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
-        started = execute_current(client, task["id"]).json()
-        fake.runs[started["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": verified_agent_result(),
-        }
-        poll_task_executions_once(fake)
+        assert execute_current(client, task["id"]).json()["status"] == "SUCCEEDED"
         returned = return_current(client, task["id"], "Use the approved menu copy")
         assert returned.status_code == 200
         assert returned.json()["task"]["status"] == "PENDING"
@@ -954,27 +907,22 @@ def test_return_resets_to_pending_with_event_and_allows_a_new_attempt(client):
         assert retried.status_code == 201
         assert retried.json()["attempt"] == 2
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 def test_review_binding_rejects_attempt_one_after_attempt_two_is_current(client):
-    from app.scheduler import poll_task_executions_once
     from helpers import FakeCoreAi
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
+        fake.llm_output = verified_agent_result("Attempt one")
         attempt_one = client.post(
             f"/api/tasks/{task['id']}/execute",
             json={"expected_version": task["version"]},
         ).json()
-        fake.runs[attempt_one["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": verified_agent_result("Attempt one"),
-        }
-        poll_task_executions_once(fake)
         first_review = client.get(f"/api/tasks/{task['id']}").json()
         first_binding = execution_binding(first_review)
         returned = client.post(
@@ -984,15 +932,11 @@ def test_review_binding_rejects_attempt_one_after_attempt_two_is_current(client)
         assert returned.status_code == 200
 
         pending = returned.json()["task"]
+        fake.llm_output = verified_agent_result("Attempt two")
         attempt_two = client.post(
             f"/api/tasks/{task['id']}/execute",
             json={"expected_version": pending["version"]},
         ).json()
-        fake.runs[attempt_two["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": verified_agent_result("Attempt two"),
-        }
-        poll_task_executions_once(fake)
         current = client.get(f"/api/tasks/{task['id']}").json()
 
         stale = client.post(
@@ -1010,7 +954,7 @@ def test_review_binding_rejects_attempt_one_after_attempt_two_is_current(client)
         assert reread["executions"][-1]["id"] == attempt_two["id"]
         assert reread["executions"][-1]["reviewed_at"] is None
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 @pytest.mark.parametrize("action", ["approve-execution", "return-execution"])
@@ -1060,20 +1004,14 @@ def test_review_actions_reject_corrupt_current_execution_without_mutation(
     client, action, column, corrupt_value
 ):
     from app.db import connect
-    from app.scheduler import poll_task_executions_once
     from helpers import FakeCoreAi
 
     fake = FakeCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
-        started = execute_current(client, task["id"]).json()
-        fake.runs[started["coreai_run_id"]] = {
-            "status": "COMPLETED",
-            "output": verified_agent_result(),
-        }
-        poll_task_executions_once(fake)
+        assert execute_current(client, task["id"]).json()["status"] == "SUCCEEDED"
         detail = client.get(f"/api/tasks/{task['id']}").json()
         binding = execution_binding(detail)
 
@@ -1126,7 +1064,7 @@ def test_review_actions_reject_corrupt_current_execution_without_mutation(
         finally:
             conn.close()
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 def test_retry_preparation_requires_failed_read_only_preparation_and_expected_version(client):
@@ -1188,68 +1126,165 @@ def test_retry_preparation_rejects_publication_verification_or_write_uncertainty
     assert response.status_code == 409
 
 
+@pytest.mark.parametrize(
+    ("column", "unsafe_value"),
+    [
+        ("request_json", '{"executor_kind":"COREAI_LLM_CALL"}'),
+        ("request_checksum", "0" * 64),
+        ("idempotency_key", "wrong-attempt-identity"),
+        ("result_json", verified_agent_result()),
+        ("evidence_json", '["dispatch outcome unavailable"]'),
+        ("coreai_run_id", "unexpected-agent-run"),
+        ("provider_resource_id", "unexpected-resource"),
+    ],
+)
+def test_unknown_retry_requires_exact_write_free_llm_call_envelope(
+    client, column, unsafe_value
+):
+    from app.db import connect
+    from helpers import FakeCoreAi
+
+    fake = FakeCoreAi(fail=True)
+    override_preparation_llm_call(fake)
+    try:
+        merchant = make_merchant(client)
+        task = make_task(client, merchant["id"])
+        unknown = execute_current(client, task["id"]).json()
+        assert unknown["status"] == "UNKNOWN"
+        detail = client.get(f"/api/tasks/{task['id']}").json()
+        conn = connect()
+        try:
+            conn.execute(
+                f"UPDATE task_executions SET {column} = ? WHERE id = ?",
+                (unsafe_value, unknown["id"]),
+            )
+            conn.commit()
+            before_task = tuple(
+                conn.execute(
+                    "SELECT status, version FROM tasks WHERE id = ?", (task["id"],)
+                ).fetchone()
+            )
+            before_execution = tuple(
+                conn.execute(
+                    "SELECT * FROM task_executions WHERE id = ?", (unknown["id"],)
+                ).fetchone()
+            )
+            before_events = conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE entity_type = 'TASK' AND entity_id = ?",
+                (task["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        response = client.post(
+            f"/api/tasks/{task['id']}/retry-preparation",
+            json={
+                "expected_version": detail["version"],
+                "reason": "Human accepts possible duplicate model cost",
+            },
+        )
+
+        assert response.status_code == 409
+        conn = connect()
+        try:
+            assert tuple(
+                conn.execute(
+                    "SELECT status, version FROM tasks WHERE id = ?", (task["id"],)
+                ).fetchone()
+            ) == before_task
+            assert tuple(
+                conn.execute(
+                    "SELECT * FROM task_executions WHERE id = ?", (unknown["id"],)
+                ).fetchone()
+            ) == before_execution
+            assert conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE entity_type = 'TASK' AND entity_id = ?",
+                (task["id"],),
+            ).fetchone()[0] == before_events
+        finally:
+            conn.close()
+    finally:
+        clear_preparation_llm_call()
+
+
 @pytest.mark.parametrize("status_code", [0, 408, 500, 503])
-def test_ambiguous_core_ai_trigger_is_unknown_attention_and_never_redispatched(
+def test_ambiguous_llm_call_is_unknown_and_human_retry_creates_new_attempt(
     client, status_code
 ):
     from app.coreai import CoreAiError
-    from app.db import connect
     from helpers import FakeCoreAi
 
     class AmbiguousCoreAi(FakeCoreAi):
         def __init__(self):
             super().__init__()
-            self.trigger_calls = 0
+            self.call_count = 0
 
-        def trigger(self, agent_id, input_text):
-            self.trigger_calls += 1
-            conn = connect()
-            try:
-                conn.execute(
-                    "UPDATE task_executions SET evidence_json = ? WHERE status = 'DISPATCHING'",
-                    ('["dispatch outcome unavailable"]',),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-            raise CoreAiError(status_code, "ambiguous trigger outcome")
+        def llm_call(self, llm_call_id, input_text):
+            self.call_count += 1
+            if self.call_count == 1:
+                self.llm_calls.append((llm_call_id, input_text))
+                raise CoreAiError(status_code, "ambiguous call outcome")
+            return super().llm_call(llm_call_id, input_text)
 
     fake = AmbiguousCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
         response = execute_current(client, task["id"])
         assert response.status_code == 201
         assert response.json()["status"] == "UNKNOWN"
-        assert response.json()["evidence"] == ["dispatch outcome unavailable"]
+        assert response.json()["coreai_run_id"] is None
+        assert response.json()["evidence"] == []
+        first_execution_id = response.json()["id"]
         detail = client.get(f"/api/tasks/{task['id']}").json()
         assert detail["status"] == "NEEDS_ATTENTION"
         assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_UNKNOWN"
-        assert client.post(
+        retry = client.post(
             f"/api/tasks/{task['id']}/retry-preparation",
-            json={"expected_version": detail["version"], "reason": "retry"},
-        ).status_code == 409
-        assert client.post(
+            json={
+                "expected_version": detail["version"],
+                "reason": "Human accepts possible duplicate model cost",
+            },
+        )
+        assert retry.status_code == 200
+        assert retry.json()["status"] == "PENDING"
+
+        second = client.post(
             f"/api/tasks/{task['id']}/execute",
-            json={"expected_version": detail["version"]},
-        ).status_code == 409
-        assert fake.trigger_calls == 1
+            json={"expected_version": retry.json()["version"]},
+        )
+        assert second.status_code == 201
+        assert second.json()["status"] == "SUCCEEDED"
+        assert second.json()["attempt"] == 2
+        assert second.json()["id"] != first_execution_id
+        current = client.get(f"/api/tasks/{task['id']}").json()
+        stale_approval = client.post(
+            f"/api/tasks/{task['id']}/approve-execution",
+            json={
+                "expected_version": current["version"],
+                "expected_execution_id": first_execution_id,
+                "expected_result_checksum": second.json()["result_checksum"],
+            },
+        )
+        assert stale_approval.status_code == 409
+        assert len(fake.llm_calls) == 2
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()
 
 
 @pytest.mark.parametrize("status_code", [400, 404, 422])
-def test_definite_core_ai_trigger_rejection_is_failed_and_retryable(client, status_code):
+def test_definite_llm_call_rejection_is_failed_and_retryable(client, status_code):
     from app.coreai import CoreAiError
     from helpers import FakeCoreAi
 
     class RejectedCoreAi(FakeCoreAi):
-        def trigger(self, agent_id, input_text):
+        def llm_call(self, llm_call_id, input_text):
+            self.llm_calls.append((llm_call_id, input_text))
             raise CoreAiError(status_code, "request rejected")
 
     fake = RejectedCoreAi()
-    override_preparation_agent(fake)
+    override_preparation_llm_call(fake)
     try:
         merchant = make_merchant(client)
         task = make_task(client, merchant["id"])
@@ -1265,4 +1300,4 @@ def test_definite_core_ai_trigger_rejection_is_failed_and_retryable(client, stat
         assert retry.status_code == 200
         assert retry.json()["status"] == "PENDING"
     finally:
-        clear_preparation_agent()
+        clear_preparation_llm_call()

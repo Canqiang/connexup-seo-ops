@@ -188,11 +188,13 @@ def get_execution_coreai() -> tuple[CoreAiClient, str]:
     settings = coreai_settings()
     if settings is None:
         raise HTTPException(status_code=503, detail="core-ai not configured")
-    if not settings.execution_agent_id:
-        raise HTTPException(status_code=503, detail="task execution agent not configured")
+    if not settings.preparation_llm_call_id:
+        raise HTTPException(
+            status_code=503, detail="task preparation LLM call not configured"
+        )
     if _execution_client is None:
         _execution_client = CoreAiClient(settings.base_url, settings.api_key)
-    return _execution_client, settings.execution_agent_id
+    return _execution_client, settings.preparation_llm_call_id
 
 
 def latest_execution(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
@@ -247,7 +249,7 @@ def build_execution_input(
         ensure_ascii=False,
     )
     lines = [
-        "Prepare this SEO Ops task for a United States merchant using read-only tools and generation skills.",
+        "Prepare this SEO Ops task for a United States merchant using only the supplied context. No tools or attachments are available.",
         "External writes and publication are NOT authorized in this run. Do not call any write, publish, or mutation tool.",
         "Do not claim an external write, publication, ranking, or verification unless it was actually performed and read back.",
         "Create a reviewable draft, audit, analysis, or instructions for the operator instead.",
@@ -262,19 +264,6 @@ def build_execution_input(
     if previous is not None and previous["review_note"]:
         lines.append(f"Reviewer feedback from the previous attempt: {previous['review_note']}")
     return "\n".join(lines)
-
-
-def preparation_agent_is_read_only(agent: dict) -> bool:
-    if agent.get("status") != "PUBLISHED":
-        return False
-    for field in ("tools", "skill_ids", "subagent_ids"):
-        value = agent.get(field)
-        if field not in agent or not isinstance(value, list) or value:
-            return False
-    for field in ("sandbox_config", "dataset_config"):
-        if field not in agent or agent[field] is not None:
-            return False
-    return True
 
 
 _TASK_SELECT = (
@@ -434,16 +423,28 @@ def _safe_retryable_preparation(execution: sqlite3.Row | None) -> bool:
         return False
     if str(execution["idempotency_key"]).startswith("legacy-task-execution-"):
         return False
-    if execution["stage"] != "PREPARATION" or execution["status"] not in {
-        "FAILED",
-        "CANCELLED",
-    }:
+    if execution["stage"] != "PREPARATION":
         return False
     if (
         execution["provider_resource_id"] is not None
         or execution["approval_id"] is not None
         or execution["artifact_id"] is not None
+        or execution["reviewed_at"] is not None
     ):
+        return False
+    if execution["status"] == "UNKNOWN":
+        if (
+            execution["coreai_run_id"] is not None
+            or execution["result_json"] is not None
+            or execution["evidence_json"] != "[]"
+        ):
+            return False
+        try:
+            _validated_llm_call_request(execution)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return True
+    if execution["status"] not in {"FAILED", "CANCELLED"}:
         return False
     if execution["result_json"] is None:
         return True
@@ -452,6 +453,51 @@ def _safe_retryable_preparation(execution: sqlite3.Row | None) -> bool:
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
     return isinstance(result, dict) and result.get("external_write_performed") is False
+
+
+def _validated_llm_call_request(execution: sqlite3.Row) -> dict[str, Any]:
+    request = json.loads(execution["request_json"])
+    if not isinstance(request, dict):
+        raise ValueError
+    if execution["request_json"] != _canonical_json(request):
+        raise ValueError
+    if execution["request_checksum"] != _checksum(request):
+        raise ValueError
+    if set(request) != {
+        "definition_checksum",
+        "executor_kind",
+        "input",
+        "llm_call_id",
+        "stage",
+        "task_id",
+        "workflow_version",
+    }:
+        raise ValueError
+    if (
+        request["executor_kind"] != "COREAI_LLM_CALL"
+        or not isinstance(request["llm_call_id"], str)
+        or not request["llm_call_id"]
+        or not isinstance(request["definition_checksum"], str)
+        or len(request["definition_checksum"]) != 64
+        or any(char not in "0123456789abcdef" for char in request["definition_checksum"])
+        or not isinstance(request["input"], str)
+        or not request["input"]
+        or request["stage"] != "PREPARATION"
+        or type(request["task_id"]) is not int
+        or request["task_id"] < 1
+        or type(request["workflow_version"]) is not int
+        or request["workflow_version"] < 1
+    ):
+        raise ValueError
+    if request["task_id"] != execution["task_id"]:
+        raise ValueError
+    expected_idempotency_key = (
+        f"task:{execution['task_id']}:preparation:{execution['attempt']}:"
+        f"{execution['request_checksum'][:16]}"
+    )
+    if execution["idempotency_key"] != expected_idempotency_key:
+        raise ValueError
+    return request
 
 
 def _validated_reviewable_preparation(
@@ -478,30 +524,9 @@ def _validated_reviewable_preparation(
         raise invalid
 
     try:
-        request = json.loads(execution["request_json"])
-        if not isinstance(request, dict):
-            raise ValueError
-        if execution["request_json"] != _canonical_json(request):
-            raise ValueError
-        if execution["request_checksum"] != _checksum(request):
-            raise ValueError
-        if set(request) != {
-            "agent_id",
-            "definition_checksum",
-            "input",
-            "stage",
-            "task_id",
-            "workflow_version",
-        }:
-            raise ValueError
+        request = _validated_llm_call_request(execution)
         if (
-            not isinstance(request["agent_id"], str)
-            or not request["agent_id"]
-            or not isinstance(request["input"], str)
-            or not request["input"]
-            or type(request["task_id"]) is not int
-            or type(request["workflow_version"]) is not int
-            or request["definition_checksum"] != task["definition_checksum"]
+            request["definition_checksum"] != task["definition_checksum"]
             or request["stage"] != "PREPARATION"
             or request["task_id"] != task["id"]
             or request["workflow_version"] != task["workflow_version"]
@@ -922,6 +947,7 @@ def _finish_failed_dispatch(
     task_id: int,
     error: str,
     *,
+    dispatch_token: str,
     ambiguous: bool = False,
 ) -> sqlite3.Row:
     conn.execute("BEGIN IMMEDIATE")
@@ -931,8 +957,8 @@ def _finish_failed_dispatch(
         execution_status = "UNKNOWN" if ambiguous else "FAILED"
         execution_update = conn.execute(
             "UPDATE task_executions SET status = ?, error = ?, finished_at = ? "
-            "WHERE id = ? AND status IN ('PENDING','DISPATCHING','RUNNING')",
-            (execution_status, error, finished_at, execution_id),
+            "WHERE id = ? AND status = 'DISPATCHING' AND dispatch_token = ?",
+            (execution_status, error, finished_at, execution_id, dispatch_token),
         )
         task_update = conn.execute(
             "UPDATE tasks SET status = 'NEEDS_ATTENTION', version = version + 1, updated_at = ? "
@@ -972,7 +998,7 @@ def execute_task(
     operator: str = Depends(require_operator),
     conn=Depends(get_db),
 ):
-    client, agent_id = coreai
+    client, llm_call_id = coreai
     conn.execute("BEGIN IMMEDIATE")
     try:
         task = fetch_task(conn, task_id)
@@ -1009,9 +1035,10 @@ def execute_task(
             ).fetchone()[0]
         )
         request = {
-            "agent_id": agent_id,
             "definition_checksum": task["definition_checksum"],
+            "executor_kind": "COREAI_LLM_CALL",
             "input": preparation_input,
+            "llm_call_id": llm_call_id,
             "stage": "PREPARATION",
             "task_id": task_id,
             "workflow_version": task["workflow_version"],
@@ -1062,18 +1089,7 @@ def execute_task(
         raise
 
     try:
-        agent = client.get_agent(agent_id)
-    except CoreAiError as exc:
-        _finish_failed_dispatch(conn, execution_id, task_id, str(exc))
-        raise HTTPException(
-            status_code=503, detail="task preparation agent could not be verified"
-        ) from exc
-    if not preparation_agent_is_read_only(agent):
-        _finish_failed_dispatch(conn, execution_id, task_id, "task preparation agent is not read-only")
-        raise HTTPException(status_code=503, detail="task preparation agent is not read-only")
-
-    try:
-        core = client.trigger(agent_id, preparation_input)
+        output = client.llm_call(llm_call_id, preparation_input)
     except CoreAiError as exc:
         ambiguous = exc.status_code in {0, 408} or exc.status_code >= 500
         failed = _finish_failed_dispatch(
@@ -1081,28 +1097,54 @@ def execute_task(
             execution_id,
             task_id,
             str(exc),
+            dispatch_token=dispatch_token,
             ambiguous=ambiguous,
         )
         return execution_dict(failed)
+    try:
+        result_json = normalize_execution_output(output)
+    except ValueError as exc:
+        failed = _finish_failed_dispatch(
+            conn,
+            execution_id,
+            task_id,
+            str(exc),
+            dispatch_token=dispatch_token,
+        )
+        return execution_dict(failed)
+
+    evidence_json = _canonical_json(json.loads(result_json)["evidence"])
+    finished_at = now_iso()
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        updated = conn.execute(
-            "UPDATE task_executions SET status = 'RUNNING', coreai_run_id = ? "
+        task = fetch_task(conn, task_id)
+        assert_transition(task["task_type"], task["status"], "AWAITING_APPROVAL")
+        execution_update = conn.execute(
+            "UPDATE task_executions SET status = 'SUCCEEDED', result_json = ?, "
+            "evidence_json = ?, error = NULL, finished_at = ? "
             "WHERE id = ? AND status = 'DISPATCHING' AND dispatch_token = ?",
-            (core["run_id"], execution_id, dispatch_token),
+            (result_json, evidence_json, finished_at, execution_id, dispatch_token),
         )
-        if updated.rowcount != 1:
-            raise HTTPException(status_code=409, detail="task preparation dispatch state changed")
+        task_update = conn.execute(
+            "UPDATE tasks SET status = 'AWAITING_APPROVAL', version = version + 1, "
+            "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
+            (finished_at, task_id, task["version"]),
+        )
+        if execution_update.rowcount != 1 or task_update.rowcount != 1:
+            raise HTTPException(
+                status_code=409, detail="task preparation dispatch state changed"
+            )
         append_task_event(
             conn,
             entity_type="TASK",
             entity_id=task_id,
-            event_type="TASK_PREPARATION_DISPATCHED",
+            event_type="TASK_PREPARATION_SUCCEEDED",
             actor_type="SYSTEM",
-            actor_id=agent_id,
-            payload={"coreai_run_id": core["run_id"], "execution_id": execution_id},
+            actor_id=llm_call_id,
+            payload={"execution_id": execution_id, "to_status": "AWAITING_APPROVAL"},
         )
+        refresh_plan_lifecycle(conn, int(task["plan_id"]))
         conn.commit()
     except Exception:
         conn.rollback()

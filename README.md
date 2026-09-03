@@ -13,10 +13,10 @@
 - 商户详情页可手动"发起分析"，或设置每商户自动周期（7/30 天）
 - 后台每 30 秒轮询进行中的 run，每小时扫描到期商户
 - 报告中的 ```json 计划块自动解析为待办任务（幂等，不重复创建）；无计划块时报告仍可在 run 详情页查看
-- 诊断/Plan Agent 通过 `COREAI_AGENT_ID` 配置；任务只读准备 Agent 通过 `COREAI_EXECUTION_AGENT_ID` 配置
-- Plan 经人工确认后任务才能交给 Agent；Agent 结果自动回填，人工只负责批准或退回重做
-- 当前任务 Agent 只允许生成草稿、审计和操作建议，不允许发布或修改任何外部系统；只有结构化、明确声明未外写的结果才能进入人工审批
-- `COREAI_EXECUTION_AGENT_ID` 必须指向已发布且不含 Tool、Skill、Sub-agent、Sandbox 或 Dataset 的专用只读 Agent；SEO Ops 每次派发前都会从 Core AI Server 读回并校验，配置漂移时拒绝执行
+- 诊断/Plan Agent 通过 `COREAI_AGENT_ID` 配置；任务准备通过 `COREAI_PREPARATION_LLM_CALL_ID` 调用 Core AI 已发布的 LLM Call 定义
+- Plan 经人工确认后任务才能进入准备；LLM Call 结果同步回填，人工只负责批准或退回重做
+- LLM Call 接口固定不加载 Agent Tool、Skill、Sub-agent、Memory、Sandbox 或 Dataset，也不接收附件；当前任务准备只允许生成草稿、审计和操作建议，不允许发布或修改任何外部系统
+- 只有符合本地严格结构、明确声明未外写的结果才能进入人工审批；网络超时或服务端错误会标记为 UNKNOWN，必须由人工明确授权后才能新建一次准备尝试
 - 任务只有在人工批准 Agent 结果后才会完成；批量操作和普通状态修改都不能绕过审批
 - 设计文档：docs/superpowers/specs/2026-08-31-agent-runs-design.md
 
