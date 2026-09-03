@@ -2,6 +2,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from .task_migrations import migrate_task_workflow_v1, task_table_kind
+
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "seo-ops-v3.db"
 
@@ -47,17 +49,50 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
 
 
+def _bootstrap_runs_for_legacy_tasks(conn: sqlite3.Connection) -> None:
+    """Create only the missing parent needed before rebuilding a first-brick DB."""
+
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+    ).fetchone():
+        return
+    conn.execute(
+        """
+        CREATE TABLE runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+          coreai_run_id TEXT,
+          status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','succeeded','failed')),
+          trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('manual','auto')),
+          report_text TEXT,
+          error TEXT,
+          plan_approved_at TEXT,
+          created_at TEXT NOT NULL,
+          finished_at TEXT
+        )
+        """
+    )
+
+
 def init_db() -> None:
     Path(db_path()).parent.mkdir(parents=True, exist_ok=True)
     conn = connect()
     try:
         _migrate(conn)
-        conn.executescript(SCHEMA_PATH.read_text())
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source_key"
-            " ON tasks(source_key) WHERE source_key IS NOT NULL"
-        )
         conn.commit()
+        kind = task_table_kind(conn)
+        if kind == "legacy":
+            _bootstrap_runs_for_legacy_tasks(conn)
+            conn.commit()
+            migrate_task_workflow_v1(conn)
+            conn.executescript(SCHEMA_PATH.read_text())
+        else:
+            conn.executescript(SCHEMA_PATH.read_text())
+            migrate_task_workflow_v1(conn)
+        _migrate(conn)
+        conn.commit()
+        if conn.execute("PRAGMA foreign_key_check").fetchall():
+            raise RuntimeError("database initialization left broken foreign keys")
     finally:
         conn.close()
 
