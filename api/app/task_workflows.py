@@ -16,7 +16,11 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
 
-from .task_plan_contract import TaskPlanValidationError, validate_task_plan
+from .task_plan_contract import (
+    TaskPlanValidationError,
+    validate_aware_rfc3339_string,
+    validate_task_plan,
+)
 
 
 @dataclass(frozen=True)
@@ -112,10 +116,8 @@ def _revision_active(conn: sqlite3.Connection, task: Any) -> bool:
     ).fetchone()
     if plan is None or plan["approved_revision"] is None:
         return False
-    if plan["approved_revision"] == _value(task, "plan_revision"):
-        return True
     if not _row_keys(task).issuperset({"task_key", "definition_checksum"}):
-        raise TaskWorkflowDataError("retained task lacks revision identity")
+        raise TaskWorkflowDataError("task lacks revision identity")
     if not _table_has_columns(
         conn,
         "task_plan_revisions",
@@ -150,25 +152,23 @@ def _revision_active(conn: sqlite3.Connection, task: Any) -> bool:
     return False
 
 
-def _parse_datetime(value: Any) -> datetime | None:
-    if value is None or value == "":
+def parse_stored_schedule(value: Any) -> datetime | None:
+    if value is None:
         return None
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
-        return None
+    try:
+        serialized = validate_aware_rfc3339_string(value)
+        assert serialized is not None
+        normalized = serialized[:-1] + "+00:00" if serialized[-1] in "Zz" else serialized
+        parsed = datetime.fromisoformat(normalized)
+    except (TypeError, ValueError) as exc:
+        raise TaskWorkflowDataError("stored scheduled_start is invalid") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        raise TaskWorkflowDataError("stored scheduled_start is timezone-naive")
     return parsed
 
 
 def _future_schedule(task: Any, now: datetime | None) -> bool:
-    scheduled = _parse_datetime(_value(task, "scheduled_start"))
+    scheduled = parse_stored_schedule(_value(task, "scheduled_start"))
     if scheduled is None:
         return False
     current = now or datetime.now(timezone.utc)
@@ -230,5 +230,6 @@ __all__ = [
     "WorkflowTemplate",
     "assert_transition",
     "enabled_task_types",
+    "parse_stored_schedule",
     "task_blocker",
 ]

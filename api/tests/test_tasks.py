@@ -247,6 +247,28 @@ def test_operator_create_is_strict_and_rejects_disabled_or_unknown_input(client)
     ).status_code == 422
 
 
+@pytest.mark.parametrize(
+    "scheduled_start",
+    [
+        0,
+        1_725_541_200.5,
+        "2026-09-05 13:00:00+00:00",
+        "2026-09-05T13:00+00:00",
+    ],
+    ids=["integer", "float", "space-separated", "seconds-omitted"],
+)
+def test_operator_create_rejects_non_rfc3339_schedule_inputs(client, scheduled_start):
+    merchant = make_merchant(client)
+
+    response = client.post(
+        f"/api/merchants/{merchant['id']}/tasks",
+        json=task_body(scheduled_start=scheduled_start),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "scheduled_start"]
+
+
 def test_task_queries_filter_and_expose_one_list_blocker_and_full_detail_chain(client):
     merchant, plan, tasks = make_graph(client)
     review = tasks["review"]
@@ -304,6 +326,42 @@ def test_task_query_schedule_filters_are_timezone_aware(client):
     ).json()[0]["id"] == task["id"]
     assert client.get("/api/tasks", params={"scheduled_before": "2026-01-01T00:00:00Z"}).json() == []
     assert client.get("/api/tasks", params={"scheduled_before": "not-a-date"}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "stored_schedule",
+    [
+        "",
+        "not-a-date",
+        "2026-09-05T13:00:00",
+        sqlite3.Binary(b"2026-09-05T13:00:00Z"),
+    ],
+    ids=["empty", "malformed", "timezone-naive", "non-string"],
+)
+def test_task_query_schedule_filter_fails_closed_on_corrupt_stored_schedule(
+    client, stored_schedule
+):
+    from app.db import connect
+
+    merchant = make_merchant(client)
+    task = make_task(client, merchant["id"])
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET scheduled_start = ? WHERE id = ?",
+            (stored_schedule, task["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get(
+        "/api/tasks",
+        params={"scheduled_before": "2027-01-01T00:00:00Z"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "stored task workflow is invalid"
 
 
 @pytest.mark.parametrize(

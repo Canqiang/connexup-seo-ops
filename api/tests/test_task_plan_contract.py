@@ -1,8 +1,10 @@
 import copy
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 
 def _task(key="draft", **overrides):
@@ -47,6 +49,48 @@ def test_valid_plan_is_canonical_and_sorted_into_waves(valid_plan):
     assert plan.canonical_json == json.dumps(
         plan.payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["task_type", "title", "rationale", "expected_outcome"],
+)
+def test_task_plan_item_rejects_blank_required_text(field):
+    from app.task_plan_contract import TaskPlanItem
+
+    item = _task()
+    item[field] = " \t\n "
+
+    with pytest.raises(ValidationError):
+        TaskPlanItem.model_validate(item)
+
+
+def test_required_human_text_is_trimmed_before_canonicalization(valid_plan):
+    from app.task_plan_contract import validate_task_plan
+
+    valid_plan["tasks"][0].update(
+        title="  Review content \n",
+        rationale="\tCatch unsupported claims  ",
+        expected_outcome="  A reviewable decision\t",
+    )
+
+    plan = validate_task_plan(valid_plan, {"PREPARE_ONLY"})
+    review = next(item for item in plan.payload["tasks"] if item["key"] == "review")
+
+    assert review["title"] == "Review content"
+    assert review["rationale"] == "Catch unsupported claims"
+    assert review["expected_outcome"] == "A reviewable decision"
+
+
+def test_task_type_is_not_silently_trimmed_into_an_enabled_type(valid_plan):
+    from app.task_plan_contract import TaskPlanValidationError, validate_task_plan
+
+    valid_plan["tasks"][0]["task_type"] = " PREPARE_ONLY "
+
+    with pytest.raises(TaskPlanValidationError) as exc:
+        validate_task_plan(valid_plan, {"PREPARE_ONLY"})
+
+    assert exc.value.codes == ["task_type_disabled"]
 
 
 @pytest.mark.parametrize(
@@ -119,6 +163,28 @@ def test_naive_scheduled_start_is_rejected(valid_plan):
     valid_plan["tasks"][0]["scheduled_start"] = "2026-09-05T13:00:00"
     with pytest.raises(TaskPlanValidationError, match="scheduled_start"):
         validate_task_plan(valid_plan, {"PREPARE_ONLY"})
+
+
+@pytest.mark.parametrize(
+    "scheduled_start",
+    [
+        0,
+        1_725_541_200.5,
+        "2026-09-05 13:00:00+00:00",
+        "2026-09-05T13:00+00:00",
+        datetime(2026, 9, 5, 13, 0, tzinfo=timezone.utc),
+    ],
+    ids=["integer", "float", "space-separated", "seconds-omitted", "datetime-object"],
+)
+def test_scheduled_start_rejects_non_rfc3339_string_inputs(valid_plan, scheduled_start):
+    from app.task_plan_contract import TaskPlanValidationError, validate_task_plan
+
+    valid_plan["tasks"][0]["scheduled_start"] = scheduled_start
+
+    with pytest.raises(TaskPlanValidationError) as exc:
+        validate_task_plan(valid_plan, {"PREPARE_ONLY"})
+
+    assert exc.value.codes == ["scheduled_start"]
 
 
 def test_parameters_above_64_kib_are_rejected(valid_plan, monkeypatch):

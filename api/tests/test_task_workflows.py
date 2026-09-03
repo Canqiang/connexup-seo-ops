@@ -10,8 +10,8 @@ def canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def workflow_item(key: str) -> dict:
-    return {
+def workflow_item(key: str, **overrides) -> dict:
+    item = {
         "key": key,
         "task_type": "PREPARE_ONLY",
         "title": f"Prepare {key}",
@@ -21,6 +21,8 @@ def workflow_item(key: str) -> dict:
         "scheduled_start": None,
         "parameters": {"description": f"Prepare {key} only.", "category": "content"},
     }
+    item.update(overrides)
+    return item
 
 
 def workflow_payload(*keys: str) -> dict:
@@ -79,15 +81,45 @@ def db():
 
 @pytest.fixture()
 def seed_task_graph(db):
+    draft = workflow_item("draft", title="Draft content")
+    review = workflow_item(
+        "review",
+        title="Review content",
+        depends_on=["draft"],
+    )
+    payload_json = canonical_json(
+        {
+            "schema_version": "seo_ops.task_plan.v1",
+            "tasks": [draft, review],
+        }
+    )
+    db.execute(
+        "INSERT INTO task_plan_revisions (plan_id, revision, payload_json, checksum) "
+        "VALUES (1, 1, ?, ?)",
+        (payload_json, hashlib.sha256(payload_json.encode()).hexdigest()),
+    )
     db.executemany(
         """
         INSERT INTO tasks
-            (id, merchant_id, plan_id, plan_revision, task_key, task_type, title, status)
-        VALUES (?, 1, 1, 1, ?, 'PREPARE_ONLY', ?, ?)
+            (id, merchant_id, plan_id, plan_revision, task_key, task_type,
+             definition_checksum, title, status)
+        VALUES (?, 1, 1, 1, ?, 'PREPARE_ONLY', ?, ?, ?)
         """,
         [
-            (10, "draft", "Draft content", "PENDING"),
-            (20, "review", "Review content", "PENDING"),
+            (
+                10,
+                "draft",
+                hashlib.sha256(canonical_json(draft).encode()).hexdigest(),
+                "Draft content",
+                "PENDING",
+            ),
+            (
+                20,
+                "review",
+                hashlib.sha256(canonical_json(review).encode()).hexdigest(),
+                "Review content",
+                "PENDING",
+            ),
         ],
     )
     db.execute(
@@ -233,11 +265,12 @@ def test_inactive_approved_revision_blocks_before_schedule(seed_task_graph, db):
     assert task_blocker(db, task) == {"code": "REVISION_INACTIVE"}
 
 
+@pytest.mark.parametrize("task_revision", [1, 2], ids=["retained", "current"])
 @pytest.mark.parametrize(
     "corruption",
     ["missing", "malformed-json", "noncanonical", "checksum-mismatch"],
 )
-def test_retained_revision_data_corruption_fails_closed(db, corruption):
+def test_approved_revision_data_corruption_fails_closed(db, corruption, task_revision):
     from app.task_workflows import TaskWorkflowDataError, task_blocker
 
     item = workflow_item("retained")
@@ -245,8 +278,8 @@ def test_retained_revision_data_corruption_fails_closed(db, corruption):
         "INSERT INTO tasks "
         "(id, merchant_id, plan_id, plan_revision, task_key, task_type, "
         "definition_checksum, title, status) "
-        "VALUES (40, 1, 1, 1, 'retained', 'PREPARE_ONLY', ?, 'Retained', 'PENDING')",
-        (hashlib.sha256(canonical_json(item).encode()).hexdigest(),),
+        "VALUES (40, 1, 1, ?, 'retained', 'PREPARE_ONLY', ?, 'Retained', 'PENDING')",
+        (task_revision, hashlib.sha256(canonical_json(item).encode()).hexdigest()),
     )
     db.execute("UPDATE task_plans SET approved_revision = 2 WHERE id = 1")
     if corruption != "missing":
@@ -273,6 +306,38 @@ def test_retained_revision_data_corruption_fails_closed(db, corruption):
         task_blocker(db, task)
 
 
+@pytest.mark.parametrize(
+    "task_key,definition_checksum",
+    [
+        ("missing", hashlib.sha256(canonical_json(workflow_item("missing")).encode()).hexdigest()),
+        ("approved", "f" * 64),
+    ],
+    ids=["task-key-absent", "definition-checksum-mismatch"],
+)
+def test_current_approved_revision_requires_exact_definition_membership(
+    db, task_key, definition_checksum
+):
+    from app.task_workflows import task_blocker
+
+    payload_json = canonical_json(workflow_payload("approved"))
+    db.execute(
+        "INSERT INTO task_plan_revisions (plan_id, revision, payload_json, checksum) "
+        "VALUES (1, 1, ?, ?)",
+        (payload_json, hashlib.sha256(payload_json.encode()).hexdigest()),
+    )
+    db.execute(
+        "INSERT INTO tasks "
+        "(id, merchant_id, plan_id, plan_revision, task_key, task_type, "
+        "definition_checksum, title, status) "
+        "VALUES (40, 1, 1, 1, ?, 'PREPARE_ONLY', ?, 'Current', 'PENDING')",
+        (task_key, definition_checksum),
+    )
+    db.commit()
+    task = db.execute("SELECT * FROM tasks WHERE id = 40").fetchone()
+
+    assert task_blocker(db, task) == {"code": "REVISION_INACTIVE"}
+
+
 def test_future_schedule_blocks_with_exact_scheduled_time(seed_task_graph, db):
     from app.task_workflows import task_blocker
 
@@ -284,6 +349,31 @@ def test_future_schedule_blocks_with_exact_scheduled_time(seed_task_graph, db):
         "code": "SCHEDULED_FOR_FUTURE",
         "scheduled_start": start.isoformat(),
     }
+
+
+@pytest.mark.parametrize(
+    "scheduled_start",
+    [
+        "",
+        "not-a-date",
+        "2026-09-05T13:00:00",
+        "2026-09-05 13:00:00+00:00",
+        "1725541200",
+    ],
+    ids=["empty", "malformed", "timezone-naive", "space-separated", "numeric-text"],
+)
+def test_invalid_non_null_stored_schedule_fails_closed(
+    seed_task_graph, db, scheduled_start
+):
+    from app.task_workflows import TaskWorkflowDataError, task_blocker
+
+    db.execute("UPDATE tasks SET status = 'DONE' WHERE id = 10")
+    db.execute("UPDATE tasks SET scheduled_start = ? WHERE id = 20", (scheduled_start,))
+    db.commit()
+    task = db.execute("SELECT * FROM tasks WHERE id = 20").fetchone()
+
+    with pytest.raises(TaskWorkflowDataError, match="scheduled_start"):
+        task_blocker(db, task, now=datetime(2026, 9, 5, 12, 59, tzinfo=timezone.utc))
 
 
 def test_done_dependencies_and_elapsed_schedule_are_ready(seed_task_graph, db):

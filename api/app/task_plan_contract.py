@@ -14,10 +14,23 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 MAX_PARAMETERS_BYTES = 64 * 1024
 MAX_PLAN_BYTES = 1024 * 1024
+_RFC3339_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
+
+
+def validate_aware_rfc3339_string(value: object) -> str | None:
+    """Reject datetime coercion before Pydantic validates an RFC 3339 string."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or _RFC3339_DATETIME_RE.fullmatch(value) is None:
+        raise ValueError("must be a timezone-aware RFC 3339 string or null")
+    return value
 
 
 class TaskPlanItem(BaseModel):
@@ -31,6 +44,28 @@ class TaskPlanItem(BaseModel):
     depends_on: list[str] = Field(default_factory=list, max_length=20)
     scheduled_start: AwareDatetime | None = None
     parameters: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("task_type", mode="before")
+    @classmethod
+    def task_type_is_normalized(cls, value: object) -> object:
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise ValueError("task_type must be a nonblank normalized string")
+        return value
+
+    @field_validator("title", "rationale", "expected_outcome", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be blank")
+        return text
+
+    @field_validator("scheduled_start", mode="before")
+    @classmethod
+    def scheduled_start_is_rfc3339_string(cls, value: object) -> object:
+        return validate_aware_rfc3339_string(value)
 
 
 class TaskPlanPayload(BaseModel):
@@ -89,6 +124,8 @@ def _error_code(error: dict[str, object]) -> str:
         if len(loc) > 1 and isinstance(loc[1], int):
             if len(loc) > 2 and loc[2] == "key":
                 return "task_key"
+            if len(loc) > 2 and loc[2] == "task_type":
+                return "task_type_disabled"
             if len(loc) > 2 and loc[2] == "scheduled_start":
                 return "scheduled_start"
             if len(loc) > 2 and loc[2] == "parameters":
@@ -256,5 +293,6 @@ __all__ = [
     "TaskPlanValidationError",
     "ValidatedTaskPlan",
     "extract_task_plan",
+    "validate_aware_rfc3339_string",
     "validate_task_plan",
 ]

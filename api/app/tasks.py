@@ -27,13 +27,18 @@ from .db import get_db
 from .execution_result import normalize_execution_output
 from .merchants import fetch_merchant, now_iso
 from .task_events import append_task_event
-from .task_plan_contract import TaskPlanValidationError, validate_task_plan
+from .task_plan_contract import (
+    TaskPlanValidationError,
+    validate_aware_rfc3339_string,
+    validate_task_plan,
+)
 from .task_plans import materialize_plan_revision, refresh_plan_lifecycle
 from .task_workflows import (
     WORKFLOW_TEMPLATES,
     TaskWorkflowDataError,
     assert_transition,
     enabled_task_types,
+    parse_stored_schedule,
     task_blocker,
 )
 
@@ -84,6 +89,11 @@ class OperatorTaskCreate(BaseModel):
         if not text:
             raise ValueError("must not be blank")
         return text
+
+    @field_validator("scheduled_start", mode="before")
+    @classmethod
+    def scheduled_start_is_rfc3339_string(cls, value: object) -> object:
+        return validate_aware_rfc3339_string(value)
 
     @model_validator(mode="after")
     def replacement_binding_is_complete(self):
@@ -360,13 +370,10 @@ def task_detail(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _parse_stored_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
+        return parse_stored_schedule(value)
+    except TaskWorkflowDataError as exc:
+        raise HTTPException(status_code=409, detail="stored task workflow is invalid") from exc
 
 
 @router.get("/tasks")
