@@ -341,10 +341,6 @@ def test_legacy_tasks_are_converted_without_losing_history(legacy_task_db, monke
 
 def _seed_interim_formal_graph(conn):
     conn.execute(
-        "INSERT INTO schema_migrations (name, applied_at) "
-        "VALUES ('task_workflow_v1', '2026-09-03T00:00:00+00:00')"
-    )
-    conn.execute(
         "INSERT INTO merchants (id, name, created_at) "
         "VALUES (1, 'Interim Merchant', '2026-09-03T00:00:00+00:00')"
     )
@@ -417,7 +413,7 @@ def _v2_failure_snapshot(conn):
     return {
         **_v2_data_snapshot(conn),
         "markers": conn.execute(
-            "SELECT * FROM schema_migrations ORDER BY name"
+            "SELECT * FROM schema_migrations ORDER BY version"
         ).fetchall(),
         "sqlite_sequence": conn.execute(
             "SELECT * FROM sqlite_sequence ORDER BY name"
@@ -483,16 +479,17 @@ def test_v1_formal_database_is_atomically_upgraded_to_all_frozen_states(
     ]
     assert conn.execute(
         "SELECT COUNT(*) FROM schema_migrations "
-        "WHERE name = 'task_workflow_states_v2'"
+        "WHERE version = '0002_task_workflows'"
     ).fetchone()[0] == 1
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     with pytest.raises(sqlite3.IntegrityError, match="formal tasks cannot be deleted"):
         conn.execute("DELETE FROM tasks WHERE id = ?", (ids["source_id"],))
+    conn.rollback()
 
     task_migrations.migrate_task_workflow_v1(conn)
     assert conn.execute(
         "SELECT COUNT(*) FROM schema_migrations "
-        "WHERE name = 'task_workflow_states_v2'"
+        "WHERE version = '0002_task_workflows'"
     ).fetchone()[0] == 1
     assert conn.execute(
         "SELECT COUNT(*) FROM tasks WHERE id IN (?, ?)",
@@ -880,11 +877,44 @@ def test_second_init_is_an_idempotent_no_op(legacy_task_db, monkeypatch):
         for table in before
     }
     marker_count = conn.execute(
-        "SELECT COUNT(*) FROM schema_migrations WHERE name = 'task_workflow_v1'"
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = '0002_task_workflows'"
     ).fetchone()[0]
     conn.close()
     assert after == before
     assert marker_count == 1
+
+
+def test_exact_legacy_markers_require_the_final_workflow_schema(
+    legacy_task_db, monkeypatch
+):
+    conn = sqlite3.connect(legacy_task_db)
+    conn.execute(
+        "CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO schema_migrations(name,applied_at) VALUES (?,?)",
+        [
+            ("task_workflow_v1", "2026-09-03T00:00:00+00:00"),
+            ("task_workflow_states_v2", "2026-09-03T00:01:00+00:00"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(legacy_task_db))
+    from app.db import init_db
+
+    with pytest.raises(RuntimeError, match="marker conflicts with tasks schema"):
+        init_db()
+
+    conn = sqlite3.connect(legacy_task_db)
+    task_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+    ).fetchone()[0]
+    assert "'todo','doing','done','cancelled'" in task_sql
+    assert conn.execute(
+        "SELECT name FROM schema_migrations ORDER BY name"
+    ).fetchall() == [("task_workflow_states_v2",), ("task_workflow_v1",)]
+    conn.close()
 
 
 def test_unapproved_candidate_with_execution_fails_closed_and_rolls_back(tmp_path, monkeypatch):

@@ -12,8 +12,9 @@ from typing import Any, cast
 from .task_plan_contract import validate_task_plan
 from .task_workflows import WORKFLOW_TEMPLATES, enabled_task_types
 
-TASK_WORKFLOW_MIGRATION = "task_workflow_v1"
-TASK_WORKFLOW_STATES_MIGRATION = "task_workflow_states_v2"
+TASK_WORKFLOW_MIGRATION = "0002_task_workflows"
+LEGACY_TASK_WORKFLOW_MIGRATION = "task_workflow_v1"
+LEGACY_TASK_WORKFLOW_STATES_MIGRATION = "task_workflow_states_v2"
 _TASK_STATES = (
     "PENDING",
     "PREPARING",
@@ -66,12 +67,6 @@ def _fetch_dicts(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = (
     return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
 
 
-def _migration_applied(conn: sqlite3.Connection, name: str) -> bool:
-    if not _table_exists(conn, "schema_migrations"):
-        return False
-    return conn.execute("SELECT 1 FROM schema_migrations WHERE name = ?", (name,)).fetchone() is not None
-
-
 def task_table_kind(conn: sqlite3.Connection) -> str:
     """Classify the current Task table after inspecting its defining SQL."""
 
@@ -99,11 +94,6 @@ def task_table_kind(conn: sqlite3.Connection) -> str:
 
 
 def _create_plan_tables(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-        if not _table_exists(conn, "schema_migrations")
-        else "SELECT 1"
-    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS task_plans (
@@ -682,88 +672,128 @@ def _rebuild_tasks_for_states_v2(conn: sqlite3.Connection) -> None:
     _create_task_workflow_indexes_and_triggers(conn)
 
 
-def migrate_task_workflow_states_v2(conn: sqlite3.Connection) -> None:
-    """Atomically widen interim Task CHECK constraints to every frozen state."""
+def run_task_workflow_migration_hook(
+    conn: sqlite3.Connection, _migration_instant: str
+) -> None:
+    """Apply 0002 inside the shared runner's single writer transaction."""
 
-    if _migration_applied(conn, TASK_WORKFLOW_STATES_MIGRATION):
-        if not _task_states_are_current(conn):
-            raise RuntimeError(
-                "task workflow states migration marker conflicts with tasks schema"
-            )
-        return
-    if conn.in_transaction:
-        raise RuntimeError("task workflow states migration requires no active transaction")
-    if task_table_kind(conn) != "formal":
-        raise RuntimeError("task workflow states migration requires formal tasks schema")
-
-    conn.execute("PRAGMA foreign_keys = OFF")
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        if not _task_states_are_current(conn):
-            _rebuild_tasks_for_states_v2(conn)
-        foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if foreign_key_errors:
-            raise RuntimeError(
-                "task workflow states migration left broken foreign keys: "
-                f"{foreign_key_errors!r}"
-            )
-        conn.execute(
-            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
-            (TASK_WORKFLOW_STATES_MIGRATION, _now_iso()),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.execute("PRAGMA foreign_keys = ON")
-
-
-def migrate_task_workflow_v1(conn: sqlite3.Connection) -> None:
-    """Apply the idempotent Task workflow migration in one rebuild transaction."""
-
-    if _migration_applied(conn, TASK_WORKFLOW_MIGRATION):
-        migrate_task_workflow_states_v2(conn)
-        return
-    if conn.in_transaction:
-        raise RuntimeError("task workflow migration requires no active transaction")
-
+    if not conn.in_transaction:
+        raise RuntimeError("task workflow migration hook requires an active transaction")
     kind = task_table_kind(conn)
     if kind == "missing":
         raise RuntimeError("tasks table is missing; apply the fresh schema before migration")
+    _create_plan_tables(conn)
+    if kind == "legacy":
+        _create_replacement_task_tables(conn)
+        _convert_legacy_runs_and_tasks(conn)
+        _swap_replacement_tables(conn)
+    if not _task_states_are_current(conn):
+        _rebuild_tasks_for_states_v2(conn)
+    _create_task_workflow_indexes_and_triggers(conn)
 
-    conn.execute("PRAGMA foreign_keys = OFF")
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        _create_plan_tables(conn)
-        if kind == "legacy":
-            _create_replacement_task_tables(conn)
-            _convert_legacy_runs_and_tasks(conn)
-            _swap_replacement_tables(conn)
-        _create_task_workflow_indexes_and_triggers(conn)
-        foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if foreign_key_errors:
-            raise RuntimeError(
-                f"task workflow migration left broken foreign keys: {foreign_key_errors!r}"
-            )
-        conn.execute(
-            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
-            (TASK_WORKFLOW_MIGRATION, _now_iso()),
+
+def assert_task_workflow_migration_postconditions(conn: sqlite3.Connection) -> None:
+    if task_table_kind(conn) != "formal" or not _task_states_are_current(conn):
+        raise RuntimeError("task workflow migration schema is incomplete")
+    required_tables = {
+        "task_plans",
+        "task_plan_revisions",
+        "task_dependencies",
+        "task_executions",
+        "task_events",
+    }
+    missing = sorted(
+        table for table in required_tables if not _table_exists(conn, table)
+    )
+    if missing:
+        raise RuntimeError(f"task workflow migration tables are missing: {missing!r}")
+    foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if foreign_key_errors:
+        raise RuntimeError(
+            f"task workflow migration left broken foreign keys: {foreign_key_errors!r}"
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.execute("PRAGMA foreign_keys = ON")
 
-    migrate_task_workflow_states_v2(conn)
+
+def validate_legacy_task_workflow_adoption(conn: sqlite3.Connection) -> None:
+    """Prove both old markers describe the final frozen Task schema."""
+
+    if task_table_kind(conn) != "formal":
+        raise RuntimeError("legacy task workflow marker conflicts with tasks schema")
+    if not _task_states_are_current(conn):
+        raise RuntimeError(
+            "legacy task workflow states marker conflicts with tasks schema"
+        )
+    assert_task_workflow_migration_postconditions(conn)
+
+
+def migrate_task_workflow_v1(conn: sqlite3.Connection) -> None:
+    """Compatibility entry point backed by the shared migration runner."""
+
+    from .migrations import apply_migrations
+
+    apply_migrations(conn, python_migrations=task_workflow_python_migrations())
+    assert_task_workflow_migration_postconditions(conn)
+
+
+def migrate_task_workflow_states_v2(conn: sqlite3.Connection) -> None:
+    """Compatibility alias for callers from the interim two-marker release."""
+
+    migrate_task_workflow_v1(conn)
+
+
+def task_workflow_python_migrations():
+    """Register the immutable 0002 hook with the shared migration runner."""
+
+    from .migrations import (
+        MIGRATIONS_DIR,
+        PythonMigration,
+        python_migration_checksum,
+    )
+
+    contract_path = MIGRATIONS_DIR / f"{TASK_WORKFLOW_MIGRATION}.hook.json"
+    contract = contract_path.read_text(encoding="utf-8")
+    try:
+        manifest = json.loads(contract)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("invalid task workflow migration contract") from exc
+    if not isinstance(manifest, dict):
+        raise RuntimeError("invalid task workflow migration contract")
+    if manifest.get("version") != TASK_WORKFLOW_MIGRATION:
+        raise RuntimeError("task workflow migration contract version mismatch")
+    if manifest.get("hook_revision") != 1:
+        raise RuntimeError("task workflow migration contract revision mismatch")
+    if (
+        manifest.get("entrypoint")
+        != "app.task_migrations:run_task_workflow_migration_hook"
+    ):
+        raise RuntimeError("task workflow migration contract entrypoint mismatch")
+    checksum = python_migration_checksum(
+        TASK_WORKFLOW_MIGRATION, contract=contract
+    )
+    return (
+        PythonMigration(
+            version=TASK_WORKFLOW_MIGRATION,
+            checksum=checksum,
+            apply=run_task_workflow_migration_hook,
+            foreign_keys_off=True,
+            legacy_ledger_names=(
+                LEGACY_TASK_WORKFLOW_MIGRATION,
+                LEGACY_TASK_WORKFLOW_STATES_MIGRATION,
+            ),
+            validate_legacy_adoption=validate_legacy_task_workflow_adoption,
+        ),
+    )
 
 
 __all__ = [
     "TASK_WORKFLOW_MIGRATION",
-    "TASK_WORKFLOW_STATES_MIGRATION",
+    "LEGACY_TASK_WORKFLOW_MIGRATION",
+    "LEGACY_TASK_WORKFLOW_STATES_MIGRATION",
+    "assert_task_workflow_migration_postconditions",
     "migrate_task_workflow_v1",
     "migrate_task_workflow_states_v2",
+    "run_task_workflow_migration_hook",
+    "task_workflow_python_migrations",
     "task_table_kind",
+    "validate_legacy_task_workflow_adoption",
 ]

@@ -1,0 +1,359 @@
+import json
+import sqlite3
+
+import pytest
+
+
+TASK_MIGRATION = "0002_task_workflows"
+PERFORMANCE_MIGRATION = "0001_performance_history"
+PERFORMANCE_MIGRATION_CHECKSUM = (
+    "3eb1f10f2e7b3b102ab626bae3097e584210320618ef92e19936cdded8be6db5"
+)
+
+
+def _ledger_columns(conn: sqlite3.Connection) -> list[str]:
+    return [str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)")]
+
+
+def test_fresh_init_uses_one_checksum_backed_migration_ledger(tmp_path, monkeypatch):
+    path = tmp_path / "fresh-canonical-ledger.db"
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+
+    from app.db import init_db
+    from app.migrations import MIGRATIONS_DIR, python_migration_checksum
+    from app.task_migrations import task_workflow_python_migrations
+
+    init_db()
+
+    conn = sqlite3.connect(path)
+    assert _ledger_columns(conn) == ["version", "checksum", "applied_at"]
+    rows = conn.execute(
+        "SELECT version, checksum FROM schema_migrations ORDER BY version"
+    ).fetchall()
+    hook_payload = (MIGRATIONS_DIR / f"{TASK_MIGRATION}.hook.json").read_text()
+    assert json.loads(hook_payload)["hook_revision"] == 1
+    expected_checksum = python_migration_checksum(TASK_MIGRATION, contract=hook_payload)
+    assert rows == [(TASK_MIGRATION, expected_checksum)]
+    migration = task_workflow_python_migrations()[0]
+    assert migration.version == TASK_MIGRATION
+    assert migration.checksum == expected_checksum
+    assert migration.foreign_keys_off is True
+    assert migration.legacy_ledger_names == (
+        "task_workflow_v1",
+        "task_workflow_states_v2",
+    )
+    assert callable(migration.validate_legacy_adoption)
+    conn.close()
+
+
+def test_legacy_task_first_name_ledger_is_atomically_adopted(tmp_path, monkeypatch):
+    path = tmp_path / "legacy-task-first.db"
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+
+    from app import task_migrations
+    from app.db import SCHEMA_PATH, init_db
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.executescript(SCHEMA_PATH.read_text())
+    conn.executemany(
+        "INSERT INTO schema_migrations(name, applied_at) VALUES (?, ?)",
+        [
+            ("task_workflow_v1", "2026-09-03T00:00:00+00:00"),
+            ("task_workflow_states_v2", "2026-09-03T00:01:00+00:00"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    def destructive_hook_must_not_rerun(_conn):
+        raise AssertionError("completed legacy task migration was re-run")
+
+    monkeypatch.setattr(
+        task_migrations,
+        "_create_task_workflow_indexes_and_triggers",
+        destructive_hook_must_not_rerun,
+    )
+    init_db()
+
+    conn = sqlite3.connect(path)
+    assert _ledger_columns(conn) == ["version", "checksum", "applied_at"]
+    assert conn.execute("SELECT version FROM schema_migrations").fetchall() == [
+        (TASK_MIGRATION,)
+    ]
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()
+
+
+def test_unknown_legacy_name_ledger_marker_fails_closed(tmp_path, monkeypatch):
+    path = tmp_path / "unknown-legacy-marker.db"
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+
+    from app.db import SCHEMA_PATH, init_db
+    from app.migrations import MigrationInvariantError
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.executescript(SCHEMA_PATH.read_text())
+    conn.execute(
+        "INSERT INTO schema_migrations(name,applied_at) VALUES (?,?)",
+        ("some_other_feature", "2026-09-03T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(MigrationInvariantError, match="unknown legacy"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert _ledger_columns(conn) == ["name", "applied_at"]
+    assert conn.execute("SELECT name FROM schema_migrations").fetchall() == [
+        ("some_other_feature",)
+    ]
+    conn.close()
+
+
+def test_partial_legacy_name_ledger_fails_closed(tmp_path, monkeypatch):
+    path = tmp_path / "partial-legacy-marker.db"
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+
+    from app.db import SCHEMA_PATH, init_db
+    from app.migrations import MigrationInvariantError
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.executescript(SCHEMA_PATH.read_text())
+    conn.execute(
+        "INSERT INTO schema_migrations(name,applied_at) VALUES (?,?)",
+        ("task_workflow_v1", "2026-09-03T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(MigrationInvariantError, match="partial legacy"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert _ledger_columns(conn) == ["name", "applied_at"]
+    assert conn.execute("SELECT name FROM schema_migrations").fetchall() == [
+        ("task_workflow_v1",)
+    ]
+    conn.close()
+
+
+def test_performance_first_canonical_ledger_is_preserved(tmp_path, monkeypatch):
+    path = tmp_path / "performance-first.db"
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+
+    from app.db import SCHEMA_PATH, init_db
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations ("
+        "version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES (?,?,?)",
+        (
+            PERFORMANCE_MIGRATION,
+            PERFORMANCE_MIGRATION_CHECKSUM,
+            "2026-09-03T00:00:00.000000Z",
+        ),
+    )
+    conn.executescript(SCHEMA_PATH.read_text())
+    conn.commit()
+    conn.close()
+
+    init_db()
+
+    conn = sqlite3.connect(path)
+    assert _ledger_columns(conn) == ["version", "checksum", "applied_at"]
+    assert conn.execute(
+        "SELECT version,checksum FROM schema_migrations ORDER BY version"
+    ).fetchall() == [
+        (PERFORMANCE_MIGRATION, PERFORMANCE_MIGRATION_CHECKSUM),
+        (
+            TASK_MIGRATION,
+            conn.execute(
+                "SELECT checksum FROM schema_migrations WHERE version=?",
+                (TASK_MIGRATION,),
+            ).fetchone()[0],
+        ),
+    ]
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()
+
+
+def test_performance_first_checksum_mismatch_fails_closed(tmp_path, monkeypatch):
+    path = tmp_path / "performance-first-checksum-mismatch.db"
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+
+    from app.db import SCHEMA_PATH, init_db
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE schema_migrations ("
+        "version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES (?,?,?)",
+        (PERFORMANCE_MIGRATION, "a" * 64, "2026-09-03T00:00:00.000000Z"),
+    )
+    conn.executescript(SCHEMA_PATH.read_text())
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="migration checksum mismatch"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert conn.execute(
+        "SELECT version,checksum FROM schema_migrations"
+    ).fetchall() == [(PERFORMANCE_MIGRATION, "a" * 64)]
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("version", "checksum", "message"),
+    [
+        ("not-numbered", "a" * 64, "invalid Python migration version"),
+        ("0009_test_hook", "not-a-checksum", "invalid Python migration checksum"),
+    ],
+)
+def test_shared_runner_rejects_invalid_python_registration(
+    tmp_path, version, checksum, message
+):
+    from app.migrations import PythonMigration, apply_migrations
+
+    conn = sqlite3.connect(":memory:")
+    migration = PythonMigration(
+        version=version,
+        checksum=checksum,
+        apply=lambda _conn, _stamp: None,
+    )
+    with pytest.raises(ValueError, match=message):
+        apply_migrations(
+            conn,
+            migrations_dir=tmp_path,
+            python_migrations=(migration,),
+        )
+    assert conn.in_transaction is False
+    conn.close()
+
+
+def test_shared_runner_rejects_empty_legacy_marker_name(tmp_path):
+    from app.migrations import PythonMigration, apply_migrations
+
+    conn = sqlite3.connect(":memory:")
+    migration = PythonMigration(
+        version="0009_test_hook",
+        checksum="a" * 64,
+        apply=lambda _conn, _stamp: None,
+        legacy_ledger_names=("",),
+        validate_legacy_adoption=lambda _conn: None,
+    )
+    with pytest.raises(ValueError, match="invalid legacy migration marker contract"):
+        apply_migrations(
+            conn,
+            migrations_dir=tmp_path,
+            python_migrations=(migration,),
+        )
+    assert conn.in_transaction is False
+    conn.close()
+
+
+def test_failed_legacy_ledger_upgrade_rolls_back_schema_and_data(tmp_path, monkeypatch):
+    from app import task_migrations
+    from app.db import init_db
+
+    path = tmp_path / "failed-legacy-ledger-upgrade.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE merchants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active'
+            CHECK (status IN ('active','archived')),
+          notes TEXT,
+          primary_location TEXT,
+          website_url TEXT,
+          auto_run_interval_days INTEGER,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+          coreai_run_id TEXT,
+          status TEXT NOT NULL DEFAULT 'running'
+            CHECK (status IN ('running','succeeded','failed')),
+          trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('manual','auto')),
+          report_text TEXT,
+          error TEXT,
+          plan_approved_at TEXT,
+          created_at TEXT NOT NULL,
+          finished_at TEXT
+        );
+        CREATE TABLE tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+          title TEXT NOT NULL,
+          description TEXT,
+          rationale TEXT,
+          expected_outcome TEXT,
+          category TEXT,
+          scheduled_start TEXT,
+          status TEXT NOT NULL DEFAULT 'todo'
+            CHECK (status IN ('todo','doing','done','cancelled')),
+          evidence_note TEXT,
+          source_run_id INTEGER REFERENCES runs(id),
+          source_key TEXT,
+          created_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO merchants(id,name,created_at) VALUES (1,'Legacy','2026-09-03T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO tasks(id,merchant_id,title,status,created_at) "
+        "VALUES (1,1,'Legacy task','todo','2026-09-03T00:00:00+00:00')"
+    )
+    conn.execute(
+        "CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    before_tasks = conn.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+    conn.close()
+
+    def fail_conversion(_conn):
+        raise RuntimeError("injected canonical migration failure")
+
+    monkeypatch.setattr(
+        task_migrations, "_convert_legacy_runs_and_tasks", fail_conversion
+    )
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    with pytest.raises(RuntimeError, match="injected canonical migration failure"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert _ledger_columns(conn) == ["name", "applied_at"]
+    assert (
+        conn.execute("SELECT name FROM schema_migrations ORDER BY name").fetchall()
+        == []
+    )
+    assert conn.execute("SELECT * FROM tasks ORDER BY id").fetchall() == before_tasks
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_plans'"
+        ).fetchone()[0]
+        == 0
+    )
+    conn.close()

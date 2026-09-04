@@ -121,10 +121,7 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
     ).fetchone()[0]
     marker = conn.execute(
-        "SELECT COUNT(*) FROM schema_migrations WHERE name = 'task_workflow_v1'"
-    ).fetchone()[0]
-    states_marker = conn.execute(
-        "SELECT COUNT(*) FROM schema_migrations WHERE name = 'task_workflow_states_v2'"
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = '0002_task_workflows'"
     ).fetchone()[0]
     foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
     conn.close()
@@ -179,7 +176,6 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
         )
     )
     assert marker == 1
-    assert states_marker == 1
     assert foreign_key_errors == []
 
 
