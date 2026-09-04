@@ -310,3 +310,79 @@ BEFORE DELETE ON task_plan_revisions
 BEGIN
   SELECT RAISE(ABORT, 'plan revisions cannot be deleted');
 END;
+
+-- Core AI Run IDs are global upstream identities.  Keep every new local
+-- binding unique across both audit Runs and Task execution history.  Triggers
+-- are used instead of adding a UNIQUE column constraint so an existing legacy
+-- database can install the guard without rewriting or discarding old rows.
+CREATE TRIGGER IF NOT EXISTS trg_runs_coreai_run_id_unique_insert
+BEFORE INSERT ON runs
+WHEN NEW.coreai_run_id IS NOT NULL
+  AND (
+    EXISTS (
+      SELECT 1 FROM runs AS existing
+      WHERE existing.coreai_run_id = NEW.coreai_run_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM task_executions AS existing
+      WHERE existing.coreai_run_id = NEW.coreai_run_id
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'core-ai run id already bound');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_runs_coreai_run_id_unique_update
+BEFORE UPDATE OF coreai_run_id ON runs
+WHEN NEW.coreai_run_id IS NOT NULL
+  AND NEW.coreai_run_id IS NOT OLD.coreai_run_id
+  AND (
+    EXISTS (
+      SELECT 1 FROM runs AS existing
+      WHERE existing.id != OLD.id
+        AND existing.coreai_run_id = NEW.coreai_run_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM task_executions AS existing
+      WHERE existing.coreai_run_id = NEW.coreai_run_id
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'core-ai run id already bound');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_task_executions_coreai_run_id_unique_insert
+BEFORE INSERT ON task_executions
+WHEN NEW.coreai_run_id IS NOT NULL
+  AND (
+    EXISTS (
+      SELECT 1 FROM task_executions AS existing
+      WHERE existing.coreai_run_id = NEW.coreai_run_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM runs AS existing
+      WHERE existing.coreai_run_id = NEW.coreai_run_id
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'core-ai run id already bound');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_task_executions_coreai_run_id_unique_update
+BEFORE UPDATE OF coreai_run_id ON task_executions
+WHEN NEW.coreai_run_id IS NOT NULL
+  AND NEW.coreai_run_id IS NOT OLD.coreai_run_id
+  AND (
+    EXISTS (
+      SELECT 1 FROM task_executions AS existing
+      WHERE existing.id != OLD.id
+        AND existing.coreai_run_id = NEW.coreai_run_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM runs AS existing
+      WHERE existing.coreai_run_id = NEW.coreai_run_id
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'core-ai run id already bound');
+END;

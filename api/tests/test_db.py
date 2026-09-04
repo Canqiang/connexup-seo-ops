@@ -3,6 +3,110 @@ import sqlite3
 import pytest
 
 
+def _insert_task_execution(conn, task_id: int, coreai_run_id: str, suffix: str) -> None:
+    conn.execute(
+        "INSERT INTO task_executions "
+        "(task_id, stage, status, attempt, request_json, request_checksum, "
+        "idempotency_key, coreai_run_id, evidence_json, created_at, finished_at) "
+        "VALUES (?, 'PREPARATION', 'FAILED', 1, '{}', ?, ?, ?, '[]', ?, ?)",
+        (
+            task_id,
+            "a" * 64,
+            f"db-binding-{suffix}",
+            coreai_run_id,
+            "2026-09-04T00:00:00+00:00",
+            "2026-09-04T00:01:00+00:00",
+        ),
+    )
+
+
+def _operator_task(client, merchant_id: int) -> dict:
+    response = client.post(
+        f"/api/merchants/{merchant_id}/tasks",
+        json={
+            "task_type": "PREPARE_ONLY",
+            "title": "Check binding",
+            "rationale": "The Core AI identity must remain unique",
+            "expected_outcome": "One local owner for one upstream run",
+            "parameters": {"description": "Read-only check"},
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_coreai_run_id_cannot_be_reused_from_run_history_across_merchants(client):
+    from app.db import connect
+
+    first = client.post("/api/merchants", json={"name": "First owner"}).json()
+    second = client.post("/api/merchants", json={"name": "Second owner"}).json()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs "
+            "(merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at) "
+            "VALUES (?, 'reused-upstream-run', 'succeeded', 'manual', ?, ?)",
+            (
+                first["id"],
+                "2026-09-04T00:00:00+00:00",
+                "2026-09-04T00:01:00+00:00",
+            ),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="core-ai run id already bound"):
+            conn.execute(
+                "INSERT INTO runs "
+                "(merchant_id, coreai_run_id, status, trigger_kind, created_at) "
+                "VALUES (?, 'reused-upstream-run', 'running', 'manual', ?)",
+                (second["id"], "2026-09-04T00:02:00+00:00"),
+            )
+    finally:
+        conn.close()
+
+
+def test_coreai_run_id_cannot_cross_from_run_history_to_task_execution(client):
+    from app.db import connect
+
+    first = client.post("/api/merchants", json={"name": "Run owner"}).json()
+    second = client.post("/api/merchants", json={"name": "Task owner"}).json()
+    task = _operator_task(client, second["id"])
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs "
+            "(merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at) "
+            "VALUES (?, 'cross-table-run', 'succeeded', 'manual', ?, ?)",
+            (
+                first["id"],
+                "2026-09-04T00:00:00+00:00",
+                "2026-09-04T00:01:00+00:00",
+            ),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="core-ai run id already bound"):
+            _insert_task_execution(conn, task["id"], "cross-table-run", "cross-table")
+    finally:
+        conn.close()
+
+
+def test_task_execution_coreai_run_id_cannot_be_reused_from_history_across_merchants(
+    client,
+):
+    from app.db import connect
+
+    first = client.post("/api/merchants", json={"name": "First task owner"}).json()
+    second = client.post("/api/merchants", json={"name": "Second task owner"}).json()
+    first_task = _operator_task(client, first["id"])
+    second_task = _operator_task(client, second["id"])
+    conn = connect()
+    try:
+        _insert_task_execution(conn, first_task["id"], "task-history-run", "first")
+        with pytest.raises(sqlite3.IntegrityError, match="core-ai run id already bound"):
+            _insert_task_execution(
+                conn, second_task["id"], "task-history-run", "second"
+            )
+    finally:
+        conn.close()
+
+
 def test_init_db_creates_tables(tmp_path, monkeypatch):
     monkeypatch.setenv("SEO_OPS_DB", str(tmp_path / "t.db"))
     from app.db import init_db

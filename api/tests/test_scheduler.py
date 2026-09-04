@@ -1,6 +1,9 @@
+import asyncio
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from helpers import FakeCoreAi, cleanup_override, override_coreai
 
@@ -135,6 +138,28 @@ def test_poll_marks_failed_on_terminal_failure(client):
     assert "took too long" in detail["error"]
 
 
+def test_poll_sanitizes_a_malicious_run_error_before_persistence(client):
+    from app.scheduler import poll_runs_once
+
+    fake = FakeCoreAi()
+    _merchant, run = make_merchant_with_run(client, fake)
+    fake.runs[run["coreai_run_id"]] = {
+        "status": "FAILED",
+        "error": (
+            "\x00 forged\nAuthorization: Bearer upstream-secret\r\n" + "x" * 1000
+        ),
+    }
+
+    poll_runs_once(fake)
+
+    stored = client.get(f"/api/runs/{run['id']}").json()["error"]
+    assert len(stored) <= 500
+    assert "upstream-secret" not in stored
+    assert "\x00" not in stored
+    assert "\n" not in stored
+    assert "\r" not in stored
+
+
 def test_poll_leaves_nonterminal_running(client):
     from app.scheduler import poll_runs_once
 
@@ -145,6 +170,27 @@ def test_poll_leaves_nonterminal_running(client):
     poll_runs_once(fake)
 
     assert client.get(f"/api/runs/{run['id']}").json()["status"] == "running"
+
+
+@pytest.mark.parametrize("returned_id", [None, "another-coreai-run"])
+def test_poll_run_rejects_a_missing_or_mismatched_coreai_identity(
+    client, returned_id
+):
+    from app.scheduler import poll_runs_once
+
+    fake = FakeCoreAi()
+    _merchant, run = make_merchant_with_run(client, fake)
+    fake.runs[run["coreai_run_id"]] = {
+        "id": returned_id,
+        "status": "COMPLETED",
+        "output": "must not be persisted",
+    }
+
+    poll_runs_once(fake)
+
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "running"
+    assert detail["report_text"] is None
 
 
 def test_auto_scan_triggers_due_merchants_only(client):
@@ -437,6 +483,36 @@ def test_poll_preserves_historical_running_execution_compatibility(client):
     assert detail["events"][-1]["event_type"] == "TASK_PREPARATION_FAILED"
 
 
+def test_task_poll_sanitizes_a_malicious_terminal_error_before_persistence(client):
+    from app.scheduler import poll_task_executions_once
+
+    fake = FakeCoreAi()
+    merchant = client.post("/api/merchants", json={"name": "Unsafe error"}).json()
+    task = _operator_task(client, merchant["id"])
+    _insert_historical_execution(
+        task,
+        status="RUNNING",
+        coreai_run_id="unsafe-error-run",
+        dispatch_started_at=datetime.now(timezone.utc).isoformat(),
+    )
+    fake.runs["unsafe-error-run"] = {
+        "status": "FAILED",
+        "error": "\x00 forged\napi_key=upstream-secret\r\n" + "x" * 1000,
+    }
+
+    poll_task_executions_once(fake)
+
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    stored = detail["executions"][-1]["error"]
+    event_error = detail["events"][-1]["payload"]["error"]
+    assert event_error == stored
+    assert len(stored) <= 500
+    assert "upstream-secret" not in stored
+    assert "\x00" not in stored
+    assert "\n" not in stored
+    assert "\r" not in stored
+
+
 def test_poll_never_approves_historical_agent_completed_output(client):
     from app.scheduler import poll_task_executions_once
 
@@ -495,6 +571,112 @@ def test_poll_never_approves_historical_agent_completed_output(client):
     assert approval.json()["detail"] == "task is not awaiting preparation approval"
     assert fake.llm_calls == []
     assert fake.triggered == []
+
+
+def test_poll_marks_a_definitively_missing_coreai_run_unknown_once(client):
+    from app.coreai import CoreAiError
+    from app.scheduler import poll_task_executions_once
+
+    class MissingRunCoreAi:
+        def get_run(self, _run_id):
+            raise CoreAiError(404, "run not found")
+
+    merchant = client.post("/api/merchants", json={"name": "Missing run"}).json()
+    task = _operator_task(client, merchant["id"])
+    execution_id = _insert_historical_execution(
+        task,
+        status="RUNNING",
+        coreai_run_id="missing-coreai-run",
+        dispatch_started_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    poll_task_executions_once(MissingRunCoreAi())
+
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    assert detail["status"] == "NEEDS_ATTENTION"
+    assert detail["executions"][-1]["id"] == execution_id
+    assert detail["executions"][-1]["status"] == "UNKNOWN"
+    assert "not found" in detail["executions"][-1]["error"]
+    assert detail["events"][-1]["payload"]["reason"] == "coreai_run_not_found"
+    recovered_state = (detail["version"], len(detail["events"]))
+
+    poll_task_executions_once(MissingRunCoreAi())
+
+    reread = client.get(f"/api/tasks/{task['id']}").json()
+    assert (reread["version"], len(reread["events"])) == recovered_state
+
+
+@pytest.mark.parametrize("returned_id", [None, "another-coreai-run"])
+def test_task_poll_rejects_a_missing_or_mismatched_coreai_identity(
+    client, returned_id
+):
+    from app.scheduler import poll_task_executions_once
+
+    class WrongRunCoreAi:
+        def get_run(self, _run_id):
+            return {
+                "id": returned_id,
+                "status": "FAILED",
+                "error": "belongs to another upstream run",
+            }
+
+    merchant = client.post("/api/merchants", json={"name": "Wrong run"}).json()
+    task = _operator_task(client, merchant["id"])
+    execution_id = _insert_historical_execution(
+        task,
+        status="RUNNING",
+        coreai_run_id="expected-coreai-run",
+        dispatch_started_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    poll_task_executions_once(WrongRunCoreAi())
+
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    assert detail["status"] == "PREPARING"
+    assert detail["executions"][-1]["id"] == execution_id
+    assert detail["executions"][-1]["status"] == "RUNNING"
+    assert detail["executions"][-1]["error"] is None
+
+
+def test_poll_bounds_transient_errors_by_execution_age(client):
+    from app.coreai import CoreAiError
+    from app.scheduler import poll_task_executions_once
+
+    class UnavailableCoreAi:
+        def get_run(self, _run_id):
+            raise CoreAiError(503, "temporarily unavailable")
+
+    merchant = client.post("/api/merchants", json={"name": "Poll ceiling"}).json()
+    stale_task = _operator_task(client, merchant["id"])
+    fresh_task = _operator_task(client, merchant["id"])
+    stale_execution_id = _insert_historical_execution(
+        stale_task,
+        status="RUNNING",
+        coreai_run_id="stale-poll-run",
+        dispatch_started_at=(
+            datetime.now(timezone.utc) - timedelta(minutes=16)
+        ).isoformat(),
+    )
+    fresh_execution_id = _insert_historical_execution(
+        fresh_task,
+        status="RUNNING",
+        coreai_run_id="fresh-poll-run",
+        dispatch_started_at=(
+            datetime.now(timezone.utc) - timedelta(minutes=14)
+        ).isoformat(),
+    )
+
+    poll_task_executions_once(UnavailableCoreAi())
+
+    stale = client.get(f"/api/tasks/{stale_task['id']}").json()
+    assert stale["status"] == "NEEDS_ATTENTION"
+    assert stale["executions"][-1]["id"] == stale_execution_id
+    assert stale["executions"][-1]["status"] == "UNKNOWN"
+    assert stale["events"][-1]["payload"]["reason"] == "coreai_poll_stale"
+    fresh = client.get(f"/api/tasks/{fresh_task['id']}").json()
+    assert fresh["status"] == "PREPARING"
+    assert fresh["executions"][-1]["id"] == fresh_execution_id
+    assert fresh["executions"][-1]["status"] == "RUNNING"
 
 
 def test_synchronous_llm_call_rejects_unstructured_result(client):
@@ -563,3 +745,35 @@ def test_poll_marks_only_stale_llm_dispatch_unknown_without_redispatch(client):
     assert fresh["executions"][-1]["id"] == fresh_execution_id
     assert fresh["executions"][-1]["status"] == "DISPATCHING"
     assert fake.llm_calls == []
+
+
+def test_scheduler_recovers_stale_db_dispatch_without_coreai_configuration(
+    client, monkeypatch
+):
+    from app import scheduler
+
+    merchant = client.post(
+        "/api/merchants", json={"name": "Offline stale recovery"}
+    ).json()
+    task = _operator_task(client, merchant["id"])
+    execution_id = _insert_llm_dispatch(
+        task,
+        (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat(),
+    )
+    monkeypatch.setattr(scheduler, "coreai_settings", lambda: None)
+
+    class OneTickComplete(Exception):
+        pass
+
+    async def stop_after_first_tick(_delay):
+        raise OneTickComplete
+
+    monkeypatch.setattr(scheduler.asyncio, "sleep", stop_after_first_tick)
+
+    with pytest.raises(OneTickComplete):
+        asyncio.run(scheduler.scheduler_loop())
+
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    assert detail["status"] == "NEEDS_ATTENTION"
+    assert detail["executions"][-1]["id"] == execution_id
+    assert detail["executions"][-1]["status"] == "UNKNOWN"

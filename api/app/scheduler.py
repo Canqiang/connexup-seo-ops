@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from .audit_snapshots import persist_audit_snapshot
 from .config import coreai_settings
-from .coreai import CoreAiClient, CoreAiError, TERMINAL_STATUSES
+from .coreai import CoreAiClient, CoreAiError, TERMINAL_STATUSES, validate_run_detail
 from .db import connect
 from .merchants import now_iso
 from .runs import has_running_run, start_run
@@ -20,6 +20,7 @@ logger = logging.getLogger("seo_ops.scheduler")
 POLL_INTERVAL_SECONDS = 30
 SCAN_EVERY_TICKS = 120  # 120 * 30s = 1 小时
 TASK_LLM_DISPATCH_STALE_AFTER = timedelta(minutes=15)
+TASK_COREAI_POLL_STALE_AFTER = timedelta(minutes=15)
 TASK_LLM_DISPATCH_STALE_ERROR = (
     "synchronous LLM call exceeded the 15-minute dispatch recovery ceiling; "
     "outcome unknown"
@@ -38,7 +39,9 @@ def poll_runs_once(client) -> None:
         ).fetchall()
         for run in rows:
             try:
-                core = client.get_run(run["coreai_run_id"])
+                core = validate_run_detail(
+                    client.get_run(run["coreai_run_id"]), run["coreai_run_id"]
+                )
             except CoreAiError as e:
                 logger.warning("poll run %s failed, stays running: %s", run["id"], e)
                 continue
@@ -205,6 +208,89 @@ def _recover_stale_task_dispatches(conn) -> None:
             raise
 
 
+def recover_stale_task_dispatches_once() -> None:
+    """Run durable recovery without requiring any Core AI configuration."""
+
+    conn = connect()
+    try:
+        _recover_stale_task_dispatches(conn)
+    finally:
+        conn.close()
+
+
+def _task_execution_poll_is_stale(execution, now: datetime) -> bool:
+    started_at = execution["dispatch_started_at"] or execution["created_at"]
+    try:
+        parsed = datetime.fromisoformat(started_at)
+    except (TypeError, ValueError):
+        return True
+    if parsed.tzinfo is None or parsed > now:
+        return True
+    return now - parsed >= TASK_COREAI_POLL_STALE_AFTER
+
+
+def _mark_task_execution_poll_unknown(
+    conn,
+    execution,
+    *,
+    error: str,
+    reason: str,
+) -> None:
+    """Atomically stop an unresolvable historical Agent preparation."""
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = conn.execute(
+            "SELECT * FROM task_executions WHERE id = ?", (execution["id"],)
+        ).fetchone()
+        if (
+            current is None
+            or current["status"] != "RUNNING"
+            or current["coreai_run_id"] != execution["coreai_run_id"]
+        ):
+            conn.rollback()
+            return
+        task = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (current["task_id"],)
+        ).fetchone()
+        if task is None or task["status"] != "PREPARING":
+            raise RuntimeError("active preparation is detached from its PREPARING Task")
+
+        assert_transition(task["task_type"], task["status"], "NEEDS_ATTENTION")
+        finished_at = now_iso()
+        execution_update = conn.execute(
+            "UPDATE task_executions SET status = 'UNKNOWN', error = ?, finished_at = ? "
+            "WHERE id = ? AND status = 'RUNNING' AND coreai_run_id = ?",
+            (error, finished_at, current["id"], current["coreai_run_id"]),
+        )
+        task_update = conn.execute(
+            "UPDATE tasks SET status = 'NEEDS_ATTENTION', version = version + 1, "
+            "updated_at = ? WHERE id = ? AND version = ? AND status = 'PREPARING'",
+            (finished_at, task["id"], task["version"]),
+        )
+        if execution_update.rowcount != 1 or task_update.rowcount != 1:
+            raise RuntimeError("task preparation state changed during polling")
+        append_task_event(
+            conn,
+            entity_type="TASK",
+            entity_id=int(task["id"]),
+            event_type="TASK_PREPARATION_UNKNOWN",
+            actor_type="SYSTEM",
+            actor_id=None,
+            payload={
+                "ambiguous": True,
+                "error": error,
+                "execution_id": current["id"],
+                "reason": reason,
+            },
+        )
+        refresh_plan_lifecycle(conn, int(task["plan_id"]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def poll_task_executions_once(client) -> None:
     conn = connect()
     try:
@@ -215,9 +301,29 @@ def poll_task_executions_once(client) -> None:
         ).fetchall()
         for execution in executions:
             try:
-                core = client.get_run(execution["coreai_run_id"])
+                core = validate_run_detail(
+                    client.get_run(execution["coreai_run_id"]),
+                    execution["coreai_run_id"],
+                )
             except CoreAiError as exc:
-                logger.warning("poll task execution %s failed, stays running: %s", execution["id"], exc)
+                missing = exc.status_code in {404, 410}
+                stale = _task_execution_poll_is_stale(
+                    execution, datetime.now(timezone.utc)
+                )
+                if missing or stale:
+                    reason = "coreai_run_not_found" if missing else "coreai_poll_stale"
+                    _mark_task_execution_poll_unknown(
+                        conn,
+                        execution,
+                        error=f"core-ai run polling could not confirm outcome: {exc}",
+                        reason=reason,
+                    )
+                else:
+                    logger.warning(
+                        "poll task execution %s failed, stays running: %s",
+                        execution["id"],
+                        exc,
+                    )
                 continue
             status = core["status"]
             if status not in TERMINAL_STATUSES:
@@ -332,26 +438,37 @@ def auto_scan_once(client, agent_id: str) -> None:
 async def scheduler_loop() -> None:
     settings = coreai_settings()
     if settings is None:
-        logger.info("core-ai not configured; scheduler disabled")
-        return
-    client = CoreAiClient(settings.base_url, settings.api_key)
+        logger.info(
+            "core-ai not configured; network jobs disabled, "
+            "DB stale-dispatch recovery remains active"
+        )
+        client = None
+    else:
+        client = CoreAiClient(settings.base_url, settings.api_key)
     tick = 0
     while True:
         try:
-            await asyncio.to_thread(poll_runs_once, client)
-            await asyncio.to_thread(poll_task_executions_once, client)
-            if settings.keyword_agent_id and settings.audit_agent_id and settings.ranking_agent_id:
-                await asyncio.to_thread(
-                    poll_seo_targets_once,
-                    client,
-                    SeoAgentIds(
-                        settings.keyword_agent_id,
-                        settings.audit_agent_id,
-                        settings.ranking_agent_id,
-                    ),
-                )
-            if tick % SCAN_EVERY_TICKS == 0:
-                await asyncio.to_thread(auto_scan_once, client, settings.agent_id)
+            if client is None:
+                await asyncio.to_thread(recover_stale_task_dispatches_once)
+            else:
+                await asyncio.to_thread(poll_runs_once, client)
+                await asyncio.to_thread(poll_task_executions_once, client)
+                if (
+                    settings.keyword_agent_id
+                    and settings.audit_agent_id
+                    and settings.ranking_agent_id
+                ):
+                    await asyncio.to_thread(
+                        poll_seo_targets_once,
+                        client,
+                        SeoAgentIds(
+                            settings.keyword_agent_id,
+                            settings.audit_agent_id,
+                            settings.ranking_agent_id,
+                        ),
+                    )
+                if tick % SCAN_EVERY_TICKS == 0:
+                    await asyncio.to_thread(auto_scan_once, client, settings.agent_id)
         except Exception:
             logger.exception("scheduler tick failed")
         tick += 1

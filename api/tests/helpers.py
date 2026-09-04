@@ -42,7 +42,7 @@ class FakeCoreAi:
         return self.llm_output
 
     def get_run(self, run_id: str) -> dict:
-        return self.runs[run_id]
+        return {"id": run_id, **self.runs[run_id]}
 
 
 def override_coreai(fake, agent_id="agent-t"):

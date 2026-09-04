@@ -36,6 +36,16 @@ def test_trigger_missing_run_id_raises():
         make_client(handler).trigger("a", "x")
 
 
+def test_trigger_rejects_an_oversized_run_id():
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(202, json={"run_id": "r" * 256, "status": "RUNNING"})
+
+    with pytest.raises(CoreAiError, match="run_id"):
+        make_client(handler).trigger("a", "x")
+
+
 def test_llm_call_posts_only_input_with_bounded_long_timeout_and_returns_output():
     seen = {}
 
@@ -82,6 +92,16 @@ def test_llm_call_rejects_missing_or_non_text_output(response):
         make_client(handler).llm_call("prepare-v1", "prepare this")
 
 
+def test_llm_call_rejects_an_oversized_output_field():
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(200, json={"output": "x" * (1024 * 1024 + 1)})
+
+    with pytest.raises(CoreAiError, match="output"):
+        make_client(handler).llm_call("prepare-v1", "prepare this")
+
+
 def test_get_agent_reads_back_the_exact_published_capabilities():
     def handler(request):
         assert request.method == "GET"
@@ -91,6 +111,19 @@ def test_get_agent_reads_back_the_exact_published_capabilities():
     agent = make_client(handler).get_agent("agent-9")
 
     assert agent == {"id": "agent-9", "status": "PUBLISHED", "tools": []}
+
+
+def test_coreai_json_lists_have_a_bounded_item_count():
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"id": "agent-9", "status": "PUBLISHED", "tools": [{}] * 1001},
+        )
+
+    with pytest.raises(CoreAiError, match="list"):
+        make_client(handler).get_agent("agent-9")
 
 
 def test_get_run_returns_detail():
@@ -103,6 +136,23 @@ def test_get_run_returns_detail():
     assert detail["output"] == "report"
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "COMPLETED", "output": "report"},
+        {"id": "another-run", "status": "COMPLETED", "output": "report"},
+    ],
+)
+def test_get_run_rejects_a_missing_or_mismatched_run_id(response):
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(200, json=response)
+
+    with pytest.raises(CoreAiError, match="run detail id mismatch"):
+        make_client(handler).get_run("expected-run")
+
+
 def test_http_error_surfaces_status_and_message():
     from app.coreai import CoreAiError
 
@@ -113,6 +163,62 @@ def test_http_error_surfaces_status_and_message():
         make_client(handler).get_run("r-3")
     assert e.value.status_code == 401
     assert "invalid api key" in str(e.value)
+
+
+def test_http_error_message_is_redacted_single_line_and_bounded():
+    from app.coreai import CoreAiError
+
+    malicious = (
+        "\x00 forged log line\nAuthorization: Bearer top-secret-token\r\n"
+        + "x" * 1000
+    )
+
+    def handler(_request):
+        return httpx.Response(500, json={"message": malicious})
+
+    with pytest.raises(CoreAiError) as caught:
+        make_client(handler).get_run("r-secret")
+
+    stored = str(caught.value)
+    assert len(stored) <= 500
+    assert "top-secret-token" not in stored
+    assert "\x00" not in stored
+    assert "\n" not in stored
+    assert "\r" not in stored
+
+
+def test_declared_oversized_response_is_rejected_without_reading_its_body():
+    from app.coreai import CoreAiError
+
+    class MustNotRead(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("oversized response body was read")
+
+    def handler(_request):
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(2 * 1024 * 1024 + 1)},
+            stream=MustNotRead(),
+        )
+
+    with pytest.raises(CoreAiError, match="too large"):
+        make_client(handler).get_run("oversized-run")
+
+
+def test_chunked_oversized_response_stops_at_the_byte_ceiling():
+    from app.coreai import CoreAiError
+
+    class OversizedChunks(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'{"padding":"'
+            yield b"x" * (2 * 1024 * 1024)
+            raise AssertionError("client read beyond its response byte ceiling")
+
+    def handler(_request):
+        return httpx.Response(200, stream=OversizedChunks())
+
+    with pytest.raises(CoreAiError, match="too large"):
+        make_client(handler).get_run("oversized-run")
 
 
 def test_network_error_wrapped():
