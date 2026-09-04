@@ -52,6 +52,12 @@ RANKING_SKILL_OUTPUT_ADAPTER_VERSION = "seo_ops.ranking_skill_output_adapter.v1"
 RANKING_SKILL_KEYWORD_SET_ADAPTER_VERSION = (
     "seo_ops.ranking_skill_keyword_set_adapter.v2"
 )
+KEYWORD_ACTIVATION_REASONS = {
+    "SKILL_GENERATION",
+    "SYSTEM_BOOTSTRAP",
+    "RESTORE_SKILL",
+    "ADOPT_FBR",
+}
 # The current Local Falcon report contract has neither a timezone-aware
 # submission timestamp nor a batch/request correlation id. A report with the
 # same keyword and scan parameters could therefore belong to another paid run.
@@ -235,6 +241,21 @@ class LocalFalconReconciliationRequest(BaseModel):
         value = value.strip()
         if len(value) < 10:
             raise ValueError("reason must contain at least 10 non-whitespace characters")
+        return value
+
+
+class KeywordActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: StrictInt = Field(gt=0)
+    expected_active_artifact_id: StrictInt | None = Field(default=None, gt=0)
+    confirmed: StrictBool
+
+    @field_validator("confirmed")
+    @classmethod
+    def validate_confirmed(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("keyword activation must be explicitly confirmed")
         return value
 
 
@@ -603,6 +624,8 @@ def _keyword_artifact_paid_eligible(
         )
     if method != "UPSTREAM_DETERMINISTIC_ADAPTER":
         return False
+    if not _has_numeric_score_for_every_keyword(keyword_set):
+        return False
 
     execution = request.get("execution_spec")
     requested_workflow = request.get("workflow")
@@ -870,11 +893,19 @@ def _has_deterministic_scored_local_cohort(keyword_set: dict) -> bool:
     )
 
 
-def _preferred_ready_keyword_artifact(
+def _has_numeric_score_for_every_keyword(keyword_set: dict) -> bool:
+    keywords = keyword_set.get("keywords")
+    return bool(keywords) and isinstance(keywords, list) and all(
+        isinstance(item, dict) and _is_numeric_keyword_score(item.get("score"))
+        for item in keywords
+    )
+
+
+def _ready_keyword_artifact_candidates(
     conn: sqlite3.Connection,
     merchant_id: int,
-    current_place_id: str | None,
-) -> tuple[sqlite3.Row | None, dict | None]:
+    place_id: str,
+) -> list[tuple[sqlite3.Row, dict]]:
     rows = conn.execute(
         "SELECT * FROM merchant_seo_artifacts"
         " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'ready'"
@@ -883,22 +914,409 @@ def _preferred_ready_keyword_artifact(
     ).fetchall()
     candidates: list[tuple[sqlite3.Row, dict]] = []
     for row in rows:
-        if (
-            current_place_id is not None
-            and _keyword_artifact_place_id(row) != current_place_id
-        ):
+        if _keyword_artifact_place_id(row) != place_id:
             continue
         try:
-            keyword_set = json.loads(row["payload_json"])
+            keyword_set = _parse_keyword_set(row["payload_json"], merchant_id)
+        except (TypeError, ValueError, ValidationError):
+            continue
+        candidates.append((row, keyword_set))
+    return candidates
+
+
+def _is_valid_fbr_keyword_artifact(
+    row: sqlite3.Row,
+    keyword_set: dict,
+    place_id: str,
+) -> bool:
+    if (
+        keyword_set.get("generation_method") != "PERSISTED_FBR_READBACK"
+        or _keyword_artifact_place_id(row) != place_id
+        or row["source_agent_id"] != "fbr-keyword-store"
+    ):
+        return False
+    try:
+        request = json.loads(row["request_json"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return bool(
+        isinstance(request, dict)
+        and request.get("source") == "FBR_KEYWORD_STORE"
+        and request.get("place_id") == place_id
+    )
+
+
+def _ensure_keyword_head(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> sqlite3.Row:
+    head = conn.execute(
+        "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, place_id),
+    ).fetchone()
+    if head is not None:
+        return head
+
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        head = conn.execute(
+            "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+            (merchant_id, place_id),
+        ).fetchone()
+        if head is not None:
+            if owns_transaction:
+                conn.commit()
+            return head
+
+        candidates = _ready_keyword_artifact_candidates(conn, merchant_id, place_id)
+        active_artifact_id = next(
+            (
+                row["id"]
+                for row, keyword_set in candidates
+                if keyword_set.get("generation_method")
+                == "UPSTREAM_DETERMINISTIC_ADAPTER"
+                and _has_deterministic_scored_local_cohort(keyword_set)
+                and _keyword_artifact_paid_eligible(row, keyword_set, place_id)
+            ),
+            None,
+        )
+        if active_artifact_id is None:
+            active_artifact_id = next(
+                (
+                    row["id"]
+                    for row, keyword_set in candidates
+                    if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id)
+                ),
+                None,
+            )
+        timestamp = now_iso()
+        activation_values = (
+            ("system-bootstrap", "SYSTEM_BOOTSTRAP", timestamp)
+            if active_artifact_id is not None
+            else (None, None, None)
+        )
+        conn.execute(
+            "INSERT INTO merchant_keyword_heads"
+            " (merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+            " activated_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (merchant_id, place_id, active_artifact_id, *activation_values, timestamp),
+        )
+        head = conn.execute(
+            "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+            (merchant_id, place_id),
+        ).fetchone()
+        if owns_transaction:
+            conn.commit()
+        return head
+    except Exception:
+        if owns_transaction:
+            conn.rollback()
+        raise
+
+
+def _move_keyword_head(
+    conn: sqlite3.Connection,
+    *,
+    merchant_id: int,
+    place_id: str,
+    artifact_id: int,
+    expected_active_artifact_id: int | None,
+    activated_by: str,
+    activation_reason: str,
+) -> bool:
+    if activation_reason not in {"SKILL_GENERATION", "RESTORE_SKILL", "ADOPT_FBR"}:
+        raise ValueError("unsupported keyword activation reason")
+    if not activated_by:
+        raise ValueError("keyword activation actor is required")
+
+    artifact = conn.execute(
+        "SELECT * FROM merchant_seo_artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()
+    if (
+        artifact is None
+        or artifact["merchant_id"] != merchant_id
+        or artifact["artifact_type"] != "KEYWORD_SET"
+        or artifact["status"] != "ready"
+        or _keyword_artifact_place_id(artifact) != place_id
+    ):
+        raise ValueError("keyword activation target is not a ready exact-place artifact")
+    try:
+        keyword_set = json.loads(artifact["payload_json"] or "null")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("keyword activation target payload is invalid") from exc
+    if not isinstance(keyword_set, dict):
+        raise ValueError("keyword activation target payload is invalid")
+    if activation_reason in {"SKILL_GENERATION", "RESTORE_SKILL"}:
+        if (
+            keyword_set.get("generation_method") != "UPSTREAM_DETERMINISTIC_ADAPTER"
+            or not _keyword_artifact_paid_eligible(
+                artifact,
+                keyword_set,
+                place_id,
+            )
+        ):
+            raise ValueError("keyword activation target is not a verified scored Skill artifact")
+    elif not _is_valid_fbr_keyword_artifact(artifact, keyword_set, place_id):
+        raise ValueError("keyword activation target is not a trusted FBR artifact")
+
+    timestamp = now_iso()
+    return (
+        conn.execute(
+            "UPDATE merchant_keyword_heads"
+            " SET active_artifact_id = ?, activated_by = ?, activation_reason = ?,"
+            " activated_at = ?, updated_at = ?"
+            " WHERE merchant_id = ? AND place_id = ? AND active_artifact_id IS ?",
+            (
+                artifact_id,
+                activated_by,
+                activation_reason,
+                timestamp,
+                timestamp,
+                merchant_id,
+                place_id,
+                expected_active_artifact_id,
+            ),
+        ).rowcount
+        == 1
+    )
+
+
+def _active_ready_keyword_artifact(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> tuple[sqlite3.Row | None, dict | None]:
+    head = conn.execute(
+        "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+        (merchant_id, place_id),
+    ).fetchone()
+    if head is None or head["active_artifact_id"] is None:
+        return None, None
+
+    row = conn.execute(
+        "SELECT artifact.* FROM merchant_keyword_heads AS head"
+        " JOIN merchant_seo_artifacts AS artifact ON artifact.id = head.active_artifact_id"
+        " WHERE head.merchant_id = ? AND head.place_id = ?",
+        (merchant_id, place_id),
+    ).fetchone()
+    if (
+        row is None
+        or row["merchant_id"] != merchant_id
+        or row["artifact_type"] != "KEYWORD_SET"
+        or row["status"] != "ready"
+        or _keyword_artifact_place_id(row) != place_id
+    ):
+        raise HTTPException(status_code=409, detail="active keyword artifact is invalid")
+    try:
+        keyword_set = _parse_keyword_set(row["payload_json"], merchant_id)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=409, detail="active keyword artifact is invalid") from exc
+    return row, keyword_set
+
+
+def _keyword_version_source(keyword_set: dict) -> str | None:
+    generation_method = keyword_set.get("generation_method")
+    if generation_method == "UPSTREAM_DETERMINISTIC_ADAPTER":
+        return "SKILL"
+    if generation_method == "PERSISTED_FBR_READBACK":
+        return "FBR"
+    if generation_method is None:
+        return None
+    return "LEGACY"
+
+
+def _keyword_score_status(
+    row: sqlite3.Row,
+    keyword_set: dict,
+    place_id: str,
+) -> str:
+    if (
+        _keyword_version_source(keyword_set) == "SKILL"
+        and _keyword_artifact_paid_eligible(row, keyword_set, place_id)
+    ):
+        return "VERIFIED_SKILL"
+    keywords = keyword_set.get("keywords")
+    valid_keywords = (
+        [item for item in keywords if isinstance(item, dict)]
+        if isinstance(keywords, list)
+        else []
+    )
+    scored_keyword_count = sum(
+        _is_numeric_keyword_score(item.get("score")) for item in valid_keywords
+    )
+    if scored_keyword_count == 0:
+        return "UNSCORED"
+    if scored_keyword_count == len(valid_keywords):
+        return "SCORED_UNVERIFIED"
+    return "PARTIAL"
+
+
+def _keyword_version_summaries(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+    active_artifact_id: int | None,
+) -> list[dict]:
+    summaries = []
+    for row, keyword_set in _ready_keyword_artifact_candidates(
+        conn, merchant_id, place_id
+    ):
+        keywords = keyword_set.get("keywords")
+        valid_keywords = (
+            [item for item in keywords if isinstance(item, dict)]
+            if isinstance(keywords, list)
+            else []
+        )
+        summaries.append(
+            {
+                "artifact_id": row["id"],
+                "place_id": place_id,
+                "source": _keyword_version_source(keyword_set),
+                "generation_method": keyword_set.get("generation_method"),
+                "keyword_count": len(valid_keywords),
+                "local_keyword_count": sum(
+                    item.get("strategy") == "LOCAL" for item in valid_keywords
+                ),
+                "organic_keyword_count": sum(
+                    item.get("strategy") == "ORGANIC" for item in valid_keywords
+                ),
+                "scored_keyword_count": sum(
+                    _is_numeric_keyword_score(item.get("score"))
+                    for item in valid_keywords
+                ),
+                "score_status": _keyword_score_status(row, keyword_set, place_id),
+                "completed_at": row["completed_at"],
+                "is_active": row["id"] == active_artifact_id,
+            }
+        )
+    return summaries
+
+
+def _compare_fbr_local_candidate(
+    active_keyword_set: dict | None,
+    fbr_keyword_set: dict | None,
+) -> dict:
+    def local_keywords_by_identity(keyword_set: dict | None) -> dict[str, dict]:
+        if not isinstance(keyword_set, dict):
+            return {}
+        keywords = keyword_set.get("keywords")
+        if not isinstance(keywords, list):
+            return {}
+        by_identity: dict[str, dict] = {}
+        for item in keywords:
+            if (
+                not isinstance(item, dict)
+                or item.get("strategy") != "LOCAL"
+                or not isinstance(item.get("keyword"), str)
+                or not item["keyword"].strip()
+            ):
+                continue
+            identity = _keyword_identity(item["keyword"])
+            by_identity.setdefault(identity, item)
+        return by_identity
+
+    def normalized_surfaces(item: dict) -> list[str]:
+        values = item.get("target_surface_types")
+        if not isinstance(values, list):
+            return []
+        return sorted({value for value in values if isinstance(value, str)})
+
+    active = local_keywords_by_identity(active_keyword_set)
+    fbr = local_keywords_by_identity(fbr_keyword_set)
+    active_keys = set(active)
+    fbr_keys = set(fbr)
+    changed_keywords = []
+    priority_changed_count = 0
+    target_surfaces_changed_count = 0
+    for keyword in sorted(active_keys & fbr_keys):
+        priority = None
+        if active[keyword].get("priority") != fbr[keyword].get("priority"):
+            priority = {
+                "active": active[keyword].get("priority"),
+                "fbr": fbr[keyword].get("priority"),
+            }
+            priority_changed_count += 1
+        target_surfaces = None
+        active_surfaces = normalized_surfaces(active[keyword])
+        fbr_surfaces = normalized_surfaces(fbr[keyword])
+        if active_surfaces != fbr_surfaces:
+            target_surfaces = {"active": active_surfaces, "fbr": fbr_surfaces}
+            target_surfaces_changed_count += 1
+        if priority is not None or target_surfaces is not None:
+            changed_keywords.append(
+                {
+                    "keyword": keyword,
+                    "priority": priority,
+                    "target_surfaces": target_surfaces,
+                }
+            )
+    return {
+        "active_local_count": len(active),
+        "fbr_local_count": len(fbr),
+        "added_count": len(fbr_keys - active_keys),
+        "removed_count": len(active_keys - fbr_keys),
+        "priority_changed_count": priority_changed_count,
+        "target_surfaces_changed_count": target_surfaces_changed_count,
+        "added_keywords": sorted(fbr_keys - active_keys),
+        "removed_keywords": sorted(active_keys - fbr_keys),
+        "changed_keywords": changed_keywords,
+    }
+
+
+def _latest_fbr_keyword_import(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> tuple[sqlite3.Row | None, dict | None]:
+    for row, keyword_set in _ready_keyword_artifact_candidates(
+        conn, merchant_id, place_id
+    ):
+        if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id):
+            return row, keyword_set
+    return None, None
+
+
+def _latest_fbr_import_state(
+    row: sqlite3.Row | None,
+    keyword_set: dict | None,
+    active_keyword_set: dict | None,
+    active_artifact_id: int | None,
+) -> dict | None:
+    if row is None or keyword_set is None:
+        return None
+    return {
+        "artifact_id": row["id"],
+        "imported_at": row["completed_at"],
+        "is_active": row["id"] == active_artifact_id,
+        "comparison": _compare_fbr_local_candidate(active_keyword_set, keyword_set),
+    }
+
+
+def _ready_keyword_artifact_for_another_place(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    place_id: str,
+) -> sqlite3.Row | None:
+    rows = conn.execute(
+        "SELECT * FROM merchant_seo_artifacts"
+        " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'ready'"
+        " AND payload_json IS NOT NULL ORDER BY id DESC",
+        (merchant_id,),
+    ).fetchall()
+    for row in rows:
+        if _keyword_artifact_place_id(row) == place_id:
+            continue
+        try:
+            payload = json.loads(row["payload_json"])
         except (TypeError, json.JSONDecodeError):
             continue
-        if isinstance(keyword_set, dict):
-            candidates.append((row, keyword_set))
-
-    for row, keyword_set in candidates:
-        if _keyword_artifact_paid_eligible(row, keyword_set, current_place_id):
-            return row, keyword_set
-    return candidates[0] if candidates else (None, None)
+        if isinstance(payload, dict):
+            return row
+    return None
 
 
 def _local_falcon_cohort(keyword_set: dict | None) -> list[dict]:
@@ -1045,7 +1463,12 @@ def _fbr_local_keyword_set(merchant: sqlite3.Row, location: dict, payload: dict)
         ],
     }
     result = _rank_keyword_scores(result)
-    return KeywordSetV2.model_validate(result).model_dump(mode="json")
+    try:
+        return KeywordSetV2.model_validate(result).model_dump(mode="json")
+    except ValidationError as exc:
+        raise FbrPayloadError(
+            "FBR persisted local keyword payload violates the supported local contract"
+        ) from exc
 
 
 def _persist_fbr_keyword_set(
@@ -1111,7 +1534,20 @@ def _claim_keyword_cycle(
                 status_code=409,
                 detail="GBP Place ID is required for keyword lookup",
             )
+        keyword_head = _ensure_keyword_head(conn, merchant["id"], place_id)
+        expected_active_artifact_id = None
+        if operation == "regenerate":
+            expected_active_artifact_id = keyword_head["active_artifact_id"]
         cycle_id = str(uuid4())
+        claim_request = {
+            "operation": operation,
+            "place_id": place_id,
+            "claim_id": cycle_id,
+        }
+        if operation == "regenerate":
+            claim_request["expected_active_artifact_id"] = (
+                expected_active_artifact_id
+            )
         cursor = conn.execute(
             "INSERT INTO merchant_seo_artifacts"
             " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
@@ -1123,14 +1559,7 @@ def _claim_keyword_cycle(
                 cycle_id,
                 "fbr-keyword-store" if operation == "refresh" else "keyword-skill-workflow",
                 now_iso(),
-                json.dumps(
-                    {
-                        "operation": operation,
-                        "place_id": place_id,
-                        "claim_id": cycle_id,
-                    },
-                    ensure_ascii=False,
-                ),
+                json.dumps(claim_request, ensure_ascii=False),
                 now_iso(),
             ),
         )
@@ -1208,7 +1637,24 @@ def _start_keyword_skill_cycle(
             detail="configured keyword Seed and Ranking Skills must be distinct",
         )
 
+    claim = conn.execute(
+        "SELECT request_json FROM merchant_seo_artifacts"
+        " WHERE id = ? AND cycle_id = ? AND status = 'running'",
+        (artifact_id, cycle_id),
+    ).fetchone()
+    try:
+        claim_request = json.loads(claim["request_json"] if claim is not None else "null")
+    except (TypeError, json.JSONDecodeError) as exc:
+        _fail_keyword_claim(conn, artifact_id, "keyword workflow claim is invalid")
+        raise HTTPException(status_code=409, detail="keyword workflow claim is invalid") from exc
+    if not isinstance(claim_request, dict) or "expected_active_artifact_id" not in claim_request:
+        _fail_keyword_claim(conn, artifact_id, "keyword workflow claim is invalid")
+        raise HTTPException(status_code=409, detail="keyword workflow claim is invalid")
+
     request = build_keyword_request(conn, merchant)
+    request["expected_active_artifact_id"] = claim_request[
+        "expected_active_artifact_id"
+    ]
     request["execution_spec"]["action"] = "REGENERATE_KEYWORD_SET_WITH_SKILLS"
     request["output_schema_version"] = "seo_ops.keyword_workflow_result.v1"
     request["workflow"] = {
@@ -1300,16 +1746,14 @@ def _mark_stale_keyword_dispatches_unknown(conn: sqlite3.Connection) -> None:
         "keyword Skill dispatch stopped before a Core AI run ID was persisted; "
         "the dispatch outcome is unknown. Verify Core AI run history before manually retrying"
     )
-    updated = conn.execute(
+    conn.execute(
         "UPDATE merchant_seo_artifacts"
         " SET status = 'failed', dispatch_state = 'unknown', error = ?, completed_at = ?"
         " WHERE artifact_type = 'KEYWORD_SET' AND status = 'running'"
         " AND coreai_run_id IS NULL AND dispatch_state IN ('pending', 'dispatching')"
         " AND COALESCE(dispatch_started_at, created_at) < ?",
         (error, now_iso(), cutoff),
-    ).rowcount
-    if updated:
-        conn.commit()
+    )
 
 
 def _parse_json_object(raw: object, label: str) -> dict:
@@ -1670,6 +2114,7 @@ def poll_seo_targets_once(client: CoreAiClient, agents: SeoAgentIds) -> None:
         # into an explicit unknown outcome so an operator can verify Core AI
         # and then choose whether to submit a fresh regeneration.
         _mark_stale_keyword_dispatches_unknown(conn)
+        conn.commit()
         rows = conn.execute(
             "SELECT * FROM merchant_seo_artifacts"
             " WHERE status = 'running' AND coreai_run_id IS NOT NULL ORDER BY id"
@@ -1809,23 +2254,81 @@ def poll_seo_targets_once(client: CoreAiClient, agents: SeoAgentIds) -> None:
                         )
                         conn.commit()
                         continue
+                    expected_active_artifact_id = request.get(
+                        "expected_active_artifact_id"
+                    )
+                    if (
+                        "expected_active_artifact_id" not in request
+                        or isinstance(expected_active_artifact_id, bool)
+                        or (
+                            expected_active_artifact_id is not None
+                            and not isinstance(expected_active_artifact_id, int)
+                        )
+                    ):
+                        conn.execute(
+                            "UPDATE merchant_seo_artifacts"
+                            " SET status = 'failed', error = ?, completed_at = ? WHERE id = ?",
+                            (
+                                "keyword workflow expected active artifact is invalid",
+                                finished_at,
+                                row["id"],
+                            ),
+                        )
+                        conn.commit()
+                        continue
+                    if (
+                        not _has_deterministic_scored_local_cohort(payload)
+                        or not _has_numeric_score_for_every_keyword(payload)
+                    ):
+                        conn.execute(
+                            "UPDATE merchant_seo_artifacts"
+                            " SET status = 'failed', error = ?, completed_at = ? WHERE id = ?",
+                            (
+                                "keyword Skill result is missing complete deterministic scores and ranks for every keyword",
+                                finished_at,
+                                row["id"],
+                            ),
+                        )
+                        conn.commit()
+                        continue
 
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE merchant_seo_artifacts"
                 " SET status = 'ready', payload_json = ?, provenance_json = ?,"
                 " error = NULL, completed_at = ?"
-                " WHERE id = ?",
+                " WHERE id = ? AND status = 'running'",
                 (
                     json.dumps(payload, ensure_ascii=False),
                     json.dumps(provenance, ensure_ascii=False) if provenance else None,
                     finished_at,
                     row["id"],
                 ),
-            )
+            ).rowcount
+            if updated != 1:
+                conn.rollback()
+                continue
             # Explicit keyword regeneration is a self-contained workflow. Once
             # its Seed + Ranking Skill trace is attested, expose the scored
             # cohort for approval; do not silently launch audit/ranking Agents.
             if row["artifact_type"] == "KEYWORD_SET" and requires_skill_provenance:
+                activated = _move_keyword_head(
+                    conn,
+                    merchant_id=row["merchant_id"],
+                    place_id=request["execution_spec"]["google_business_id"],
+                    artifact_id=row["id"],
+                    expected_active_artifact_id=expected_active_artifact_id,
+                    activated_by="system-skill-workflow",
+                    activation_reason="SKILL_GENERATION",
+                )
+                if not activated:
+                    conn.execute(
+                        "UPDATE merchant_seo_artifacts SET error = ? WHERE id = ?",
+                        (
+                            "keyword activation conflict: active version changed while "
+                            "Skill generation was running",
+                            row["id"],
+                        ),
+                    )
                 conn.commit()
                 continue
             if row["artifact_type"] == "RANKING_REPORT":
@@ -2175,6 +2678,35 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
     merchant = conn.execute("SELECT * FROM merchants WHERE id = ?", (merchant_id,)).fetchone()
     location = _selected_location_context(conn, merchant) if merchant is not None else None
     current_place_id = location.get("place_id") if location else None
+    keyword_head = (
+        _ensure_keyword_head(conn, merchant_id, current_place_id)
+        if current_place_id
+        else None
+    )
+    keyword_row, keyword_payload = (
+        _active_ready_keyword_artifact(conn, merchant_id, current_place_id)
+        if current_place_id
+        else (None, None)
+    )
+    active_artifact_id = keyword_row["id"] if keyword_row else None
+    keyword_versions = (
+        _keyword_version_summaries(
+            conn, merchant_id, current_place_id, active_artifact_id
+        )
+        if current_place_id
+        else []
+    )
+    latest_fbr_row, latest_fbr_payload = (
+        _latest_fbr_keyword_import(conn, merchant_id, current_place_id)
+        if current_place_id
+        else (None, None)
+    )
+    latest_fbr_import = _latest_fbr_import_state(
+        latest_fbr_row,
+        latest_fbr_payload,
+        keyword_payload,
+        active_artifact_id,
+    )
     unresolved_batch = _unresolved_local_falcon_batch(conn, merchant_id)
     regenerate_blockers = []
     if not current_place_id:
@@ -2226,20 +2758,40 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
         ).fetchone()
         cycle_id = row["cycle_id"] if row else None
     if cycle_id is None:
+        paid_eligible = _keyword_artifact_paid_eligible(
+            keyword_row,
+            keyword_payload,
+            current_place_id,
+        )
         return {
             "merchant_id": merchant_id,
             "cycle_status": "empty",
             "active_stage": None,
-            "keyword_set_artifact_id": None,
-            "local_falcon_cohort_sha256": None,
-            "keyword_set": None,
+            "keyword_set_artifact_id": active_artifact_id,
+            "active_keyword_artifact_id": active_artifact_id,
+            "active_keyword_source": (
+                _keyword_version_source(keyword_payload) if keyword_payload else None
+            ),
+            "active_keyword_activated_at": (
+                keyword_head["activated_at"] if keyword_head else None
+            ),
+            "local_falcon_cohort_sha256": (
+                _local_falcon_cohort_sha256(keyword_payload)
+                if paid_eligible
+                else None
+            ),
+            "keyword_set": keyword_payload,
+            "keyword_versions": keyword_versions,
+            "latest_fbr_import": latest_fbr_import,
             "audit_report": None,
             "ranking_report": None,
             "local_falcon": _local_falcon_state(
                 conn,
                 merchant_id,
-                None,
+                keyword_payload,
+                active_artifact_id,
                 current_place_id=current_place_id,
+                paid_eligible=paid_eligible,
             ),
             "capabilities": capabilities,
             "error": None,
@@ -2250,13 +2802,16 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
     ).fetchall()
     running = next((row for row in rows if row["status"] == "running"), None)
     failed = next((row for row in reversed(rows) if row["status"] == "failed"), None)
-
-    keyword_row, keyword_payload = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        current_place_id,
+    activation_conflict = next(
+        (
+            row
+            for row in reversed(rows)
+            if row["status"] == "ready" and row["error"]
+        ),
+        None,
     )
-    display_cycle_id = keyword_row["cycle_id"] if keyword_row else None
+
+    display_cycle_id = keyword_row["cycle_id"] if keyword_row else cycle_id
     display_rows = conn.execute(
         "SELECT * FROM merchant_seo_artifacts"
         " WHERE merchant_id = ? AND cycle_id = ? AND status = 'ready' ORDER BY id",
@@ -2319,20 +2874,142 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
         "cycle_id": cycle_id,
         "cycle_status": "running" if running else "failed" if failed else "ready",
         "active_stage": running["artifact_type"] if running else None,
-        "keyword_set_artifact_id": keyword_row["id"] if keyword_row else None,
+        "keyword_set_artifact_id": active_artifact_id,
+        "active_keyword_artifact_id": active_artifact_id,
+        "active_keyword_source": (
+            _keyword_version_source(keyword_payload) if keyword_payload else None
+        ),
+        "active_keyword_activated_at": (
+            keyword_head["activated_at"] if keyword_head else None
+        ),
         "local_falcon_cohort_sha256": cohort_sha256,
         "keyword_set": keyword_payload,
+        "keyword_versions": keyword_versions,
+        "latest_fbr_import": latest_fbr_import,
         "audit_report": payload("AUDIT_REPORT"),
         "ranking_report": payload("RANKING_REPORT"),
         "local_falcon": local_falcon,
         "capabilities": capabilities,
-        "error": _public_seo_artifact_error(failed),
+        "error": _public_seo_artifact_error(failed or activation_conflict),
     }
 
 
 @router.get("/merchants/{merchant_id}/seo-targets")
 def get_seo_targets(merchant_id: int, conn=Depends(get_db)):
     fetch_merchant(conn, merchant_id)
+    return _state(conn, merchant_id)
+
+
+@router.post("/merchants/{merchant_id}/seo-targets/activations")
+def activate_keyword_version(
+    merchant_id: int,
+    body: KeywordActivationRequest,
+    operator: str = Depends(require_operator),
+    conn=Depends(get_db),
+):
+    merchant = fetch_active_merchant(conn, merchant_id)
+    location = _location_context(conn, merchant)
+    place_id = location.get("place_id")
+    if not place_id:
+        raise HTTPException(
+            status_code=409,
+            detail="GBP Place ID is required for keyword activation",
+        )
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        locked_merchant = fetch_active_merchant(conn, merchant_id)
+        locked_location = _location_context(conn, locked_merchant)
+        locked_place_id = locked_location.get("place_id")
+        if locked_place_id != place_id:
+            raise HTTPException(
+                status_code=409,
+                detail="selected GBP location changed; refresh keyword versions",
+            )
+
+        _ensure_keyword_head(conn, merchant_id, place_id)
+        candidate = conn.execute(
+            "SELECT * FROM merchant_seo_artifacts WHERE id = ?",
+            (body.artifact_id,),
+        ).fetchone()
+        head = conn.execute(
+            "SELECT * FROM merchant_keyword_heads WHERE merchant_id = ? AND place_id = ?",
+            (merchant_id, place_id),
+        ).fetchone()
+        if candidate is None or candidate["merchant_id"] != merchant_id:
+            raise HTTPException(status_code=404, detail="keyword artifact not found")
+        if candidate["artifact_type"] != "KEYWORD_SET":
+            raise HTTPException(
+                status_code=409,
+                detail="keyword activation target is not a keyword artifact",
+            )
+        if candidate["status"] != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact is not ready",
+            )
+        if _keyword_artifact_place_id(candidate) != place_id:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact belongs to another GBP location",
+            )
+        if head is None:
+            raise HTTPException(
+                status_code=409,
+                detail="active keyword head is not initialized",
+            )
+        try:
+            keyword_set = _parse_keyword_set(candidate["payload_json"], merchant_id)
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact payload is invalid",
+            ) from exc
+
+        generation_method = keyword_set.get("generation_method")
+        if generation_method == "UPSTREAM_DETERMINISTIC_ADAPTER":
+            activation_reason = "RESTORE_SKILL"
+        elif generation_method == "PERSISTED_FBR_READBACK":
+            activation_reason = "ADOPT_FBR"
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact source cannot be activated",
+            )
+
+        unresolved = _unresolved_local_falcon_batch(conn, merchant_id)
+        if unresolved is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Local Falcon scan batch {unresolved['id']} is unresolved; "
+                    "sync or reconcile it before activating another keyword version"
+                ),
+            )
+
+        try:
+            moved = _move_keyword_head(
+                conn,
+                merchant_id=merchant_id,
+                place_id=place_id,
+                artifact_id=candidate["id"],
+                expected_active_artifact_id=body.expected_active_artifact_id,
+                activated_by=operator,
+                activation_reason=activation_reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not moved:
+            raise HTTPException(
+                status_code=409,
+                detail="active keyword version changed; refresh and review the latest version",
+            )
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
     return _state(conn, merchant_id)
 
 
@@ -2346,37 +3023,53 @@ def approve_local_falcon_cohort(
     operator: str = Depends(require_operator),
     conn=Depends(get_db),
 ):
-    merchant = fetch_active_merchant(conn, merchant_id)
-    location = _location_context(conn, merchant)
-    place_id = location.get("place_id")
-    if not place_id:
-        raise HTTPException(status_code=409, detail="GBP Place ID is required for Local Falcon")
-    if conn.execute(
-        "SELECT 1 FROM merchant_seo_artifacts"
-        " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'running'"
-        " LIMIT 1",
-        (merchant_id,),
-    ).fetchone():
-        raise HTTPException(
-            status_code=409,
-            detail="wait for keyword regeneration to finish before approval",
-        )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        merchant = fetch_active_merchant(conn, merchant_id)
+        location = _location_context(conn, merchant)
+        place_id = location.get("place_id")
+        if not place_id:
+            raise HTTPException(
+                status_code=409,
+                detail="GBP Place ID is required for Local Falcon",
+            )
+        if conn.execute(
+            "SELECT 1 FROM merchant_seo_artifacts"
+            " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'running'"
+            " LIMIT 1",
+            (merchant_id,),
+        ).fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="wait for keyword regeneration to finish before approval",
+            )
 
-    latest_keyword_row, keyword_set = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        place_id,
-    )
-    if latest_keyword_row is None:
-        latest_other_location, _ = _preferred_ready_keyword_artifact(
-            conn,
-            merchant_id,
-            None,
+        _ensure_keyword_head(conn, merchant_id, place_id)
+        active_keyword_row, keyword_set = _active_ready_keyword_artifact(
+            conn, merchant_id, place_id
         )
-        if (
-            latest_other_location is not None
-            and _keyword_artifact_place_id(latest_other_location) != place_id
-        ):
+        if active_keyword_row is None:
+            latest_other_location = _ready_keyword_artifact_for_another_place(
+                conn, merchant_id, place_id
+            )
+            if latest_other_location is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "keyword artifact belongs to another GBP location; "
+                        "refresh or regenerate keywords for the current location"
+                    ),
+                )
+            raise HTTPException(
+                status_code=409,
+                detail="generate and score keywords before approval",
+            )
+        if active_keyword_row["id"] != body.keyword_artifact_id:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword cohort changed; review the latest Top 20",
+            )
+        if _keyword_artifact_place_id(active_keyword_row) != place_id:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -2384,61 +3077,53 @@ def approve_local_falcon_cohort(
                     "refresh or regenerate keywords for the current location"
                 ),
             )
-        raise HTTPException(status_code=409, detail="generate and score keywords before approval")
-    if latest_keyword_row["id"] != body.keyword_artifact_id:
-        raise HTTPException(
-            status_code=409,
-            detail="keyword cohort changed; review the latest Top 20",
-        )
-    if _keyword_artifact_place_id(latest_keyword_row) != place_id:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "keyword artifact belongs to another GBP location; "
-                "refresh or regenerate keywords for the current location"
+
+        if not _has_deterministic_scored_local_cohort(keyword_set):
+            raise HTTPException(
+                status_code=409,
+                detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
+            )
+        if not _keyword_artifact_paid_eligible(
+            active_keyword_row, keyword_set, place_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="keyword artifact does not have trusted FBR or configured Skill provenance",
+            )
+        cohort = _local_falcon_cohort_snapshot(keyword_set)
+        cohort_sha256 = _local_falcon_cohort_sha256(keyword_set)
+        if not cohort or cohort_sha256 is None:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
+            )
+        if cohort_sha256 != body.expected_cohort_sha256:
+            raise HTTPException(
+                status_code=409,
+                detail="keyword cohort changed; review the latest Top 20",
+            )
+
+        approved_at = now_iso()
+        conn.execute(
+            "INSERT INTO merchant_local_falcon_approvals"
+            " (merchant_id, keyword_artifact_id, cohort_sha256, cohort_json, place_id,"
+            " approved_by, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(merchant_id, keyword_artifact_id, cohort_sha256) DO NOTHING",
+            (
+                merchant_id,
+                active_keyword_row["id"],
+                cohort_sha256,
+                json.dumps(cohort, ensure_ascii=False),
+                place_id,
+                operator,
+                approved_at,
             ),
         )
-
-    if not _has_deterministic_scored_local_cohort(keyword_set):
-        raise HTTPException(
-            status_code=409,
-            detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
-        )
-    if not _keyword_artifact_paid_eligible(latest_keyword_row, keyword_set, place_id):
-        raise HTTPException(
-            status_code=409,
-            detail="keyword artifact does not have trusted FBR or configured Skill provenance",
-        )
-    cohort = _local_falcon_cohort_snapshot(keyword_set)
-    cohort_sha256 = _local_falcon_cohort_sha256(keyword_set)
-    if not cohort or cohort_sha256 is None:
-        raise HTTPException(
-            status_code=409,
-            detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
-        )
-    if cohort_sha256 != body.expected_cohort_sha256:
-        raise HTTPException(
-            status_code=409,
-            detail="keyword cohort changed; review the latest Top 20",
-        )
-
-    approved_at = now_iso()
-    conn.execute(
-        "INSERT INTO merchant_local_falcon_approvals"
-        " (merchant_id, keyword_artifact_id, cohort_sha256, cohort_json, place_id,"
-        " approved_by, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        " ON CONFLICT(merchant_id, keyword_artifact_id, cohort_sha256) DO NOTHING",
-        (
-            merchant_id,
-            latest_keyword_row["id"],
-            cohort_sha256,
-            json.dumps(cohort, ensure_ascii=False),
-            place_id,
-            operator,
-            approved_at,
-        ),
-    )
-    conn.commit()
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
     return _state(conn, merchant_id)
 
 
@@ -2523,10 +3208,9 @@ def create_local_falcon_scan_batch(
             ),
         )
 
-    latest_keyword_row, latest_keyword_set = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        approval["place_id"],
+    _ensure_keyword_head(conn, merchant_id, approval["place_id"])
+    latest_keyword_row, latest_keyword_set = _active_ready_keyword_artifact(
+        conn, merchant_id, approval["place_id"]
     )
     latest_sha256 = _local_falcon_cohort_sha256(latest_keyword_set)
     if (
@@ -3071,6 +3755,7 @@ def recover_stale_seo_dispatches_once() -> None:
     conn = connect()
     try:
         _mark_stale_keyword_dispatches_unknown(conn)
+        conn.commit()
         _mark_stale_local_falcon_dispatches_unknown(conn)
     finally:
         conn.close()
@@ -3520,21 +4205,15 @@ def sync_local_falcon_reports(
     place_id = location.get("place_id")
     if not place_id:
         raise HTTPException(status_code=409, detail="GBP Place ID is required for Local Falcon")
-    keyword_row, keyword_set = _preferred_ready_keyword_artifact(
-        conn,
-        merchant_id,
-        place_id,
+    _ensure_keyword_head(conn, merchant_id, place_id)
+    keyword_row, keyword_set = _active_ready_keyword_artifact(
+        conn, merchant_id, place_id
     )
     if keyword_row is None:
-        latest_other_location, _ = _preferred_ready_keyword_artifact(
-            conn,
-            merchant_id,
-            None,
+        latest_other_location = _ready_keyword_artifact_for_another_place(
+            conn, merchant_id, place_id
         )
-        if (
-            latest_other_location is not None
-            and _keyword_artifact_place_id(latest_other_location) != place_id
-        ):
+        if latest_other_location is not None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -3684,10 +4363,17 @@ def refresh_seo_targets(
             detail="FBR keyword repository is not configured",
         ) from exc
     try:
+        fbr_response = fbr_client.get_local_keywords(place_id)
+        if not isinstance(fbr_response, dict):
+            raise FbrPayloadError("FBR persisted local keyword response is invalid")
+        if fbr_response.get("place_id") != place_id:
+            raise FbrPayloadError(
+                "FBR persisted keyword Place ID does not match the selected GBP location"
+            )
         persisted = _fbr_local_keyword_set(
             merchant,
             location,
-            fbr_client.get_local_keywords(place_id),
+            fbr_response,
         )
     except (FbrPayloadError, FbrUnavailableError) as exc:
         _fail_keyword_claim(conn, artifact_id, str(exc))

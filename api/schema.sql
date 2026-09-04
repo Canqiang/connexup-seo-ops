@@ -103,6 +103,34 @@ CREATE TABLE IF NOT EXISTS merchant_seo_artifacts (
 CREATE INDEX IF NOT EXISTS idx_merchant_seo_artifacts_latest
   ON merchant_seo_artifacts(merchant_id, id DESC);
 
+CREATE TABLE IF NOT EXISTS merchant_keyword_heads (
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  place_id TEXT NOT NULL,
+  active_artifact_id INTEGER REFERENCES merchant_seo_artifacts(id) ON DELETE RESTRICT,
+  activated_by TEXT,
+  activation_reason TEXT CHECK (
+    activation_reason IS NULL OR activation_reason IN (
+      'SKILL_GENERATION',
+      'SYSTEM_BOOTSTRAP',
+      'RESTORE_SKILL',
+      'ADOPT_FBR'
+    )
+  ),
+  activated_at TEXT,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (active_artifact_id IS NULL AND activated_by IS NULL
+      AND activation_reason IS NULL AND activated_at IS NULL)
+    OR
+    (active_artifact_id IS NOT NULL AND activated_by IS NOT NULL
+      AND activation_reason IS NOT NULL AND activated_at IS NOT NULL)
+  ),
+  PRIMARY KEY (merchant_id, place_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_keyword_heads_active
+  ON merchant_keyword_heads(active_artifact_id);
+
 CREATE TABLE IF NOT EXISTS merchant_local_falcon_syncs (
   merchant_id INTEGER PRIMARY KEY REFERENCES merchants(id) ON DELETE CASCADE,
   place_id TEXT,

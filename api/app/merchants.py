@@ -22,6 +22,7 @@ MERCHANT_DELETE_STATEMENTS = (
     "DELETE FROM tasks WHERE merchant_id = ?",
     "DELETE FROM audit_snapshots WHERE merchant_id = ?",
     "DELETE FROM runs WHERE merchant_id = ?",
+    "DELETE FROM merchant_keyword_heads WHERE merchant_id = ?",
     "DELETE FROM merchant_seo_artifacts WHERE merchant_id = ?",
     "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?",
     "DELETE FROM merchant_fbr_links WHERE merchant_id = ?",

@@ -265,6 +265,43 @@ export type SeoKeywordSet = {
   evidence_gaps: string[]
 }
 
+export type SeoKeywordVersion = {
+  artifact_id: number
+  place_id: string
+  source: 'SKILL' | 'FBR' | 'LEGACY'
+  generation_method: SeoKeywordSet['generation_method']
+  keyword_count: number
+  local_keyword_count: number
+  organic_keyword_count: number
+  scored_keyword_count: number
+  score_status: 'VERIFIED_SKILL' | 'SCORED_UNVERIFIED' | 'UNSCORED' | 'PARTIAL'
+  completed_at: string | null
+  is_active: boolean
+}
+
+export type SeoKeywordComparison = {
+  active_local_count: number
+  fbr_local_count: number
+  added_count: number
+  removed_count: number
+  priority_changed_count: number
+  target_surfaces_changed_count: number
+  added_keywords: string[]
+  removed_keywords: string[]
+  changed_keywords: Array<{
+    keyword: string
+    priority: { active: SeoKeyword['priority']; fbr: SeoKeyword['priority'] } | null
+    target_surfaces: { active: string[]; fbr: string[] } | null
+  }>
+}
+
+export type SeoLatestFbrImport = {
+  artifact_id: number
+  imported_at: string | null
+  is_active: boolean
+  comparison: SeoKeywordComparison
+}
+
 export type SeoRankingItem = {
   keyword: string
   local_rank: number | null
@@ -389,6 +426,11 @@ export type SeoTargetState = {
   active_stage: 'KEYWORD_SET' | 'AUDIT_REPORT' | 'RANKING_REPORT' | null
   keyword_set: SeoKeywordSet | null
   keyword_set_artifact_id?: number | null
+  active_keyword_artifact_id: number | null
+  active_keyword_source: 'SKILL' | 'FBR' | 'LEGACY' | null
+  active_keyword_activated_at: string | null
+  keyword_versions: SeoKeywordVersion[]
+  latest_fbr_import: SeoLatestFbrImport | null
   local_falcon_cohort_sha256?: string | null
   audit_report: AuditReport | null
   ranking_report: SeoRankingReport | null
@@ -480,6 +522,15 @@ export const api = {
   getSeoTargets: (id: number) => request<SeoTargetState>(`/api/merchants/${id}/seo-targets`),
   refreshSeoTargets: (id: number) =>
     request<SeoTargetState>(`/api/merchants/${id}/seo-targets/refresh`, { method: 'POST' }),
+  activateSeoKeywordVersion: (id: number, body: {
+    artifact_id: number
+    expected_active_artifact_id: number | null
+    confirmed: true
+  }) =>
+    request<SeoTargetState>(`/api/merchants/${id}/seo-targets/activations`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   regenerateSeoTargets: (id: number) =>
     request<SeoTargetState>(`/api/merchants/${id}/seo-targets/regenerate`, { method: 'POST' }),
   syncLocalFalconReports: (id: number) =>
