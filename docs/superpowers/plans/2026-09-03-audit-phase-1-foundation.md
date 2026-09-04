@@ -56,7 +56,7 @@ cd /Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace/api
 
 - [ ] Preserve the Performance runner's invariant registration and postcondition hooks. For each migration, acquire `BEGIN IMMEDIATE`, re-read the ledger under that lock, execute and data-migrate atomically, insert the version/checksum row, and commit; a concurrent caller must become a verified no-op rather than execute DDL twice.
 - [ ] Keep the existing `init_db()` integration. Existing databases and fresh databases must converge on the same schema before any Audit table is added.
-- [ ] Document that an applied numbered migration is immutable and that Audit starts at `0002`. Every later schema change receives a new higher-numbered file.
+- [ ] Document that an applied numbered migration is immutable and that Audit starts at `0003`. Every later schema change receives a new higher-numbered file.
 - [ ] Run the focused tests, `git diff --check`, and inspect only the migration-runner diff. Commit as `feat: add ordered schema migrations` when green.
 
 ## Task 2: Reuse the shared stable Location Registry for Audit
@@ -288,9 +288,9 @@ def invalidate_subject_generation(conn: sqlite3.Connection, *, subject_id: str,
 - [ ] Ensure Subject creation/projection and source snapshot persistence commit together. If exact resolution fails, append a shared `needs_attention` status event with bounded reason/evidence and create no active Subject.
 - [ ] On merchant/location archive or generation change, update Subject/policy/Run projections with policy-version CAS in the same transaction as the registry lifecycle event.
 - [ ] Extend `merchant_has_active_work()` to include active Audit Runs.
-- [ ] Before merchant hard delete, query accepted Audit Versions. Return HTTP 409 with structured code `MERCHANT_HAS_IMMUTABLE_AUDIT_HISTORY` and an archive recommendation when any exist. Also reject with `MERCHANT_HAS_AUDIT_ASSETS` while any Audit Asset metadata exists; Phase 5 extends this path with exact unaccepted-object cleanup.
-- [ ] For a merchant with no Audit Version, no active work, and no Audit Asset rows, implement `delete_unaccepted_audit_state(conn, merchant_id)` and call it inside the existing delete transaction before the existing shared merchant/location cleanup. Delete only Audit-owned state in dependency order: Run events; terminal Attempts; terminal/blocked Runs; policies; Subject events; Subjects. Do not delete shared location aliases, bindings, status events, or locations from the Audit helper. Assert every Audit delete is scoped through the target merchant/Subject IDs and read back zero Audit dependents before the existing merchant lifecycle code handles shared registry rows.
-- [ ] Add tests for a never-audited synced merchant, blocked-only history, failed-only history, active Run, accepted Version, and Asset metadata. The first three delete cleanly with no orphan/FK failure; active/history/Asset cases return their stable conflict without partial deletion.
+- [ ] Preserve the Performance foundation's hard-delete boundary: only an archived blank draft with no location, source binding, Audit row, or other durable history may be physically deleted. A synced merchant is never a blank draft, even when it has never run Audit. Return HTTP 409 with `MERCHANT_HAS_IMMUTABLE_AUDIT_HISTORY` for accepted Versions, `MERCHANT_HAS_AUDIT_ASSETS` for any Asset metadata, and `MERCHANT_HAS_AUDIT_HISTORY` for any other Subject/policy/Run/Attempt/event row; every response recommends archive/history retention.
+- [ ] Do not add an Audit helper that deletes failed/blocked Runs, Subjects, policies, or shared registry history merely to regain hard-delete eligibility. Phase 5 orphan-object cleanup may reclaim unreferenced bytes and their fenced pending/failed metadata, but it does not erase the durable operational history that caused a merchant to stop being a blank draft.
+- [ ] Add tests for an archived blank draft, a never-audited synced merchant, blocked-only history, failed-only history, active Run, accepted Version, and Asset metadata. Only the blank draft deletes cleanly; every other case returns its stable conflict without partial deletion or history loss.
 - [ ] Run:
 
 ```bash

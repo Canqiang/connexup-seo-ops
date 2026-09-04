@@ -91,7 +91,7 @@ Plan: `docs/superpowers/plans/2026-09-03-audit-phase-5-exports.md`
 
 Deliverables:
 
-- durable content-addressed Asset Store;
+- durable owner-scoped write-once Asset Store;
 - JSON and self-contained HTML renderers;
 - customer PDF via pinned Playwright Chromium;
 - export/retry/status/download APIs and UI states;
