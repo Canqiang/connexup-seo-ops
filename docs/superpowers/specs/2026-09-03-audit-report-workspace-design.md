@@ -2,7 +2,7 @@
 
 **日期：** 2026-09-03
 
-**状态：** 对话设计已确认；书面规格等待最终评审
+**状态：** 已确认；实现限定于 `codex/audit-report-workspace` 隔离分支
 
 **仓库：** `/Users/xander/git_repo/connexup-seo-ops`
 
@@ -193,7 +193,7 @@ Audit 不复用通用 `runs` 的输出契约或 merchant-wide running lock。
 
 `audit_subject_events` 以 append-only 方式保存 created、identity_projection_changed、website_changed、archived 和 restored。每条事件保存前后 Audit generation、引用的共享 location lifecycle event、GBP source-scope binding generation、Place alias/evidence generation、规范化 identity manifest/hash、原因、operator/system actor 与时间，不复制或重写共享 alias 历史。
 
-Audit 不创建第二套门店主数据。它依赖共享稳定 Location Registry：`merchant_locations`、有效期 source scope bindings、Place aliases/evidence 和生命周期事件。如果该共享能力尚未部署，必须先以共享 migration/module 交付；不能为了 Audit 临时把现有 `merchant_gbp_profiles.id` 或名称/地址当稳定键。
+Audit 不创建第二套门店主数据。它硬依赖 Performance History foundation 已部署并完成全量回归：复用 `api/app/migrations.py`、`schema_migrations(version, checksum, applied_at)`、整数键 `merchant_locations`、`source_scopes`/`source_scope_bindings`、`merchant_location_aliases` 和 `merchant_location_status_events`。Audit migration 从该 foundation 的 `0001_performance_history.sql` 之后编号；不能创建第二个 migration ledger、另一组 location/binding/alias 表，也不能把现有 `merchant_gbp_profiles.id` 或名称/地址当稳定键。
 
 Subject 由共享 Location Registry 投影创建，不由名称搜索临时生成：
 
@@ -690,7 +690,7 @@ Agent/Skill provenance 由服务端从 Core AI Run 和 Trace 读回，不相信�
 - due 时若同一 Subject 有任何 active Audit Run（包括 `unknown`），scheduler 保持当前 due 不动，不创建新 Run，也不在每次 30 秒 tick 重复写 blocker event。
 - 占用 due 的 active Run terminal 后：若它是成功的手动 Run，则按上节从 cadence anchor 重算 due；其他 terminal 结果由下一次 scheduler claim 创建且只创建一个 catch-up Run，并把 `next_due_at` 跳到首个未来 occurrence，在单一事件中记录 skipped occurrence count。
 - 商户或 Audit subject archived 时不创建新 occurrence。
-- 禁用 policy 后，尚未 dispatch 的 queued scheduled Run 可以安全标记 blocked；已获 Core AI acknowledgement 的 Run继续追踪到 terminal，不伪装取消远端执行。
+- 禁用 policy 后，所有没有 nonterminal/ambiguous 远端工作的 queued 或 retry-wait scheduled Run 都安全标记 blocked，包括最后一个 Attempt 已明确失败但后继 Attempt 尚未创建的 Run；已获 Core AI acknowledgement 或结果不明确的 Run 继续追踪到 terminal，不伪装取消远端执行。创建每个重试后继 Attempt 前必须重新确认 policy 仍启用。
 - 策略重新启用从新的 anchor 计算未来 occurrence，不自动补跑关闭期间。
 - 本地 anchor 使用 IANA timezone。DST 不存在时间顺延到当日第一个合法 instant；重复时间固定选择较早 offset，并把解析后的 UTC instant 写入 occurrence event。
 
@@ -982,7 +982,7 @@ PDF 包含：
 8. HTML 预览使用隔离 origin、CSP 和 `sandbox`，不允许访问主应用凭证。
 9. 下载失败只影响附件状态；除非 Rubric 将该附件定义为 required evidence，否则不破坏已验证的 JSON Version。
 
-Asset Store provider 通过部署配置选择，并必须是 API/worker 共用的耐久存储，不能把容器临时目录作为 accepted Version 的唯一副本。被 accepted Version 或 ready Export 引用的对象遵循对应报告的数据保留期，不做普通 orphan 清理；仅清理超过 24 小时、没有 ready DB 引用的 pending/failed 上传，并为每次清理写安全 event。任何正式销毁走第 20 节的受控流程。
+Asset Store provider 通过部署配置选择，并必须是 API/worker 共用的耐久存储，不能把容器临时目录作为 accepted Version 的唯一副本。被 accepted Version 或 ready Export 引用的对象遵循对应报告的数据保留期，不做普通 orphan 清理。清理超过 24 小时、没有 ready DB 引用的 pending/failed 上传时，必须先在短事务内把 exact metadata/lease 以 CAS 围栏为 `deleting`；ready publisher 必须拒绝该状态。事务外只删除该已围栏 object key，再以第二次 CAS 完成 metadata/event，崩溃后可幂等续跑。任何正式销毁走第 20 节的受控流程。
 
 ## 17. 历史迁移
 
