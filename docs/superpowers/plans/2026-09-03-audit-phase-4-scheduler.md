@@ -88,7 +88,7 @@ cd /Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace/api
 - [ ] Add failing tests for first creation, enable/disable, 7/30/90/custom cadence, timezone/anchor validation, archived Subject, stale expected version, and two concurrent updates.
 - [ ] On a successful operator update, compute the next future occurrence from a new anchor at the request time, update all fields with `WHERE version = expected_version`, set `updated_by` to the authenticated operator, and increment version exactly once.
 - [ ] On CAS failure, return 409 `AUDIT_POLICY_VERSION_CONFLICT` with the current safe policy projection. Do not retry an operator's stale intention server-side.
-- [ ] Disabling blocks only queued scheduled Runs that have no current Attempt and no dispatch barrier. Continue tracking acknowledged/possibly dispatched work.
+- [ ] Disabling blocks every queued or retry-wait scheduled Run that has no nonterminal/ambiguous remote work, including a Run whose latest Attempt is terminal failed and whose successor has not been created. Continue tracking only acknowledged/possibly dispatched work.
 - [ ] Re-enabling starts from the new anchor and current time; do not enqueue disabled-period backlog.
 - [ ] Replace the Phase 3 read-only policy summary with choices off/7/30/90/custom, timezone, local anchor, and `expected_version`. On 409, show the returned current policy and require the operator to reapply rather than silently overwriting it.
 - [ ] Run:
@@ -152,7 +152,7 @@ SCHEDULED_RETRY_DELAYS = (
 - [ ] Add tests for initial Attempt plus exactly three successors, unique retry-parent enforcement, `retry_at` gating, non-retryable failure, exhausted failure, normal next due remaining independent, and manual failure remaining terminal without an Attempt successor.
 - [ ] Classify as retryable only an acknowledged Core AI Run whose terminal provider status is explicitly transient, or a UAT-proven dispatch rejection that guarantees no remote Run was created. Any generic HTTP/transport error after `dispatch_started_at` is ambiguous and becomes unknown. Invalid JSON/schema/provenance/score/identity, blocked preflight, and operator abandonment are not automatically retryable.
 - [ ] On a retryable scheduled failure, make the current Attempt terminal failed, set the Run back to queued with its calculated `retry_at`, retain the same occurrence and frozen manifest, and append one retry-scheduled event in one transaction.
-- [ ] At `retry_at`, claim creates Attempt N+1 with unique `retry_of_attempt_id` and a new deterministically derived dispatch key. Never update/revive Attempt N.
+- [ ] At `retry_at`, re-read the current policy and require it to remain enabled before creating Attempt N+1. A disabled policy terminally blocks the retry-wait Run without a successor whenever no nonterminal/ambiguous remote work exists. Otherwise claim creates Attempt N+1 with unique `retry_of_attempt_id` and a new deterministically derived dispatch key. Never update/revive Attempt N.
 - [ ] After the third retry fails, make Run terminal failed and surface “需要处理”; do not shift the next normal policy occurrence.
 - [ ] An ambiguous result always becomes unknown, ignores retry timing, retains the active Subject lock, and requires reconciliation.
 - [ ] Run:

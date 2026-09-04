@@ -4,7 +4,7 @@
 
 **Goal:** Establish stable location identity, strict Audit v2 contracts, frozen rubric/scoring, and immutable version persistence before any new remote Audit dispatch is allowed.
 
-**Architecture:** Add an ordered SQL migration runner beside the existing bootstrap schema. Reconcile each exact GBP location into a shared Location Registry inside the existing GBP persistence transaction, then project active Audit Subjects from that registry. Validate producer output against a frozen evidence manifest and rubric, construct canonical v2 server-side, and accept Version/Criteria/head/policy/events atomically with immutable database guards and readback verification.
+**Architecture:** Build on the Performance History foundation: reuse its ordered `api/app/migrations.py` runner, integer-keyed `merchant_locations`, versioned alias/status events, and `source_scopes`/`source_scope_bindings`. Reconcile each exact GBP location inside the existing GBP persistence transaction, then project active Audit Subjects from that shared registry. Validate producer output against a frozen evidence manifest and rubric, construct canonical v2 server-side, and accept Version/Criteria/head/policy/events atomically with immutable database guards and readback verification.
 
 **Tech Stack:** FastAPI, Pydantic v2, Python `sqlite3`, `decimal.Decimal`, `rfc8785`, pytest.
 
@@ -13,6 +13,8 @@
 ## Global Constraints
 
 - Work only in the isolated `codex/audit-report-workspace` worktree named in the roadmap.
+- Phase 1 has a hard dependency on the reviewed, full-suite-green Performance History foundation and its `0001_performance_history.sql`. If that foundation is absent, partially applied, or its postconditions fail, stop; do not create a parallel migration ledger or second location model.
+- Reuse `schema_migrations(version, checksum, applied_at)` and allocate Audit schema changes only after `0001_performance_history.sql`. Never introduce a second `sha256` ledger column or another `merchant_locations`/alias/source-binding table.
 - Do not change `audit_snapshots.py` or its v1 contract. Native v2 code lives in new modules.
 - Existing `merchant_gbp_profiles` rows are replaceable snapshots; never reference their integer IDs from a stable Audit subject.
 - Exact GBP location ID is the initial binding authority. Preserve Place ID observations as versioned aliases/evidence; do not merge identities by display name or address.
@@ -22,29 +24,29 @@
 
 ---
 
-## Task 1: Add an ordered, checksummed SQL migration runner
+## Task 1: Adopt and harden the shared ordered migration runner
 
 **Files:**
 
-- Create: `api/migrations/README.md`
+- Modify: `api/migrations/README.md`
+- Modify: `api/app/migrations.py`
 - Modify: `api/app/db.py`
 - Modify: `api/tests/test_db.py`
+- Modify: `api/tests/test_db_migrations.py`
 
 **Interfaces:**
 
 ```python
-MIGRATIONS_PATH = Path(__file__).resolve().parent.parent / "migrations"
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
-def apply_schema_migrations(conn: sqlite3.Connection,
-                            migrations_path: Path = MIGRATIONS_PATH) -> None: ...
-def migration_sha256(path: Path) -> str: ...
-def iter_complete_sql_statements(script: str) -> Iterator[str]: ...
+def apply_migrations(conn: sqlite3.Connection,
+                     migrations_dir: Path = MIGRATIONS_DIR) -> list[str]: ...
 ```
 
-`schema_migrations` has `version TEXT PRIMARY KEY`, `sha256 TEXT NOT NULL`, and `applied_at TEXT NOT NULL`. A file whose recorded hash differs from its current bytes raises `RuntimeError("schema migration checksum mismatch: <version>")` before later migrations run.
+Reuse the Performance foundation's `schema_migrations(version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)`. A file whose recorded checksum differs from its current bytes raises `RuntimeError("migration checksum mismatch: <version>")` before later migrations run.
 
-- [ ] Add failing tests that create temporary sample migration files outside the production migration directory, initialize a blank database, apply them in filename order, re-run initialization as a no-op, and reject a modified already-recorded migration checksum.
-- [ ] Add a failing test opening the same SQLite file from two connections and assert both end with one row per migration and no partially applied schema.
+- [ ] First run the Performance migration tests and assert `0001_performance_history.sql`, the `checksum` ledger, all postconditions, and both blank/legacy upgrades are present. Do not proceed by recreating these primitives in Audit code.
+- [ ] Extend the existing tests with Audit-numbered temporary samples, filename ordering, no-op re-entry, checksum mismatch, and two connections that both end with one ledger row per migration and no partial schema.
 - [ ] Run the focused tests and confirm the missing runner/schema failures:
 
 ```bash
@@ -52,16 +54,15 @@ cd /Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace/api
 .venv/bin/python -m pytest tests/test_db.py -q
 ```
 
-- [ ] Implement `iter_complete_sql_statements` with `sqlite3.complete_statement` so trigger bodies remain intact. For each migration, acquire `BEGIN IMMEDIATE`, re-read the migration ledger under that lock, execute each complete statement with `conn.execute` rather than `executescript`, insert the version/hash row, and commit. Roll back the whole file on any statement failure; this avoids `executescript`'s implicit pre-commit breaking migration atomicity.
-- [ ] Call the ordered runner from `init_db()` after the existing `schema.sql` bootstrap and lightweight column migration. Existing databases and fresh databases must converge on the same schema.
-- [ ] Document that an applied numbered migration is immutable. Every later schema change receives a new higher-numbered file; no later task may modify a migration after its checksum can have been recorded.
+- [ ] Preserve the Performance runner's invariant registration and postcondition hooks. For each migration, acquire `BEGIN IMMEDIATE`, re-read the ledger under that lock, execute and data-migrate atomically, insert the version/checksum row, and commit; a concurrent caller must become a verified no-op rather than execute DDL twice.
+- [ ] Keep the existing `init_db()` integration. Existing databases and fresh databases must converge on the same schema before any Audit table is added.
+- [ ] Document that an applied numbered migration is immutable and that Audit starts at `0002`. Every later schema change receives a new higher-numbered file.
 - [ ] Run the focused tests, `git diff --check`, and inspect only the migration-runner diff. Commit as `feat: add ordered schema migrations` when green.
 
-## Task 2: Create the shared stable Location Registry
+## Task 2: Reuse the shared stable Location Registry for Audit
 
 **Files:**
 
-- Create: `api/migrations/0001_location_registry.sql`
 - Create: `api/app/location_registry.py`
 - Modify: `api/app/merchant_profiles.py`
 - Modify: `api/app/merchants.py`
@@ -69,22 +70,24 @@ cd /Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace/api
 - Modify: `api/tests/test_merchant_profiles.py`
 - Modify: `api/tests/test_merchants.py`
 
-**Tables and keys:**
+**Existing shared tables and keys (do not recreate):**
 
-- `merchant_locations(id TEXT PRIMARY KEY, merchant_id INTEGER NOT NULL, display_name TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','archived')), identity_generation INTEGER NOT NULL CHECK(identity_generation > 0), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(id,merchant_id))`.
-- `merchant_location_bindings(id TEXT PRIMARY KEY, merchant_location_id TEXT NOT NULL, merchant_id INTEGER NOT NULL, source_kind TEXT NOT NULL, source_scope TEXT NOT NULL, external_location_id TEXT NOT NULL, valid_from TEXT NOT NULL, valid_to TEXT, binding_generation INTEGER NOT NULL, evidence_sha256 TEXT NOT NULL, UNIQUE(source_kind,source_scope,external_location_id,valid_from), FOREIGN KEY(merchant_location_id,merchant_id) REFERENCES merchant_locations(id,merchant_id) ON DELETE RESTRICT)`.
-- `merchant_location_aliases(id TEXT PRIMARY KEY, merchant_location_id TEXT NOT NULL, merchant_id INTEGER NOT NULL, alias_kind TEXT NOT NULL CHECK(alias_kind IN ('place_id')), alias_value TEXT NOT NULL, observed_at TEXT NOT NULL, valid_to TEXT, evidence_sha256 TEXT NOT NULL, alias_generation INTEGER NOT NULL, FOREIGN KEY(merchant_location_id,merchant_id) REFERENCES merchant_locations(id,merchant_id) ON DELETE RESTRICT)`.
-- `merchant_location_events(id TEXT PRIMARY KEY, merchant_location_id TEXT NOT NULL, merchant_id INTEGER NOT NULL, event_kind TEXT NOT NULL, before_generation INTEGER, after_generation INTEGER NOT NULL, manifest_json TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(merchant_location_id,merchant_id) REFERENCES merchant_locations(id,merchant_id) ON DELETE RESTRICT)`.
-- `merchant_location_quality_issues(id TEXT PRIMARY KEY, merchant_id INTEGER NOT NULL, source_kind TEXT NOT NULL, source_scope TEXT NOT NULL, external_location_id TEXT, reason_code TEXT NOT NULL, evidence_sha256 TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('open','resolved')), created_at TEXT NOT NULL, resolved_at TEXT)`.
+- `merchant_locations(id INTEGER PRIMARY KEY, merchant_id INTEGER NOT NULL, ..., UNIQUE(merchant_id,id))` is the stable internal location identity.
+- `merchant_location_aliases` owns versioned exact `GOOGLE_PLACE_ID` aliases and evidence; Audit never infers identity from display name/address.
+- `merchant_location_status_events` owns immutable lifecycle/`needs_attention` generations and reason metadata.
+- `source_scopes` owns canonical `GBP_LOCATION` scope identity; `source_scope_bindings` owns versioned exact binding generations back to `(merchant_id, merchant_location_id)`.
+- Ambiguous/conflicting reconciliation appends a `needs_attention` status event with a bounded reason code and evidence hash; it does not introduce a parallel quality-issue identity table.
 
 **Interfaces:**
 
 ```python
 @dataclass(frozen=True)
 class ResolvedMerchantLocation:
-    merchant_location_id: str
+    merchant_location_id: int
     merchant_id: int
-    identity_generation: int
+    binding_generation: int
+    alias_generation: int | None
+    status_generation: int
     identity_manifest: dict[str, object]
     identity_manifest_sha256: str
 
@@ -102,10 +105,10 @@ def set_merchant_locations_archived(conn: sqlite3.Connection, *, merchant_id: in
 ```
 
 - [ ] Add failing tests for first exact GBP binding, unchanged repeat sync, title/address-only display update, Place ID observation change, GBP location binding replacement, multiple exact locations, and ambiguous/conflicting binding quarantine.
-- [ ] Assert that an unchanged exact identity preserves `merchant_location_id` and generation; an identity-affecting binding/Place change appends an event and increments generation; a fuzzy title/address match never creates a binding.
-- [ ] Mint `merchant_location_id` once on the first exact binding as a deterministic UUIDv5 derived from the SEO Ops namespace plus `merchant_id`, `source_kind`, normalized account scope, and that initial external location ID. Persist and reuse that internal ID forever; subsequent exact binding rotation never recomputes it.
+- [ ] Assert that an unchanged exact identity preserves `merchant_location_id` and the current binding/alias/status generation vector; a binding or Place observation change appends the corresponding shared event and increments only that component; a fuzzy title/address match never creates a binding.
+- [ ] Mint the integer `merchant_location_id` once through the Performance registry on first exact binding and persist/reuse it forever. Subsequent exact binding rotation appends a `source_scope_bindings` generation and never creates or recomputes a second Audit-owned location ID.
 - [ ] When a new exact GBP binding has no current binding row, attach it to an existing active location only if its non-empty Place ID exactly matches one unique current Place alias for the same merchant. If there is no exact Place match, create a new location from the new binding; if more than one match exists, quarantine the source. Never use title/address similarity for this decision.
-- [ ] Implement canonical Location Registry manifest creation and JCS/SHA-256 verification. Include merchant ID, internal location ID, active binding generation, exact GBP location ID, and current Place alias/evidence generation; exclude website and display-only title changes. Website belongs to the Audit Subject projection in Task 6, not the shared location identity.
+- [ ] Implement canonical Audit Location manifest creation and JCS/SHA-256 verification over the shared registry: merchant ID, integer location ID, current GBP source-scope/binding generation, exact GBP location ID, current Place alias/evidence generation, and current status generation. Exclude website and display-only title changes. Website belongs to the Audit Subject projection in Task 6, not location identity.
 - [ ] Call `reconcile_gbp_locations` from `_persist_gbp_snapshots()` after lease revalidation and before commit. The snapshot delete/reinsert, binding reconciliation, location lifecycle events, and Audit Subject projection added in Task 6 must share the same transaction.
 - [ ] Extend merchant archive/restore to call `set_merchant_locations_archived` in its existing transaction. Do not delete registry history.
 - [ ] Run:
@@ -279,12 +282,12 @@ def invalidate_subject_generation(conn: sqlite3.Connection, *, subject_id: str,
 ```
 
 - [ ] Add tests that exact location reconciliation creates one Subject, unchanged sync is idempotent, website/identity changes append an event, queued Runs become blocked, acknowledged Runs become invalidated but remain tracked, and the current-generation head becomes empty without deleting old history.
-- [ ] Keep Audit Subject `identity_generation` independent from `merchant_locations.identity_generation`: the Subject manifest includes the current Location Registry generation/hash plus normalized website URL. Increment the Subject generation whenever that full Subject manifest changes, including website changes; a display-title-only change updates presentation without incrementing either generation.
-- [ ] Ensure Subject creation/projection and source snapshot persistence commit together. If exact resolution fails, write a location quality issue and create no active Subject.
+- [ ] Keep Audit Subject `identity_generation` independent from the registry's binding/alias/status generation vector: the Subject manifest includes the current canonical Audit Location manifest/hash plus normalized website URL. Increment the Subject generation whenever that full Subject manifest changes, including website changes; a display-title-only change updates presentation without changing the registry vector or Subject generation.
+- [ ] Ensure Subject creation/projection and source snapshot persistence commit together. If exact resolution fails, append a shared `needs_attention` status event with bounded reason/evidence and create no active Subject.
 - [ ] On merchant/location archive or generation change, update Subject/policy/Run projections with policy-version CAS in the same transaction as the registry lifecycle event.
 - [ ] Extend `merchant_has_active_work()` to include active Audit Runs.
 - [ ] Before merchant hard delete, query accepted Audit Versions. Return HTTP 409 with structured code `MERCHANT_HAS_IMMUTABLE_AUDIT_HISTORY` and an archive recommendation when any exist. Also reject with `MERCHANT_HAS_AUDIT_ASSETS` while any Audit Asset metadata exists; Phase 5 extends this path with exact unaccepted-object cleanup.
-- [ ] For a merchant with no Audit Version, no active work, and no Audit Asset rows, implement `delete_unaccepted_audit_state(conn, merchant_id)` and call it inside the existing delete transaction before `DELETE FROM merchants`. Delete only in dependency order: Run events; terminal Attempts; terminal/blocked Runs; policies; Subject events; Subjects; location quality issues; aliases; bindings; lifecycle events; locations. Assert every delete is scoped through the target merchant/Subject IDs, then read back zero dependent rows before deleting the merchant.
+- [ ] For a merchant with no Audit Version, no active work, and no Audit Asset rows, implement `delete_unaccepted_audit_state(conn, merchant_id)` and call it inside the existing delete transaction before the existing shared merchant/location cleanup. Delete only Audit-owned state in dependency order: Run events; terminal Attempts; terminal/blocked Runs; policies; Subject events; Subjects. Do not delete shared location aliases, bindings, status events, or locations from the Audit helper. Assert every Audit delete is scoped through the target merchant/Subject IDs and read back zero Audit dependents before the existing merchant lifecycle code handles shared registry rows.
 - [ ] Add tests for a never-audited synced merchant, blocked-only history, failed-only history, active Run, accepted Version, and Asset metadata. The first three delete cleanly with no orphan/FK failure; active/history/Asset cases return their stable conflict without partial deletion.
 - [ ] Run:
 

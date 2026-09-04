@@ -4,7 +4,7 @@
 
 **Goal:** Deliver the approved location-level Audit workspace, manual and scheduled execution pipeline, immutable version history, comparison, and PDF/HTML/JSON export without disturbing the running `main` checkout.
 
-**Architecture:** Implement Audit as a new v2 domain in SEO Ops. A shared stable Location Registry owns location identity; Audit freezes local evidence and rubric state before dispatch; a dedicated worker validates Core AI producer output into immutable canonical versions; the React workspace reads only accepted versions and server-provided capabilities. Legacy reports, exports, scheduling, and Plan delivery remain separate adapters around that canonical core.
+**Architecture:** Implement Audit as a new v2 domain in SEO Ops on top of the reviewed Performance History foundation. Reuse its ordered migration runner and shared integer-keyed Location Registry/source-scope bindings; Audit freezes local evidence and rubric state before dispatch, a dedicated worker validates Core AI producer output into immutable canonical versions, and the React workspace reads only accepted versions and server-provided capabilities. Legacy reports, exports, scheduling, and Plan delivery remain separate adapters around that canonical core.
 
 **Tech Stack:** FastAPI, Pydantic v2, Python `sqlite3`, pytest, React 19, TypeScript 6, Vitest, Testing Library, Vite, oxlint, RFC 8785 JCS, Jinja2, Playwright Chromium.
 
@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - Execute only in `/Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace` on branch `codex/audit-report-workspace`. Do not switch, modify, stop, or restart `/Users/xander/git_repo/connexup-seo-ops`, because that checkout is reserved for the user's demo.
+- Do not begin Phase 1 until the Performance History migration foundation is merged, its complete API/Web regression is green, and `0001_performance_history.sql` postconditions read back successfully. Audit starts at migration `0002` and never forks the migration ledger or location identity model.
 - Keep all SEO Ops implementation in this repository. Core AI, FBR, GBP, Local Falcon, and the future Plan service are external providers; do not modify or deploy them from these plans.
 - Preserve the existing v1 Audit snapshot endpoint, generic Run pages, keyword workflows, Local Falcon workflows, GBP/FBR sync, and current Task approval flow until the v2 replacement has passed readback acceptance.
 - Never create a stable location from fuzzy merchant name or address matching. A location must resolve through an exact external binding or remain unbound.
@@ -34,8 +35,8 @@ Plan: `docs/superpowers/plans/2026-09-03-audit-phase-1-foundation.md`
 
 Deliverables:
 
-- versioned SQL migration runner;
-- shared `merchant_locations` registry and exact GBP reconciliation;
+- reuse and concurrency verification of the Performance foundation's versioned SQL migration runner;
+- shared Performance `merchant_locations`/alias/source-binding registry and exact GBP reconciliation;
 - `seo_ops.audit_result.v2` and `seo_ops.audit_report.v2` contracts;
 - immutable rubric, JCS hashing, Decimal scoring, evidence manifest validation;
 - Audit tables, constraints, immutable triggers, atomic Version acceptance and readback verification.
