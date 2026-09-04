@@ -406,13 +406,14 @@ Append-only 记录每次状态变化、lease claim、dispatch acknowledgement、
 
 - `id`；
 - 可空 `audit_run_id` 与可空 `legacy_source_id`，二者必须恰好一个非空；
-- `asset_kind` 与 `status`：`pending`、`ready` 或 `failed`；
+- `asset_kind` 与 `status`：`pending`、`ready`、`failed` 或 `deleting`；
+- 单调递增的 `lease_generation`，以及状态对应的 `updated_at`、可空 `ready_at` / `deleting_at`；
 - 内部 object key；
 - MIME、大小、SHA-256；
 - source kind；
-- created_at、ready_at。
+- created_at。
 
-只有内部对象 bytes 已写入、重新读取、MIME/大小/hash 验证一致后，Asset 才能以 CAS 从 `pending` 标记 `ready`。对象 key 使用 content-addressed 或 write-once 语义。DB trigger 禁止 ready Asset 的 object key、MIME、大小、hash 被 UPDATE 或 DELETE。
+正式状态机只允许 `pending → ready|failed|deleting` 与 `failed → deleting`。只有内部对象 bytes 已写入、重新读取、MIME/大小/hash 验证一致后，publisher 才能用 `status='pending' AND lease_generation=<expected>` 的 CAS 标记 `ready`。cleanup 或受控删除也必须用同一精确 lease generation 把未被引用的 `pending|failed` 围栏为 `deleting`；一旦进入 `deleting`，任何 publisher 或 retry 都不能再把它变成 `ready`。对象 key 使用 content-addressed 或 write-once 语义。DB CHECK/trigger 必须拒绝未列出的状态与状态迁移，并禁止 ready Asset 的 object key、MIME、大小、hash 被 UPDATE 或 DELETE。
 
 `audit_version_assets` 是验收或迁移事务创建的不可变连接表，保存 `audit_version_id`、可空 `audit_criterion_result_id`、可空 `evidence_id` 与 `audit_asset_id`。原生 canonical Evidence 必须同时绑定 Criterion 与 Evidence ID，并且只能引用同一 Run 的 ready Asset；legacy source-level 附件允许两者都为空，但只能引用从该 Version 唯一 `legacy_source_id` 内部化、读回并校验 hash 的 ready Asset。required Evidence Asset 未 ready 时不得验收。连接行和关联 ready Asset 均受 UPDATE/DELETE trigger 保护，避免 Version Evidence bytes 漂移。
 
