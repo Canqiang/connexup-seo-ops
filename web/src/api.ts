@@ -269,6 +269,7 @@ export type SeoKeywordVersion = {
   artifact_id: number
   place_id: string
   source: 'SKILL' | 'FBR' | 'LEGACY'
+  activation_eligible: boolean
   generation_method: SeoKeywordSet['generation_method']
   keyword_count: number
   local_keyword_count: number

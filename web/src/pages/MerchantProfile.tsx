@@ -1154,8 +1154,7 @@ function KeywordRanking({
                 : version.artifact_id === state.active_keyword_artifact_id
               const sourceLabel = isFbr ? 'FBR Local' : version.source === 'SKILL' ? 'Skill' : '历史'
               const actionLabel = isFbr ? '采用这个 FBR 版本' : '恢复这个 Skill 版本'
-              const canActivate = isFbr
-                || (version.source === 'SKILL' && version.score_status === 'VERIFIED_SKILL')
+              const canActivate = version.activation_eligible
               return (
                 <li key={version.artifact_id} className={isCurrentActive ? 'is-active' : ''}>
                   <div>

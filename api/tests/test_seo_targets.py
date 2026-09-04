@@ -3526,6 +3526,116 @@ def test_get_seo_targets_rejects_an_active_head_with_invalid_keyword_object(
     assert response.json() == {"detail": "active keyword artifact is invalid"}
 
 
+def test_get_seo_targets_rejects_an_active_head_with_untrusted_fbr_provenance(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    payload = keyword_result(
+        merchant_id,
+        [local_keyword("forged persisted keyword")],
+        generation_method="PERSISTED_FBR_READBACK",
+    )
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    cursor = conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, payload_json, created_at, completed_at)"
+        " VALUES (?, 'forged-active-fbr', 'KEYWORD_SET', 'seo_ops.keyword_set.v2', 'ready',"
+        " 'another-keyword-source', ?, ?, '2026-09-02T12:00:00Z',"
+        " '2026-09-02T12:01:00Z')",
+        (
+            merchant_id,
+            json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID}),
+            json.dumps(payload),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO merchant_keyword_heads"
+        " (merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+        " activated_at, updated_at) VALUES (?, ?, ?, 'test', 'ADOPT_FBR', ?, ?)",
+        (
+            merchant_id,
+            TEST_PLACE_ID,
+            cursor.lastrowid,
+            "2026-09-02T12:02:00Z",
+            "2026-09-02T12:02:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "active keyword artifact is invalid"}
+
+
+def test_get_seo_targets_rejects_an_active_head_with_a_mismatched_activation_reason(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    fbr_artifact_id = insert_unscored_fbr_keyword_inventory(merchant_id)
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "INSERT INTO merchant_keyword_heads"
+        " (merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+        " activated_at, updated_at) VALUES (?, ?, ?, 'test', 'RESTORE_SKILL', ?, ?)",
+        (
+            merchant_id,
+            TEST_PLACE_ID,
+            fbr_artifact_id,
+            "2026-09-02T12:02:00Z",
+            "2026-09-02T12:02:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "active keyword artifact is invalid"}
+
+
+def test_keyword_version_summary_does_not_trust_fbr_method_without_provenance(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    payload = keyword_result(
+        merchant_id,
+        [local_keyword("untrusted FBR candidate")],
+        generation_method="PERSISTED_FBR_READBACK",
+    )
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    cursor = conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, payload_json, created_at, completed_at)"
+        " VALUES (?, 'untrusted-fbr-version', 'KEYWORD_SET', 'seo_ops.keyword_set.v2',"
+        " 'ready', 'another-keyword-source', ?, ?, '2026-09-02T12:00:00Z',"
+        " '2026-09-02T12:01:00Z')",
+        (
+            merchant_id,
+            json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID}),
+            json.dumps(payload),
+        ),
+    )
+    conn.commit()
+    artifact_id = cursor.lastrowid
+    conn.close()
+
+    response = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+
+    assert response.status_code == 200
+    version = next(
+        item
+        for item in response.json()["keyword_versions"]
+        if item["artifact_id"] == artifact_id
+    )
+    assert version["source"] == "LEGACY"
+    assert version["activation_eligible"] is False
+
+
 def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(
     client, monkeypatch
 ):
@@ -3599,6 +3709,7 @@ def test_state_resolves_the_bootstrapped_active_head_not_a_newer_scored_fbr_arti
         "artifact_id": newer_fbr_artifact_id,
         "place_id": TEST_PLACE_ID,
         "source": "FBR",
+        "activation_eligible": True,
         "generation_method": "PERSISTED_FBR_READBACK",
         "keyword_count": 1,
         "local_keyword_count": 1,

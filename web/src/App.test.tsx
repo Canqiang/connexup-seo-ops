@@ -2586,9 +2586,9 @@ describe('关键词版本 controls', () => {
     active_keyword_source: 'SKILL',
     active_keyword_activated_at: '2026-09-03T00:00:00Z',
     keyword_versions: [
-      { artifact_id: 41, place_id: 'place-3', source: 'SKILL', generation_method: 'EVIDENCE_BOUNDED_RESEARCH', keyword_count: 16, local_keyword_count: 10, organic_keyword_count: 6, scored_keyword_count: 16, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-03T00:00:00Z', is_active: true },
-      { artifact_id: 32, place_id: 'place-3', source: 'SKILL', generation_method: 'EVIDENCE_BOUNDED_RESEARCH', keyword_count: 12, local_keyword_count: 8, organic_keyword_count: 4, scored_keyword_count: 12, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-02T00:00:00Z', is_active: false },
-      { artifact_id: 99, place_id: 'place-3', source: 'FBR', generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 101, local_keyword_count: 71, organic_keyword_count: 30, scored_keyword_count: 0, score_status: 'UNSCORED', completed_at: '2026-09-03T00:01:00Z', is_active: false },
+      { artifact_id: 41, place_id: 'place-3', source: 'SKILL', activation_eligible: true, generation_method: 'EVIDENCE_BOUNDED_RESEARCH', keyword_count: 16, local_keyword_count: 10, organic_keyword_count: 6, scored_keyword_count: 16, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-03T00:00:00Z', is_active: true },
+      { artifact_id: 32, place_id: 'place-3', source: 'SKILL', activation_eligible: true, generation_method: 'EVIDENCE_BOUNDED_RESEARCH', keyword_count: 12, local_keyword_count: 8, organic_keyword_count: 4, scored_keyword_count: 12, score_status: 'VERIFIED_SKILL', completed_at: '2026-09-02T00:00:00Z', is_active: false },
+      { artifact_id: 99, place_id: 'place-3', source: 'FBR', activation_eligible: true, generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 101, local_keyword_count: 71, organic_keyword_count: 30, scored_keyword_count: 0, score_status: 'UNSCORED', completed_at: '2026-09-03T00:01:00Z', is_active: false },
     ],
     latest_fbr_import: {
       artifact_id: 99,
@@ -2672,6 +2672,7 @@ describe('关键词版本 controls', () => {
       artifact_id: 98,
       place_id: 'place-3',
       source: 'FBR',
+      activation_eligible: true,
       generation_method: 'PERSISTED_FBR_READBACK',
       keyword_count: 1,
       local_keyword_count: 1,
@@ -2738,12 +2739,32 @@ describe('关键词版本 controls', () => {
     expect(within(screen.getByText(/#41/).closest('li') as HTMLElement).queryByRole('button')).toBeNull()
   })
 
+  it('does not offer adoption when the server marks an FBR-looking version ineligible', async () => {
+    renderWithState(activeState({
+      keyword_versions: [
+        activeState().keyword_versions[0],
+        {
+          ...activeState().keyword_versions[2],
+          artifact_id: 100,
+          source: 'FBR',
+          activation_eligible: false,
+          is_active: false,
+        },
+      ],
+      latest_fbr_import: null,
+    }))
+    await screen.findByRole('button', { name: '查看版本' })
+    fireEvent.click(screen.getByRole('button', { name: '查看版本' }))
+
+    expect(within(screen.getByText(/#100/).closest('li') as HTMLElement).queryByRole('button')).toBeNull()
+  })
+
   it('renders partial and unverified score states and restores only verified Skill versions', async () => {
     renderWithState(activeState({
       keyword_versions: [
         ...activeState().keyword_versions,
-        { artifact_id: 52, place_id: 'place-3', source: 'SKILL', generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 1, score_status: 'PARTIAL', completed_at: '2026-09-03T00:02:00Z', is_active: false },
-        { artifact_id: 53, place_id: 'place-3', source: 'SKILL', generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 2, score_status: 'SCORED_UNVERIFIED', completed_at: '2026-09-03T00:03:00Z', is_active: false },
+        { artifact_id: 52, place_id: 'place-3', source: 'LEGACY', activation_eligible: false, generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 1, score_status: 'PARTIAL', completed_at: '2026-09-03T00:02:00Z', is_active: false },
+        { artifact_id: 53, place_id: 'place-3', source: 'LEGACY', activation_eligible: false, generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 2, score_status: 'SCORED_UNVERIFIED', completed_at: '2026-09-03T00:03:00Z', is_active: false },
       ],
     }))
     await screen.findByRole('button', { name: '查看版本' })
@@ -2755,14 +2776,14 @@ describe('关键词版本 controls', () => {
   })
 
   it('renders the active partial score status accurately', async () => {
-    const partial = { artifact_id: 52, place_id: 'place-3', source: 'SKILL', generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 1, score_status: 'PARTIAL', completed_at: '2026-09-03T00:02:00Z', is_active: true }
+    const partial = { artifact_id: 52, place_id: 'place-3', source: 'LEGACY', activation_eligible: false, generation_method: 'UPSTREAM_DETERMINISTIC_ADAPTER', keyword_count: 2, local_keyword_count: 1, organic_keyword_count: 1, scored_keyword_count: 1, score_status: 'PARTIAL', completed_at: '2026-09-03T00:02:00Z', is_active: true }
     renderWithState(activeState({
       active_keyword_artifact_id: 52,
       keyword_set_artifact_id: 52,
       keyword_versions: [partial],
     }))
 
-    await screen.findByText('SEO Ops 当前版本 · Skill · 2 个关键词（Local 1 / Organic 1）· 部分评分')
+    await screen.findByText('SEO Ops 当前版本 · 历史 · 2 个关键词（Local 1 / Organic 1）· 部分评分')
   })
 
   it('waits for explicit confirmation before adopting an unscored FBR version', async () => {
@@ -2791,7 +2812,7 @@ describe('关键词版本 controls', () => {
   })
 
   it('keeps Local Falcon eligibility for a fully scored trusted FBR version', async () => {
-    const scoredFbr = { artifact_id: 98, place_id: 'place-3', source: 'FBR', generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 10, local_keyword_count: 10, organic_keyword_count: 0, scored_keyword_count: 10, score_status: 'SCORED_UNVERIFIED', completed_at: '2026-09-03T00:04:00Z', is_active: false }
+    const scoredFbr = { artifact_id: 98, place_id: 'place-3', source: 'FBR', activation_eligible: true, generation_method: 'PERSISTED_FBR_READBACK', keyword_count: 10, local_keyword_count: 10, organic_keyword_count: 0, scored_keyword_count: 10, score_status: 'SCORED_UNVERIFIED', completed_at: '2026-09-03T00:04:00Z', is_active: false }
     renderWithState(activeState({
       keyword_versions: [activeState().keyword_versions[0], scoredFbr],
       latest_fbr_import: {
