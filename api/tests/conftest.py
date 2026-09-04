@@ -13,6 +13,7 @@ def client(tmp_path, monkeypatch):
         "COREAI_API_KEY",
         "COREAI_AGENT_ID",
         "COREAI_EXECUTION_AGENT_ID",
+        "COREAI_PREPARATION_LLM_CALL_ID",
         "COREAI_KEYWORD_AGENT_ID",
         "COREAI_AUDIT_AGENT_ID",
         "COREAI_RANKING_AGENT_ID",

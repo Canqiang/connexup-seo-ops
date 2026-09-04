@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import {
+  ApiError,
   api,
   type LocalFalconReconciliationRequest,
   type LocalFalconScanBatch,
@@ -27,6 +28,10 @@ const DAY_LABELS: Record<string, string> = {
 const POST_PREVIEW_COUNT = 5
 const MENU_PREVIEW_COUNT = 6
 
+const newFbrRelinkRequestId = (merchantId: number) => (
+  `seo-ops-fbr-relink-${merchantId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+)
+
 type LocalFalconConfirmationDraft = {
   requestId: string
   scanConfigSha256: string
@@ -49,6 +54,32 @@ type LocalFalconConfirmationBinding = Pick<
   LocalFalconConfirmationDraft,
   'requestId' | 'scanConfigSha256' | 'keywordArtifactId' | 'cohortSha256' | 'placeId'
 >
+
+type KeywordScoreStatus = SeoTargetState['keyword_versions'][number]['score_status']
+
+const KEYWORD_SCORE_STATUS_LABELS: Record<KeywordScoreStatus, string> = {
+  VERIFIED_SKILL: '评分已验证',
+  SCORED_UNVERIFIED: '已评分，来源未验证',
+  UNSCORED: '未评分',
+  PARTIAL: '部分评分',
+}
+
+function fbrActivationEligibilityCopy(scoreStatus: KeywordScoreStatus) {
+  if (scoreStatus === 'VERIFIED_SKILL') {
+    return '该 FBR 版本评分已验证；采用后可继续使用 Local Falcon Top 20。'
+  }
+  if (scoreStatus === 'SCORED_UNVERIFIED') {
+    return '该 FBR 版本已有完整评分；虽非 Skill 验证评分，采用后仍可继续使用 Local Falcon Top 20。'
+  }
+  if (scoreStatus === 'PARTIAL') {
+    return '该 FBR 版本仅有部分评分；采用后会停用 Local Falcon Top 20，直到恢复或重新生成评分已验证的 Skill 版本。'
+  }
+  return '采用未评分的 FBR 版本会停用 Local Falcon Top 20，直到恢复或重新生成已评分的 Skill 版本。'
+}
+
+function isFbrActivationLocalFalconEligible(scoreStatus: KeywordScoreStatus) {
+  return scoreStatus === 'VERIFIED_SKILL' || scoreStatus === 'SCORED_UNVERIFIED'
+}
 
 function FieldHelp({
   label,
@@ -787,6 +818,7 @@ function KeywordRanking({
   localFalconBusy,
   onRefresh,
   onRegenerate,
+  onActivateKeywordVersion,
   onSyncLocalFalcon,
   onGenerateLocalFalcon,
   onReconcileLocalFalcon,
@@ -798,6 +830,7 @@ function KeywordRanking({
   localFalconBusy: boolean
   onRefresh: () => void
   onRegenerate: () => void
+  onActivateKeywordVersion: (artifactId: number, expectedActiveArtifactId: number | null) => Promise<string | null>
   onSyncLocalFalcon: () => void
   onGenerateLocalFalcon: (
     requestId: string,
@@ -812,6 +845,13 @@ function KeywordRanking({
   const [localFalconConfirmation, setLocalFalconConfirmation] = useState<LocalFalconConfirmationDraft | null>(null)
   const [reconcileLocalFalcon, setReconcileLocalFalcon] = useState(false)
   const [reconciliationError, setReconciliationError] = useState('')
+  const [versionsOpen, setVersionsOpen] = useState(false)
+  const [selectedVersion, setSelectedVersion] = useState<{
+    version: SeoTargetState['keyword_versions'][number]
+    expectedActiveArtifactId: number | null
+  } | null>(null)
+  const [activationBusy, setActivationBusy] = useState(false)
+  const [activationError, setActivationError] = useState('')
   const rankRows = new Map(
     (state?.ranking_report?.keywords ?? []).map(row => [keywordIdentity(row.keyword), row]),
   )
@@ -820,6 +860,16 @@ function KeywordRanking({
     localFalconReports.map(report => [keywordIdentity(report.keyword), report]),
   )
   const sourceKeywords = state?.keyword_set?.keywords ?? []
+  const keywordVersions = state?.keyword_versions ?? []
+  const activeVersion = state?.active_keyword_artifact_id == null
+    ? keywordVersions.find(version => version.is_active)
+    : keywordVersions.find(version => version.artifact_id === state.active_keyword_artifact_id)
+  const latestFbrVersion = state?.latest_fbr_import
+    ? keywordVersions.find(version => version.artifact_id === state.latest_fbr_import?.artifact_id)
+    : null
+  const latestFbrIsActive = state?.active_keyword_artifact_id == null
+    ? state?.latest_fbr_import?.is_active === true
+    : state.active_keyword_artifact_id === state?.latest_fbr_import?.artifact_id
   const keywords = sourceKeywords
     .map((keyword, sourceIndex) => ({ keyword, sourceIndex }))
     .sort((left, right) => {
@@ -953,6 +1003,40 @@ function KeywordRanking({
     else setReconcileLocalFalcon(false)
   }
 
+  const openVersionConfirmation = (version: SeoTargetState['keyword_versions'][number]) => {
+    setActivationError('')
+    setSelectedVersion({ version, expectedActiveArtifactId: state?.active_keyword_artifact_id ?? null })
+  }
+
+  const confirmVersionActivation = async () => {
+    if (!selectedVersion) return
+    setActivationBusy(true)
+    setActivationError('')
+    const failure = await onActivateKeywordVersion(selectedVersion.version.artifact_id, selectedVersion.expectedActiveArtifactId)
+    setActivationBusy(false)
+    if (failure) {
+      setActivationError(`关键词版本冲突或采用失败：${failure}`)
+      return
+    }
+    setSelectedVersion(null)
+  }
+
+  const activeSourceLabel = activeVersion?.source === 'FBR' ? 'FBR Local' : activeVersion?.source === 'LEGACY' ? '历史' : 'Skill'
+  const activeScoreLabel = activeVersion
+    ? KEYWORD_SCORE_STATUS_LABELS[activeVersion.score_status]
+    : null
+  const keywordScoreHeading = state?.active_keyword_source === 'FBR'
+    ? 'FBR 评分 / 排名'
+    : state?.active_keyword_source === 'LEGACY'
+      ? '当前版本评分 / 排名'
+      : 'Skill 评分 / 排名'
+  const keywordScoreDescription = state?.active_keyword_source === 'FBR'
+    ? '评分来自当前采用的 FBR 关键词版本，尚未通过 Skill 来源验证。表格按评分降序展示；P0–P3 是运营优先级，不参与排序。Local Falcon 的 Top 20 仍只从本地关键词中选择。'
+    : state?.active_keyword_source === 'LEGACY'
+      ? '评分来自当前采用的历史关键词版本，来源验证状态以“SEO Ops 当前版本”提示为准。表格按评分降序展示；P0–P3 是运营优先级，不参与排序。'
+      : '评分来自专用 Agent 依次加载 Seed 与 Ranking Skill 后返回的关键词产物。表格按该评分统一降序展示；P0–P3 是运营优先级，不参与排序。Local Falcon 的 Top 20 仍只从本地关键词中选择。'
+  const comparison = state?.latest_fbr_import?.comparison
+
   return (
     <section className="gbp-data-section" id="seo-keywords" aria-labelledby="seo-keywords-title">
       <div className="gbp-data-section-head">
@@ -960,7 +1044,7 @@ function KeywordRanking({
           <p className="section-code">SEO TARGETS</p>
           <div className="field-label-line">
             <h3 id="seo-keywords-title">SEO 目标关键词与排名</h3>
-            <FieldHelp label="目标关键词" description="优先读取 FBR 已落库关键词，页面加载和“从 FBR 重新读取”都不会触发生成。只有运营人员点击“重新生成关键词并评分”时，系统才会运行已配置的 Seed + Ranking Skill 工作流。" />
+            <FieldHelp label="目标关键词" description="页面加载读取 SEO Ops 当前采用的本地关键词版本，不会访问 FBR 或触发生成。FBR 只在运营人员明确点击“从 FBR 重新读取”时导入候选版本；只有点击“重新生成关键词并评分”才会运行已配置的 Seed + Ranking Skill 工作流。" />
           </div>
         </div>
         <div className={`seo-target-actions${isGenerationRunning ? ' is-running' : ''}`}>
@@ -1014,6 +1098,8 @@ function KeywordRanking({
             >审批并生成 Top 20 报告</button>
           </div>
           <div className="seo-target-secondary-actions" aria-label="关键词辅助操作">
+            <button className="text-action" type="button" onClick={() => setVersionsOpen(value => !value)} aria-expanded={versionsOpen} aria-controls="seo-keyword-versions">查看版本</button>
+            <span aria-hidden="true">·</span>
             <button className="text-action" type="button" onClick={onRefresh} disabled={busy || isRunning || locationMismatch || scanBatchIsActive || scanBatchIsUncertain}>{refreshButtonLabel}</button>
             <span aria-hidden="true">·</span>
             <button
@@ -1025,8 +1111,67 @@ function KeywordRanking({
           </div>
         </div>
       </div>
-      {state?.cycle_status === 'failed' && (
-        <p className="seo-target-message error" role="alert">关键词同步失败：{state.error || '未能读取 FBR 关键词库'}</p>
+      {(state?.cycle_status === 'failed' || Boolean(state?.error)) && (
+        <p className="seo-target-message error" role="alert">
+          {state?.cycle_status === 'failed' ? '关键词同步失败' : '关键词版本激活冲突'}：{state?.error || '未能读取 FBR 关键词库'}
+        </p>
+      )}
+      {activeVersion && (
+        <p className="seo-active-version" role="status">
+          SEO Ops 当前版本 · {activeSourceLabel} · {activeVersion.keyword_count} 个关键词（Local {activeVersion.local_keyword_count} / Organic {activeVersion.organic_keyword_count}）· {activeScoreLabel}
+        </p>
+      )}
+      {state?.latest_fbr_import && latestFbrVersion && !latestFbrIsActive && (
+        <p className="seo-fbr-version-status" role="status">最新 FBR Local 导入 · {latestFbrVersion.keyword_count} 个关键词 · 未采用</p>
+      )}
+      {versionsOpen && (
+        <section className="seo-keyword-versions" id="seo-keyword-versions" aria-labelledby="seo-keyword-versions-title">
+          <div className="seo-keyword-versions-head">
+            <div>
+              <h4 id="seo-keyword-versions-title">关键词版本</h4>
+              <p>当前表格只显示 SEO Ops 当前版本；FBR 导入先作为候选版本比较。</p>
+            </div>
+            <button className="text-action" type="button" onClick={() => setVersionsOpen(false)}>收起版本</button>
+          </div>
+          {comparison && (
+            <section className="seo-fbr-comparison" role="region" aria-label="最新 FBR Local 对比">
+              <h5>最新 FBR Local 对比</h5>
+              <div className="seo-fbr-comparison-counts">
+                <span>当前 Local {comparison.active_local_count}</span>
+                <span>FBR Local {comparison.fbr_local_count}</span>
+                <span>新增 {comparison.added_count}</span>
+                <span>移除 {comparison.removed_count}</span>
+                <span>优先级变化 {comparison.priority_changed_count}</span>
+                <span>落地页变化 {comparison.target_surfaces_changed_count}</span>
+              </div>
+              <div className="seo-fbr-comparison-details" aria-label="FBR 对比明细">
+                {comparison.added_keywords.length > 0 && <p><strong>新增关键词</strong>{comparison.added_keywords.slice(0, 6).map(keyword => <span key={keyword}>{keyword}</span>)}</p>}
+                {comparison.removed_keywords.length > 0 && <p><strong>移除关键词</strong>{comparison.removed_keywords.slice(0, 6).map(keyword => <span key={keyword}>{keyword}</span>)}</p>}
+                {comparison.changed_keywords.length > 0 && <p><strong>变化关键词</strong>{comparison.changed_keywords.slice(0, 6).map(change => <span key={change.keyword}>{change.keyword}</span>)}</p>}
+              </div>
+            </section>
+          )}
+          <ul className="seo-version-list" aria-label="关键词版本列表">
+            {keywordVersions.map(version => {
+              const isFbr = version.source === 'FBR'
+              const isCurrentActive = state?.active_keyword_artifact_id == null
+                ? version.is_active
+                : version.artifact_id === state.active_keyword_artifact_id
+              const sourceLabel = isFbr ? 'FBR Local' : version.source === 'SKILL' ? 'Skill' : '历史'
+              const actionLabel = isFbr ? '采用这个 FBR 版本' : '恢复这个 Skill 版本'
+              const canActivate = version.activation_eligible
+              return (
+                <li key={version.artifact_id} className={isCurrentActive ? 'is-active' : ''}>
+                  <div>
+                    <strong>{sourceLabel} · #{version.artifact_id}{isCurrentActive ? ' · 当前版本' : ''}</strong>
+                    <span>{version.keyword_count} 个关键词（Local {version.local_keyword_count} / Organic {version.organic_keyword_count}） · {KEYWORD_SCORE_STATUS_LABELS[version.score_status]}</span>
+                  </div>
+                  {!isCurrentActive && canActivate && <button type="button" className={isFbr ? 'primary compact' : 'quiet compact'} disabled={activationBusy} onClick={() => openVersionConfirmation(version)}>{actionLabel}</button>}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
       )}
       {locationMismatch && (
         <p className="seo-target-message warning" role="alert">当前 SEO 工作区未绑定到所选 GBP 门店。为避免对错误的 Place ID 发起付费扫描，关键词与 Local Falcon 操作已暂停。</p>
@@ -1071,7 +1216,7 @@ function KeywordRanking({
               <thead>
                 <tr>
                   <th>关键词 / 优先级</th>
-                  <th><span className="field-label-line align-right">Skill 评分 / 排名<FieldHelp label="关键词评分" description="评分来自专用 Agent 依次加载 Seed 与 Ranking Skill 后返回的关键词产物。表格按该评分统一降序展示；P0–P3 是运营优先级，不参与排序。Local Falcon 的 Top 20 仍只从本地关键词中选择。" align="end" /></span></th>
+                  <th><span className="field-label-line align-right">{keywordScoreHeading}<FieldHelp label="关键词评分" description={keywordScoreDescription} align="end" /></span></th>
                   <th><span className="local-falcon-heatmap-head"><span>热力图</span><LocalFalconLegend /></span></th>
                   <th><span className="field-label-line align-right">ARP<FieldHelp label="ARP" description="Local Falcon 网格中各采样点排名的平均值；数值越低越好。" align="end" /></span></th>
                   <th><span className="field-label-line align-right">ATRP<FieldHelp label="ATRP" description="商户被发现的采样点中，各点排名的平均值；数值越低越好。" align="end" /></span></th>
@@ -1207,6 +1352,30 @@ function KeywordRanking({
           </section>
         </div>
       )}
+      {selectedVersion && (
+        <div className="operation-confirm-backdrop">
+          <section className="operation-confirm-dialog keyword-version-confirm" role="dialog" aria-modal="true" aria-labelledby="keyword-version-confirm-title">
+            <header>
+              <div>
+                <p className="section-code">KEYWORD VERSION</p>
+                <h4 id="keyword-version-confirm-title">确认{selectedVersion.version.source === 'FBR' ? '采用 FBR 关键词版本' : '恢复 Skill 关键词版本'}</h4>
+              </div>
+              <button type="button" className="dialog-close" aria-label="关闭版本确认" onClick={() => setSelectedVersion(null)} disabled={activationBusy}>×</button>
+            </header>
+            <div className="keyword-version-confirm-copy">
+              <p>将采用 #{selectedVersion.version.artifact_id}，并以确认时的当前活动版本 #{selectedVersion.expectedActiveArtifactId ?? '无'} 作为冲突校验。</p>
+              {selectedVersion.version.source === 'FBR' && (
+                <p className={isFbrActivationLocalFalconEligible(selectedVersion.version.score_status) ? 'muted' : 'credit-warning'}>{fbrActivationEligibilityCopy(selectedVersion.version.score_status)}</p>
+              )}
+              {activationError && <p className="scan-confirm-error" role="alert">{activationError}</p>}
+            </div>
+            <footer>
+              <button type="button" className="quiet" onClick={() => setSelectedVersion(null)} disabled={activationBusy}>取消</button>
+              <button type="button" className="primary" onClick={() => void confirmVersionActivation()} disabled={activationBusy}>{activationBusy ? '正在采用…' : selectedVersion.version.source === 'FBR' ? '确认采用 FBR 版本' : '确认恢复 Skill 版本'}</button>
+            </footer>
+          </section>
+        </div>
+      )}
       {reconcileLocalFalcon && scanBatch && (
         <LocalFalconReconciliationDialog
           batch={scanBatch}
@@ -1231,6 +1400,7 @@ function GbpLocationRecord({
   localFalconBusy,
   onRefreshSeo,
   onRegenerateSeo,
+  onActivateKeywordVersion,
   onSyncLocalFalcon,
   onGenerateLocalFalcon,
   onReconcileLocalFalcon,
@@ -1242,6 +1412,7 @@ function GbpLocationRecord({
   localFalconBusy: boolean
   onRefreshSeo: () => void
   onRegenerateSeo: () => void
+  onActivateKeywordVersion: (artifactId: number, expectedActiveArtifactId: number | null) => Promise<string | null>
   onSyncLocalFalcon: () => void
   onGenerateLocalFalcon: (
     requestId: string,
@@ -1313,6 +1484,7 @@ function GbpLocationRecord({
         localFalconBusy={localFalconBusy}
         onRefresh={onRefreshSeo}
         onRegenerate={onRegenerateSeo}
+        onActivateKeywordVersion={onActivateKeywordVersion}
         onSyncLocalFalcon={onSyncLocalFalcon}
         onGenerateLocalFalcon={onGenerateLocalFalcon}
         onReconcileLocalFalcon={onReconcileLocalFalcon}
@@ -1405,13 +1577,18 @@ export default function MerchantProfile() {
   const [selectedLocationId, setSelectedLocationId] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showFbrRelink, setShowFbrRelink] = useState(false)
+  const [newFbrMerchantId, setNewFbrMerchantId] = useState('')
+  const [fbrRelinkReason, setFbrRelinkReason] = useState('')
+  const [fbrRelinkConfirmed, setFbrRelinkConfirmed] = useState(false)
+  const [fbrRelinking, setFbrRelinking] = useState(false)
   const [seoBusy, setSeoBusy] = useState(false)
   const [seoRegenerating, setSeoRegenerating] = useState(false)
   const [localFalconBusy, setLocalFalconBusy] = useState(false)
-  const autoSeoMerchantRef = useRef<number | null>(null)
   const performanceHashFocusedRef = useRef<string | null>(null)
   const profileMutationVersionRef = useRef(0)
   const profileMutationBusyRef = useRef(false)
+  const fbrRelinkRequestRef = useRef<{ key: string; requestId: string } | null>(null)
 
   useEffect(() => {
     let active = true
@@ -1553,6 +1730,83 @@ export default function MerchantProfile() {
     }
   }
 
+  const cancelFbrRelink = () => {
+    if (fbrRelinking) return
+    setShowFbrRelink(false)
+    setNewFbrMerchantId('')
+    setFbrRelinkReason('')
+    setFbrRelinkConfirmed(false)
+    fbrRelinkRequestRef.current = null
+  }
+
+  const relinkFbr = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const nextFbrMerchantId = newFbrMerchantId.trim()
+    const reason = fbrRelinkReason.trim()
+    if (
+      fbrRelinking
+      || !fbrRelinkConfirmed
+      || !nextFbrMerchantId
+      || !reason
+      || nextFbrMerchantId === profile?.fbr_merchant_id
+      || profile?.binding_generation == null
+      || !profile.binding_sha256
+    ) return
+
+    const requestKey = JSON.stringify({
+      merchantId,
+      generation: profile.binding_generation,
+      sha256: profile.binding_sha256,
+      nextFbrMerchantId,
+      reason,
+    })
+    if (fbrRelinkRequestRef.current?.key !== requestKey) {
+      fbrRelinkRequestRef.current = {
+        key: requestKey,
+        requestId: newFbrRelinkRequestId(merchantId),
+      }
+    }
+
+    const mutationVersion = ++profileMutationVersionRef.current
+    profileMutationBusyRef.current = true
+    setFbrRelinking(true)
+    let relinkAccepted = false
+    try {
+      const result = await api.relinkMerchantFbr({
+        request_id: fbrRelinkRequestRef.current.requestId,
+        merchant_id: merchantId,
+        expected_current_binding_generation: profile.binding_generation,
+        expected_current_fbr_sha256: profile.binding_sha256,
+        new_fbr_merchant_id: nextFbrMerchantId,
+        reason,
+        confirmed: true,
+      })
+      relinkAccepted = true
+      const latest = await api.getMerchantProfile(merchantId)
+      if (mutationVersion !== profileMutationVersionRef.current) return
+      if (
+        latest.fbr_merchant_id !== result.binding.fbr_merchant_id
+        || latest.binding_generation !== result.binding.generation
+        || latest.binding_sha256 !== result.binding.canonical_fbr_merchant_sha256
+      ) {
+        throw new Error('FBR 重新绑定后的资料读回不一致，请停止操作并联系管理员')
+      }
+      setProfile(latest)
+      setFbrMerchantId(latest.fbr_merchant_id || '')
+      setSelectedLocationId('')
+      setError('')
+      cancelFbrRelink()
+    } catch (err) {
+      if (!relinkAccepted && err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        fbrRelinkRequestRef.current = null
+      }
+      setError((err as Error).message)
+    } finally {
+      profileMutationBusyRef.current = false
+      setFbrRelinking(false)
+    }
+  }
+
   const refreshSeo = useCallback(async () => {
     setSeoBusy(true)
     try {
@@ -1677,12 +1931,25 @@ export default function MerchantProfile() {
     }
   }, [merchantId])
 
-  useEffect(() => {
-    if (!profile || !seoTargets || profile.locations.length === 0 || seoTargets.cycle_status !== 'empty') return
-    if (autoSeoMerchantRef.current === merchantId) return
-    autoSeoMerchantRef.current = merchantId
-    void refreshSeo()
-  }, [merchantId, profile, refreshSeo, seoTargets])
+  const activateKeywordVersion = useCallback(async (artifactId: number, expectedActiveArtifactId: number | null) => {
+    try {
+      setSeoTargets(await api.activateSeoKeywordVersion(merchantId, {
+        artifact_id: artifactId,
+        expected_active_artifact_id: expectedActiveArtifactId,
+        confirmed: true,
+      }))
+      setError('')
+      return null
+    } catch (err) {
+      const requestError = (err as Error).message
+      try {
+        setSeoTargets(await api.getSeoTargets(merchantId))
+      } catch {
+        // The failed request remains visible; never replace a known active table with a candidate.
+      }
+      return requestError
+    }
+  }, [merchantId])
 
   if (!merchant || !profile) {
     return (
@@ -1695,6 +1962,7 @@ export default function MerchantProfile() {
 
   const isUnbound = profile.state === 'unbound'
   const hasLocations = profile.locations.length > 0
+  const isArchived = merchant.status === 'archived'
 
   return (
     <main aria-label="商户资料" className="merchant-workspace-page merchant-profile-page">
@@ -1713,6 +1981,7 @@ export default function MerchantProfile() {
 
       <MerchantSectionNav merchantId={merchantId} active="profile" />
       {error && <p className="error profile-error" role="alert">{error}</p>}
+      {isArchived && <p className="notice warning" role="status">商户已归档，恢复在营后可操作。</p>}
 
       {isUnbound ? (
         <section className="profile-connect-panel" aria-labelledby="profile-connect-title">
@@ -1721,24 +1990,92 @@ export default function MerchantProfile() {
             <h2 id="profile-connect-title">连接 FBR 商户资料</h2>
             <p>保存准确的 FBR Merchant ID 后，SEO Ops 可以只读同步已落库的 GBP 门店资料。</p>
           </div>
-          <form onSubmit={bind} className="profile-bind-form">
-            <label>FBR Merchant ID<input aria-label="FBR Merchant ID" value={fbrMerchantId} onChange={event => setFbrMerchantId(event.target.value)} required /></label>
-            <button className="primary" type="submit" disabled={busy}>{busy ? '保存中…' : '保存绑定'}</button>
-          </form>
+          {!isArchived && (
+            <form onSubmit={bind} className="profile-bind-form">
+              <label>FBR Merchant ID<input aria-label="FBR Merchant ID" value={fbrMerchantId} onChange={event => setFbrMerchantId(event.target.value)} required /></label>
+              <button className="primary" type="submit" disabled={busy}>{busy ? '保存中…' : '保存绑定'}</button>
+            </form>
+          )}
           <p className="source-boundary">这里只保存资源 ID 和资料快照，不保存 Google 授权凭证。</p>
         </section>
       ) : (
         <>
           <section className="profile-source-bar" aria-label="FBR 同步状态">
-            <div>
+            <div className="profile-source-summary">
               <span className={`source-status ${profile.state}`}>{profile.state === 'synced' ? 'FBR 已同步' : profile.state === 'failed' ? '同步失败' : '等待首次同步'}</span>
               <span className="source-id">Merchant ID · {profile.fbr_merchant_id}</span>
               {profile.last_synced_at && <span>最后同步 {formatTime(profile.last_synced_at)}</span>}
             </div>
-            <button className="primary" type="button" onClick={() => void sync()} disabled={busy}>
-              {busy ? '同步中…' : hasLocations ? '重新同步' : '同步 GBP 资料'}
-            </button>
+            {!isArchived && (
+              <div className="profile-source-actions">
+                <button
+                  type="button"
+                  onClick={() => setShowFbrRelink(value => !value)}
+                  disabled={busy || fbrRelinking || profile.binding_generation == null || !profile.binding_sha256}
+                >
+                  重新绑定 FBR
+                </button>
+                <button className="primary" type="button" onClick={() => void sync()} disabled={busy || fbrRelinking}>
+                  {busy ? '同步中…' : hasLocations ? '重新同步' : '同步 GBP 资料'}
+                </button>
+              </div>
+            )}
           </section>
+
+          {showFbrRelink && (
+            <form className="profile-relink-panel" aria-label="重新绑定 FBR Merchant ID" onSubmit={relinkFbr}>
+              <div className="profile-relink-intro">
+                <p className="section-code">IDENTITY CORRECTION</p>
+                <h2>纠正 FBR 资源绑定</h2>
+                <p>仅用于同一商户绑定错误的纠正。系统会保留旧绑定历史，并清空当前可替换的 GBP 快照；有活动任务时会拒绝操作。</p>
+              </div>
+              <label>
+                <span>新的 FBR Merchant ID</span>
+                <input
+                  aria-label="新的 FBR Merchant ID"
+                  value={newFbrMerchantId}
+                  onChange={event => setNewFbrMerchantId(event.target.value)}
+                  disabled={fbrRelinking}
+                  required
+                />
+              </label>
+              <label>
+                <span>重新绑定原因</span>
+                <textarea
+                  aria-label="重新绑定原因"
+                  value={fbrRelinkReason}
+                  onChange={event => setFbrRelinkReason(event.target.value)}
+                  disabled={fbrRelinking}
+                  required
+                />
+              </label>
+              <label className="profile-relink-confirmation">
+                <input
+                  type="checkbox"
+                  checked={fbrRelinkConfirmed}
+                  onChange={event => setFbrRelinkConfirmed(event.target.checked)}
+                  disabled={fbrRelinking}
+                />
+                <span>我确认这是同一商户的正确 FBR 资源，并理解当前 GBP 快照将被清空</span>
+              </label>
+              <div className="profile-relink-actions">
+                <button type="button" className="quiet" onClick={cancelFbrRelink} disabled={fbrRelinking}>取消</button>
+                <button
+                  type="submit"
+                  className="danger-button"
+                  disabled={
+                    fbrRelinking
+                    || !fbrRelinkConfirmed
+                    || !newFbrMerchantId.trim()
+                    || !fbrRelinkReason.trim()
+                    || newFbrMerchantId.trim() === profile.fbr_merchant_id
+                  }
+                >
+                  {fbrRelinking ? '正在重新绑定…' : '确认重新绑定'}
+                </button>
+              </div>
+            </form>
+          )}
 
           {profile.last_error && <p className="notice warning profile-sync-warning">上次同步失败：{profile.last_error}。已保留最后一次成功数据。</p>}
 
@@ -1774,6 +2111,7 @@ export default function MerchantProfile() {
                 localFalconBusy={localFalconBusy}
                 onRefreshSeo={() => void refreshSeo()}
                 onRegenerateSeo={() => void regenerateSeo()}
+                onActivateKeywordVersion={activateKeywordVersion}
                 onSyncLocalFalcon={() => void syncLocalFalcon()}
                 onGenerateLocalFalcon={generateLocalFalcon}
                 onReconcileLocalFalcon={reconcileLocalFalcon}

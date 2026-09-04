@@ -5,7 +5,9 @@ import pytest
 def make_client(handler):
     from app.coreai import CoreAiClient
 
-    return CoreAiClient("https://core.test", "coreai_k", transport=httpx.MockTransport(handler))
+    return CoreAiClient(
+        "https://core.test", "coreai_k", transport=httpx.MockTransport(handler)
+    )
 
 
 def test_trigger_posts_input_and_returns_run_id():
@@ -36,21 +38,104 @@ def test_trigger_missing_run_id_raises():
         make_client(handler).trigger("a", "x")
 
 
+def test_trigger_rejects_an_oversized_run_id():
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(202, json={"run_id": "r" * 256, "status": "RUNNING"})
+
+    with pytest.raises(CoreAiError, match="run_id"):
+        make_client(handler).trigger("a", "x")
+
+
+def test_llm_call_posts_only_input_with_bounded_long_timeout_and_returns_output():
+    seen = {}
+
+    def handler(request):
+        import json
+
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        seen["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200, json={"output": '{"outcome":"ready"}'})
+
+    output = make_client(handler).llm_call("prepare-v1", "prepare this")
+
+    assert output == '{"outcome":"ready"}'
+    assert seen == {
+        "method": "POST",
+        "url": "https://core.test/api/llm/prepare-v1/call",
+        "body": {"input": "prepare this"},
+        "timeout": {
+            "connect": 660.0,
+            "read": 660.0,
+            "write": 660.0,
+            "pool": 660.0,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"output": None},
+        {"output": ["not", "text"]},
+    ],
+)
+def test_llm_call_rejects_missing_or_non_text_output(response):
+    from app.coreai import CoreAiError
+
+    def handler(request):
+        return httpx.Response(200, json=response)
+
+    with pytest.raises(CoreAiError, match="output"):
+        make_client(handler).llm_call("prepare-v1", "prepare this")
+
+
+def test_llm_call_rejects_an_oversized_output_field():
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(200, json={"output": "x" * (1024 * 1024 + 1)})
+
+    with pytest.raises(CoreAiError, match="output"):
+        make_client(handler).llm_call("prepare-v1", "prepare this")
+
+
 def test_get_agent_reads_back_the_exact_published_capabilities():
     def handler(request):
         assert request.method == "GET"
         assert request.url.path == "/api/agents/agent-9"
-        return httpx.Response(200, json={"id": "agent-9", "status": "PUBLISHED", "tools": []})
+        return httpx.Response(
+            200, json={"id": "agent-9", "status": "PUBLISHED", "tools": []}
+        )
 
     agent = make_client(handler).get_agent("agent-9")
 
     assert agent == {"id": "agent-9", "status": "PUBLISHED", "tools": []}
 
 
+def test_coreai_json_lists_have_a_bounded_item_count():
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"id": "agent-9", "status": "PUBLISHED", "tools": [{}] * 1001},
+        )
+
+    with pytest.raises(CoreAiError, match="list"):
+        make_client(handler).get_agent("agent-9")
+
+
 def test_get_run_returns_detail():
     def handler(request):
         assert str(request.url) == "https://core.test/api/runs/r-2"
-        return httpx.Response(200, json={"id": "r-2", "status": "COMPLETED", "output": "report"})
+        return httpx.Response(
+            200, json={"id": "r-2", "status": "COMPLETED", "output": "report"}
+        )
 
     detail = make_client(handler).get_run("r-2")
     assert detail["status"] == "COMPLETED"
@@ -74,12 +159,18 @@ def test_reads_skill_and_trace_span_detail_for_keyword_provenance():
         if request.url.path == "/api/traces/trace-1":
             return httpx.Response(
                 200,
-                json={"traceId": "trace-1", "agentId": "agent-1", "status": "COMPLETED"},
+                json={
+                    "traceId": "trace-1",
+                    "agentId": "agent-1",
+                    "status": "COMPLETED",
+                },
             )
         if request.url.path == "/api/traces/trace-1/spans":
             return httpx.Response(
                 200,
-                json={"spans": [{"spanId": "span-1", "name": "use_skill", "type": "TOOL"}]},
+                json={
+                    "spans": [{"spanId": "span-1", "name": "use_skill", "type": "TOOL"}]
+                },
             )
         if request.url.path == "/api/traces/trace-1/spans/span-1":
             return httpx.Response(
@@ -138,6 +229,74 @@ def test_provenance_reads_reject_mismatched_or_malformed_contracts(method, respo
         getattr(client, method)(*args)
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "COMPLETED", "output": "report"},
+        {"id": "another-run", "status": "COMPLETED", "output": "report"},
+    ],
+)
+def test_get_run_rejects_a_missing_or_mismatched_run_id(response):
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(200, json=response)
+
+    with pytest.raises(CoreAiError, match="run detail id mismatch"):
+        make_client(handler).get_run("expected-run")
+
+
+def test_get_run_rejects_a_status_outside_the_public_coreai_contract():
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(200, json={"id": "bad-status", "status": "BROKEN"})
+
+    with pytest.raises(CoreAiError, match="unsupported status"):
+        make_client(handler).get_run("bad-status")
+
+
+@pytest.mark.parametrize(
+    "unsafe_output",
+    [
+        {"password": "output-object-secret"},
+        ["output-list-secret"],
+    ],
+)
+def test_get_run_converts_non_text_completed_output_to_safe_failure(unsafe_output):
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"id": "terminal-run", "status": "COMPLETED", "output": unsafe_output},
+        )
+
+    detail = make_client(handler).get_run("terminal-run")
+
+    assert detail["status"] == "FAILED"
+    assert "invalid output" in detail["error"]
+    assert "output" not in detail
+    assert "output-object-secret" not in str(detail)
+    assert "output-list-secret" not in str(detail)
+
+
+def test_get_run_replaces_non_text_terminal_error_with_safe_failure():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "id": "terminal-run",
+                "status": "FAILED",
+                "error": {"client_secret": "structured-error-secret"},
+            },
+        )
+
+    detail = make_client(handler).get_run("terminal-run")
+
+    assert detail["status"] == "FAILED"
+    assert detail["error"] == "core-ai terminal response has invalid error"
+    assert "structured-error-secret" not in str(detail)
+
+
 def test_http_error_surfaces_status_and_message():
     from app.coreai import CoreAiError
 
@@ -148,6 +307,181 @@ def test_http_error_surfaces_status_and_message():
         make_client(handler).get_run("r-3")
     assert e.value.status_code == 401
     assert "invalid api key" in str(e.value)
+
+
+def test_http_error_message_is_redacted_single_line_and_bounded():
+    from app.coreai import CoreAiError
+
+    malicious = (
+        "\x00 forged log line\nAuthorization: Bearer top-secret-token\r\n" + "x" * 1000
+    )
+
+    def handler(_request):
+        return httpx.Response(500, json={"message": malicious})
+
+    with pytest.raises(CoreAiError) as caught:
+        make_client(handler).get_run("r-secret")
+
+    stored = str(caught.value)
+    assert len(stored) <= 500
+    assert "top-secret-token" not in stored
+    assert "\x00" not in stored
+    assert "\n" not in stored
+    assert "\r" not in stored
+
+
+def test_http_error_redacts_common_plain_and_quoted_credential_forms():
+    from app.coreai import CoreAiError
+
+    malicious = (
+        "access_token=access-token-value "
+        "client_secret:'client-secret-value' "
+        'password="password-value" '
+        '{"api_key":"quoted-api-key-value"}'
+    )
+
+    def handler(_request):
+        return httpx.Response(500, json={"message": malicious})
+
+    with pytest.raises(CoreAiError) as caught:
+        make_client(handler).get_run("r-secret")
+
+    stored = str(caught.value)
+    for secret in (
+        "access-token-value",
+        "client-secret-value",
+        "password-value",
+        "quoted-api-key-value",
+    ):
+        assert secret not in stored
+
+
+def test_http_error_redacts_header_query_refresh_token_and_url_userinfo_forms():
+    from app.coreai import CoreAiError
+
+    malicious = " ".join(
+        (
+            "X-Api-Key: x-api-key-secret",
+            "Authorization: Basic basic-auth-secret",
+            "refresh_token=refresh-secret",
+            "Refresh-Token: refresh-header-secret",
+            "https://alice:url-password-secret@core.test/fail?api_key=query-secret&refresh_token=query-refresh-secret",
+        )
+    )
+
+    def handler(_request):
+        return httpx.Response(503, json={"message": malicious})
+
+    with pytest.raises(CoreAiError) as caught:
+        make_client(handler).get_run("r-secret")
+
+    stored = str(caught.value)
+    for secret in (
+        "x-api-key-secret",
+        "basic-auth-secret",
+        "refresh-secret",
+        "refresh-header-secret",
+        "url-password-secret",
+        "query-secret",
+        "query-refresh-secret",
+    ):
+        assert secret not in stored
+
+
+def test_http_error_redacts_cloud_signed_url_credentials_and_preserves_safe_query_shape():
+    from app.coreai import CoreAiError
+
+    malicious = " ".join(
+        (
+            "azure=https://blob.test/report.html?sv=2018-11-09&sp=r&sig=azure-secret&se=2026-09-03T04%3A16%3A57Z",
+            "legacy=https://blob.test/report?signature=legacy-secret&download=1",
+            "aws=https://s3.test/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=aws-credential%2Fscope&X-Amz-Signature=aws-signature&response-content-type=text%2Fhtml",
+        )
+    )
+
+    def handler(_request):
+        return httpx.Response(500, json={"message": malicious})
+
+    with pytest.raises(CoreAiError) as caught:
+        make_client(handler).get_run("r-signed-url")
+
+    assert str(caught.value) == " ".join(
+        (
+            "azure=https://blob.test/report.html?sv=2018-11-09&sp=r&sig=<redacted>&se=2026-09-03T04%3A16%3A57Z",
+            "legacy=https://blob.test/report?signature=<redacted>&download=1",
+            "aws=https://s3.test/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=<redacted>&X-Amz-Signature=<redacted>&response-content-type=text%2Fhtml",
+        )
+    )
+
+
+def test_http_error_redacts_common_sensitive_query_keys_without_touching_safe_keys():
+    from app.coreai import sanitize_coreai_error
+
+    unsafe = (
+        "https://core.test/callback?token=token-secret&code=code-secret&key=key-secret"
+        "&api-key=api-key-secret&access_token=access-secret"
+        "&refresh-token=refresh-secret&session_token=session-secret"
+        "&monkey=banana&postcode=11501&keyboard=qwerty"
+    )
+
+    assert sanitize_coreai_error(unsafe) == (
+        "https://core.test/callback?token=<redacted>&code=<redacted>&key=<redacted>"
+        "&api-key=<redacted>&access_token=<redacted>"
+        "&refresh-token=<redacted>&session_token=<redacted>"
+        "&monkey=banana&postcode=11501&keyboard=qwerty"
+    )
+
+
+def test_http_error_redacts_embedded_multiple_and_malformed_urls_without_losing_punctuation():
+    from app.coreai import sanitize_coreai_error
+
+    unsafe = (
+        "first=(https://one.test/a?sig=one-secret&view=full), "
+        "malformed=https://[::1/path?token=two-secret&keep=yes; "
+        "next=https://two.test/b?code=three-secret#section. "
+        "bad-percent=https://bad.test/?signature=%E0%A4%A&ok=%ZZ"
+    )
+
+    assert sanitize_coreai_error(unsafe) == (
+        "first=(https://one.test/a?sig=<redacted>&view=full), "
+        "malformed=https://[::1/path?token=<redacted>&keep=yes; "
+        "next=https://two.test/b?code=<redacted>#section. "
+        "bad-percent=https://bad.test/?signature=<redacted>&ok=%ZZ"
+    )
+
+
+def test_declared_oversized_response_is_rejected_without_reading_its_body():
+    from app.coreai import CoreAiError
+
+    class MustNotRead(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("oversized response body was read")
+
+    def handler(_request):
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(2 * 1024 * 1024 + 1)},
+            stream=MustNotRead(),
+        )
+
+    with pytest.raises(CoreAiError, match="too large"):
+        make_client(handler).get_run("oversized-run")
+
+
+def test_chunked_oversized_response_stops_at_the_byte_ceiling():
+    from app.coreai import CoreAiError
+
+    class OversizedChunks(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'{"padding":"'
+            yield b"x" * (2 * 1024 * 1024)
+            raise AssertionError("client read beyond its response byte ceiling")
+
+    def handler(_request):
+        return httpx.Response(200, stream=OversizedChunks())
+
+    with pytest.raises(CoreAiError, match="too large"):
+        make_client(handler).get_run("oversized-run")
 
 
 def test_network_error_wrapped():
@@ -193,7 +527,10 @@ def test_call_mcp_tool_posts_json_arguments_and_parses_nested_object():
         {"placeId": "place-1", "keyword": "breakfast"},
     )
 
-    assert seen["url"] == "https://core.test/api/tools/mcp-servers/local-falcon-id/test-tool"
+    assert (
+        seen["url"]
+        == "https://core.test/api/tools/mcp-servers/local-falcon-id/test-tool"
+    )
     assert seen["body"] == {
         "tool_name": "listLocalFalconScanReports",
         "arguments": '{"placeId": "place-1", "keyword": "breakfast"}',
@@ -204,7 +541,10 @@ def test_call_mcp_tool_posts_json_arguments_and_parses_nested_object():
 @pytest.mark.parametrize(
     ("response", "expected"),
     [
-        ({"success": False, "result": "upstream rejected", "duration_ms": 3}, "upstream rejected"),
+        (
+            {"success": False, "result": "upstream rejected", "duration_ms": 3},
+            "upstream rejected",
+        ),
         ({"success": True, "result": "[]", "duration_ms": 3}, "non-object"),
         ({"success": True, "result": "not-json", "duration_ms": 3}, "invalid JSON"),
     ],

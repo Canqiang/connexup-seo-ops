@@ -2,7 +2,7 @@
 
 **日期：** 2026-09-03
 
-**状态：** 对话设计已确认；书面规格等待最终评审
+**状态：** 已确认；实现限定于 `codex/audit-report-workspace` 隔离分支
 
 **仓库：** `/Users/xander/git_repo/connexup-seo-ops`
 
@@ -172,7 +172,7 @@ Audit 不复用通用 `runs` 的输出契约或 merchant-wide running lock。
 
 核心字段：
 
-- `id`；
+- `id`：在任何 durable write 前生成且永不复用的 UUID/ULID；
 - `merchant_id`；
 - `merchant_location_id`：共享 `merchant_locations` 的稳定内部 FK；
 - `current_identity_manifest_sha256`；
@@ -193,7 +193,7 @@ Audit 不复用通用 `runs` 的输出契约或 merchant-wide running lock。
 
 `audit_subject_events` 以 append-only 方式保存 created、identity_projection_changed、website_changed、archived 和 restored。每条事件保存前后 Audit generation、引用的共享 location lifecycle event、GBP source-scope binding generation、Place alias/evidence generation、规范化 identity manifest/hash、原因、operator/system actor 与时间，不复制或重写共享 alias 历史。
 
-Audit 不创建第二套门店主数据。它依赖共享稳定 Location Registry：`merchant_locations`、有效期 source scope bindings、Place aliases/evidence 和生命周期事件。如果该共享能力尚未部署，必须先以共享 migration/module 交付；不能为了 Audit 临时把现有 `merchant_gbp_profiles.id` 或名称/地址当稳定键。
+Audit 不创建第二套门店主数据。它硬依赖 Performance History foundation 与 Task Workflow migration hook 已部署并完成全量回归：复用 `api/app/migrations.py`、`schema_migrations(version, checksum, applied_at)`、整数键 `merchant_locations`、`source_scopes`/`source_scope_bindings`、`merchant_location_aliases` 和 `merchant_location_status_events`。`0001_performance_history.sql` 与 `0002_task_workflows` 占用共同 migration 序列，Audit migration 从 `0003` 起编号；不能创建第二个 migration ledger、另一组 location/binding/alias 表，也不能把现有 `merchant_gbp_profiles.id` 或名称/地址当稳定键。
 
 Subject 由共享 Location Registry 投影创建，不由名称搜索临时生成：
 
@@ -402,19 +402,22 @@ Append-only 记录每次状态变化、lease claim、dispatch acknowledgement、
 
 ### 7.9 `audit_assets` 与 `audit_exports`
 
-`audit_assets` 保存输入证据附件和来源 Artifact 的内部对象元数据：
+`audit_assets` 是证据附件、来源 Artifact 与导出结果共用的内部对象元数据表：
 
 - `id`；
-- 可空 `audit_run_id` 与可空 `legacy_source_id`，二者必须恰好一个非空；
-- `asset_kind` 与 `status`：`pending`、`ready` 或 `failed`；
-- 内部 object key；
+- `owner_kind`，以及可空 `audit_run_id`、`legacy_source_id`、`audit_export_attempt_id`；三种 owner 外键必须按 kind 恰好一个非空，同一 Export Attempt 最多一个 Asset；
+- `asset_kind` 与 `status`：`pending`、`ready`、`failed`、`deleting` 或 `deleted`；
+- 单调递增的 `lease_generation`，以及状态对应的 `updated_at`、可空 `ready_at` / `deleting_at`；
+- 可空 `current_storage_attempt_id` 与 `ready_storage_attempt_id`；ready 时后者必须指向同 Asset、当前 lease generation 的 verified storage attempt；
 - MIME、大小、SHA-256；
 - source kind；
-- created_at、ready_at。
+- created_at。
 
-只有内部对象 bytes 已写入、重新读取、MIME/大小/hash 验证一致后，Asset 才能以 CAS 从 `pending` 标记 `ready`。对象 key 使用 content-addressed 或 write-once 语义。DB trigger 禁止 ready Asset 的 object key、MIME、大小、hash 被 UPDATE 或 DELETE。
+`audit_asset_storage_attempts` 为每次 durable write 保存独立、可围栏且删除后仍保留的记录：稳定 `id`、`audit_asset_id`、`lease_generation`、全局唯一且不可变的 final/staging object keys、`writing|verified|failed|deleting|deleted` 状态、MIME/大小/SHA-256 与时间。`(audit_asset_id, lease_generation)` 唯一；key 同时包含 Asset ID 和 storage-attempt ID，所以同一 Run/legacy source 下多个附件、同 bytes 附件以及 lease takeover 都不会共享或覆盖路径。状态机只允许 `writing → verified|failed|deleting`、`verified|failed → deleting` 与 `deleting → deleted`。whole-Asset cleanup 要求 parent Asset 未 ready/未引用且已先 CAS 为 deleting；superseded-attempt cleanup 则必须证明 attempt 同时不是 `current_storage_attempt_id` 和 `ready_storage_attempt_id`，即使 parent 已 ready/被引用也只能删除该旧 attempt。DB trigger 拒绝其他迁移及 key/owner/generation 修改。
 
-`audit_version_assets` 是验收或迁移事务创建的不可变连接表，保存 `audit_version_id`、可空 `audit_criterion_result_id`、可空 `evidence_id` 与 `audit_asset_id`。原生 canonical Evidence 必须同时绑定 Criterion 与 Evidence ID，并且只能引用同一 Run 的 ready Asset；legacy source-level 附件允许两者都为空，但只能引用从该 Version 唯一 `legacy_source_id` 内部化、读回并校验 hash 的 ready Asset。required Evidence Asset 未 ready 时不得验收。连接行和关联 ready Asset 均受 UPDATE/DELETE trigger 保护，避免 Version Evidence bytes 漂移。
+Asset 正式状态机只允许 `pending → ready|failed|deleting`、`failed → deleting` 与 `deleting → deleted`。任何 durable write 前必须先提交 pending Asset 和对应 writing storage-attempt row，因此存储中的 staging/final bytes 总能反查唯一数据库 write attempt。只有该 storage attempt 的 bytes 已写入、重新读取、MIME/大小/hash 验证一致并标记 verified 后，publisher 才能用 `asset.status='pending' AND asset.lease_generation=<expected> AND current_storage_attempt_id=<exact>` 的 CAS 标记 Asset ready 并冻结 `ready_storage_attempt_id`。lease takeover 创建新的 storage-attempt row，绝不改写或遗忘旧 generation；stale writer 只能写自己的独占 key，不能发布 Asset。cleanup 逐条围栏 storage attempt，原子封存其 attempt namespace，删除内容但永久保留不可写的非内容 tombstone；stale writer因 exclusive/no-recreate 语义不能在清理后重新生成路径。所有 attempts 被安全处理后，Asset 只转为 `deleted` 并保留最小 owner/key tombstone，不物理删除 metadata。一旦 Asset 或 attempt 进入 `deleting|deleted`，publisher/retry 都不能使其 ready/verified。DB CHECK/trigger 必须拒绝未列出的迁移，并禁止 ready/deleted Asset 的 owner、ready attempt、MIME、大小、hash 被 UPDATE 或 DELETE。
+
+`audit_version_assets` 是验收或迁移事务创建的不可变 Evidence 连接表，保存 `audit_version_id`、可空 `audit_criterion_result_id`、可空 `evidence_id` 与 `audit_asset_id`。原生 canonical Evidence 必须同时绑定 Criterion 与 Evidence ID，并且只能引用同一 Run 的 ready Asset；legacy source-level 附件允许两者都为空，但只能引用从该 Version 唯一 `legacy_source_id` 内部化、读回并校验 hash 的 ready Asset。Export-owned Asset 不得进入此表。required Evidence Asset 未 ready 时不得验收。连接行和关联 ready Asset 均受 UPDATE/DELETE trigger 保护，避免 Version Evidence bytes 漂移。
 
 `audit_exports` 保存导出任务及冻结结果：
 
@@ -429,14 +432,13 @@ Append-only 记录每次状态变化、lease claim、dispatch acknowledgement、
 - 非空 `comparison_base_key`：无基线使用 `none`，有基线使用规范化 Version ID；
 - `status`：`queued`、`running`、`ready` 或 `failed`；
 - `current_attempt_id`、`attempt_count`；
-- 内部 object key；
-- MIME、大小、SHA-256；
+- `ready_asset_id`，只在 ready 时引用当前成功 Export Attempt 独占且已读回验证的 ready Asset；
 - created_by、created_at、completed_at；
 - 安全错误码与摘要。
 
-`(audit_version_id, request_id)` 唯一，`(audit_version_id, format, locale, template_version, renderer_version, comparison_base_key)` 也唯一。相同 request ID 只有 request payload hash 相同才是 replay；hash 不同返回稳定冲突，不能静默返回另一种导出。Ready Export 的内容元数据不可修改；Export 只有通过 bytes readback gate 后才能进入 ready。使用非空 key 避免 SQLite 对 NULL 唯一值允许重复。
+`(audit_version_id, request_id)` 唯一，`(audit_version_id, format, locale, template_version, renderer_version, comparison_base_key)` 也唯一。相同 request ID 只有 request payload hash 相同才是 replay；hash 不同返回稳定冲突，不能静默返回另一种导出。Ready Export 的 `ready_asset_id` 不可修改；Export 只有在该 Asset 完成 bytes readback gate 后才能进入 ready。使用非空 key 避免 SQLite 对 NULL 唯一值允许重复。
 
-`audit_export_attempts` 为每次 renderer 执行保存 `export_id`、attempt number、可空 retry parent、retry `request_id`、status、lease owner/generation/expiry、错误和时间。`(export_id, request_id)` 唯一。Attempt terminal 后不可修改；一个 Export 同时最多一个 active Attempt。普通 Export POST 的 request-id replay 只读回原 Export，绝不隐式启动第二次 render；失败后只有显式 retry command 才创建新 Attempt。
+`audit_export_attempts` 为每次 renderer 执行保存 `export_id`、attempt number、可空 retry parent、retry `request_id`、status、lease owner/generation/expiry、错误和时间。`(export_id, request_id)` 唯一。Attempt 可拥有至多一个 `owner_kind=EXPORT_ATTEMPT` 的 `audit_assets` 行；每次 retry 创建新 Attempt 与新 owner-exclusive Asset key，绝不复用先前 Attempt 的 key。Attempt terminal 后不可修改；一个 Export 同时最多一个 active Attempt。普通 Export POST 的 request-id replay 只读回原 Export，绝不隐式启动第二次 render；失败后只有显式 retry command 才创建新 Attempt。
 
 ### 7.10 `audit_rubric_versions`
 
@@ -690,7 +692,7 @@ Agent/Skill provenance 由服务端从 Core AI Run 和 Trace 读回，不相信�
 - due 时若同一 Subject 有任何 active Audit Run（包括 `unknown`），scheduler 保持当前 due 不动，不创建新 Run，也不在每次 30 秒 tick 重复写 blocker event。
 - 占用 due 的 active Run terminal 后：若它是成功的手动 Run，则按上节从 cadence anchor 重算 due；其他 terminal 结果由下一次 scheduler claim 创建且只创建一个 catch-up Run，并把 `next_due_at` 跳到首个未来 occurrence，在单一事件中记录 skipped occurrence count。
 - 商户或 Audit subject archived 时不创建新 occurrence。
-- 禁用 policy 后，尚未 dispatch 的 queued scheduled Run 可以安全标记 blocked；已获 Core AI acknowledgement 的 Run继续追踪到 terminal，不伪装取消远端执行。
+- 禁用 policy 后，所有没有 nonterminal/ambiguous 远端工作的 queued 或 retry-wait scheduled Run 都安全标记 blocked，包括最后一个 Attempt 已明确失败但后继 Attempt 尚未创建的 Run；已获 Core AI acknowledgement 或结果不明确的 Run 继续追踪到 terminal，不伪装取消远端执行。创建每个重试后继 Attempt 前必须重新确认 policy 仍启用。
 - 策略重新启用从新的 anchor 计算未来 occurrence，不自动补跑关闭期间。
 - 本地 anchor 使用 IANA timezone。DST 不存在时间顺延到当日第一个合法 instant；重复时间固定选择较早 offset，并把解析后的 UTC instant 写入 occurrence event。
 
@@ -982,7 +984,7 @@ PDF 包含：
 8. HTML 预览使用隔离 origin、CSP 和 `sandbox`，不允许访问主应用凭证。
 9. 下载失败只影响附件状态；除非 Rubric 将该附件定义为 required evidence，否则不破坏已验证的 JSON Version。
 
-Asset Store provider 通过部署配置选择，并必须是 API/worker 共用的耐久存储，不能把容器临时目录作为 accepted Version 的唯一副本。被 accepted Version 或 ready Export 引用的对象遵循对应报告的数据保留期，不做普通 orphan 清理；仅清理超过 24 小时、没有 ready DB 引用的 pending/failed 上传，并为每次清理写安全 event。任何正式销毁走第 20 节的受控流程。
+Asset Store provider 通过部署配置选择，并必须是 API/worker 共用的耐久存储，不能把容器临时目录作为 accepted Version 的唯一副本。被 accepted Version 或 ready Export 引用的对象遵循对应报告的数据保留期，不做普通 orphan 清理。任何 durable write 前先提交 pending Asset 与带全局唯一 final/staging key 的 storage-attempt row；因此 crash-left bytes 也能反查一个可围栏 write attempt。清理整个超过 24 小时且未被引用的 pending/failed Asset 时，必须先在短事务内用 exact generation 把父 Asset CAS 为 `deleting`，从而阻止任何 current writer 发布；若只清理 superseded attempt，则必须在同一事务证明它既不是 `current_storage_attempt_id` 也不是 `ready_storage_attempt_id` 后再 CAS attempt 为 `deleting`，不受 ready parent 的保留期限制。事务外仅围栏并删除该 attempt 的独占内容，永久保留非内容 tombstone，再以 CAS 标记 attempt `deleted`；所有 attempt 完成后才将已围栏父 Asset 标记 `deleted`。崩溃后可从数据库逐 attempt 幂等续跑。任何正式销毁走第 20 节的受控流程。
 
 ## 17. 历史迁移
 
@@ -1096,7 +1098,8 @@ Version acceptance 只能通过一个事务函数完成。它必须以 Run/Attem
 新 Audit Version、Rubric、ready Asset 和其关联表使用 `ON DELETE RESTRICT`，不能被现有商户 hard-delete 级联清除：
 
 - 只要商户存在 accepted Audit Version，普通 `DELETE merchant` 返回 409 `MERCHANT_HAS_IMMUTABLE_AUDIT_HISTORY`，UI 引导归档；
-- 没有 accepted Version 且通过现有依赖检查的误建商户仍可按原流程删除；
+- 任何其他 Audit Subject、policy、Run、Attempt、event 或 Asset metadata 也属于 durable history，普通删除返回对应稳定 409；普通 orphan-object cleanup 不删除这些历史来恢复删除资格；
+- 只有已归档且从未同步 location/source、从未产生 Audit/任务/其他 durable row 的空白误建草稿可按 Performance foundation 的既有流程删除；
 - 法律/合规销毁属于单独的高权限、双确认 purge 流程，必须先生成对象/行清单及 hash、记录批准人与原因，再删除 bytes 和数据并保留最小非内容 tombstone；第一版普通 operator API 不提供该能力。
 
 ## 21. 可观测性

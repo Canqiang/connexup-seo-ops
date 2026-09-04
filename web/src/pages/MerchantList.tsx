@@ -25,6 +25,7 @@ export default function MerchantList() {
   const [fbrMerchantId, setFbrMerchantId] = useState('')
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [creating, setCreating] = useState(false)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
   const [error, setError] = useState('')
   const createLockRef = useRef(false)
 
@@ -93,19 +94,23 @@ export default function MerchantList() {
     }
   }
 
-  const deleteArchivedMerchant = async (event: React.MouseEvent<HTMLButtonElement>, merchant: MerchantStats) => {
+  const removeBlankDraft = async (event: React.MouseEvent, merchant: MerchantStats) => {
+    event.preventDefault()
     event.stopPropagation()
-    if (merchant.status !== 'archived') return
+    if (!merchant.can_delete || deletingId !== null) return
     const confirmed = window.confirm(
-      `永久删除后，该商户及其所有任务、分析记录和关联资料将无法恢复。确认删除“${merchant.name}”？`,
+      `“${merchant.name}”没有任何同步、任务、分析或审计历史。删除空白草稿后无法恢复，确认删除？`,
     )
     if (!confirmed) return
+    setDeletingId(merchant.id)
     try {
       await api.deleteMerchant(merchant.id)
       setMerchants(current => current.filter(item => item.id !== merchant.id))
       setError('')
     } catch (err) {
       setError((err as Error).message)
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -209,18 +214,19 @@ export default function MerchantList() {
                   </td>
                   <td className="dim nowrap">{m.auto_run_interval_days != null ? `每 ${m.auto_run_interval_days} 天` : '关闭'}</td>
                   <td className="merchant-action">
-                    {m.status === 'archived'
-                      ? (
-                          <button
-                            type="button"
-                            className="merchant-delete"
-                            aria-label={`删除商户 ${m.name}`}
-                            onClick={event => deleteArchivedMerchant(event, m)}
-                          >
-                            删除
-                          </button>
-                        )
-                      : <span className="merchant-enter" aria-hidden="true">→</span>}
+                    {m.can_delete ? (
+                      <button
+                        type="button"
+                        className="merchant-delete-action"
+                        aria-label={`删除商户 ${m.name}`}
+                        disabled={deletingId !== null}
+                        onClick={event => void removeBlankDraft(event, m)}
+                      >
+                        {deletingId === m.id ? '删除中…' : '删除草稿'}
+                      </button>
+                    ) : (
+                      <span className="merchant-enter" aria-hidden="true">→</span>
+                    )}
                   </td>
                 </tr>
               ))}

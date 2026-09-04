@@ -1,0 +1,242 @@
+# Audit Phase 5 Durable Report Export Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Export an accepted Audit Version as deterministic internal JSON, self-contained HTML, and customer PDF, with durable owner-scoped write-once storage, immutable attempt history, authenticated download, and bytes-level readback proof.
+
+**Architecture:** An Export command freezes Version, format, locale, template, renderer, and comparison base into an idempotent database resource. A dedicated worker builds one safe render model from the verified immutable Version, renders JSON or self-contained HTML, and uses pinned Playwright Chromium to print the same HTML to PDF. Files are written once to a configured durable Asset Store, reopened, validated, hashed, and only then published ready under a fenced Export Attempt.
+
+**Tech Stack:** FastAPI streaming responses, Python filesystem APIs, Jinja2 3.1.6, Playwright 1.55.0 bundled Chromium, pypdf 6.0.0, pytest, React 19.
+
+**Spec:** `docs/superpowers/specs/2026-09-03-audit-report-workspace-design.md`
+
+## Global Constraints
+
+- Complete Phases 1–3. Export only an accepted, readback-verified `audit_version_id`; never call Core AI, FBR, GBP, Local Falcon, or the scheduler to refresh content.
+- Persist internal object keys only. Do not persist a public URL, SAS query, Authorization header, cookie, or browser credential.
+- The Asset Store root must be an explicit durable path configured by `SEO_OPS_AUDIT_ASSET_DIR`; reject an empty value, relative path, `/tmp`, `/var/tmp`, or a path inside a known ephemeral container temp directory.
+- Every storage attempt for an immutable Asset or Export owner receives its own write-once object key; different Asset rows and attempts never share a key even when bytes are identical. A database row cannot become ready until reopened bytes match MIME, size, SHA-256, and format-specific validation.
+- Asset metadata has an explicit fenced lifecycle `pending → ready|failed`, `pending|failed → deleting`, and `deleting → deleted`. Ordinary orphan cleanup must first CAS an exact unreferenced row to `deleting`; publication rejects `deleting|deleted`, so bytes are never removed while another worker can still publish them ready. Deleted attempts/assets retain minimal non-content database and storage tombstones so stale writers cannot recreate a reclaimed path. Merchant hard delete does not use this as a shortcut around durable-history guards.
+- HTML contains no external scripts, styles, fonts, images, or network requests. PDF uses that HTML and the pinned renderer; it must not silently translate immutable report content.
+- `unscored_legacy` always supports exact JSON wrapper export. HTML/PDF remain disabled unless Phase 6 registers a renderer for that exact legacy schema/version.
+- A normal Export POST replay never launches another Attempt. A failed Export can retry only through the explicit retry command with a new request ID.
+
+---
+
+## Task 1: Add durable Asset Store configuration and write/readback protocol
+
+**Files:**
+
+- Create: `api/app/audit_assets.py`
+- Create: `api/app/audit_asset_transport.py`
+- Modify: `api/app/config.py`
+- Modify: `api/.env.example`
+- Create: `api/tests/test_audit_assets.py`
+- Create: `api/tests/test_audit_asset_transport.py`
+- Modify: `api/app/audit_worker.py`
+- Modify: `api/app/audit_repository.py`
+- Modify: `api/tests/test_audit_worker.py`
+- Modify: `api/tests/test_config.py`
+
+**Interfaces:**
+
+```python
+class AssetStore(Protocol):
+    def put_verified(self, *, write: PendingAssetWrite,
+                     content: bytes, mime_type: str) -> StoredObject: ...
+    def read_verified(self, *, object_key: str, expected_size: int,
+                      expected_sha256: str) -> bytes: ...
+    def open_verified(self, *, object_key: str, expected_size: int,
+                      expected_sha256: str) -> BinaryIO: ...
+    def fence_for_delete(self, *, write: PendingAssetWrite) -> FencedAssetWrite: ...
+    def purge_fenced_content(self, *, fence: FencedAssetWrite) -> None: ...
+
+class FilesystemAssetStore:
+    def __init__(self, root: Path): ...
+
+class TrustedAuditAssetTransport:
+    def download_coreai_attachment(self, *, run_id: str,
+                                   attachment_id: str) -> DownloadedAsset: ...
+    def download_registered_source(self, *, source_kind: str,
+                                   artifact_reference: str) -> DownloadedAsset: ...
+```
+
+`PendingAssetWrite` is loaded from one committed `audit_asset_storage_attempts` row and contains the exact Asset ID, storage-attempt ID, lease generation, validated staging key, and validated final key. The store never derives or chooses a shared key from content alone. `fence_for_delete` atomically replaces the attempt namespace with a non-content tombstone (or uses an equivalent provider conditional fence) before bytes are purged; `put_verified` uses exclusive/no-recreate opens and cannot write through a fenced namespace.
+
+- [ ] Add config tests for accepted absolute durable path and rejection of relative/temp/root paths. Tests use their pytest temp directory through a direct constructor, not production config.
+- [ ] Write Asset Store tests for atomic temp write+fsync+rename, stable replay for one storage attempt, distinct keys for two Asset rows under the same Run/legacy source with identical or different bytes, collision with different bytes for one attempt, interrupted write, reopen/hash/size validation, path traversal, missing file, MIME allowlist, concurrent writers, lease takeover, and cleanup of every crash-left generation through its storage-attempt row.
+- [ ] Use keys such as `audit/<kind>/<owner-kind>/<owner-id>/<asset-id>/<storage-attempt-id>/g<lease-generation>.<allowlisted-extension>` and a separate sibling staging key stored in the same attempt row. Build paths from the validated `PendingAssetWrite`, open with no-follow/exclusive semantics where supported, and verify resolved paths remain below the configured root. Add database uniqueness constraints on both keys. No other Asset or attempt may reuse either key.
+- [ ] Return only object key, MIME, size, and SHA-256. Never return a filesystem absolute path through API DTOs.
+- [ ] Accept Core AI attachments only through the proven opaque list/download methods from Phase 2. Accept FBR URLs only from a registered source-adapter field and a configured HTTPS host/port allowlist; never follow a URL extracted from model prose.
+- [ ] For URL transport, validate scheme, explicit/default port, hostname allowlist, and every DNS answer before the first request and every redirect. Reject loopback, private, link-local, multicast, unspecified, reserved, metadata endpoints, protocol downgrade, userinfo, excessive redirects, disallowed MIME, declared/streamed/expanded size excess, connect/read/total timeout, and DNS result change. Strip query/fragment from all stored/logged references.
+- [ ] Use `audit_assets` for both Evidence and Export objects with an exactly-one owner constraint (`RUN`, `LEGACY_SOURCE`, or `EXPORT_ATTEMPT`) and a unique Export Attempt owner. Before writing any durable byte, commit the pending Asset plus a writing `audit_asset_storage_attempts` row with unique final/staging keys and the same lease generation. Stream only through its `PendingAssetWrite`, atomically rename, reopen and verify bytes, then mark the attempt verified before the Asset can CAS ready from that exact current attempt. Thus a crash before metadata creates no durable bytes, while a crash after metadata leaves a database-tracked attempt that cleanup can resume. A takeover appends a new generation/attempt and retains the old row for cleanup; `deleting` is terminal and stale attempts can never publish. Optional transport failure produces `AUDIT_ASSET_TRANSPORT_UNAVAILABLE`; a rubric-required attachment prevents Version acceptance.
+- [ ] The initial `2026.09` rubric has no required remote attachment. After this transport is installed, update the worker's post-completion/pre-acceptance path to list only trusted opaque attachments, internalize them through this transport/store, and bind ready metadata under the same Run. A future rubric may mark one required only after this path's readback tests pass; required means acceptance waits or fails closed, never that Phase 2 followed an arbitrary URL.
+- [ ] Implement authenticated `GET /api/audit-assets/{asset_id}/preview` and `/download` only for ready metadata. Preview permits PNG/JPEG inline and renders JSON as escaped `text/plain`. In the first release, PDF/HTML preview returns 409 `AUDIT_ACTIVE_CONTENT_PREVIEW_UNAVAILABLE` because this repository has no isolated-origin deployment; authenticated download remains available. Do not serve untrusted PDF/HTML inline from the application origin.
+- [ ] Set `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, safe `Content-Disposition`, `Cache-Control: private, no-store`, and no-referrer headers.
+- [ ] Run:
+
+```bash
+cd /Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace/api
+.venv/bin/python -m pytest tests/test_audit_assets.py tests/test_audit_asset_transport.py tests/test_config.py -q
+```
+
+- [ ] Commit as `feat: add durable audit asset store` when green.
+
+## Task 2: Build one safe render model and deterministic JSON export
+
+**Files:**
+
+- Create: `api/app/audit_rendering.py`
+- Create: `api/tests/test_audit_rendering.py`
+- Create: `api/tests/fixtures/audit_export_expected.json`
+
+**Interfaces:**
+
+```python
+AUDIT_TEMPLATE_VERSION = "customer-v1"
+AUDIT_JSON_RENDERER_VERSION = "json-wrapper-v1"
+
+def build_audit_render_model(*, version: VerifiedAuditVersion,
+                             comparison: AuditComparison | None,
+                             locale: str) -> AuditRenderModel: ...
+def render_audit_json(*, version: VerifiedAuditVersion,
+                      locale: str) -> bytes: ...
+```
+
+- [ ] Add snapshot-style structural tests for scored, incomplete, no comparison, comparison with added/persistent/resolved, shared scope, missing optional website, and unscored legacy.
+- [ ] Whitelist render-model fields. Customer-facing views exclude operator identity, Core AI/Attempt/Run/database IDs, retries, internal source references, validation errors, and full provenance. Internal JSON puts safe trusted provenance in a separate top-level section.
+- [ ] Produce a deterministic UTF-8 JSON wrapper containing safe Version metadata, version kind, score status, exact stored payload, payload hash mode/hash, raw source hash when legacy, and safe provenance. Serialize with JCS and a trailing newline.
+- [ ] Recompute the inner payload hash from the stored payload before rendering; refuse export if it differs. Keep inner payload hash distinct from the outer file bytes hash.
+- [ ] Locale changes labels/date/number formatting metadata only. Observation, evidence fact, recommendation, limitations, and summary remain in their original report language and the output declares that language.
+- [ ] Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_audit_rendering.py -k json -q
+```
+
+- [ ] Commit as `feat: render deterministic audit json exports` when green.
+
+## Task 3: Render self-contained CSP-safe HTML
+
+**Files:**
+
+- Create: `api/app/templates/audit/customer-v1.html.j2`
+- Create: `api/app/templates/audit/customer-v1.css`
+- Modify: `api/app/audit_rendering.py`
+- Modify: `api/tests/test_audit_rendering.py`
+- Modify: `api/requirements.txt`
+
+**Renderer identity:** `html-jinja-3.1.6-customer-v1`.
+
+- [ ] Pin `Jinja2==3.1.6`, install it in the worktree venv, and add tests that render the full canonical fixture and parse the result as HTML.
+- [ ] Create a single document with inline CSS, no `<script>`, no `<link>`, no remote URL, and no active form. Use system-safe font fallbacks and inline data URIs only for fixed repository-owned decorative assets whose bytes/hash are part of the template version.
+- [ ] Include cover identity, report date/version/Rubric/data-through, score/Grade/coverage, dimension scorecards, priority Criteria, Evidence summaries, recommendations, comparison changes when frozen, limitations, methodology, Version ID, template version, renderer version, and short hash.
+- [ ] Escape every report string by default. Never mark producer/legacy HTML as safe. Validate resulting CSP-compatible tags/attributes and fail on external `src`, `href`, CSS `url()`, meta refresh, iframe, object, embed, or SVG script/event attributes.
+- [ ] For incomplete reports, label partial score and “数据不完整”; do not show a Grade. Reject unscored legacy unless an exact renderer is registered in Phase 6.
+- [ ] Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_audit_rendering.py -k html -q
+```
+
+- [ ] Commit as `feat: render self contained audit html` when green.
+
+## Task 4: Render and validate customer PDF with pinned Chromium
+
+**Files:**
+
+- Create: `api/app/audit_pdf.py`
+- Create: `api/scripts/install_audit_chromium.py`
+- Create: `api/tests/test_audit_pdf.py`
+- Modify: `api/requirements.txt`
+- Modify: `README.md`
+
+**Renderer identity:** `playwright-1.55.0-chromium-customer-v1` plus the exact bundled Chromium revision returned by Playwright at installation; store that resolved revision in each Export request identity and result metadata.
+
+- [ ] Pin `playwright==1.55.0` and `pypdf==6.0.0`. Add setup instructions that run `.venv/bin/python -m playwright install chromium`; do not use an unversioned system browser.
+- [ ] Add tests for missing browser capability, successful PDF signature, more than zero pages, extractable non-empty text, required report identifiers, no internal-only fields, long Criteria across pages, Chinese/English text, and deterministic renderer metadata.
+- [ ] Load the HTML with request routing that aborts every `http://`, `https://`, `file://`, websocket, and other network request. Use `page.set_content`, print-background, fixed A4 margins/header/footer, and close browser/context on every outcome.
+- [ ] Parse output with pypdf, verify `%PDF-`, page count, non-empty extracted report title/Version text, and configured maximum bytes before returning content to the Asset Store.
+- [ ] At API startup, probe the exact browser executable/revision once and expose PDF capability false with `AUDIT_EXPORT_RUNTIME_UNAVAILABLE` if missing or mismatched. Do not fail the whole SEO Ops app; HTML/JSON remain available.
+- [ ] Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_audit_pdf.py tests/test_audit_rendering.py -q
+```
+
+- [ ] Commit as `feat: render verified audit pdf reports` when green.
+
+## Task 5: Implement Export commands, attempts, worker, and downloads
+
+**Files:**
+
+- Create: `api/app/audit_exports.py`
+- Modify: `api/app/audit_repository.py`
+- Modify: `api/app/main.py`
+- Create: `api/tests/test_audit_exports.py`
+
+**Endpoints:**
+
+- `POST /api/audit-versions/{version_id}/exports`
+- `GET /api/audit-exports/{export_id}`
+- `POST /api/audit-exports/{export_id}/retry`
+- `GET /api/audit-exports/{export_id}/download`
+
+**Worker interfaces:**
+
+```python
+def process_audit_exports_once(*, now: str, worker_id: str,
+                               store: AssetStore | None = None) -> int: ...
+async def audit_export_worker_loop() -> None: ...
+```
+
+- [ ] Add API tests for auth, unsupported legacy format, format/locale/template/renderer/base validation, request replay, request-ID payload conflict, identity reuse, queued/running/failed/ready status, explicit retry, concurrent Attempt claim, and cross-merchant download isolation.
+- [ ] Return `poll_after_ms=2000` only while Export status is queued/running and `null` for failed/ready. The browser must never invent its own polling cadence.
+- [ ] Canonicalize the request fields and comparison-base key. In one short transaction, verify Version/capability/base, insert or replay one Export, and create the first queued Attempt only when the Export is new.
+- [ ] Return 409 `AUDIT_IDEMPOTENCY_KEY_REUSED` when one request ID is paired with a different request hash. Return 409 `AUDIT_EXPORT_UNSUPPORTED_VERSION_KIND` for unsupported format/version combinations.
+- [ ] Claim and fence one Export Attempt in a short transaction. Render bytes outside the transaction but, before writing them durably, create its unique `owner_kind=EXPORT_ATTEMPT` pending Asset and writing storage-attempt row under the current lease. Store, reopen, and validate bytes through that exact attempt, mark it verified, CAS the Asset ready, then in one transaction verify the same Export Attempt/lease/ready Asset and publish the terminal Attempt plus Export `ready_asset_id`. A crash between render and metadata leaves no durable bytes; a crash after metadata leaves one or more cleanup-visible storage attempts; a crash after Asset-ready is reconciled by the exact Attempt rather than starting another renderer.
+- [ ] A normal POST returns an existing failed Export without rendering. Retry requires a new request ID, adds one immutable Attempt, and may move the Export projection back to queued; ready cannot retry or mutate.
+- [ ] Stream ready downloads through authentication with safe filename `<location-slug>-audit-v<version>.<ext>` and verified bytes. Never redirect to or create a persistent signed URL.
+- [ ] Register one export worker loop in lifespan and run:
+
+```bash
+.venv/bin/python -m pytest tests/test_audit_exports.py tests/test_audit_assets.py tests/test_audit_rendering.py tests/test_audit_pdf.py -q
+```
+
+- [ ] Commit as `feat: generate and download audit exports` when green.
+
+## Task 6: Wire Export UX and durable cleanup
+
+**Files:**
+
+- Modify: `web/src/components/audit/AuditExportDialog.tsx`
+- Modify: `web/src/pages/AuditWorkspace.tsx`
+- Modify: `web/src/pages/AuditWorkspace.test.tsx`
+- Create: `api/app/audit_asset_cleanup.py`
+- Create: `api/tests/test_audit_asset_cleanup.py`
+- Modify: `api/app/audit_observability.py`
+- Modify: `api/tests/test_audit_observability.py`
+- Modify: `api/app/merchants.py`
+- Modify: `api/tests/test_merchants.py`
+- Modify: `api/app/main.py`
+
+- [ ] Add UI tests for PDF default, independent format capabilities, locale/report-language explanation, comparison inclusion, one request ID per command, ready replay, failed explicit retry, status polling only while queued/running, authenticated Blob download, filename, and stable errors.
+- [ ] Display template and accepted Version identity in the confirmation. Disable unsupported formats with server text; do not let the browser infer PDF availability from environment assumptions.
+- [ ] Use `requestBlob()` only after ready. Trigger a local object URL download, revoke it after click, and never display/persist a provider URL.
+- [ ] Implement a daily cleanup loop over database-tracked storage attempts older than 24 hours. Whole-Asset cleanup first rechecks that the Asset is unreferenced and CASes the exact parent Asset/generation from `pending|failed` to `deleting` in a short transaction, fencing every publisher before any byte is removed. Superseded-attempt-only cleanup may leave the parent in any state, including ready/referenced, only when the same transaction proves the attempt is neither `current_storage_attempt_id` nor `ready_storage_attempt_id`; it then CASes only that exact attempt ID/generation to `deleting`. Outside the transaction atomically fence the claimed attempt namespace, purge only its staging/final content, retain the non-content storage tombstone, and mark the attempt deleted by CAS. After every attempt for a deleting Asset is deleted, a separate Asset CAS changes `deleting → deleted` but retains minimal metadata/tombstone rows. A ready publisher must reject deleting/deleted/superseded attempts, and a stale writer's exclusive path operations must fail after the fence. Accepted/ready content is never ordinary-cleanup eligible, while a superseded attempt may be reclaimed without touching the ready attempt or parent; cleanup never touches another Asset or generation.
+- [ ] Keep ordinary orphan-object cleanup independent from merchant hard delete. It may reclaim exact unreferenced pending/failed bytes and metadata after fencing, but must not delete Subjects, policies, Runs, Attempts, events, accepted Versions, shared locations/bindings, or otherwise make a synced/audited merchant appear to be an empty draft. Only the already-eligible archived blank draft may use the Performance hard-delete path.
+- [ ] Emit safe Export latency, format, size, failure-code, retry, ready, and cleanup counters through `audit_observability`; never emit filename, report text, source reference, or URL.
+- [ ] Add tests for protected ready Version Asset, protected ready Export, young pending file, orphan pending file, two Asset rows under one Run/source with identical and different bytes, distinct keys across Asset rows and lease generations, `g1 verified → g2 ready/referenced → reclaim g1 only`, publisher-versus-cleaner CAS race, stale writer after takeover, publisher rejection after `deleting`, crash before pending metadata (no durable object), crash after pending metadata (every staging/final generation cleanup-visible), path traversal/collision, crash between file delete and event, and idempotent next pass.
+- [ ] Run complete suites and builds:
+
+```bash
+cd /Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace/api
+.venv/bin/python -m pytest -q
+cd ../web
+npm test
+npm run lint
+npm run build
+```
+
+- [ ] Generate all three formats from one fixture Version, reopen each file, recompute hashes, parse JSON/HTML, decode PDF, and record exact verification in `docs/evidence/audit-export-readback-2026-09-03.md`.
+- [ ] Commit as `feat: complete audit export workflow` when all checks pass.

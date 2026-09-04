@@ -1,0 +1,44 @@
+{
+  "version": "0002_task_workflows",
+  "hook_revision": 4,
+  "entrypoint": "app.task_migrations:run_task_workflow_migration_hook",
+  "legacy_markers": [
+    "task_workflow_v1",
+    "task_workflow_states_v2"
+  ],
+  "input_task_schemas": [
+    "legacy_todo_doing_done_cancelled",
+    "formal_interim_states",
+    "formal_frozen_states"
+  ],
+  "output_task_states": [
+    "PENDING",
+    "PREPARING",
+    "AWAITING_APPROVAL",
+    "EXECUTING",
+    "VERIFYING",
+    "NEEDS_ATTENTION",
+    "DONE",
+    "CANCELLED"
+  ],
+  "output_tables": [
+    "task_plans",
+    "task_plan_revisions",
+    "tasks",
+    "task_dependencies",
+    "task_executions",
+    "task_events"
+  ],
+  "guarantees": [
+    "preserve_legacy_task_and_execution_ids",
+    "preserve_non_pristine_tasks_from_unapproved_legacy_runs",
+    "preserve_foreign_key_integrity",
+    "reject_duplicate_coreai_run_bindings",
+    "restore_cross_table_coreai_run_uniqueness_triggers",
+    "atomically_convert_legacy_registry_and_task_graph",
+    "fail_closed_on_unknown_or_contradictory_legacy_registry",
+    "validate_canonical_plan_and_task_projection_before_legacy_adoption",
+    "validate_exact_task_table_contracts_on_every_startup",
+    "require_exact_performance_delete_guard_when_performance_history_is_recorded"
+  ]
+}

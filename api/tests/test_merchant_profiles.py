@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -25,6 +26,8 @@ def test_unbound_merchant_profile_is_explicit(client):
         "merchant_id": merchant["id"],
         "state": "unbound",
         "fbr_merchant_id": None,
+        "binding_generation": None,
+        "binding_sha256": None,
         "sync_status": None,
         "last_synced_at": None,
         "last_error": None,
@@ -43,7 +46,10 @@ def test_archived_merchant_rejects_fbr_binding(client):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "merchant is archived"
-    assert client.get(f"/api/merchants/{merchant['id']}/profile").json()["state"] == "unbound"
+    assert (
+        client.get(f"/api/merchants/{merchant['id']}/profile").json()["state"]
+        == "unbound"
+    )
 
 
 def test_normalize_gbp_location_extracts_operator_facts():
@@ -274,33 +280,67 @@ def test_operation_assistant_client_uses_merchant_scoped_location_snapshot(monke
             return json.dumps(self.payload).encode()
 
     def fake_urlopen(request, timeout):
-        captured.append((request.full_url, request.get_header("X-merchant-id"), timeout))
+        captured.append(
+            (request.full_url, request.get_header("X-merchant-id"), timeout)
+        )
         url = request.full_url
         if "/gbp/location?" in url:
             return Response({"locations": [source_location]})
         if "/gbp/location/24300588970198995?" in url:
             return Response(location_detail)
         if "/gbp/location/24300588970198995/menu?" in url:
-            return Response({"menus": [{"sections": [{"items": [{"labels": [{"display_name": "Cold Brew"}]}]}]}]})
+            return Response(
+                {
+                    "menus": [
+                        {
+                            "sections": [
+                                {"items": [{"labels": [{"display_name": "Cold Brew"}]}]}
+                            ]
+                        }
+                    ]
+                }
+            )
         if "/gbp/location/24300588970198995/post?" in url:
-            return Response({"posts": [{"post_id": "post-1", "state": "LIVE", "summary": "Fresh pastries"}]})
+            return Response(
+                {
+                    "posts": [
+                        {
+                            "post_id": "post-1",
+                            "state": "LIVE",
+                            "summary": "Fresh pastries",
+                        }
+                    ]
+                }
+            )
         if "/gbp/location/24300588970198995/attribute?" in url:
-            return Response({"attributes": [{"attribute_id": "has_takeout", "values": [True]}]})
+            return Response(
+                {"attributes": [{"attribute_id": "has_takeout", "values": [True]}]}
+            )
         if "/gbp/review/24300588970198995/review?" in url:
             return Response({"reviews": [], "total": 0})
         if "/location/monthly-overview?" in url:
-            return Response({
-                "query_date": "2026-09-02",
-                "current_month_rating": 4.8,
-                "current_month_review_count": 17,
-                "reply_rate": 0.94,
-                "reviews": [{"rating": 5, "content": "Excellent brunch", "reply_content": "Thank you"}],
-            })
+            return Response(
+                {
+                    "query_date": "2026-09-02",
+                    "current_month_rating": 4.8,
+                    "current_month_review_count": 17,
+                    "reply_rate": 0.94,
+                    "reviews": [
+                        {
+                            "rating": 5,
+                            "content": "Excellent brunch",
+                            "reply_content": "Thank you",
+                        }
+                    ],
+                }
+            )
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("app.fbr_gbp.urlopen", fake_urlopen)
     client = FbrGbpClient(
-        FbrGbpSettings("http://operation-assistant.test", None, 4.0, "operation_assistant")
+        FbrGbpSettings(
+            "http://operation-assistant.test", None, 4.0, "operation_assistant"
+        )
     )
 
     identities = client.list_locations("merchant 1")
@@ -309,12 +349,17 @@ def test_operation_assistant_client_uses_merchant_scoped_location_snapshot(monke
     posts = client.get_field("merchant 1", "24300588970198995", "LOCAL_POSTS")
     attributes = client.get_field("merchant 1", "24300588970198995", "ATTRIBUTES")
     reviews = client.get_reviews("merchant 1", "24300588970198995")
-    overview = client.get_review_overview("merchant 1", "24300588970198995", query_date="2026-09-02")
+    overview = client.get_review_overview(
+        "merchant 1", "24300588970198995", query_date="2026-09-02"
+    )
     normalized = normalize_gbp_location(field["value"])
 
     assert all(merchant_header == "merchant 1" for _, merchant_header, _ in captured)
     assert all(timeout == 4.0 for _, _, timeout in captured)
-    assert captured[0][0] == "http://operation-assistant.test/gbp/location?merchant_id=merchant+1"
+    assert (
+        captured[0][0]
+        == "http://operation-assistant.test/gbp/location?merchant_id=merchant+1"
+    )
     assert identities == [
         {
             "merchant_id": "merchant 1",
@@ -334,11 +379,24 @@ def test_operation_assistant_client_uses_merchant_scoped_location_snapshot(monke
     assert normalized["description"] == "Upper West Side neighborhood cafe."
     assert normalized["website_url"] == "https://www.choicebrooklyn.com/"
     assert normalized["regular_hours"] == [
-        {"open_day": "MONDAY", "open_time": "08:00", "close_day": "MONDAY", "close_time": "20:00"}
+        {
+            "open_day": "MONDAY",
+            "open_time": "08:00",
+            "close_day": "MONDAY",
+            "close_time": "20:00",
+        }
     ]
-    assert json.loads(menu["value"])["menus"][0]["sections"][0]["items"][0]["labels"][0]["display_name"] == "Cold Brew"
+    assert (
+        json.loads(menu["value"])["menus"][0]["sections"][0]["items"][0]["labels"][0][
+            "display_name"
+        ]
+        == "Cold Brew"
+    )
     assert json.loads(posts["value"])["posts"][0]["state"] == "LIVE"
-    assert json.loads(attributes["value"])["attributes"][0]["attribute_id"] == "has_takeout"
+    assert (
+        json.loads(attributes["value"])["attributes"][0]["attribute_id"]
+        == "has_takeout"
+    )
     assert reviews == {"reviews": [], "total": 0}
     assert overview["current_month_review_count"] == 17
 
@@ -362,7 +420,9 @@ def test_operation_assistant_client_uses_place_id_for_gbp_insights(monkeypatch):
             return json.dumps(self.payload).encode()
 
     def fake_urlopen(request, timeout):
-        captured.append((request.full_url, request.get_header("X-merchant-id"), timeout))
+        captured.append(
+            (request.full_url, request.get_header("X-merchant-id"), timeout)
+        )
         if "/gbp/performance-metric?" in request.full_url:
             return Response(
                 {
@@ -377,17 +437,15 @@ def test_operation_assistant_client_uses_place_id_for_gbp_insights(monkeypatch):
             )
         if "/gbp/search-keyword-metric?" in request.full_url:
             return Response(
-                {
-                    "keywords": [
-                        {"month": "2026-08", "keyword": "coffee", "value": 6246}
-                    ]
-                }
+                {"keywords": [{"month": "2026-08", "keyword": "coffee", "value": 6246}]}
             )
         raise AssertionError(f"unexpected URL: {request.full_url}")
 
     monkeypatch.setattr("app.fbr_gbp.urlopen", fake_urlopen)
     client = FbrGbpClient(
-        FbrGbpSettings("http://operation-assistant.test", None, 4.0, "operation_assistant")
+        FbrGbpSettings(
+            "http://operation-assistant.test", None, 4.0, "operation_assistant"
+        )
     )
 
     performance = client.list_performance_metrics(
@@ -421,7 +479,9 @@ def test_operation_assistant_client_uses_place_id_for_gbp_insights(monkeypatch):
     ]
 
 
-def test_operation_assistant_client_reads_persisted_local_keywords_by_place_id(monkeypatch):
+def test_operation_assistant_client_reads_persisted_local_keywords_by_place_id(
+    monkeypatch,
+):
     from app.fbr_gbp import FbrGbpClient, FbrGbpSettings
 
     captured = {}
@@ -461,7 +521,9 @@ def test_operation_assistant_client_reads_persisted_local_keywords_by_place_id(m
 
     monkeypatch.setattr("app.fbr_gbp.urlopen", fake_urlopen)
     client = FbrGbpClient(
-        FbrGbpSettings("http://operation-assistant.test", None, 4.0, "operation_assistant")
+        FbrGbpSettings(
+            "http://operation-assistant.test", None, 4.0, "operation_assistant"
+        )
     )
 
     payload = client.get_local_keywords("ChIJH8iZh-5ZwokRPLzzADeSnYE")
@@ -491,7 +553,379 @@ def test_binding_fbr_merchant_is_explicit_and_trimmed(client):
     assert response.status_code == 200
     assert response.json()["state"] == "not_synced"
     assert response.json()["fbr_merchant_id"] == "fbr-merchant-123"
+    assert response.json()["binding_generation"] == 1
+    assert (
+        response.json()["binding_sha256"]
+        == hashlib.sha256(b"fbr-merchant-123").hexdigest()
+    )
     assert response.json()["locations"] == []
+    from app.db import connect
+
+    conn = connect()
+    try:
+        event = conn.execute(
+            "SELECT fbr_merchant_id,generation,valid_to,opened_by,open_reason "
+            "FROM merchant_fbr_binding_events WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()
+        state = conn.execute(
+            "SELECT sync_status FROM merchant_fbr_link_state WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert tuple(event) == (
+        "fbr-merchant-123",
+        1,
+        None,
+        "test",
+        "initial_fbr_link",
+    )
+    assert state["sync_status"] == "not_synced"
+
+
+def test_put_fbr_link_rejects_replacement_without_rewriting_binding_history(client):
+    merchant = create_merchant(client)
+    first = client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-old"},
+    )
+    second = client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-new"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"] == "FBR Merchant ID 已绑定；请使用重新绑定流程"
+    from app.db import connect
+
+    conn = connect()
+    try:
+        events = conn.execute(
+            "SELECT fbr_merchant_id,generation,valid_from,valid_to "
+            "FROM merchant_fbr_binding_events WHERE merchant_id=? ORDER BY generation",
+            (merchant["id"],),
+        ).fetchall()
+        projection = conn.execute(
+            "SELECT fbr_merchant_id,binding_event_id FROM merchant_fbr_links "
+            "WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert [(row["fbr_merchant_id"], row["generation"]) for row in events] == [
+        ("fbr-merchant-old", 1),
+    ]
+    assert events[0]["valid_to"] is None
+    assert projection["fbr_merchant_id"] == "fbr-merchant-old"
+
+
+def test_fbr_relink_is_audited_cas_and_resets_replaceable_profile_state(client):
+    merchant = create_merchant(client)
+    assert (
+        client.put(
+            f"/api/merchants/{merchant['id']}/fbr-link",
+            json={"fbr_merchant_id": "fbr-merchant-old"},
+        ).status_code
+        == 200
+    )
+    from app.db import connect
+
+    conn = connect()
+    try:
+        current = conn.execute(
+            "SELECT id,generation,canonical_fbr_merchant_sha256 "
+            "FROM merchant_fbr_binding_events "
+            "WHERE merchant_id=? AND valid_to IS NULL",
+            (merchant["id"],),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO merchant_gbp_profiles("
+            "merchant_id,fbr_merchant_id,gbp_location_id,normalized_json,synced_at"
+            ") VALUES (?,?,?,'{}',?)",
+            (
+                merchant["id"],
+                "fbr-merchant-old",
+                "locations/old",
+                "2026-09-04T00:00:00.000000Z",
+            ),
+        )
+        conn.execute(
+            "UPDATE merchant_fbr_link_state SET sync_status='synced',"
+            "last_synced_at='2026-09-04T00:00:00.000000Z',last_error='old',"
+            "updated_at='2026-09-04T00:00:00.000000Z' WHERE merchant_id=?",
+            (merchant["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    body = {
+        "request_id": "relink-request-1",
+        "merchant_id": merchant["id"],
+        "expected_current_binding_generation": current["generation"],
+        "expected_current_fbr_sha256": current["canonical_fbr_merchant_sha256"],
+        "new_fbr_merchant_id": "  fbr-merchant-new  ",
+        "reason": "Operator verified the corrected FBR merchant",
+        "confirmed": True,
+    }
+    response = client.post("/api/performance-identities/fbr/relink", json=body)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["request_id"] == "relink-request-1"
+    assert result["previous_event_id"] == current["id"]
+    assert result["binding"]["fbr_merchant_id"] == "fbr-merchant-new"
+    assert result["binding"]["generation"] == 2
+    assert result["projection_binding_event_id"] == result["binding"]["event_id"]
+
+    conn = connect()
+    try:
+        events = conn.execute(
+            "SELECT id,fbr_merchant_id,generation,valid_from,valid_to,opened_by,"
+            "open_reason,closed_by,close_reason FROM merchant_fbr_binding_events "
+            "WHERE merchant_id=? ORDER BY generation",
+            (merchant["id"],),
+        ).fetchall()
+        state = conn.execute(
+            "SELECT sync_status,last_synced_at,last_error FROM merchant_fbr_link_state "
+            "WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()
+        profile_count = conn.execute(
+            "SELECT count(*) FROM merchant_gbp_profiles WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()[0]
+        ledger = conn.execute(
+            "SELECT command_kind,requested_by,request_id,target_kind,target_stable_id,"
+            "http_status,result_json,result_sha256,fbr_binding_event_id "
+            "FROM operator_command_ledger WHERE requested_by='test' AND request_id=?",
+            (body["request_id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert events[0]["valid_to"] == events[1]["valid_from"]
+    assert events[0]["closed_by"] == "test"
+    assert events[0]["close_reason"] == body["reason"]
+    assert events[1]["opened_by"] == "test"
+    assert events[1]["open_reason"] == body["reason"]
+    assert tuple(state) == ("not_synced", None, None)
+    assert profile_count == 0
+    assert tuple(ledger)[:5] == (
+        "FBR_RELINK",
+        "test",
+        body["request_id"],
+        "MERCHANT",
+        str(merchant["id"]),
+    )
+    assert ledger["http_status"] == 200
+    assert json.loads(ledger["result_json"]) == result
+    assert (
+        ledger["result_sha256"]
+        == hashlib.sha256(ledger["result_json"].encode("utf-8")).hexdigest()
+    )
+    assert ledger["fbr_binding_event_id"] == result["binding"]["event_id"]
+
+
+def test_fbr_relink_replays_identical_request_and_rejects_changed_body(client):
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-replay-old"},
+    )
+    from app.db import connect
+
+    conn = connect()
+    try:
+        current = conn.execute(
+            "SELECT generation,canonical_fbr_merchant_sha256 "
+            "FROM merchant_fbr_binding_events WHERE merchant_id=? AND valid_to IS NULL",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    body = {
+        "request_id": "relink-replay-1",
+        "merchant_id": merchant["id"],
+        "expected_current_binding_generation": current["generation"],
+        "expected_current_fbr_sha256": current["canonical_fbr_merchant_sha256"],
+        "new_fbr_merchant_id": "fbr-replay-new",
+        "reason": "Verified correction",
+        "confirmed": True,
+    }
+
+    first = client.post("/api/performance-identities/fbr/relink", json=body)
+    replay = client.post("/api/performance-identities/fbr/relink", json=body)
+    conflict = client.post(
+        "/api/performance-identities/fbr/relink",
+        json={**body, "new_fbr_merchant_id": "fbr-different"},
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.content == first.content
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "request_id_body_conflict"
+    conn = connect()
+    try:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM merchant_fbr_binding_events WHERE merchant_id=?",
+                (merchant["id"],),
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM operator_command_ledger "
+                "WHERE requested_by='test' AND request_id='relink-replay-1'"
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()
+
+
+def test_fbr_relink_blocks_active_work_and_stale_binding_without_partial_write(client):
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-active-old"},
+    )
+    from app.db import connect
+
+    conn = connect()
+    try:
+        current = conn.execute(
+            "SELECT id,generation,canonical_fbr_merchant_sha256 "
+            "FROM merchant_fbr_binding_events WHERE merchant_id=? AND valid_to IS NULL",
+            (merchant["id"],),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO merchant_seo_artifacts("
+            "merchant_id,cycle_id,artifact_type,schema_version,status,source_agent_id,"
+            "request_json,created_at) VALUES (?,'active-cycle','AUDIT_REPORT','v1',"
+            "'running','agent','{}','2026-09-04T00:00:00.000000Z')",
+            (merchant["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    base = {
+        "merchant_id": merchant["id"],
+        "expected_current_binding_generation": current["generation"],
+        "expected_current_fbr_sha256": current["canonical_fbr_merchant_sha256"],
+        "new_fbr_merchant_id": "fbr-active-new",
+        "reason": "Verified correction",
+        "confirmed": True,
+    }
+
+    active = client.post(
+        "/api/performance-identities/fbr/relink",
+        json={"request_id": "active-work", **base},
+    )
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE merchant_seo_artifacts SET status='failed' WHERE merchant_id=?",
+            (merchant["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    active_replay = client.post(
+        "/api/performance-identities/fbr/relink",
+        json={"request_id": "active-work", **base},
+    )
+    changed_body = client.post(
+        "/api/performance-identities/fbr/relink",
+        json={
+            "request_id": "active-work",
+            **base,
+            "reason": "A different correction reason",
+        },
+    )
+    stale = client.post(
+        "/api/performance-identities/fbr/relink",
+        json={
+            "request_id": "stale-binding",
+            **base,
+            "expected_current_binding_generation": current["generation"] + 1,
+        },
+    )
+
+    assert active.status_code == 409
+    assert active.json()["detail"] == (
+        "merchant has active work; resolve it before relinking FBR"
+    )
+    assert active_replay.status_code == active.status_code
+    assert active_replay.content == active.content
+    assert changed_body.status_code == 409
+    assert changed_body.json()["detail"] == "request_id_body_conflict"
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "stale_fbr_binding"
+    conn = connect()
+    try:
+        event = conn.execute(
+            "SELECT id,valid_to FROM merchant_fbr_binding_events "
+            "WHERE merchant_id=? AND valid_to IS NULL",
+            (merchant["id"],),
+        ).fetchone()
+        assert tuple(event) == (current["id"], None)
+        commands = conn.execute(
+            "SELECT request_id,http_status,result_json,fbr_binding_event_id "
+            "FROM operator_command_ledger WHERE request_id IN (?,?) "
+            "ORDER BY request_id",
+            ("active-work", "stale-binding"),
+        ).fetchall()
+        assert [tuple(row) for row in commands] == [
+            (
+                "active-work",
+                409,
+                '{"detail":"merchant has active work; resolve it before relinking FBR"}',
+                None,
+            ),
+            ("stale-binding", 409, '{"detail":"stale_fbr_binding"}', None),
+        ]
+    finally:
+        conn.close()
+
+
+def test_fbr_relink_strictly_rejects_caller_owned_effective_time(client):
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-strict-old"},
+    )
+    from app.db import connect
+
+    conn = connect()
+    try:
+        current = conn.execute(
+            "SELECT generation,canonical_fbr_merchant_sha256 "
+            "FROM merchant_fbr_binding_events WHERE merchant_id=? AND valid_to IS NULL",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    response = client.post(
+        "/api/performance-identities/fbr/relink",
+        json={
+            "request_id": "strict-relink",
+            "merchant_id": merchant["id"],
+            "expected_current_binding_generation": current["generation"],
+            "expected_current_fbr_sha256": current["canonical_fbr_merchant_sha256"],
+            "new_fbr_merchant_id": "fbr-strict-new",
+            "reason": "Verified correction",
+            "confirmed": True,
+            "effective_at": "2026-09-04T01:00:00.000000Z",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_unbound_merchant_cannot_sync_gbp(client):
@@ -566,8 +1000,17 @@ class FakeFbrGbpClient:
                                 "labels": [{"display_name": "Lunch"}],
                                 "items": [
                                     {
-                                        "labels": [{"display_name": "Avocado sandwich", "description": "House-made lunch favorite"}],
-                                        "price": {"currency_code": "USD", "units": "12", "nanos": 500000000},
+                                        "labels": [
+                                            {
+                                                "display_name": "Avocado sandwich",
+                                                "description": "House-made lunch favorite",
+                                            }
+                                        ],
+                                        "price": {
+                                            "currency_code": "USD",
+                                            "units": "12",
+                                            "nanos": 500000000,
+                                        },
                                         "media_keys": ["AF1QipMenuPhoto"],
                                     }
                                 ],
@@ -583,10 +1026,22 @@ class FakeFbrGbpClient:
                         "state": "LIVE",
                         "summary": "Fresh pastries near Broadway",
                         "create_time": "2026-09-01T10:00:00Z",
-                        "call_to_action": {"action_type": "ORDER", "url": "https://order.example.com"},
-                        "media": [{"media_format": "PHOTO", "google_url": "https://images.example/post-1.jpg"}],
+                        "call_to_action": {
+                            "action_type": "ORDER",
+                            "url": "https://order.example.com",
+                        },
+                        "media": [
+                            {
+                                "media_format": "PHOTO",
+                                "google_url": "https://images.example/post-1.jpg",
+                            }
+                        ],
                     },
-                    {"post_id": "post-2", "state": "PROCESSING", "summary": "Weekend brunch"},
+                    {
+                        "post_id": "post-2",
+                        "state": "PROCESSING",
+                        "summary": "Weekend brunch",
+                    },
                 ]
             },
             "MEDIA": {"mediaItems": [{"name": "media/1"}]},
@@ -618,7 +1073,9 @@ class FakeFbrGbpClient:
             ],
         }
 
-    def list_performance_metrics(self, fbr_merchant_id, place_id, *, from_date, to_date):
+    def list_performance_metrics(
+        self, fbr_merchant_id, place_id, *, from_date, to_date
+    ):
         assert fbr_merchant_id == "fbr-merchant-123"
         assert place_id == "ChIJH8iZh-5ZwokRPLzzADeSnYE"
         assert from_date <= to_date
@@ -637,7 +1094,9 @@ class FakeFbrGbpClient:
             ]
         }
 
-    def list_search_keyword_metrics(self, fbr_merchant_id, place_id, *, from_month, to_month):
+    def list_search_keyword_metrics(
+        self, fbr_merchant_id, place_id, *, from_month, to_month
+    ):
         assert fbr_merchant_id == "fbr-merchant-123"
         assert place_id == "ChIJH8iZh-5ZwokRPLzzADeSnYE"
         assert from_month <= to_month
@@ -771,7 +1230,13 @@ def test_unavailable_gbp_collections_are_unknown_instead_of_zero(client):
     original_get_field = fake.get_field
 
     def partial_get_field(fbr_merchant_id, gbp_location_id, field):
-        if field in {"MEDIA", "CUSTOMER_MEDIA", "QUESTIONS", "PLACE_ACTION_LINKS", "VERIFICATIONS"}:
+        if field in {
+            "MEDIA",
+            "CUSTOMER_MEDIA",
+            "QUESTIONS",
+            "PLACE_ACTION_LINKS",
+            "VERIFICATIONS",
+        }:
             raise FbrUnavailableError(f"{field} is not exposed")
         return original_get_field(fbr_merchant_id, gbp_location_id, field)
 
@@ -878,7 +1343,9 @@ def test_failed_resync_preserves_last_successful_snapshot(client):
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         successful = client.get(f"/api/merchants/{merchant['id']}/profile").json()
         fake.fail_list = True
         failed = client.post(f"/api/merchants/{merchant['id']}/gbp-sync")
@@ -887,7 +1354,10 @@ def test_failed_resync_preserves_last_successful_snapshot(client):
         app.dependency_overrides.pop(get_fbr_client, None)
 
     assert failed.status_code == 503
-    assert failed.json()["detail"] == "FBR SEO service is unavailable; last successful data was preserved"
+    assert (
+        failed.json()["detail"]
+        == "FBR SEO service is unavailable; last successful data was preserved"
+    )
     assert cached.status_code == 200
     assert cached.json()["sync_status"] == "failed"
     assert cached.json()["last_error"] == "FBR SEO service is unavailable"
@@ -907,7 +1377,9 @@ def test_empty_location_list_on_resync_preserves_last_successful_snapshot(client
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         successful = client.get(f"/api/merchants/{merchant['id']}/profile").json()
         fake.list_locations = lambda _fbr_merchant_id: []
 
@@ -950,7 +1422,9 @@ def test_location_field_failure_on_resync_preserves_last_successful_snapshot(
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         successful = client.get(f"/api/merchants/{merchant['id']}/profile").json()
         original_get_field = fake.get_field
 
@@ -1003,7 +1477,9 @@ def test_optional_field_failure_keeps_old_value_while_successful_fields_update(
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         conn = connect()
         try:
             old_menu_json = conn.execute(
@@ -1092,7 +1568,9 @@ def test_incomplete_location_identity_keeps_previous_identity_values(client):
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         fake.list_locations = lambda _fbr_merchant_id: [
             {
                 "gbp_location_id": "locations/123",
@@ -1142,7 +1620,9 @@ def test_auxiliary_source_failures_preserve_old_normalized_values(client):
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         before = client.get(f"/api/merchants/{merchant['id']}/profile").json()[
             "locations"
         ][0]
@@ -1202,7 +1682,9 @@ def test_invalid_auxiliary_payloads_preserve_old_normalized_values(
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         before = client.get(f"/api/merchants/{merchant['id']}/profile").json()[
             "locations"
         ][0]
@@ -1262,7 +1744,9 @@ def test_zero_review_snapshot_with_failed_overview_preserves_previous_overview(c
     }
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         before = client.get(f"/api/merchants/{merchant['id']}/profile").json()[
             "locations"
         ][0]
@@ -1303,7 +1787,9 @@ def test_incomplete_location_list_on_resync_preserves_entire_old_snapshot(client
     fake = FakeFbrGbpClient()
     app.dependency_overrides[get_fbr_client] = lambda: fake
     try:
-        assert client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        assert (
+            client.post(f"/api/merchants/{merchant['id']}/gbp-sync").status_code == 200
+        )
         conn = connect()
         try:
             conn.execute(
@@ -1373,12 +1859,15 @@ def test_gbp_sync_records_remote_read_completion_time_when_clock_is_not_injected
 
     conn = connect()
     try:
-        assert merchant_profiles.sync_gbp_profile_once(
-            conn,
-            EmptyFirstSyncClient(),
-            merchant["id"],
-            force=True,
-        ) is True
+        assert (
+            merchant_profiles.sync_gbp_profile_once(
+                conn,
+                EmptyFirstSyncClient(),
+                merchant["id"],
+                force=True,
+            )
+            is True
+        )
         link = conn.execute(
             "SELECT sync_status, last_synced_at, updated_at"
             " FROM merchant_fbr_links WHERE merchant_id = ?",
@@ -1484,7 +1973,7 @@ def test_reusable_gbp_sync_releases_database_transaction_during_fbr_io(client):
 
 
 def test_gbp_sync_discards_stale_result_when_fbr_binding_changes(client):
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     from app.db import connect
     from app.merchant_profiles import sync_gbp_profile_once
@@ -1501,12 +1990,42 @@ def test_gbp_sync_discards_stale_result_when_fbr_binding_changes(client):
             assert fbr_merchant_id == "fbr-merchant-123"
             other = connect()
             try:
+                other.execute("BEGIN IMMEDIATE")
+                current = other.execute(
+                    "SELECT id,generation,valid_from FROM merchant_fbr_binding_events "
+                    "WHERE merchant_id=? AND valid_to IS NULL",
+                    (merchant["id"],),
+                ).fetchone()
+                rebound_at = (
+                    datetime.strptime(
+                        current["valid_from"], "%Y-%m-%dT%H:%M:%S.%fZ"
+                    ).replace(tzinfo=timezone.utc)
+                    + timedelta(microseconds=1)
+                ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                 other.execute(
-                    "UPDATE merchant_fbr_links"
-                    " SET fbr_merchant_id = 'fbr-merchant-new', sync_status = 'not_synced',"
-                    " last_synced_at = NULL, last_error = NULL, updated_at = ?"
-                    " WHERE merchant_id = ?",
-                    ("2026-09-03T12:00:01+00:00", merchant["id"]),
+                    "UPDATE merchant_fbr_binding_events "
+                    "SET valid_to=?,closed_by='test',close_reason='stale worker fence' "
+                    "WHERE id=?",
+                    (rebound_at, current["id"]),
+                )
+                other.execute(
+                    "INSERT INTO merchant_fbr_binding_events("
+                    "merchant_id,fbr_merchant_id,generation,valid_from,opened_by,open_reason,created_at"
+                    ") VALUES (?,?,?,?,?,?,?)",
+                    (
+                        merchant["id"],
+                        "fbr-merchant-new",
+                        current["generation"] + 1,
+                        rebound_at,
+                        "test",
+                        "stale worker fence",
+                        rebound_at,
+                    ),
+                )
+                other.execute(
+                    "UPDATE merchant_fbr_link_state SET sync_status='not_synced',"
+                    "last_synced_at=NULL,last_error=NULL,updated_at=? WHERE merchant_id=?",
+                    (rebound_at, merchant["id"]),
                 )
                 other.execute(
                     "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?",
@@ -1539,6 +2058,102 @@ def test_gbp_sync_discards_stale_result_when_fbr_binding_changes(client):
         "sync_status": "not_synced",
         "last_synced_at": None,
     }
+
+
+def test_gbp_sync_discards_stale_result_across_archive_restore_aba(client):
+    from datetime import datetime, timezone
+
+    from app.db import connect
+    from app.merchant_profiles import sync_gbp_profile_once
+    from app.migrations import content_sha256
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    conn = connect()
+
+    class ArchivingClient:
+        def list_locations(self, fbr_merchant_id):
+            assert fbr_merchant_id == "fbr-merchant-123"
+            other = connect()
+            stamp = "2026-09-03T12:01:00.000000Z"
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                other.execute(
+                    "UPDATE merchants SET status='archived' WHERE id=?",
+                    (merchant["id"],),
+                )
+                other.execute(
+                    "INSERT INTO merchant_status_events(merchant_id,status,effective_at,"
+                    "generation,actor,reason,content_sha256,created_at) "
+                    "VALUES (?,'archived',?,2,'test','archive_during_sync',?,?)",
+                    (
+                        merchant["id"],
+                        stamp,
+                        content_sha256(
+                            merchant["id"],
+                            "archived",
+                            stamp,
+                            2,
+                            "test",
+                            "archive_during_sync",
+                        ),
+                        stamp,
+                    ),
+                )
+                restored_at = "2026-09-03T12:02:00.000000Z"
+                other.execute(
+                    "UPDATE merchants SET status='active' WHERE id=?",
+                    (merchant["id"],),
+                )
+                other.execute(
+                    "INSERT INTO merchant_status_events(merchant_id,status,effective_at,"
+                    "generation,actor,reason,content_sha256,created_at) "
+                    "VALUES (?,'active',?,3,'test','restore_during_sync',?,?)",
+                    (
+                        merchant["id"],
+                        restored_at,
+                        content_sha256(
+                            merchant["id"],
+                            "active",
+                            restored_at,
+                            3,
+                            "test",
+                            "restore_during_sync",
+                        ),
+                        restored_at,
+                    ),
+                )
+                other.commit()
+            finally:
+                other.close()
+            return []
+
+    try:
+        completed = sync_gbp_profile_once(
+            conn,
+            ArchivingClient(),
+            merchant["id"],
+            force=True,
+            current_time=datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc),
+        )
+        profile_count = conn.execute(
+            "SELECT count(*) FROM merchant_gbp_profiles WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()[0]
+        state = conn.execute(
+            "SELECT sync_status,last_synced_at FROM merchant_fbr_link_state "
+            "WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert completed is False
+    assert profile_count == 0
+    assert tuple(state) == ("syncing", None)
 
 
 def test_gbp_sync_does_not_take_over_a_fresh_sync_lease(client):
