@@ -2,13 +2,15 @@ import json
 import os
 import sqlite3
 
+from helpers import seed_fbr_link
+
 
 def _insert_link(conn, merchant_id, sync_status="synced"):
-    conn.execute(
-        "INSERT INTO merchant_fbr_links "
-        "(merchant_id, fbr_merchant_id, sync_status, created_at, updated_at) "
-        "VALUES (?, ?, ?, '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z')",
-        (merchant_id, f"fbr-{merchant_id}", sync_status),
+    seed_fbr_link(
+        conn,
+        merchant_id,
+        fbr_merchant_id=f"fbr-{merchant_id}",
+        sync_status=sync_status,
     )
 
 

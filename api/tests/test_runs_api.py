@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from helpers import FakeCoreAi, cleanup_override, override_coreai
+from helpers import FakeCoreAi, cleanup_override, override_coreai, seed_fbr_link
 
 
 def insert_fbr_link(
@@ -18,11 +18,13 @@ def insert_fbr_link(
     last_error: str | None = None,
 ) -> None:
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
-    conn.execute(
-        "INSERT INTO merchant_fbr_links"
-        " (merchant_id, fbr_merchant_id, sync_status, last_synced_at, last_error, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, '2026-09-03T00:00:00+00:00', '2026-09-03T00:00:00+00:00')",
-        (merchant_id, fbr_merchant_id, sync_status, last_synced_at, last_error),
+    seed_fbr_link(
+        conn,
+        merchant_id,
+        fbr_merchant_id=fbr_merchant_id,
+        sync_status=sync_status,
+        last_synced_at=last_synced_at,
+        last_error=last_error,
     )
     conn.commit()
     conn.close()
@@ -512,6 +514,45 @@ def test_archived_merchant_rejects_new_analysis_run(client):
         cleanup_override()
 
 
+def test_start_run_rechecks_active_status_after_acquiring_writer_lock(client):
+    from fastapi import HTTPException
+
+    from app.db import connect
+    from app.runs import start_run
+
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": "Stale run claim", "primary_location": "New York, NY"},
+    ).json()
+    stale_connection = connect()
+    stale_merchant = stale_connection.execute(
+        "SELECT * FROM merchants WHERE id=?", (merchant["id"],)
+    ).fetchone()
+    fake = FakeCoreAi()
+    try:
+        assert client.patch(
+            f"/api/merchants/{merchant['id']}", json={"status": "archived"}
+        ).status_code == 200
+
+        with pytest.raises(HTTPException) as error:
+            start_run(
+                stale_connection,
+                fake,
+                "agent-t",
+                stale_merchant,
+                "manual",
+            )
+
+        assert error.value.status_code == 409
+        assert error.value.detail == "merchant is archived"
+        assert fake.triggered == []
+        assert stale_connection.execute(
+            "SELECT count(*) FROM runs WHERE merchant_id=?", (merchant["id"],)
+        ).fetchone()[0] == 0
+    finally:
+        stale_connection.close()
+
+
 def test_trigger_failure_stores_failed_run(client):
     override_coreai(FakeCoreAi(fail=True))
     try:
@@ -631,3 +672,22 @@ def test_archived_merchant_rejects_plan_approval(client):
     assert response.status_code == 409
     assert response.json()["detail"] == "merchant is archived"
     assert client.get(f"/api/runs/{run_id}").json()["plan_approved_at"] is None
+
+
+def test_plan_approval_rechecks_merchant_inside_writer_transaction(client, monkeypatch):
+    from app import runs
+
+    _merchant_id, run_id = insert_run(client, status="succeeded", with_task=True)
+    original_fetch = runs.fetch_active_merchant
+    active_reads = []
+
+    def observed_fetch(conn, merchant_id):
+        active_reads.append(conn.in_transaction)
+        return original_fetch(conn, merchant_id)
+
+    monkeypatch.setattr(runs, "fetch_active_merchant", observed_fetch)
+
+    response = client.post(f"/api/runs/{run_id}/approve-plan")
+
+    assert response.status_code == 200
+    assert active_reads == [True]

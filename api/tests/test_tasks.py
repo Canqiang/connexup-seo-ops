@@ -64,6 +64,27 @@ def test_create_and_list_tasks(client):
     assert [x["id"] for x in client.get(f"/api/merchants/{m['id']}/tasks").json()] == [t["id"]]
 
 
+def test_task_creation_rechecks_merchant_inside_writer_transaction(client, monkeypatch):
+    from app import tasks
+
+    merchant = make_merchant(client)
+    original_fetch = tasks.fetch_active_merchant
+    active_reads = []
+
+    def observed_fetch(conn, merchant_id):
+        active_reads.append(conn.in_transaction)
+        return original_fetch(conn, merchant_id)
+
+    monkeypatch.setattr(tasks, "fetch_active_merchant", observed_fetch)
+
+    response = client.post(
+        f"/api/merchants/{merchant['id']}/tasks", json={"title": "serialized"}
+    )
+
+    assert response.status_code == 201
+    assert active_reads == [True]
+
+
 def test_create_task_rejects_empty_title(client):
     m = make_merchant(client)
     assert client.post(f"/api/merchants/{m['id']}/tasks", json={"title": ""}).status_code == 422

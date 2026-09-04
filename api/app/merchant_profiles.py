@@ -52,7 +52,12 @@ GBP_SYNC_LEASE_TIMEOUT = timedelta(minutes=15)
 @dataclass(frozen=True)
 class GbpSyncClaim:
     merchant_id: int
+    merchant_status_generation: int
+    merchant_status_content_sha256: str
     fbr_merchant_id: str
+    binding_event_id: int
+    canonical_fbr_merchant_sha256: str
+    binding_content_sha256: str
     lease_started_at: str
 
 
@@ -69,6 +74,10 @@ def _utc_now(current_time: datetime | None = None) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _canonical_utc_instant(current_time: datetime | None = None) -> str:
+    return _utc_now(current_time).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -688,22 +697,75 @@ def get_profile(merchant_id: int, conn=Depends(get_db)):
 
 @router.put("/{merchant_id}/fbr-link")
 def put_fbr_link(merchant_id: int, body: FbrLinkBody, conn=Depends(get_db)):
-    fetch_active_merchant(conn, merchant_id)
     fbr_merchant_id = body.fbr_merchant_id.strip()
     if not fbr_merchant_id:
         raise HTTPException(status_code=422, detail="FBR Merchant ID 不能为空")
-    now = now_iso()
-    conn.execute("DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?", (merchant_id,))
-    conn.execute(
-        "INSERT INTO merchant_fbr_links"
-        " (merchant_id, fbr_merchant_id, sync_status, last_synced_at, last_error, created_at, updated_at)"
-        " VALUES (?, ?, 'not_synced', NULL, NULL, ?, ?)"
-        " ON CONFLICT(merchant_id) DO UPDATE SET"
-        " fbr_merchant_id = excluded.fbr_merchant_id, sync_status = 'not_synced',"
-        " last_synced_at = NULL, last_error = NULL, updated_at = excluded.updated_at",
-        (merchant_id, fbr_merchant_id, now, now),
-    )
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        fetch_active_merchant(conn, merchant_id)
+        current = conn.execute(
+            "SELECT fbr_merchant_id FROM merchant_fbr_links WHERE merchant_id=?",
+            (merchant_id,),
+        ).fetchone()
+        if current is not None:
+            if current["fbr_merchant_id"] != fbr_merchant_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="FBR Merchant ID 已绑定；请使用重新绑定流程",
+                )
+            conn.commit()
+            return _profile_response(conn, merchant_id)
+        partial = conn.execute(
+            "SELECT 1 FROM merchant_fbr_binding_events WHERE merchant_id=? "
+            "UNION ALL SELECT 1 FROM merchant_fbr_link_state WHERE merchant_id=? LIMIT 1",
+            (merchant_id, merchant_id),
+        ).fetchone()
+        if partial is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="FBR 绑定历史不一致；请先修复绑定状态",
+            )
+
+        now = _canonical_utc_instant()
+        conn.execute(
+            "INSERT INTO merchant_fbr_binding_events("
+            "merchant_id,fbr_merchant_id,generation,valid_from,opened_by,open_reason,created_at"
+            ") VALUES (?,?,1,?,'merchant_profile','initial_fbr_link',?)",
+            (merchant_id, fbr_merchant_id, now, now),
+        )
+        conn.execute(
+            "INSERT INTO merchant_fbr_link_state("
+            "merchant_id,sync_status,last_synced_at,last_error,created_at,updated_at"
+            ") VALUES (?,'not_synced',NULL,NULL,?,?)",
+            (merchant_id, now, now),
+        )
+        conn.execute(
+            "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?", (merchant_id,)
+        )
+        projected = conn.execute(
+            "SELECT fbr_merchant_id FROM merchant_fbr_links WHERE merchant_id=?",
+            (merchant_id,),
+        ).fetchone()
+        if projected is None or projected["fbr_merchant_id"] != fbr_merchant_id:
+            raise RuntimeError("FBR binding projection readback failed")
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        if (
+            "fbr_identity_interval_overlap" in str(exc)
+            or "merchant_fbr_binding_events.fbr_merchant_id" in str(exc)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="FBR Merchant ID 已绑定到其他商户",
+            ) from exc
+        raise
+    except Exception:
+        conn.rollback()
+        raise
     return _profile_response(conn, merchant_id)
 
 
@@ -715,8 +777,21 @@ def _claim_gbp_sync(
     current_time: datetime,
 ) -> GbpSyncClaim | None:
     fetch_active_merchant(conn, merchant_id)
+    lifecycle = conn.execute(
+        "SELECT status,generation,content_sha256 FROM merchant_status_events "
+        "WHERE merchant_id=? ORDER BY generation DESC LIMIT 1",
+        (merchant_id,),
+    ).fetchone()
+    if lifecycle is None or lifecycle["status"] != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="商户生命周期记录与当前状态不一致",
+        )
     link = conn.execute(
-        "SELECT * FROM merchant_fbr_links WHERE merchant_id = ?",
+        "SELECT link.*,event.canonical_fbr_merchant_sha256,event.content_sha256 "
+        "FROM merchant_fbr_links AS link "
+        "JOIN merchant_fbr_binding_events AS event ON event.id=link.binding_event_id "
+        "WHERE link.merchant_id = ? AND event.valid_to IS NULL",
         (merchant_id,),
     ).fetchone()
     if link is None:
@@ -731,35 +806,94 @@ def _claim_gbp_sync(
 
     lease_started_at = current_time.isoformat()
     claimed = conn.execute(
-        "UPDATE merchant_fbr_links"
+        "UPDATE merchant_fbr_link_state"
         " SET sync_status = 'syncing', last_error = NULL, updated_at = ?"
-        " WHERE merchant_id = ? AND fbr_merchant_id = ?"
+        " WHERE merchant_id = ?"
         " AND sync_status = ? AND updated_at = ?"
+        " AND EXISTS (SELECT 1 FROM merchant_fbr_binding_events AS event"
+        "             WHERE event.id = ?"
+        "               AND event.merchant_id = merchant_fbr_link_state.merchant_id"
+        "               AND event.fbr_merchant_id = ?"
+        "               AND event.canonical_fbr_merchant_sha256 = ?"
+        "               AND event.content_sha256 = ?"
+        "               AND event.valid_to IS NULL)"
         " AND EXISTS (SELECT 1 FROM merchants"
-        "             WHERE merchants.id = merchant_fbr_links.merchant_id"
-        "               AND merchants.status = 'active')",
+        "             WHERE merchants.id = merchant_fbr_link_state.merchant_id"
+        "               AND merchants.status = 'active')"
+        " AND EXISTS (SELECT 1 FROM merchant_status_events AS status_event"
+        "             WHERE status_event.merchant_id = merchant_fbr_link_state.merchant_id"
+        "               AND status_event.status = 'active'"
+        "               AND status_event.generation = ?"
+        "               AND status_event.content_sha256 = ?"
+        "               AND status_event.generation = ("
+        "                 SELECT MAX(current_event.generation)"
+        "                 FROM merchant_status_events AS current_event"
+        "                 WHERE current_event.merchant_id = merchant_fbr_link_state.merchant_id))"
+        " RETURNING merchant_id",
         (
             lease_started_at,
             merchant_id,
-            link["fbr_merchant_id"],
             link["sync_status"],
             link["updated_at"],
+            link["binding_event_id"],
+            link["fbr_merchant_id"],
+            link["canonical_fbr_merchant_sha256"],
+            link["content_sha256"],
+            lifecycle["generation"],
+            lifecycle["content_sha256"],
         ),
-    )
+    ).fetchone()
     conn.commit()
-    if claimed.rowcount != 1:
+    if claimed is None:
         return None
     return GbpSyncClaim(
         merchant_id=merchant_id,
+        merchant_status_generation=int(lifecycle["generation"]),
+        merchant_status_content_sha256=lifecycle["content_sha256"],
         fbr_merchant_id=link["fbr_merchant_id"],
+        binding_event_id=link["binding_event_id"],
+        canonical_fbr_merchant_sha256=link["canonical_fbr_merchant_sha256"],
+        binding_content_sha256=link["content_sha256"],
         lease_started_at=lease_started_at,
     )
 
 
 def _claim_where_sql() -> str:
     return (
-        " merchant_id = ? AND fbr_merchant_id = ?"
+        " merchant_id = ?"
         " AND sync_status = 'syncing' AND updated_at = ?"
+        " AND EXISTS (SELECT 1 FROM merchant_fbr_binding_events AS event"
+        "             WHERE event.id = ?"
+        "               AND event.merchant_id = merchant_fbr_link_state.merchant_id"
+        "               AND event.fbr_merchant_id = ?"
+        "               AND event.canonical_fbr_merchant_sha256 = ?"
+        "               AND event.content_sha256 = ?"
+        "               AND event.valid_to IS NULL)"
+        " AND EXISTS (SELECT 1 FROM merchants"
+        "             WHERE merchants.id = merchant_fbr_link_state.merchant_id"
+        "               AND merchants.status = 'active')"
+        " AND EXISTS (SELECT 1 FROM merchant_status_events AS status_event"
+        "             WHERE status_event.merchant_id = merchant_fbr_link_state.merchant_id"
+        "               AND status_event.status = 'active'"
+        "               AND status_event.generation = ?"
+        "               AND status_event.content_sha256 = ?"
+        "               AND status_event.generation = ("
+        "                 SELECT MAX(current_event.generation)"
+        "                 FROM merchant_status_events AS current_event"
+        "                 WHERE current_event.merchant_id = merchant_fbr_link_state.merchant_id))"
+    )
+
+
+def _claim_where_params(claim: GbpSyncClaim) -> tuple[Any, ...]:
+    return (
+        claim.merchant_id,
+        claim.lease_started_at,
+        claim.binding_event_id,
+        claim.fbr_merchant_id,
+        claim.canonical_fbr_merchant_sha256,
+        claim.binding_content_sha256,
+        claim.merchant_status_generation,
+        claim.merchant_status_content_sha256,
     )
 
 
@@ -768,22 +902,22 @@ def _mark_gbp_sync_failed(
     claim: GbpSyncClaim,
     message: str,
     failed_at: datetime,
-) -> None:
+) -> bool:
     if conn.in_transaction:
         conn.rollback()
-    conn.execute(
-        "UPDATE merchant_fbr_links"
+    updated = conn.execute(
+        "UPDATE merchant_fbr_link_state"
         " SET sync_status = 'failed', last_error = ?, updated_at = ? WHERE"
-        + _claim_where_sql(),
+        + _claim_where_sql()
+        + " RETURNING merchant_id",
         (
             message,
             failed_at.isoformat(),
-            claim.merchant_id,
-            claim.fbr_merchant_id,
-            claim.lease_started_at,
+            *_claim_where_params(claim),
         ),
-    )
+    ).fetchone()
     conn.commit()
+    return updated is not None
 
 
 def _persist_gbp_snapshots(
@@ -796,8 +930,8 @@ def _persist_gbp_snapshots(
     # lease tuple is the fence: rebinding or a newer lease makes this a no-op.
     conn.execute("BEGIN IMMEDIATE")
     owned = conn.execute(
-        "SELECT 1 FROM merchant_fbr_links WHERE" + _claim_where_sql(),
-        (claim.merchant_id, claim.fbr_merchant_id, claim.lease_started_at),
+        "SELECT 1 FROM merchant_fbr_link_state WHERE" + _claim_where_sql(),
+        _claim_where_params(claim),
     ).fetchone()
     if owned is None:
         conn.rollback()
@@ -837,18 +971,18 @@ def _persist_gbp_snapshots(
             ),
         )
     finished = conn.execute(
-        "UPDATE merchant_fbr_links"
+        "UPDATE merchant_fbr_link_state"
         " SET sync_status = 'synced', last_synced_at = ?, last_error = NULL, updated_at = ?"
-        " WHERE" + _claim_where_sql(),
+        " WHERE"
+        + _claim_where_sql()
+        + " RETURNING merchant_id",
         (
             synced_at,
             synced_at,
-            claim.merchant_id,
-            claim.fbr_merchant_id,
-            claim.lease_started_at,
+            *_claim_where_params(claim),
         ),
-    )
-    if finished.rowcount != 1:
+    ).fetchone()
+    if finished is None:
         conn.rollback()
         return False
     conn.commit()

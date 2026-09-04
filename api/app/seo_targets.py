@@ -82,6 +82,12 @@ class KeywordSkillWorkflow:
     ranking_skill_id: str
 
 
+@dataclass(frozen=True)
+class MerchantLifecycleFence:
+    generation: int
+    content_sha256: str
+
+
 _client: CoreAiClient | None = None
 
 
@@ -346,6 +352,55 @@ def _selected_location_context(
     if len(values) == 1:
         return values[0][1]
     return None
+
+
+def _capture_active_merchant_lifecycle(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+) -> tuple[sqlite3.Row, MerchantLifecycleFence]:
+    merchant = fetch_active_merchant(conn, merchant_id)
+    lifecycle = conn.execute(
+        "SELECT status,generation,content_sha256 FROM merchant_status_events "
+        "WHERE merchant_id=? ORDER BY generation DESC LIMIT 1",
+        (merchant_id,),
+    ).fetchone()
+    if lifecycle is None or lifecycle["status"] != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="merchant lifecycle history is inconsistent",
+        )
+    return merchant, MerchantLifecycleFence(
+        generation=int(lifecycle["generation"]),
+        content_sha256=str(lifecycle["content_sha256"]),
+    )
+
+
+def _assert_active_merchant_lifecycle(
+    conn: sqlite3.Connection,
+    merchant_id: int,
+    fence: MerchantLifecycleFence,
+) -> None:
+    current = conn.execute(
+        "SELECT m.status AS merchant_status,e.status AS lifecycle_status,"
+        "e.generation,e.content_sha256 FROM merchants AS m "
+        "LEFT JOIN merchant_status_events AS e ON e.id=("
+        "SELECT latest.id FROM merchant_status_events AS latest "
+        "WHERE latest.merchant_id=m.id ORDER BY latest.generation DESC LIMIT 1) "
+        "WHERE m.id=?",
+        (merchant_id,),
+    ).fetchone()
+    if current is None:
+        raise HTTPException(status_code=404, detail="merchant not found")
+    if (
+        current["merchant_status"] != "active"
+        or current["lifecycle_status"] != "active"
+        or current["generation"] != fence.generation
+        or current["content_sha256"] != fence.content_sha256
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="merchant lifecycle changed during Local Falcon synchronization",
+        )
 
 
 def _location_context(conn: sqlite3.Connection, merchant: sqlite3.Row) -> dict:
@@ -1536,6 +1591,9 @@ def _claim_keyword_cycle(
 ) -> tuple[int, str, dict, str]:
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # The endpoint/scheduler lookup can become stale while waiting for this
+        # writer lock. Lifecycle eligibility is decided only inside the claim.
+        merchant = fetch_active_merchant(conn, int(merchant["id"]))
         unresolved = _unresolved_local_falcon_batch(conn, merchant["id"])
         if unresolved is not None:
             raise HTTPException(
@@ -3061,51 +3119,50 @@ def approve_local_falcon_cohort(
 ):
     conn.execute("BEGIN IMMEDIATE")
     try:
-        merchant = fetch_active_merchant(conn, merchant_id)
-        location = _location_context(conn, merchant)
-        place_id = location.get("place_id")
-        if not place_id:
-            raise HTTPException(
-                status_code=409,
-                detail="GBP Place ID is required for Local Falcon",
-            )
-        if conn.execute(
-            "SELECT 1 FROM merchant_seo_artifacts"
-            " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'running'"
-            " LIMIT 1",
-            (merchant_id,),
-        ).fetchone():
-            raise HTTPException(
-                status_code=409,
-                detail="wait for keyword regeneration to finish before approval",
-            )
+        result = _approve_local_falcon_cohort_locked(
+            merchant_id,
+            body,
+            operator,
+            conn,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return result
 
-        _ensure_keyword_head(conn, merchant_id, place_id)
-        active_keyword_row, keyword_set = _active_ready_keyword_artifact(
+
+def _approve_local_falcon_cohort_locked(
+    merchant_id: int,
+    body: LocalFalconApprovalRequest,
+    operator: str,
+    conn: sqlite3.Connection,
+) -> dict:
+    merchant = fetch_active_merchant(conn, merchant_id)
+    location = _location_context(conn, merchant)
+    place_id = location.get("place_id")
+    if not place_id:
+        raise HTTPException(status_code=409, detail="GBP Place ID is required for Local Falcon")
+    if conn.execute(
+        "SELECT 1 FROM merchant_seo_artifacts"
+        " WHERE merchant_id = ? AND artifact_type = 'KEYWORD_SET' AND status = 'running'"
+        " LIMIT 1",
+        (merchant_id,),
+    ).fetchone():
+        raise HTTPException(
+            status_code=409,
+            detail="wait for keyword regeneration to finish before approval",
+        )
+
+    _ensure_keyword_head(conn, merchant_id, place_id)
+    active_keyword_row, keyword_set = _active_ready_keyword_artifact(
+        conn, merchant_id, place_id
+    )
+    if active_keyword_row is None:
+        latest_other_location = _ready_keyword_artifact_for_another_place(
             conn, merchant_id, place_id
         )
-        if active_keyword_row is None:
-            latest_other_location = _ready_keyword_artifact_for_another_place(
-                conn, merchant_id, place_id
-            )
-            if latest_other_location is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "keyword artifact belongs to another GBP location; "
-                        "refresh or regenerate keywords for the current location"
-                    ),
-                )
-            raise HTTPException(
-                status_code=409,
-                detail="generate and score keywords before approval",
-            )
-        if active_keyword_row["id"] != body.keyword_artifact_id:
-            raise HTTPException(
-                status_code=409,
-                detail="keyword cohort changed; review the latest Top 20",
-            )
-        if _keyword_artifact_place_id(active_keyword_row) != place_id:
+        if latest_other_location is not None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -3113,53 +3170,65 @@ def approve_local_falcon_cohort(
                     "refresh or regenerate keywords for the current location"
                 ),
             )
-
-        if not _has_deterministic_scored_local_cohort(keyword_set):
-            raise HTTPException(
-                status_code=409,
-                detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
-            )
-        if not _keyword_artifact_paid_eligible(
-            active_keyword_row, keyword_set, place_id
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="keyword artifact does not have trusted FBR or configured Skill provenance",
-            )
-        cohort = _local_falcon_cohort_snapshot(keyword_set)
-        cohort_sha256 = _local_falcon_cohort_sha256(keyword_set)
-        if not cohort or cohort_sha256 is None:
-            raise HTTPException(
-                status_code=409,
-                detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
-            )
-        if cohort_sha256 != body.expected_cohort_sha256:
-            raise HTTPException(
-                status_code=409,
-                detail="keyword cohort changed; review the latest Top 20",
-            )
-
-        approved_at = now_iso()
-        conn.execute(
-            "INSERT INTO merchant_local_falcon_approvals"
-            " (merchant_id, keyword_artifact_id, cohort_sha256, cohort_json, place_id,"
-            " approved_by, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT(merchant_id, keyword_artifact_id, cohort_sha256) DO NOTHING",
-            (
-                merchant_id,
-                active_keyword_row["id"],
-                cohort_sha256,
-                json.dumps(cohort, ensure_ascii=False),
-                place_id,
-                operator,
-                approved_at,
+        raise HTTPException(
+            status_code=409,
+            detail="generate and score keywords before approval",
+        )
+    if active_keyword_row["id"] != body.keyword_artifact_id:
+        raise HTTPException(
+            status_code=409,
+            detail="keyword cohort changed; review the latest Top 20",
+        )
+    if _keyword_artifact_place_id(active_keyword_row) != place_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "keyword artifact belongs to another GBP location; "
+                "refresh or regenerate keywords for the current location"
             ),
         )
-        conn.commit()
-    except Exception:
-        if conn.in_transaction:
-            conn.rollback()
-        raise
+
+    if not _has_deterministic_scored_local_cohort(keyword_set):
+        raise HTTPException(
+            status_code=409,
+            detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
+        )
+    if not _keyword_artifact_paid_eligible(
+        active_keyword_row, keyword_set, place_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="keyword artifact does not have trusted FBR or configured Skill provenance",
+        )
+    cohort = _local_falcon_cohort_snapshot(keyword_set)
+    cohort_sha256 = _local_falcon_cohort_sha256(keyword_set)
+    if not cohort or cohort_sha256 is None:
+        raise HTTPException(
+            status_code=409,
+            detail="keyword scores are required before approving the Local Falcon Top 20 cohort",
+        )
+    if cohort_sha256 != body.expected_cohort_sha256:
+        raise HTTPException(
+            status_code=409,
+            detail="keyword cohort changed; review the latest Top 20",
+        )
+
+    approved_at = now_iso()
+    conn.execute(
+        "INSERT INTO merchant_local_falcon_approvals"
+        " (merchant_id, keyword_artifact_id, cohort_sha256, cohort_json, place_id,"
+        " approved_by, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(merchant_id, keyword_artifact_id, cohort_sha256) DO NOTHING",
+        (
+            merchant_id,
+            active_keyword_row["id"],
+            cohort_sha256,
+            json.dumps(cohort, ensure_ascii=False),
+            place_id,
+            operator,
+            approved_at,
+        ),
+    )
     return _state(conn, merchant_id)
 
 
@@ -3179,9 +3248,28 @@ def create_local_falcon_scan_batch(
             status_code=409,
             detail="confirm the credit-consuming Local Falcon scans",
         )
-    merchant = fetch_active_merchant(conn, merchant_id)
-
     conn.execute("BEGIN IMMEDIATE")
+    try:
+        result = _create_local_falcon_scan_batch_locked(
+            merchant_id,
+            body,
+            operator,
+            conn,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return result
+
+
+def _create_local_falcon_scan_batch_locked(
+    merchant_id: int,
+    body: LocalFalconScanBatchRequest,
+    operator: str,
+    conn: sqlite3.Connection,
+) -> dict:
+    merchant = fetch_active_merchant(conn, merchant_id)
     existing_confirmation = conn.execute(
         "SELECT * FROM merchant_local_falcon_scan_confirmations"
         " WHERE merchant_id = ? AND confirmation_request_id = ?",
@@ -3204,7 +3292,6 @@ def create_local_falcon_scan_batch(
             (existing_confirmation["id"],),
         ).fetchone()
         if existing is not None:
-            conn.commit()
             state = _state(conn, merchant_id)
             state["local_falcon"]["scan_batch"] = _local_falcon_scan_batch_json(
                 conn,
@@ -3334,7 +3421,6 @@ def create_local_falcon_scan_batch(
         " (batch_id, keyword, status, updated_at) VALUES (?, ?, 'pending', ?)",
         [(batch_id, item["keyword"], created_at) for item in cohort],
     )
-    conn.commit()
     state = _state(conn, merchant_id)
     exact_batch = conn.execute(
         "SELECT * FROM merchant_local_falcon_scan_batches WHERE id = ?",
@@ -3800,21 +3886,29 @@ def recover_stale_seo_dispatches_once() -> None:
 def _claim_local_falcon_scan_batch(conn: sqlite3.Connection) -> tuple[int, str] | None:
     token = str(uuid4())
     conn.execute("BEGIN IMMEDIATE")
-    batch = conn.execute(
-        "SELECT id FROM merchant_local_falcon_scan_batches"
-        " WHERE status = 'submitting' AND dispatch_token IS NULL"
-        " ORDER BY id LIMIT 1"
-    ).fetchone()
-    if batch is None:
+    try:
+        batch = conn.execute(
+            "SELECT b.id FROM merchant_local_falcon_scan_batches AS b"
+            " JOIN merchants AS m ON m.id=b.merchant_id"
+            " WHERE b.status = 'submitting' AND b.dispatch_token IS NULL"
+            " AND m.status = 'active' ORDER BY b.id LIMIT 1"
+        ).fetchone()
+        if batch is None:
+            conn.commit()
+            return None
+        claimed = conn.execute(
+            "UPDATE merchant_local_falcon_scan_batches"
+            " SET dispatch_token = ?, dispatch_started_at = ?"
+            " WHERE id = ? AND status = 'submitting' AND dispatch_token IS NULL"
+            " AND EXISTS (SELECT 1 FROM merchants AS m"
+            " WHERE m.id=merchant_local_falcon_scan_batches.merchant_id"
+            " AND m.status='active')",
+            (token, now_iso(), batch["id"]),
+        ).rowcount
         conn.commit()
-        return None
-    claimed = conn.execute(
-        "UPDATE merchant_local_falcon_scan_batches"
-        " SET dispatch_token = ?, dispatch_started_at = ?"
-        " WHERE id = ? AND status = 'submitting' AND dispatch_token IS NULL",
-        (token, now_iso(), batch["id"]),
-    ).rowcount
-    conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return (batch["id"], token) if claimed == 1 else None
 
 
@@ -3957,31 +4051,38 @@ def submit_local_falcon_batches_once(local_falcon, max_batches: int = 1) -> int:
 def _record_local_falcon_failure(
     conn: sqlite3.Connection,
     merchant_id: int,
+    lifecycle_fence: MerchantLifecycleFence,
     place_id: str,
     keyword_artifact_id: int,
     cohort_sha256: str,
     error: str,
 ) -> None:
     attempted_at = now_iso()
-    conn.execute(
-        "INSERT INTO merchant_local_falcon_syncs"
-        " (merchant_id, place_id, keyword_artifact_id, cohort_sha256, status,"
-        " last_attempt_at, last_error) VALUES (?, ?, ?, ?, 'failed', ?, ?)"
-        " ON CONFLICT(merchant_id) DO UPDATE SET"
-        " place_id = excluded.place_id, keyword_artifact_id = excluded.keyword_artifact_id,"
-        " cohort_sha256 = excluded.cohort_sha256, status = 'failed',"
-        " last_attempt_at = excluded.last_attempt_at,"
-        " last_error = excluded.last_error",
-        (
-            merchant_id,
-            place_id,
-            keyword_artifact_id,
-            cohort_sha256,
-            attempted_at,
-            error[:500],
-        ),
-    )
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _assert_active_merchant_lifecycle(conn, merchant_id, lifecycle_fence)
+        conn.execute(
+            "INSERT INTO merchant_local_falcon_syncs"
+            " (merchant_id, place_id, keyword_artifact_id, cohort_sha256, status,"
+            " last_attempt_at, last_error) VALUES (?, ?, ?, ?, 'failed', ?, ?)"
+            " ON CONFLICT(merchant_id) DO UPDATE SET"
+            " place_id = excluded.place_id, keyword_artifact_id = excluded.keyword_artifact_id,"
+            " cohort_sha256 = excluded.cohort_sha256, status = 'failed',"
+            " last_attempt_at = excluded.last_attempt_at,"
+            " last_error = excluded.last_error",
+            (
+                merchant_id,
+                place_id,
+                keyword_artifact_id,
+                cohort_sha256,
+                attempted_at,
+                error[:500],
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _local_falcon_scan_config_matches_snapshot(
@@ -4236,7 +4337,10 @@ def sync_local_falcon_reports(
     local_falcon=Depends(get_local_falcon),
     conn=Depends(get_db),
 ):
-    merchant = fetch_active_merchant(conn, merchant_id)
+    merchant, lifecycle_fence = _capture_active_merchant_lifecycle(
+        conn,
+        merchant_id,
+    )
     location = _location_context(conn, merchant)
     place_id = location.get("place_id")
     if not place_id:
@@ -4335,6 +4439,7 @@ def sync_local_falcon_reports(
         _record_local_falcon_failure(
             conn,
             merchant_id,
+            lifecycle_fence,
             place_id,
             keyword_row["id"],
             cohort_sha256,
@@ -4343,36 +4448,42 @@ def sync_local_falcon_reports(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     synced_at = now_iso()
-    for snapshot in snapshots:
-        _upsert_local_falcon_snapshot(conn, merchant_id, snapshot, synced_at)
-    _complete_acknowledged_local_falcon_items(
-        conn,
-        merchant_id,
-        snapshots,
-        synced_at,
-    )
-    conn.execute(
-        "INSERT INTO merchant_local_falcon_syncs"
-        " (merchant_id, place_id, keyword_artifact_id, cohort_sha256, status,"
-        " last_attempt_at, last_synced_at, last_error, missing_keywords_json)"
-        " VALUES (?, ?, ?, ?, 'synced', ?, ?, NULL, ?)"
-        " ON CONFLICT(merchant_id) DO UPDATE SET"
-        " place_id = excluded.place_id, keyword_artifact_id = excluded.keyword_artifact_id,"
-        " cohort_sha256 = excluded.cohort_sha256, status = 'synced',"
-        " last_attempt_at = excluded.last_attempt_at,"
-        " last_synced_at = excluded.last_synced_at, last_error = NULL,"
-        " missing_keywords_json = excluded.missing_keywords_json",
-        (
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _assert_active_merchant_lifecycle(conn, merchant_id, lifecycle_fence)
+        for snapshot in snapshots:
+            _upsert_local_falcon_snapshot(conn, merchant_id, snapshot, synced_at)
+        _complete_acknowledged_local_falcon_items(
+            conn,
             merchant_id,
-            place_id,
-            keyword_row["id"],
-            cohort_sha256,
+            snapshots,
             synced_at,
-            synced_at,
-            json.dumps(missing, ensure_ascii=False),
-        ),
-    )
-    conn.commit()
+        )
+        conn.execute(
+            "INSERT INTO merchant_local_falcon_syncs"
+            " (merchant_id, place_id, keyword_artifact_id, cohort_sha256, status,"
+            " last_attempt_at, last_synced_at, last_error, missing_keywords_json)"
+            " VALUES (?, ?, ?, ?, 'synced', ?, ?, NULL, ?)"
+            " ON CONFLICT(merchant_id) DO UPDATE SET"
+            " place_id = excluded.place_id, keyword_artifact_id = excluded.keyword_artifact_id,"
+            " cohort_sha256 = excluded.cohort_sha256, status = 'synced',"
+            " last_attempt_at = excluded.last_attempt_at,"
+            " last_synced_at = excluded.last_synced_at, last_error = NULL,"
+            " missing_keywords_json = excluded.missing_keywords_json",
+            (
+                merchant_id,
+                place_id,
+                keyword_row["id"],
+                cohort_sha256,
+                synced_at,
+                synced_at,
+                json.dumps(missing, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return _state(conn, merchant_id)
 
 

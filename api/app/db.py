@@ -2,6 +2,18 @@ import os
 import sqlite3
 from pathlib import Path
 
+from app.migrations import (
+    PERFORMANCE_LIFECYCLE_MIGRATION,
+    PERFORMANCE_MIGRATION,
+    MigrationInvariantError,
+    PythonMigration,
+    apply_migrations,
+    assert_migration_postconditions,
+    assert_migration_registry_checksums,
+    execute_sql_payload,
+    register_sqlite_invariants,
+)
+
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "seo-ops-v3.db"
 
@@ -15,6 +27,7 @@ def connect() -> sqlite3.Connection:
     # 每个请求独享一条连接、顺序使用，因此跨线程是安全的。
     conn = sqlite3.connect(db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    register_sqlite_invariants(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -66,25 +79,137 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
 
 
-def init_db() -> None:
+def _object_type(conn: sqlite3.Connection, name: str) -> str | None:
+    row = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name = ?", (name,)
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _migration_recorded(
+    conn: sqlite3.Connection, version: str = PERFORMANCE_MIGRATION
+) -> bool:
+    if _object_type(conn, "schema_migrations") != "table":
+        return False
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)")
+    }
+    if columns == {"name", "applied_at"}:
+        # The shared runner may adopt this only after Task's exact marker-set
+        # contract and final checksum have been registered.
+        return False
+    if columns != {"version", "checksum", "applied_at"}:
+        raise MigrationInvariantError("unrecognized schema_migrations layout")
+    return (
+        conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = ?",
+            (version,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _legacy_fbr_bootstrap_required(
+    conn: sqlite3.Connection,
+    *,
+    python_migrations: tuple[PythonMigration, ...] = (),
+) -> bool:
+    """Validate the FBR schema boundary without mutating it."""
+    migration_columns = (
+        {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(schema_migrations)")
+        }
+        if _object_type(conn, "schema_migrations") == "table"
+        else set()
+    )
+    if migration_columns != {"name", "applied_at"}:
+        assert_migration_registry_checksums(
+            conn,
+            python_migrations=python_migrations,
+        )
+    recorded = _migration_recorded(conn)
+    lifecycle_recorded = _migration_recorded(
+        conn, PERFORMANCE_LIFECYCLE_MIGRATION
+    )
+    compatibility_type = _object_type(conn, "merchant_fbr_links")
+    legacy_renamed = _object_type(conn, "merchant_fbr_links_legacy")
+    history_type = _object_type(conn, "merchant_fbr_binding_events")
+    state_type = _object_type(conn, "merchant_fbr_link_state")
+
+    if recorded:
+        if (
+            compatibility_type == "view"
+            and (
+                legacy_renamed is None
+                or (legacy_renamed == "table" and not lifecycle_recorded)
+            )
+            and history_type == "table"
+            and state_type == "table"
+        ):
+            return False
+        raise MigrationInvariantError("recorded_fbr_migration_schema_inconsistent")
+
+    if compatibility_type == "table":
+        if legacy_renamed is None and history_type is None and state_type is None:
+            return False
+        raise MigrationInvariantError("legacy_and_migrated_fbr_objects_conflict")
+
+    if (
+        compatibility_type is None
+        and legacy_renamed is None
+        and history_type is None
+        and state_type is None
+    ):
+        return True
+
+    raise MigrationInvariantError("unrecorded_or_partial_fbr_migration_schema")
+
+
+def init_db(*, python_migrations: tuple[PythonMigration, ...] = ()) -> None:
     Path(db_path()).parent.mkdir(parents=True, exist_ok=True)
     conn = connect()
     try:
-        _migrate(conn)
-        conn.executescript(SCHEMA_PATH.read_text())
-        # Existing databases may already contain the scan batch table while the
-        # confirmation table is introduced by the schema above.
-        _migrate(conn)
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source_key"
-            " ON tasks(source_key) WHERE source_key IS NOT NULL"
+        # Serialize the legacy column bridge and base schema installation.  In
+        # particular, never let two cold starts both observe a missing column
+        # before either ALTER TABLE commits.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _legacy_fbr_bootstrap_required(
+                conn,
+                python_migrations=python_migrations,
+            )
+            _migrate(conn)
+            execute_sql_payload(conn, SCHEMA_PATH.read_bytes())
+            # Existing databases may already contain the scan batch table while
+            # the confirmation table is introduced by the schema above.
+            _migrate(conn)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source_key"
+                " ON tasks(source_key) WHERE source_key IS NOT NULL"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_falcon_scan_batch_confirmation"
+                " ON merchant_local_falcon_scan_batches(confirmation_id)"
+                " WHERE confirmation_id IS NOT NULL"
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        apply_migrations(conn, python_migrations=python_migrations)
+        assert_migration_registry_checksums(
+            conn,
+            python_migrations=python_migrations,
         )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_falcon_scan_batch_confirmation"
-            " ON merchant_local_falcon_scan_batches(confirmation_id)"
-            " WHERE confirmation_id IS NOT NULL"
+        if _legacy_fbr_bootstrap_required(
+            conn,
+            python_migrations=python_migrations,
+        ):
+            raise MigrationInvariantError("fbr_migration_did_not_complete")
+        assert_migration_postconditions(
+            conn, version=PERFORMANCE_LIFECYCLE_MIGRATION
         )
-        conn.commit()
     finally:
         conn.close()
 

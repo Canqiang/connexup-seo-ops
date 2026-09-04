@@ -1,5 +1,8 @@
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 
 def test_create_and_get_merchant(client):
@@ -14,6 +17,138 @@ def test_create_and_get_merchant(client):
     assert m["notes"] == "first"
     assert m["created_at"]
     assert client.get(f"/api/merchants/{m['id']}").json()["name"] == "Alpha"
+
+
+def test_create_archive_duplicate_archive_and_restore_append_status_history(client):
+    created = client.post(
+        "/api/merchants",
+        json={"name": "Lifecycle", "primary_location": "Mineola, NY"},
+    ).json()
+    merchant_id = created["id"]
+
+    assert client.patch(
+        f"/api/merchants/{merchant_id}", json={"status": "archived"}
+    ).status_code == 200
+    assert client.patch(
+        f"/api/merchants/{merchant_id}", json={"status": "archived"}
+    ).status_code == 200
+    assert client.patch(
+        f"/api/merchants/{merchant_id}", json={"status": "active"}
+    ).status_code == 200
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    from app.migrations import register_sqlite_invariants
+
+    register_sqlite_invariants(conn)
+    rows = conn.execute(
+        "SELECT status,generation,actor,reason,effective_at,created_at,content_sha256 "
+        "FROM merchant_status_events WHERE merchant_id=? ORDER BY generation",
+        (merchant_id,),
+    ).fetchall()
+    valid_hashes = [
+        conn.execute(
+            "SELECT content_sha256(?,?,?,?,?,?)",
+            (merchant_id, status, effective_at, generation, actor, reason),
+        ).fetchone()[0]
+        for status, generation, actor, reason, effective_at, _created_at, _hash in rows
+    ]
+    conn.close()
+
+    assert [(row[0], row[1], row[2], row[3]) for row in rows] == [
+        ("active", 1, "merchant_api", "merchant_created"),
+        ("archived", 2, "merchant_api", "merchant_archived"),
+        ("active", 3, "merchant_api", "merchant_restored"),
+    ]
+    assert all(row[4].endswith("Z") and len(row[4]) == 27 for row in rows)
+    assert all(row[5] == row[4] for row in rows)
+    assert [row[6] for row in rows] == valid_hashes
+
+
+def test_concurrent_duplicate_archive_appends_exactly_one_generation(client):
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": "Archive once", "primary_location": "Mineola, NY"},
+    ).json()
+
+    def archive_once(_index):
+        response = client.patch(
+            f"/api/merchants/{merchant['id']}", json={"status": "archived"}
+        )
+        return response.status_code, response.json()["status"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(archive_once, range(2)))
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    events = conn.execute(
+        "SELECT status,generation FROM merchant_status_events "
+        "WHERE merchant_id=? ORDER BY generation",
+        (merchant["id"],),
+    ).fetchall()
+    conn.close()
+
+    assert results == [(200, "archived"), (200, "archived")]
+    assert events == [("active", 1), ("archived", 2)]
+
+
+def test_create_rolls_back_merchant_when_initial_status_event_fails(client):
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "CREATE TRIGGER reject_lifecycle_test BEFORE INSERT ON merchant_status_events "
+        "WHEN NEW.reason='merchant_created' BEGIN "
+        "SELECT RAISE(ABORT, 'reject lifecycle test'); END"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match="reject lifecycle test"):
+        client.post(
+            "/api/merchants",
+            json={"name": "Must rollback", "primary_location": "Mineola, NY"},
+        )
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    count = conn.execute(
+        "SELECT count(*) FROM merchants WHERE name='Must rollback'"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_archive_rolls_back_status_and_other_fields_when_event_insert_fails(client):
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": "Keep original", "primary_location": "Mineola, NY"},
+    ).json()
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    conn.execute(
+        "CREATE TRIGGER reject_archive_event_test "
+        "BEFORE INSERT ON merchant_status_events "
+        "WHEN NEW.reason='merchant_archived' BEGIN "
+        "SELECT RAISE(ABORT, 'reject archive event test'); END"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(
+        sqlite3.IntegrityError, match="reject archive event test"
+    ):
+        client.patch(
+            f"/api/merchants/{merchant['id']}",
+            json={"name": "Must rollback", "status": "archived"},
+        )
+
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    row = conn.execute(
+        "SELECT name,status FROM merchants WHERE id=?", (merchant["id"],)
+    ).fetchone()
+    events = conn.execute(
+        "SELECT status,generation FROM merchant_status_events WHERE merchant_id=?",
+        (merchant["id"],),
+    ).fetchall()
+    conn.close()
+    assert row == ("Keep original", "active")
+    assert events == [("active", 1)]
 
 
 def test_create_merchant_rejects_empty_name(client):
@@ -166,18 +301,16 @@ def test_delete_requires_an_archived_merchant_without_related_records(client):
     assert client.get(f"/api/merchants/{m['id']}").status_code == 404
 
 
-def test_delete_archived_merchant_cascades_tasks_and_related_business_data(client):
+def test_delete_archived_merchant_preserves_tasks_and_related_business_data(client):
     m = client.post(
         "/api/merchants",
         json={"name": "Archived with history", "primary_location": "Mineola, NY"},
     ).json()
+    assert client.put(
+        f"/api/merchants/{m['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-connected"},
+    ).status_code == 200
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
-    conn.execute(
-        "INSERT INTO merchant_fbr_links"
-        " (merchant_id, fbr_merchant_id, created_at, updated_at)"
-        " VALUES (?, 'fbr-connected', '2026-09-02T00:00:00+00:00', '2026-09-02T00:00:00+00:00')",
-        (m["id"],),
-    )
     conn.execute(
         "INSERT INTO runs"
         " (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
@@ -265,8 +398,9 @@ def test_delete_archived_merchant_cascades_tasks_and_related_business_data(clien
 
     response = client.delete(f"/api/merchants/{m['id']}")
 
-    assert response.status_code == 204
-    assert client.get(f"/api/merchants/{m['id']}").status_code == 404
+    assert response.status_code == 409
+    assert response.json()["detail"] == "merchant has durable history; archive preserves it"
+    assert client.get(f"/api/merchants/{m['id']}").status_code == 200
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
     remaining = {
         "tasks": conn.execute("SELECT COUNT(*) FROM tasks WHERE merchant_id = ?", (m["id"],)).fetchone()[0],
@@ -291,7 +425,7 @@ def test_delete_archived_merchant_cascades_tasks_and_related_business_data(clien
         ).fetchone()[0],
     }
     conn.close()
-    assert remaining == {table: 0 for table in remaining}
+    assert remaining == {table: 1 for table in remaining}
 
 
 def test_archive_rejects_merchant_with_active_work(client):

@@ -6,27 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from .db import get_db
+from .migrations import content_sha256
 
 router = APIRouter(prefix="/api/merchants", tags=["merchants"])
-
-MERCHANT_DELETE_STATEMENTS = (
-    "DELETE FROM merchant_local_falcon_scan_items WHERE batch_id IN"
-    " (SELECT id FROM merchant_local_falcon_scan_batches WHERE merchant_id = ?)",
-    "DELETE FROM merchant_local_falcon_scan_batches WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_scan_confirmations WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_approvals WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_reports WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_syncs WHERE merchant_id = ?",
-    "DELETE FROM task_executions WHERE task_id IN"
-    " (SELECT id FROM tasks WHERE merchant_id = ?)",
-    "DELETE FROM tasks WHERE merchant_id = ?",
-    "DELETE FROM audit_snapshots WHERE merchant_id = ?",
-    "DELETE FROM runs WHERE merchant_id = ?",
-    "DELETE FROM merchant_keyword_heads WHERE merchant_id = ?",
-    "DELETE FROM merchant_seo_artifacts WHERE merchant_id = ?",
-    "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?",
-    "DELETE FROM merchant_fbr_links WHERE merchant_id = ?",
-)
 
 
 class MerchantCreate(BaseModel):
@@ -51,7 +33,40 @@ class MerchantPatch(BaseModel):
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _append_status_event(
+    conn: sqlite3.Connection,
+    *,
+    merchant_id: int,
+    status: str,
+    generation: int,
+    stamp: str,
+    reason: str,
+) -> None:
+    actor = "merchant_api"
+    conn.execute(
+        "INSERT INTO merchant_status_events(merchant_id,status,effective_at,generation,"
+        "actor,reason,content_sha256,created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            merchant_id,
+            status,
+            stamp,
+            generation,
+            actor,
+            reason,
+            content_sha256(
+                merchant_id,
+                status,
+                stamp,
+                generation,
+                actor,
+                reason,
+            ),
+            stamp,
+        ),
+    )
 
 
 def fetch_merchant(conn: sqlite3.Connection, merchant_id: int) -> sqlite3.Row:
@@ -126,12 +141,26 @@ def list_merchants(status: Literal["active", "archived"] | None = None, conn=Dep
 
 @router.post("", status_code=201)
 def create_merchant(body: MerchantCreate, conn=Depends(get_db)):
-    cur = conn.execute(
-        "INSERT INTO merchants (name, notes, primary_location, website_url, created_at)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (body.name, body.notes, body.primary_location, body.website_url, now_iso()),
-    )
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        stamp = now_iso()
+        cur = conn.execute(
+            "INSERT INTO merchants (name, notes, primary_location, website_url, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (body.name, body.notes, body.primary_location, body.website_url, stamp),
+        )
+        _append_status_event(
+            conn,
+            merchant_id=int(cur.lastrowid),
+            status="active",
+            generation=1,
+            stamp=stamp,
+            reason="merchant_created",
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return dict(fetch_merchant(conn, cur.lastrowid))
 
 
@@ -142,23 +171,51 @@ def get_merchant(merchant_id: int, conn=Depends(get_db)):
 
 @router.patch("/{merchant_id}")
 def patch_merchant(merchant_id: int, body: MerchantPatch, conn=Depends(get_db)):
-    merchant = fetch_merchant(conn, merchant_id)
     updates = body.model_dump(exclude_unset=True)
     for field in ("name", "status"):
         if field in updates and updates[field] is None:
             raise HTTPException(status_code=422, detail=f"{field} cannot be null")
-    if (
-        updates.get("status") == "archived"
-        and merchant["status"] != "archived"
-        and merchant_has_active_work(conn, merchant_id)
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="merchant has active work; resolve it before archiving",
-        )
-    for field, value in updates.items():
-        conn.execute(f"UPDATE merchants SET {field} = ? WHERE id = ?", (value, merchant_id))
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        merchant = fetch_merchant(conn, merchant_id)
+        target_status = updates.get("status")
+        if (
+            target_status == "archived"
+            and merchant["status"] != "archived"
+            and merchant_has_active_work(conn, merchant_id)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="merchant has active work; resolve it before archiving",
+            )
+        for field, value in updates.items():
+            conn.execute(
+                f"UPDATE merchants SET {field} = ? WHERE id = ?",
+                (value, merchant_id),
+            )
+        if target_status is not None and target_status != merchant["status"]:
+            prior_generation = conn.execute(
+                "SELECT COALESCE(MAX(generation),0) FROM merchant_status_events "
+                "WHERE merchant_id=?",
+                (merchant_id,),
+            ).fetchone()[0]
+            stamp = now_iso()
+            _append_status_event(
+                conn,
+                merchant_id=merchant_id,
+                status=target_status,
+                generation=int(prior_generation) + 1,
+                stamp=stamp,
+                reason=(
+                    "merchant_archived"
+                    if target_status == "archived"
+                    else "merchant_restored"
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return dict(fetch_merchant(conn, merchant_id))
 
 
@@ -169,9 +226,15 @@ def delete_merchant(merchant_id: int, conn=Depends(get_db)):
         merchant = fetch_merchant(conn, merchant_id)
         if merchant["status"] != "archived":
             raise HTTPException(status_code=409, detail="archive merchant before deleting it")
-        for statement in MERCHANT_DELETE_STATEMENTS:
-            conn.execute(statement, (merchant_id,))
         conn.execute("DELETE FROM merchants WHERE id = ?", (merchant_id,))
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        if "merchant_has_durable_history" in str(exc):
+            raise HTTPException(
+                status_code=409,
+                detail="merchant has durable history; archive preserves it",
+            ) from exc
+        raise
     except Exception:
         conn.rollback()
         raise

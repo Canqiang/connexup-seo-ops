@@ -216,12 +216,17 @@ def list_tasks(merchant_id: int, conn=Depends(get_db)):
 
 @router.post("/merchants/{merchant_id}/tasks", status_code=201)
 def create_task(merchant_id: int, body: TaskCreate, conn=Depends(get_db)):
-    fetch_active_merchant(conn, merchant_id)
-    cur = conn.execute(
-        "INSERT INTO tasks (merchant_id, title, description, rationale, expected_outcome, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (merchant_id, body.title, body.description, body.rationale, body.expected_outcome, body.category, now_iso()),
-    )
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        fetch_active_merchant(conn, merchant_id)
+        cur = conn.execute(
+            "INSERT INTO tasks (merchant_id, title, description, rationale, expected_outcome, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (merchant_id, body.title, body.description, body.rationale, body.expected_outcome, body.category, now_iso()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return task_dict(fetch_task(conn, cur.lastrowid))
 
 
