@@ -1,3 +1,6 @@
+import pytest
+
+
 VALID_REPORT = """# 分析报告
 
 一些前文。
@@ -78,6 +81,47 @@ def test_create_tasks_idempotent(client):
     assert t1["status"] == "todo"
     assert t1["rationale"] == "营业时间与官网不一致"
     assert t1["source_run_id"] == run_id
+
+
+def test_create_tasks_from_plan_rejects_an_archived_merchant(client):
+    from app.db import connect
+    from app.plan_parser import create_tasks_from_plan, extract_plan
+
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": "Archived plan", "primary_location": "Mineola, NY"},
+    ).json()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs (merchant_id,coreai_run_id,status,trigger_kind,created_at)"
+            " VALUES (?,'archived-plan-run','succeeded','manual',"
+            "'2026-09-01T00:00:00+00:00')",
+            (merchant["id"],),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+    assert client.patch(
+        f"/api/merchants/{merchant['id']}", json={"status": "archived"}
+    ).status_code == 200
+
+    conn = connect()
+    try:
+        with pytest.raises(ValueError, match="merchant is archived"):
+            create_tasks_from_plan(
+                conn,
+                merchant["id"],
+                run_id,
+                "archived-plan-run",
+                extract_plan(VALID_REPORT),
+            )
+        assert conn.execute(
+            "SELECT count(*) FROM tasks WHERE merchant_id=?", (merchant["id"],)
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_extract_plan_carries_expected_outcome(client):

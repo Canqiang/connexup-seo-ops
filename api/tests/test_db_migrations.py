@@ -542,6 +542,108 @@ def test_0001_backfills_legacy_fbr_projection_at_migration_instant_only(tmp_path
     assert exact_database_fingerprint(database) == before_replay
 
 
+def test_0001_registry_checksum_binds_frozen_data_hook_contract():
+    migrations = migrations_api()
+    sql_path = migrations.MIGRATIONS_DIR / "0001_performance_history.sql"
+    hook_path = migrations.MIGRATIONS_DIR / "0001_performance_history.hook.json"
+
+    checksums = migrations.migration_registry_checksums()
+    sql_checksum = hashlib.sha256(sql_path.read_bytes()).hexdigest()
+    hook_checksum = migrations.python_migration_checksum(
+        "0001_performance_history",
+        contract=hook_path.read_text(),
+    )
+
+    assert checksums["0001_performance_history"] == (
+        migrations.combined_migration_checksum(
+            "0001_performance_history",
+            sql_checksum=sql_checksum,
+            python_checksum=hook_checksum,
+        )
+    )
+    assert checksums["0001_performance_history"] != sql_checksum
+
+
+def test_0001_missing_status_baseline_rolls_back_hook_schema_and_ledger(
+    tmp_path, monkeypatch
+):
+    migrations = migrations_api()
+    database = build_legacy_database(tmp_path / "legacy-status-noop.db")
+    before_fingerprint = exact_database_fingerprint(database)
+    monkeypatch.setattr(
+        migrations,
+        "_bootstrap_legacy_merchant_status_baselines",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(
+        migrations.MigrationInvariantError,
+        match="merchant_status_history_missing: merchant_id=1",
+    ):
+        migrations.apply_migrations(sqlite3.connect(database))
+
+    assert exact_database_fingerprint(database) == before_fingerprint
+    assert migration_versions(database) == []
+    assert sqlite_object_type(database, "merchant_fbr_links") == "table"
+
+
+def test_0001_backfills_traceable_status_baseline_for_every_legacy_merchant(tmp_path):
+    migrations = migrations_api()
+    database = build_legacy_database(tmp_path / "legacy-status-baseline.db")
+
+    migrations.apply_migrations(sqlite3.connect(database))
+
+    conn = open_database(database)
+    rows = conn.execute(
+        "SELECT merchant_id,status,effective_at,generation,actor,reason,"
+        "content_sha256,created_at FROM merchant_status_events ORDER BY merchant_id"
+    ).fetchall()
+    merchants = conn.execute(
+        "SELECT id,status FROM merchants ORDER BY id"
+    ).fetchall()
+    persisted_checksum = conn.execute(
+        "SELECT checksum FROM schema_migrations WHERE version='0001_performance_history'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert [(row["merchant_id"], row["status"]) for row in rows] == [
+        (merchant["id"], merchant["status"]) for merchant in merchants
+    ]
+    for row in rows:
+        assert row["generation"] == 1
+        assert row["actor"] == "schema_migration:0001_performance_history"
+        assert row["reason"] == "legacy_status_baseline"
+        assert row["created_at"] == row["effective_at"]
+        assert row["content_sha256"] == migrations.content_sha256(
+            row["merchant_id"],
+            row["status"],
+            row["effective_at"],
+            row["generation"],
+            row["actor"],
+            row["reason"],
+        )
+    assert persisted_checksum == migrations.migration_registry_checksums()[
+        "0001_performance_history"
+    ]
+
+
+def test_replayed_0001_rejects_merchant_status_without_a_latest_event(tmp_path):
+    migrations = migrations_api()
+    database = build_legacy_database(tmp_path / "status-event-tamper.db")
+    migrations.apply_migrations(sqlite3.connect(database))
+    conn = open_database(database)
+    conn.execute("UPDATE merchants SET status='archived' WHERE id=1")
+    conn.commit()
+
+    with pytest.raises(
+        migrations.MigrationInvariantError,
+        match="merchant_status_latest_mismatch: merchant_id=1",
+    ):
+        migrations.apply_migrations(conn)
+
+    conn.close()
+
+
 def test_0001_fbr_baseline_conflict_rolls_back_schema_hook_and_registry(tmp_path):
     database = build_legacy_database_with_duplicate_current_fbr_identity(tmp_path / "legacy-fbr-conflict.db")
     before_fingerprint = exact_database_fingerprint(database)

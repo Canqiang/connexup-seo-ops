@@ -689,6 +689,41 @@ def test_archived_merchant_rejects_seo_target_refresh(client):
     assert response.json()["detail"] == "merchant is archived"
 
 
+def test_keyword_claim_rechecks_stale_merchant_after_acquiring_writer_lock(
+    client, monkeypatch
+):
+    from fastapi import HTTPException
+
+    from app import seo_targets
+    from app.db import connect
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    stale_connection = connect()
+    stale_merchant = stale_connection.execute(
+        "SELECT * FROM merchants WHERE id=?", (merchant_id,)
+    ).fetchone()
+    try:
+        assert client.patch(
+            f"/api/merchants/{merchant_id}", json={"status": "archived"}
+        ).status_code == 200
+
+        with pytest.raises(HTTPException) as error:
+            seo_targets._claim_keyword_cycle(
+                stale_connection,
+                stale_merchant,
+                "refresh",
+            )
+
+        assert error.value.status_code == 409
+        assert error.value.detail == "merchant is archived"
+        assert stale_connection.execute(
+            "SELECT count(*) FROM merchant_seo_artifacts WHERE merchant_id=?",
+            (merchant_id,),
+        ).fetchone()[0] == 0
+    finally:
+        stale_connection.close()
+
+
 def create_uws_merchant(client, monkeypatch):
     response = client.post(
         "/api/merchants",
@@ -2031,6 +2066,35 @@ def insert_ready_keyword_set(
     conn.close()
 
 
+def test_local_falcon_approval_rechecks_merchant_inside_writer_transaction(
+    client, monkeypatch
+):
+    from app import seo_targets
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    insert_ready_keyword_set(merchant_id)
+    state = client.get(f"/api/merchants/{merchant_id}/seo-targets").json()
+    original_fetch = seo_targets.fetch_active_merchant
+    active_reads = []
+
+    def observed_fetch(conn, exact_merchant_id):
+        active_reads.append(conn.in_transaction)
+        return original_fetch(conn, exact_merchant_id)
+
+    monkeypatch.setattr(seo_targets, "fetch_active_merchant", observed_fetch)
+
+    response = client.post(
+        f"/api/merchants/{merchant_id}/local-falcon-approvals",
+        json={
+            "keyword_artifact_id": state["keyword_set_artifact_id"],
+            "expected_cohort_sha256": state["local_falcon_cohort_sha256"],
+        },
+    )
+
+    assert response.status_code == 201
+    assert active_reads == [True]
+
+
 def insert_verified_skill_keyword_set(
     merchant_id,
     *,
@@ -2498,6 +2562,132 @@ class FakeLocalFalcon:
             "message": "Scan submitted successfully",
             "report_key": f"{len(self.scan_requests):015x}",
         }
+
+
+def test_local_falcon_sync_discards_stale_result_across_archive_restore_aba(
+    client, monkeypatch
+):
+    from app import seo_targets
+    from app.db import connect
+    from app.main import app
+    from app.merchants import MerchantPatch, patch_merchant
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    insert_ready_keyword_set(merchant_id)
+
+    class ArchiveRestoreDuringRead(FakeLocalFalcon):
+        lifecycle_changed = False
+
+        def list_latest_exact_report(self, place_id, keyword):
+            if not self.lifecycle_changed:
+                lifecycle_connection = connect()
+                try:
+                    patch_merchant(
+                        merchant_id,
+                        MerchantPatch(status="archived"),
+                        lifecycle_connection,
+                    )
+                    patch_merchant(
+                        merchant_id,
+                        MerchantPatch(status="active"),
+                        lifecycle_connection,
+                    )
+                finally:
+                    lifecycle_connection.close()
+                self.lifecycle_changed = True
+            return super().list_latest_exact_report(place_id, keyword)
+
+    fake = ArchiveRestoreDuringRead()
+    app.dependency_overrides[seo_targets.get_local_falcon] = lambda: fake
+    try:
+        response = client.post(f"/api/merchants/{merchant_id}/local-falcon-sync")
+    finally:
+        app.dependency_overrides.pop(seo_targets.get_local_falcon, None)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "merchant lifecycle changed during Local Falcon synchronization"
+    )
+    conn = connect()
+    try:
+        assert conn.execute(
+            "SELECT count(*) FROM merchant_local_falcon_reports WHERE merchant_id=?",
+            (merchant_id,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT count(*) FROM merchant_local_falcon_syncs WHERE merchant_id=?",
+            (merchant_id,),
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_local_falcon_dispatch_claim_skips_archived_merchant_batches(
+    client, monkeypatch
+):
+    from app import seo_targets
+    from app.db import connect
+
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    insert_ready_keyword_set(merchant_id)
+    assert client.patch(
+        f"/api/merchants/{merchant_id}", json={"status": "archived"}
+    ).status_code == 200
+
+    conn = connect()
+    try:
+        artifact_id = conn.execute(
+            "SELECT id FROM merchant_seo_artifacts WHERE merchant_id=?",
+            (merchant_id,),
+        ).fetchone()[0]
+        approval_id = conn.execute(
+            "INSERT INTO merchant_local_falcon_approvals"
+            " (merchant_id,keyword_artifact_id,cohort_sha256,cohort_json,place_id,"
+            "approved_by,approved_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                merchant_id,
+                artifact_id,
+                "a" * 64,
+                "[]",
+                TEST_PLACE_ID,
+                "test",
+                "2026-09-03T10:00:00.000000Z",
+            ),
+        ).lastrowid
+        confirmation_id = conn.execute(
+            "INSERT INTO merchant_local_falcon_scan_confirmations"
+            " (merchant_id,approval_id,confirmation_request_id,scan_config_sha256,"
+            "scan_config_json,confirmed_by,confirmed_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                merchant_id,
+                approval_id,
+                "archived-batch-confirmation",
+                "b" * 64,
+                "{}",
+                "test",
+                "2026-09-03T10:00:00.000000Z",
+            ),
+        ).lastrowid
+        batch_id = conn.execute(
+            "INSERT INTO merchant_local_falcon_scan_batches"
+            " (merchant_id,approval_id,confirmation_id,request_id,status,scan_config_json,"
+            "created_at) VALUES (?,?,?,'archived-batch','submitting','{}',?)",
+            (
+                merchant_id,
+                approval_id,
+                confirmation_id,
+                "2026-09-03T10:00:00.000000Z",
+            ),
+        ).lastrowid
+        conn.commit()
+
+        assert seo_targets._claim_local_falcon_scan_batch(conn) is None
+        assert conn.execute(
+            "SELECT dispatch_token FROM merchant_local_falcon_scan_batches WHERE id=?",
+            (batch_id,),
+        ).fetchone()[0] is None
+    finally:
+        conn.close()
 
 
 def test_local_falcon_approval_uses_scored_artifact_hidden_by_newer_fbr_inventory(

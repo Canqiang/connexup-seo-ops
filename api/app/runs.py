@@ -320,6 +320,9 @@ def start_run(
 ) -> sqlite3.Row:
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # The caller may have selected this row before waiting for the writer
+        # lock. Re-read lifecycle state under the same lock that creates work.
+        merchant = fetch_active_merchant(conn, int(merchant["id"]))
         if has_running_run(conn, merchant["id"]):
             raise HTTPException(
                 status_code=409,
@@ -381,23 +384,28 @@ def get_run(run_id: int, conn=Depends(get_db)):
 
 @router.post("/runs/{run_id}/approve-plan")
 def approve_plan(run_id: int, conn=Depends(get_db)):
-    run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-    if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    fetch_active_merchant(conn, run["merchant_id"])
-    if run["status"] != "succeeded":
-        raise HTTPException(status_code=409, detail="only a succeeded run can be approved")
-    task_count = conn.execute(
-        "SELECT COUNT(*) AS n FROM tasks WHERE source_run_id = ?", (run_id,)
-    ).fetchone()["n"]
-    if task_count == 0:
-        raise HTTPException(status_code=409, detail="run has no generated plan")
-    if run["plan_approved_at"] is None:
-        conn.execute(
-            "UPDATE runs SET plan_approved_at = ? WHERE id = ?",
-            (now_iso(), run_id),
-        )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        fetch_active_merchant(conn, run["merchant_id"])
+        if run["status"] != "succeeded":
+            raise HTTPException(status_code=409, detail="only a succeeded run can be approved")
+        task_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE source_run_id = ?", (run_id,)
+        ).fetchone()["n"]
+        if task_count == 0:
+            raise HTTPException(status_code=409, detail="run has no generated plan")
+        if run["plan_approved_at"] is None:
+            conn.execute(
+                "UPDATE runs SET plan_approved_at = ? WHERE id = ?",
+                (now_iso(), run_id),
+            )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return dict(conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone())
 
 

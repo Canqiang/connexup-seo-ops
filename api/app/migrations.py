@@ -14,6 +14,7 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 MIGRATION_NAME = re.compile(r"^(?P<version>\d{4}_[a-z0-9_]+)\.sql$")
 MIGRATION_VERSION = re.compile(r"^\d{4}_[a-z0-9_]+$")
 PERFORMANCE_MIGRATION = "0001_performance_history"
+PERFORMANCE_HOOK_MANIFEST = f"{PERFORMANCE_MIGRATION}.hook.json"
 _CANONICAL_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 _PYTHON_MIGRATION_CHECKSUM_PREFIX = "seo-ops-python-migration-v1:"
 _COMBINED_MIGRATION_CHECKSUM_PREFIX = "seo-ops-combined-migration-v1:"
@@ -313,6 +314,53 @@ def _index_python_migrations(
     return hooks_by_version
 
 
+def _builtin_python_migrations(
+    migrations_dir: Path,
+    sql_by_version: dict[str, tuple[bytes, str]],
+) -> tuple[PythonMigration, ...]:
+    """Register repository-owned hooks whenever their matching SQL is present."""
+
+    if PERFORMANCE_MIGRATION not in sql_by_version:
+        return ()
+    manifest_path = migrations_dir / PERFORMANCE_HOOK_MANIFEST
+    try:
+        contract = manifest_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise MigrationInvariantError(
+            f"migration hook contract missing: {PERFORMANCE_HOOK_MANIFEST}"
+        ) from exc
+    try:
+        manifest = json.loads(contract)
+    except json.JSONDecodeError as exc:
+        raise MigrationInvariantError(
+            f"migration hook contract invalid: {PERFORMANCE_HOOK_MANIFEST}"
+        ) from exc
+    if not isinstance(manifest, dict) or manifest.get("version") != PERFORMANCE_MIGRATION:
+        raise MigrationInvariantError(
+            f"migration hook contract version mismatch: {PERFORMANCE_HOOK_MANIFEST}"
+        )
+    return (
+        PythonMigration(
+            version=PERFORMANCE_MIGRATION,
+            checksum=python_migration_checksum(
+                PERFORMANCE_MIGRATION,
+                contract=contract,
+            ),
+            apply=run_performance_history_migration_hook,
+        ),
+    )
+
+
+def _all_python_migrations(
+    migrations_dir: Path,
+    sql_by_version: dict[str, tuple[bytes, str]],
+    python_migrations: tuple[PythonMigration, ...],
+) -> dict[str, PythonMigration]:
+    return _index_python_migrations(
+        (*_builtin_python_migrations(migrations_dir, sql_by_version), *python_migrations)
+    )
+
+
 def _registered_migration_checksums(
     sql_by_version: dict[str, tuple[bytes, str]],
     hooks_by_version: dict[str, PythonMigration],
@@ -349,7 +397,7 @@ def migration_registry_checksums(
     }
     return _registered_migration_checksums(
         sql_by_version,
-        _index_python_migrations(python_migrations),
+        _all_python_migrations(migrations_dir, sql_by_version, python_migrations),
     )
 
 
@@ -640,23 +688,66 @@ def _bootstrap_legacy_merchant_status_baselines(
         )
 
 
-def run_migration_data_hook(
-    conn: sqlite3.Connection, *, version: str, migration_instant: str
-) -> LegacyFbrBaselineResult | None:
-    if version != PERFORMANCE_MIGRATION:
-        return None
+def run_performance_history_migration_hook(
+    conn: sqlite3.Connection, migration_instant: str
+) -> None:
+    """Apply the frozen 0001 data transformation inside the runner transaction."""
+
     instant = datetime.strptime(migration_instant, _CANONICAL_UTC_FORMAT).replace(
         tzinfo=timezone.utc
     )
     actor = "schema_migration:0001_performance_history"
-    result = bootstrap_legacy_fbr_binding_baselines(
+    bootstrap_legacy_fbr_binding_baselines(
         conn, baseline_at=instant, actor=actor
     )
     _bootstrap_legacy_merchant_status_baselines(
         conn, stamp=migration_instant, actor=actor
     )
     conn.execute("DROP TABLE merchant_fbr_links_legacy")
-    return result
+
+
+def _assert_merchant_status_history_valid(conn: sqlite3.Connection) -> None:
+    if not table_exists(conn, "merchant_status_events"):
+        raise MigrationInvariantError("merchant_status_history_missing")
+    for merchant_id, current_status in conn.execute(
+        "SELECT id,status FROM merchants ORDER BY id"
+    ).fetchall():
+        events = conn.execute(
+            "SELECT id,status,effective_at,generation,actor,reason,content_sha256 "
+            "FROM merchant_status_events WHERE merchant_id=? ORDER BY generation",
+            (merchant_id,),
+        ).fetchall()
+        if not events:
+            raise MigrationInvariantError(
+                f"merchant_status_history_missing: merchant_id={merchant_id}"
+            )
+        generations = [int(event[3]) for event in events]
+        if generations != list(range(1, len(events) + 1)):
+            raise MigrationInvariantError(
+                f"merchant_status_generation_invalid: merchant_id={merchant_id}"
+            )
+        for event in events:
+            event_id, status, effective_at, generation, actor, reason, digest = event
+            if not str(actor).strip() or not str(reason).strip():
+                raise MigrationInvariantError(
+                    f"merchant_status_provenance_missing: event_id={event_id}"
+                )
+            expected_digest = _content_sha256(
+                merchant_id,
+                status,
+                effective_at,
+                generation,
+                actor,
+                reason,
+            )
+            if digest != expected_digest:
+                raise MigrationInvariantError(
+                    f"merchant_status_hash_invalid: event_id={event_id}"
+                )
+        if events[-1][1] != current_status:
+            raise MigrationInvariantError(
+                f"merchant_status_latest_mismatch: merchant_id={merchant_id}"
+            )
 
 
 def assert_migration_postconditions(
@@ -699,6 +790,7 @@ def assert_migration_postconditions(
                 "legacy_fbr_projection_not_one_to_one: "
                 f"expected={expected_legacy_fbr_rows},actual={counts}"
             )
+    _assert_merchant_status_history_valid(conn)
     _assert_existing_source_scope_binding_generations_valid(conn)
 
 
@@ -717,7 +809,11 @@ def apply_migrations(
         version: (payload, checksum)
         for _path, version, payload, checksum in _migration_files(migrations_dir)
     }
-    hooks_by_version = _index_python_migrations(python_migrations)
+    hooks_by_version = _all_python_migrations(
+        migrations_dir,
+        sql_by_version,
+        python_migrations,
+    )
     expected_checksums = _registered_migration_checksums(
         sql_by_version,
         hooks_by_version,
@@ -788,6 +884,7 @@ def apply_migrations(
             if existing is not None:
                 if existing[0] != checksum:
                     raise RuntimeError(f"migration checksum mismatch: {version}")
+                assert_migration_postconditions(conn, version=version)
                 conn.commit()
                 continue
 
@@ -798,13 +895,6 @@ def apply_migrations(
             stamp = datetime.now(timezone.utc).strftime(_CANONICAL_UTC_FORMAT)
             if payload is not None:
                 _execute_sql_payload(conn, payload)
-            baseline = (
-                run_migration_data_hook(
-                    conn, version=version, migration_instant=stamp
-                )
-                if version == PERFORMANCE_MIGRATION
-                else None
-            )
             if python_migration is not None:
                 python_migration.apply(conn, stamp)
             if disable_foreign_keys:
@@ -816,15 +906,6 @@ def apply_migrations(
                         "python migration foreign_key_check failed: "
                         f"{foreign_key_errors!r}"
                     )
-            if (
-                expected_legacy_fbr_rows is not None
-                and (baseline is None or baseline.rows_seen != expected_legacy_fbr_rows)
-            ):
-                raise MigrationInvariantError(
-                    "legacy_fbr_projection_not_one_to_one: "
-                    f"expected={expected_legacy_fbr_rows},"
-                    f"actual={None if baseline is None else baseline.rows_seen}"
-                )
             assert_migration_postconditions(
                 conn,
                 version=version,
