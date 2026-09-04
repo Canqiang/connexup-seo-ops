@@ -1,6 +1,6 @@
 {
   "version": "0002_task_workflows",
-  "hook_revision": 1,
+  "hook_revision": 2,
   "entrypoint": "app.task_migrations:run_task_workflow_migration_hook",
   "legacy_markers": [
     "task_workflow_v1",
@@ -32,6 +32,8 @@
   "guarantees": [
     "preserve_legacy_task_and_execution_ids",
     "preserve_foreign_key_integrity",
+    "reject_duplicate_coreai_run_bindings",
+    "restore_cross_table_coreai_run_uniqueness_triggers",
     "atomically_convert_legacy_registry_and_task_graph",
     "fail_closed_on_unknown_or_contradictory_legacy_registry"
   ]

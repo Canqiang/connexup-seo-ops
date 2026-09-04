@@ -31,7 +31,12 @@ def test_fresh_init_uses_one_checksum_backed_migration_ledger(tmp_path, monkeypa
         "SELECT version, checksum FROM schema_migrations ORDER BY version"
     ).fetchall()
     hook_payload = (MIGRATIONS_DIR / f"{TASK_MIGRATION}.hook.json").read_text()
-    assert json.loads(hook_payload)["hook_revision"] == 1
+    hook_contract = json.loads(hook_payload)
+    assert hook_contract["hook_revision"] == 2
+    assert {
+        "reject_duplicate_coreai_run_bindings",
+        "restore_cross_table_coreai_run_uniqueness_triggers",
+    } <= set(hook_contract["guarantees"])
     expected_checksum = python_migration_checksum(TASK_MIGRATION, contract=hook_payload)
     assert rows == [(TASK_MIGRATION, expected_checksum)]
     migration = task_workflow_python_migrations()[0]

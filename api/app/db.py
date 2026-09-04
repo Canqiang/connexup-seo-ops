@@ -2,7 +2,12 @@ import os
 import sqlite3
 from pathlib import Path
 
-from .task_migrations import migrate_task_workflow_v1, task_table_kind
+from .task_migrations import (
+    assert_task_workflow_migration_postconditions,
+    assert_unique_coreai_run_bindings as _assert_unique_coreai_run_bindings,
+    migrate_task_workflow_v1,
+    task_table_kind,
+)
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "seo-ops-v3.db"
@@ -74,25 +79,6 @@ def _bootstrap_runs_for_legacy_tasks(conn: sqlite3.Connection) -> None:
     )
 
 
-def _assert_unique_coreai_run_bindings(conn: sqlite3.Connection) -> None:
-    sources: list[str] = []
-    for table in ("runs", "task_executions"):
-        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-        if "coreai_run_id" in columns:
-            sources.append(
-                f"SELECT coreai_run_id FROM {table} WHERE coreai_run_id IS NOT NULL"
-            )
-    if not sources:
-        return
-    duplicate = conn.execute(
-        "SELECT coreai_run_id FROM ("
-        + " UNION ALL ".join(sources)
-        + ") GROUP BY coreai_run_id HAVING COUNT(*) > 1 LIMIT 1"
-    ).fetchone()
-    if duplicate is not None:
-        raise RuntimeError("database contains duplicate coreai_run_id bindings")
-
-
 def init_db() -> None:
     Path(db_path()).parent.mkdir(parents=True, exist_ok=True)
     conn = connect()
@@ -111,6 +97,7 @@ def init_db() -> None:
             migrate_task_workflow_v1(conn)
         _migrate(conn)
         conn.commit()
+        assert_task_workflow_migration_postconditions(conn)
         if conn.execute("PRAGMA foreign_key_check").fetchall():
             raise RuntimeError("database initialization left broken foreign keys")
     finally:

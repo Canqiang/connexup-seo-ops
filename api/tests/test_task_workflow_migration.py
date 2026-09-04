@@ -793,6 +793,93 @@ def test_legacy_upgrade_rejects_preexisting_duplicate_coreai_run_bindings(
     conn.close()
 
 
+def test_direct_migration_rejects_cross_table_coreai_run_duplicate_atomically(
+    legacy_task_db,
+):
+    from app import task_migrations
+
+    conn = sqlite3.connect(legacy_task_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(
+        "UPDATE task_executions SET coreai_run_id = 'approved-core-run' WHERE id = 103"
+    )
+    conn.commit()
+    before = _legacy_failure_snapshot(conn)
+
+    with pytest.raises(RuntimeError, match="duplicate coreai_run_id bindings"):
+        task_migrations.migrate_task_workflow_v1(conn)
+
+    assert _legacy_failure_snapshot(conn) == before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name='schema_migrations'"
+    ).fetchone()[0] == 0
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    conn.close()
+
+
+def test_task_postconditions_detect_cross_table_coreai_run_duplicate(
+    legacy_task_db, monkeypatch
+):
+    monkeypatch.setenv("SEO_OPS_DB", str(legacy_task_db))
+    from app import db
+
+    db.init_db()
+    conn = sqlite3.connect(legacy_task_db)
+    for trigger in (
+        "trg_runs_coreai_run_id_unique_insert",
+        "trg_runs_coreai_run_id_unique_update",
+        "trg_task_executions_coreai_run_id_unique_insert",
+        "trg_task_executions_coreai_run_id_unique_update",
+    ):
+        conn.execute(f'DROP TRIGGER "{trigger}"')
+    conn.execute(
+        "UPDATE task_executions SET coreai_run_id = 'approved-core-run' WHERE id = 103"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(db, "_assert_unique_coreai_run_bindings", lambda _conn: None)
+    with pytest.raises(RuntimeError, match="duplicate coreai_run_id bindings"):
+        db.init_db()
+
+
+def test_direct_migration_restores_cross_run_uniqueness_triggers(legacy_task_db):
+    from app import task_migrations
+
+    expected = {
+        "trg_runs_coreai_run_id_unique_insert",
+        "trg_runs_coreai_run_id_unique_update",
+        "trg_task_executions_coreai_run_id_unique_insert",
+        "trg_task_executions_coreai_run_id_unique_update",
+    }
+    conn = sqlite3.connect(legacy_task_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    task_migrations.migrate_task_workflow_v1(conn)
+
+    actual = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    }
+    assert expected <= actual
+    task_migrations.assert_task_workflow_migration_postconditions(conn)
+    with pytest.raises(sqlite3.IntegrityError, match="core-ai run id already bound"):
+        conn.execute(
+            "UPDATE task_executions SET coreai_run_id = 'approved-core-run' "
+            "WHERE id = 103"
+        )
+    conn.rollback()
+    conn.execute("DROP TRIGGER trg_task_executions_coreai_run_id_unique_insert")
+    with pytest.raises(RuntimeError, match="migration triggers are missing"):
+        task_migrations.assert_task_workflow_migration_postconditions(conn)
+    conn.close()
+
+
 def test_orphan_execution_aborts_before_swap_when_foreign_keys_were_disabled(
     tmp_path, monkeypatch
 ):

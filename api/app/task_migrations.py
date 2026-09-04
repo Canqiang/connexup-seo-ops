@@ -27,6 +27,12 @@ _TASK_STATES = (
 )
 _TASK_KEY_RE = re.compile(r"^[a-z0-9_-]{1,80}$")
 _CATEGORIES = {"gbp", "content", "review", "citation", "technical", "other"}
+_COREAI_RUN_UNIQUENESS_TRIGGERS = {
+    "trg_runs_coreai_run_id_unique_insert",
+    "trg_runs_coreai_run_id_unique_update",
+    "trg_task_executions_coreai_run_id_unique_insert",
+    "trg_task_executions_coreai_run_id_unique_update",
+}
 
 
 def _now_iso() -> str:
@@ -65,6 +71,25 @@ def _fetch_dicts(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = (
     cursor = conn.execute(sql, params)
     names = [description[0] for description in cursor.description or ()]
     return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+
+def assert_unique_coreai_run_bindings(conn: sqlite3.Connection) -> None:
+    sources: list[str] = []
+    for table in ("runs", "task_executions"):
+        columns = _table_columns(conn, table) if _table_exists(conn, table) else set()
+        if "coreai_run_id" in columns:
+            sources.append(
+                f"SELECT coreai_run_id FROM {table} WHERE coreai_run_id IS NOT NULL"
+            )
+    if not sources:
+        return
+    duplicate = conn.execute(
+        "SELECT coreai_run_id FROM ("
+        + " UNION ALL ".join(sources)
+        + ") GROUP BY coreai_run_id HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicate is not None:
+        raise RuntimeError("database contains duplicate coreai_run_id bindings")
 
 
 def task_table_kind(conn: sqlite3.Connection) -> str:
@@ -598,6 +623,82 @@ def _create_task_workflow_indexes_and_triggers(conn: sqlite3.Connection) -> None
           SELECT RAISE(ABORT, 'plan revisions cannot be deleted');
         END
         """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_runs_coreai_run_id_unique_insert
+        BEFORE INSERT ON runs
+        WHEN NEW.coreai_run_id IS NOT NULL
+          AND (
+            EXISTS (
+              SELECT 1 FROM runs AS existing
+              WHERE existing.coreai_run_id = NEW.coreai_run_id
+            )
+            OR EXISTS (
+              SELECT 1 FROM task_executions AS existing
+              WHERE existing.coreai_run_id = NEW.coreai_run_id
+            )
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'core-ai run id already bound');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_runs_coreai_run_id_unique_update
+        BEFORE UPDATE OF coreai_run_id ON runs
+        WHEN NEW.coreai_run_id IS NOT NULL
+          AND NEW.coreai_run_id IS NOT OLD.coreai_run_id
+          AND (
+            EXISTS (
+              SELECT 1 FROM runs AS existing
+              WHERE existing.id != OLD.id
+                AND existing.coreai_run_id = NEW.coreai_run_id
+            )
+            OR EXISTS (
+              SELECT 1 FROM task_executions AS existing
+              WHERE existing.coreai_run_id = NEW.coreai_run_id
+            )
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'core-ai run id already bound');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_task_executions_coreai_run_id_unique_insert
+        BEFORE INSERT ON task_executions
+        WHEN NEW.coreai_run_id IS NOT NULL
+          AND (
+            EXISTS (
+              SELECT 1 FROM task_executions AS existing
+              WHERE existing.coreai_run_id = NEW.coreai_run_id
+            )
+            OR EXISTS (
+              SELECT 1 FROM runs AS existing
+              WHERE existing.coreai_run_id = NEW.coreai_run_id
+            )
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'core-ai run id already bound');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_task_executions_coreai_run_id_unique_update
+        BEFORE UPDATE OF coreai_run_id ON task_executions
+        WHEN NEW.coreai_run_id IS NOT NULL
+          AND NEW.coreai_run_id IS NOT OLD.coreai_run_id
+          AND (
+            EXISTS (
+              SELECT 1 FROM task_executions AS existing
+              WHERE existing.id != OLD.id
+                AND existing.coreai_run_id = NEW.coreai_run_id
+            )
+            OR EXISTS (
+              SELECT 1 FROM runs AS existing
+              WHERE existing.coreai_run_id = NEW.coreai_run_id
+            )
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'core-ai run id already bound');
+        END
+        """,
     )
     for statement in statements:
         conn.execute(statement)
@@ -679,6 +780,7 @@ def run_task_workflow_migration_hook(
 
     if not conn.in_transaction:
         raise RuntimeError("task workflow migration hook requires an active transaction")
+    assert_unique_coreai_run_bindings(conn)
     kind = task_table_kind(conn)
     if kind == "missing":
         raise RuntimeError("tasks table is missing; apply the fresh schema before migration")
@@ -693,6 +795,7 @@ def run_task_workflow_migration_hook(
 
 
 def assert_task_workflow_migration_postconditions(conn: sqlite3.Connection) -> None:
+    assert_unique_coreai_run_bindings(conn)
     if task_table_kind(conn) != "formal" or not _task_states_are_current(conn):
         raise RuntimeError("task workflow migration schema is incomplete")
     required_tables = {
@@ -707,6 +810,19 @@ def assert_task_workflow_migration_postconditions(conn: sqlite3.Connection) -> N
     )
     if missing:
         raise RuntimeError(f"task workflow migration tables are missing: {missing!r}")
+    installed_triggers = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    }
+    missing_triggers = sorted(
+        _COREAI_RUN_UNIQUENESS_TRIGGERS - installed_triggers
+    )
+    if missing_triggers:
+        raise RuntimeError(
+            f"task workflow migration triggers are missing: {missing_triggers!r}"
+        )
     foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
     if foreign_key_errors:
         raise RuntimeError(
@@ -760,7 +876,7 @@ def task_workflow_python_migrations():
         raise RuntimeError("invalid task workflow migration contract")
     if manifest.get("version") != TASK_WORKFLOW_MIGRATION:
         raise RuntimeError("task workflow migration contract version mismatch")
-    if manifest.get("hook_revision") != 1:
+    if manifest.get("hook_revision") != 2:
         raise RuntimeError("task workflow migration contract revision mismatch")
     if (
         manifest.get("entrypoint")
@@ -790,6 +906,7 @@ __all__ = [
     "LEGACY_TASK_WORKFLOW_MIGRATION",
     "LEGACY_TASK_WORKFLOW_STATES_MIGRATION",
     "assert_task_workflow_migration_postconditions",
+    "assert_unique_coreai_run_bindings",
     "migrate_task_workflow_v1",
     "migrate_task_workflow_states_v2",
     "run_task_workflow_migration_hook",
