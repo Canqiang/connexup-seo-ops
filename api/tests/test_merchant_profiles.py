@@ -1626,6 +1626,102 @@ def test_gbp_sync_discards_stale_result_when_fbr_binding_changes(client):
     }
 
 
+def test_gbp_sync_discards_stale_result_across_archive_restore_aba(client):
+    from datetime import datetime, timezone
+
+    from app.db import connect
+    from app.merchant_profiles import sync_gbp_profile_once
+    from app.migrations import content_sha256
+
+    merchant = create_merchant(client)
+    client.put(
+        f"/api/merchants/{merchant['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-merchant-123"},
+    )
+    conn = connect()
+
+    class ArchivingClient:
+        def list_locations(self, fbr_merchant_id):
+            assert fbr_merchant_id == "fbr-merchant-123"
+            other = connect()
+            stamp = "2026-09-03T12:01:00.000000Z"
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                other.execute(
+                    "UPDATE merchants SET status='archived' WHERE id=?",
+                    (merchant["id"],),
+                )
+                other.execute(
+                    "INSERT INTO merchant_status_events(merchant_id,status,effective_at,"
+                    "generation,actor,reason,content_sha256,created_at) "
+                    "VALUES (?,'archived',?,2,'test','archive_during_sync',?,?)",
+                    (
+                        merchant["id"],
+                        stamp,
+                        content_sha256(
+                            merchant["id"],
+                            "archived",
+                            stamp,
+                            2,
+                            "test",
+                            "archive_during_sync",
+                        ),
+                        stamp,
+                    ),
+                )
+                restored_at = "2026-09-03T12:02:00.000000Z"
+                other.execute(
+                    "UPDATE merchants SET status='active' WHERE id=?",
+                    (merchant["id"],),
+                )
+                other.execute(
+                    "INSERT INTO merchant_status_events(merchant_id,status,effective_at,"
+                    "generation,actor,reason,content_sha256,created_at) "
+                    "VALUES (?,'active',?,3,'test','restore_during_sync',?,?)",
+                    (
+                        merchant["id"],
+                        restored_at,
+                        content_sha256(
+                            merchant["id"],
+                            "active",
+                            restored_at,
+                            3,
+                            "test",
+                            "restore_during_sync",
+                        ),
+                        restored_at,
+                    ),
+                )
+                other.commit()
+            finally:
+                other.close()
+            return []
+
+    try:
+        completed = sync_gbp_profile_once(
+            conn,
+            ArchivingClient(),
+            merchant["id"],
+            force=True,
+            current_time=datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc),
+        )
+        profile_count = conn.execute(
+            "SELECT count(*) FROM merchant_gbp_profiles WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()[0]
+        state = conn.execute(
+            "SELECT sync_status,last_synced_at FROM merchant_fbr_link_state "
+            "WHERE merchant_id=?",
+            (merchant["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert completed is False
+    assert profile_count == 0
+    assert tuple(state) == ("syncing", None)
+
+
 def test_gbp_sync_does_not_take_over_a_fresh_sync_lease(client):
     from datetime import datetime, timezone
 

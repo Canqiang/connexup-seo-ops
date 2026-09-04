@@ -52,6 +52,8 @@ GBP_SYNC_LEASE_TIMEOUT = timedelta(minutes=15)
 @dataclass(frozen=True)
 class GbpSyncClaim:
     merchant_id: int
+    merchant_status_generation: int
+    merchant_status_content_sha256: str
     fbr_merchant_id: str
     binding_event_id: int
     canonical_fbr_merchant_sha256: str
@@ -775,6 +777,16 @@ def _claim_gbp_sync(
     current_time: datetime,
 ) -> GbpSyncClaim | None:
     fetch_active_merchant(conn, merchant_id)
+    lifecycle = conn.execute(
+        "SELECT status,generation,content_sha256 FROM merchant_status_events "
+        "WHERE merchant_id=? ORDER BY generation DESC LIMIT 1",
+        (merchant_id,),
+    ).fetchone()
+    if lifecycle is None or lifecycle["status"] != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="商户生命周期记录与当前状态不一致",
+        )
     link = conn.execute(
         "SELECT link.*,event.canonical_fbr_merchant_sha256,event.content_sha256 "
         "FROM merchant_fbr_links AS link "
@@ -808,6 +820,15 @@ def _claim_gbp_sync(
         " AND EXISTS (SELECT 1 FROM merchants"
         "             WHERE merchants.id = merchant_fbr_link_state.merchant_id"
         "               AND merchants.status = 'active')"
+        " AND EXISTS (SELECT 1 FROM merchant_status_events AS status_event"
+        "             WHERE status_event.merchant_id = merchant_fbr_link_state.merchant_id"
+        "               AND status_event.status = 'active'"
+        "               AND status_event.generation = ?"
+        "               AND status_event.content_sha256 = ?"
+        "               AND status_event.generation = ("
+        "                 SELECT MAX(current_event.generation)"
+        "                 FROM merchant_status_events AS current_event"
+        "                 WHERE current_event.merchant_id = merchant_fbr_link_state.merchant_id))"
         " RETURNING merchant_id",
         (
             lease_started_at,
@@ -818,6 +839,8 @@ def _claim_gbp_sync(
             link["fbr_merchant_id"],
             link["canonical_fbr_merchant_sha256"],
             link["content_sha256"],
+            lifecycle["generation"],
+            lifecycle["content_sha256"],
         ),
     ).fetchone()
     conn.commit()
@@ -825,6 +848,8 @@ def _claim_gbp_sync(
         return None
     return GbpSyncClaim(
         merchant_id=merchant_id,
+        merchant_status_generation=int(lifecycle["generation"]),
+        merchant_status_content_sha256=lifecycle["content_sha256"],
         fbr_merchant_id=link["fbr_merchant_id"],
         binding_event_id=link["binding_event_id"],
         canonical_fbr_merchant_sha256=link["canonical_fbr_merchant_sha256"],
@@ -844,6 +869,18 @@ def _claim_where_sql() -> str:
         "               AND event.canonical_fbr_merchant_sha256 = ?"
         "               AND event.content_sha256 = ?"
         "               AND event.valid_to IS NULL)"
+        " AND EXISTS (SELECT 1 FROM merchants"
+        "             WHERE merchants.id = merchant_fbr_link_state.merchant_id"
+        "               AND merchants.status = 'active')"
+        " AND EXISTS (SELECT 1 FROM merchant_status_events AS status_event"
+        "             WHERE status_event.merchant_id = merchant_fbr_link_state.merchant_id"
+        "               AND status_event.status = 'active'"
+        "               AND status_event.generation = ?"
+        "               AND status_event.content_sha256 = ?"
+        "               AND status_event.generation = ("
+        "                 SELECT MAX(current_event.generation)"
+        "                 FROM merchant_status_events AS current_event"
+        "                 WHERE current_event.merchant_id = merchant_fbr_link_state.merchant_id))"
     )
 
 
@@ -855,6 +892,8 @@ def _claim_where_params(claim: GbpSyncClaim) -> tuple[Any, ...]:
         claim.fbr_merchant_id,
         claim.canonical_fbr_merchant_sha256,
         claim.binding_content_sha256,
+        claim.merchant_status_generation,
+        claim.merchant_status_content_sha256,
     )
 
 

@@ -7,13 +7,16 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 MIGRATION_NAME = re.compile(r"^(?P<version>\d{4}_[a-z0-9_]+)\.sql$")
+MIGRATION_VERSION = re.compile(r"^\d{4}_[a-z0-9_]+$")
 PERFORMANCE_MIGRATION = "0001_performance_history"
 _CANONICAL_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+_PYTHON_MIGRATION_CHECKSUM_PREFIX = "seo-ops-python-migration-v1:"
+_COMBINED_MIGRATION_CHECKSUM_PREFIX = "seo-ops-combined-migration-v1:"
 
 
 class MigrationInvariantError(RuntimeError):
@@ -25,6 +28,18 @@ class LegacyFbrBaselineResult:
     rows_seen: int
     events_inserted: int
     states_inserted: int
+
+
+@dataclass(frozen=True)
+class PythonMigration:
+    """An explicitly registered, transaction-owned application migration."""
+
+    version: str
+    checksum: str
+    apply: Callable[[sqlite3.Connection, str], None]
+    foreign_keys_off: bool = False
+    legacy_ledger_names: tuple[str, ...] = ()
+    validate_legacy_adoption: Callable[[sqlite3.Connection], None] | None = None
 
 
 def _sha256_text(value: str) -> str:
@@ -72,6 +87,12 @@ def _fbr_binding_close_sha256(
 
 def _content_sha256(*parts: Any) -> str:
     return _canonical_hash(list(parts))
+
+
+def content_sha256(*parts: Any) -> str:
+    """Return the canonical digest used by immutable application events."""
+
+    return _content_sha256(*parts)
 
 
 def _is_canonical_utc_instant(value: Any) -> int:
@@ -145,21 +166,226 @@ def _execute_sql_payload(conn: sqlite3.Connection, payload: bytes) -> None:
         raise sqlite3.OperationalError("incomplete migration SQL statement")
 
 
+def execute_sql_payload(conn: sqlite3.Connection, payload: bytes) -> None:
+    """Execute complete SQL statements without ``executescript`` auto-commits."""
+
+    _execute_sql_payload(conn, payload)
+
+
+def python_migration_checksum(version: str, *, contract: str) -> str:
+    """Hash a frozen migration contract rather than an evolving runtime module."""
+
+    if MIGRATION_VERSION.fullmatch(version) is None:
+        raise ValueError("invalid Python migration version")
+    if not isinstance(contract, str) or not contract.strip():
+        raise ValueError("Python migration contract is required")
+    return _sha256_text(
+        f"{_PYTHON_MIGRATION_CHECKSUM_PREFIX}{version}:{contract.strip()}"
+    )
+
+
+def combined_migration_checksum(
+    version: str, *, sql_checksum: str, python_checksum: str
+) -> str:
+    """Bind one SQL payload and one frozen Python-hook contract together."""
+
+    if MIGRATION_VERSION.fullmatch(version) is None:
+        raise ValueError("invalid combined migration version")
+    for label, checksum in (
+        ("SQL", sql_checksum),
+        ("Python", python_checksum),
+    ):
+        if re.fullmatch(r"[a-f0-9]{64}", checksum) is None:
+            raise ValueError(f"invalid {label} migration checksum: {version}")
+    return _sha256_text(
+        f"{_COMBINED_MIGRATION_CHECKSUM_PREFIX}"
+        f"{version}:{sql_checksum}:{python_checksum}"
+    )
+
+
+def _migration_ledger_columns(conn: sqlite3.Connection) -> set[str]:
+    if not table_exists(conn, "schema_migrations"):
+        return set()
+    return {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)")
+    }
+
+
+def ensure_migration_ledger(
+    conn: sqlite3.Connection,
+    *,
+    legacy_adoptions: dict[
+        frozenset[str],
+        tuple[str, str, Callable[[sqlite3.Connection], None]],
+    ]
+    | None = None,
+) -> None:
+    """Create or atomically upgrade the sole migration registry.
+
+    Earlier Task workflow builds used ``(name, applied_at)``.  A non-empty
+    legacy ledger can only be adopted through an explicitly registered exact
+    marker-set contract.  Partial and unknown sets fail closed.
+    """
+
+    columns = _migration_ledger_columns(conn)
+    if not columns:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+        )
+        return
+    if columns == {"version", "checksum", "applied_at"}:
+        return
+    if columns != {"name", "applied_at"}:
+        raise MigrationInvariantError("unrecognized schema_migrations layout")
+
+    legacy_rows = conn.execute(
+        "SELECT name,applied_at FROM schema_migrations ORDER BY name"
+    ).fetchall()
+    adoption: tuple[
+        str,
+        str,
+        Callable[[sqlite3.Connection], None],
+    ] | None = None
+    if legacy_rows:
+        legacy_names = frozenset(str(row[0]) for row in legacy_rows)
+        adoption = (legacy_adoptions or {}).get(legacy_names)
+        if adoption is None:
+            raise MigrationInvariantError(
+                "unrecognized legacy migration marker set: "
+                f"{','.join(sorted(legacy_names))}"
+            )
+        adoption[2](conn)
+    conn.execute("ALTER TABLE schema_migrations RENAME TO schema_migrations_legacy")
+    conn.execute(
+        "CREATE TABLE schema_migrations ("
+        "version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    )
+    if adoption is not None:
+        version, checksum, _validator = adoption
+        applied_at = max(str(row[1]) for row in legacy_rows)
+        conn.execute(
+            "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES (?,?,?)",
+            (version, checksum, applied_at),
+        )
+    conn.execute("DROP TABLE schema_migrations_legacy")
+
+
+def _index_python_migrations(
+    python_migrations: tuple[PythonMigration, ...],
+) -> dict[str, PythonMigration]:
+    hooks_by_version: dict[str, PythonMigration] = {}
+    for migration in python_migrations:
+        if MIGRATION_VERSION.fullmatch(migration.version) is None:
+            raise ValueError(f"invalid Python migration version: {migration.version}")
+        if migration.version in hooks_by_version:
+            raise MigrationInvariantError(
+                f"duplicate migration version: {migration.version}"
+            )
+        if re.fullmatch(r"[a-f0-9]{64}", migration.checksum) is None:
+            raise ValueError(f"invalid Python migration checksum: {migration.version}")
+        if any(
+            not isinstance(name, str) or not name
+            for name in migration.legacy_ledger_names
+        ) or len(set(migration.legacy_ledger_names)) != len(
+            migration.legacy_ledger_names
+        ):
+            raise ValueError(
+                f"invalid legacy migration marker contract: {migration.version}"
+            )
+        if (
+            migration.legacy_ledger_names
+            and migration.validate_legacy_adoption is None
+        ):
+            raise ValueError(
+                "legacy migration marker contract requires a validator: "
+                f"{migration.version}"
+            )
+        if (
+            not migration.legacy_ledger_names
+            and migration.validate_legacy_adoption is not None
+        ):
+            raise ValueError(
+                "legacy migration validator requires marker names: "
+                f"{migration.version}"
+            )
+        hooks_by_version[migration.version] = migration
+    return hooks_by_version
+
+
+def _registered_migration_checksums(
+    sql_by_version: dict[str, tuple[bytes, str]],
+    hooks_by_version: dict[str, PythonMigration],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for version in sorted({*sql_by_version, *hooks_by_version}):
+        sql_migration = sql_by_version.get(version)
+        python_migration = hooks_by_version.get(version)
+        if sql_migration is not None and python_migration is not None:
+            result[version] = combined_migration_checksum(
+                version,
+                sql_checksum=sql_migration[1],
+                python_checksum=python_migration.checksum,
+            )
+        elif sql_migration is not None:
+            result[version] = sql_migration[1]
+        elif python_migration is not None:
+            result[version] = python_migration.checksum
+        else:  # pragma: no cover - versions comes from these two registries.
+            raise AssertionError(f"migration registry lost version: {version}")
+    return result
+
+
+def migration_registry_checksums(
+    migrations_dir: Path = MIGRATIONS_DIR,
+    *,
+    python_migrations: tuple[PythonMigration, ...] = (),
+) -> dict[str, str]:
+    """Return the final SQL, Python, and combined checksums for one registry."""
+
+    sql_by_version = {
+        version: (payload, checksum)
+        for _path, version, payload, checksum in _migration_files(migrations_dir)
+    }
+    return _registered_migration_checksums(
+        sql_by_version,
+        _index_python_migrations(python_migrations),
+    )
+
+
 def assert_migration_registry_checksums(
-    conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR
+    conn: sqlite3.Connection,
+    migrations_dir: Path = MIGRATIONS_DIR,
+    *,
+    expected_checksums: dict[str, str] | None = None,
+    python_migrations: tuple[PythonMigration, ...] = (),
 ) -> None:
     if not table_exists(conn, "schema_migrations"):
         return
-    expected = {
-        version: checksum
-        for _, version, _, checksum in _migration_files(migrations_dir)
-    }
+    if expected_checksums is not None and python_migrations:
+        raise ValueError(
+            "pass expected_checksums or python_migrations, not both"
+        )
+    expected = (
+        expected_checksums
+        if expected_checksums is not None
+        else migration_registry_checksums(
+            migrations_dir,
+            python_migrations=python_migrations,
+        )
+    )
+    columns = _migration_ledger_columns(conn)
+    if columns != {"version", "checksum", "applied_at"}:
+        raise MigrationInvariantError("unrecognized schema_migrations layout")
     for version, checksum in conn.execute(
         "SELECT version, checksum FROM schema_migrations ORDER BY version"
     ):
-        if version not in expected:
-            raise MigrationInvariantError(f"unknown migration registry row: {version}")
-        if checksum != expected[version]:
+        expected_checksum = expected.get(version)
+        if expected_checksum is None:
+            raise MigrationInvariantError(
+                f"unknown migration registry row: {version}"
+            )
+        if checksum != expected_checksum:
             raise RuntimeError(f"migration checksum mismatch: {version}")
 
 
@@ -477,40 +703,88 @@ def assert_migration_postconditions(
 
 
 def apply_migrations(
-    conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR
+    conn: sqlite3.Connection,
+    migrations_dir: Path = MIGRATIONS_DIR,
+    *,
+    python_migrations: tuple[PythonMigration, ...] = (),
 ) -> list[str]:
     if conn.in_transaction:
         raise MigrationInvariantError("migration_connection_has_active_transaction")
     register_sqlite_invariants(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     applied: list[str] = []
-    migrations = _migration_files(migrations_dir)
-    if not migrations:
+    sql_by_version = {
+        version: (payload, checksum)
+        for _path, version, payload, checksum in _migration_files(migrations_dir)
+    }
+    hooks_by_version = _index_python_migrations(python_migrations)
+    expected_checksums = _registered_migration_checksums(
+        sql_by_version,
+        hooks_by_version,
+    )
+    versions = sorted(expected_checksums)
+
+    legacy_adoptions: dict[
+        frozenset[str],
+        tuple[str, str, Callable[[sqlite3.Connection], None]],
+    ] = {}
+    for migration in hooks_by_version.values():
+        if not migration.legacy_ledger_names:
+            continue
+        validator = migration.validate_legacy_adoption
+        if validator is None:  # Guarded while the hook registry is validated.
+            raise AssertionError(
+                f"migration adoption validator was lost: {migration.version}"
+            )
+        marker_set = frozenset(migration.legacy_ledger_names)
+        if marker_set in legacy_adoptions:
+            raise MigrationInvariantError(
+                "duplicate legacy migration marker contract: "
+                f"{','.join(sorted(marker_set))}"
+            )
+        legacy_adoptions[marker_set] = (
+            migration.version,
+            expected_checksums[migration.version],
+            validator,
+        )
+
+    if not versions:
         try:
             conn.execute("BEGIN IMMEDIATE")
+            ensure_migration_ledger(conn, legacy_adoptions=legacy_adoptions)
             _assert_existing_source_scope_binding_generations_valid(conn)
-            assert_migration_registry_checksums(conn, migrations_dir)
+            assert_migration_registry_checksums(
+                conn, migrations_dir, expected_checksums=expected_checksums
+            )
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         return applied
 
-    for _path, version, payload, checksum in migrations:
+    for version in versions:
+        sql_migration = sql_by_version.get(version)
+        python_migration = hooks_by_version.get(version)
+        payload = None if sql_migration is None else sql_migration[0]
+        checksum = expected_checksums[version]
+        disable_foreign_keys = bool(
+            python_migration is not None and python_migration.foreign_keys_off
+        )
+        if disable_foreign_keys:
+            conn.execute("PRAGMA foreign_keys = OFF")
         try:
             # The ledger and every preflight are deliberately read only after this
             # writer lock. A waiter must observe the winner's committed registry row.
             conn.execute("BEGIN IMMEDIATE")
+            ensure_migration_ledger(conn, legacy_adoptions=legacy_adoptions)
             _assert_existing_source_scope_binding_generations_valid(conn)
-            assert_migration_registry_checksums(conn, migrations_dir)
-            existing = (
-                conn.execute(
-                    "SELECT checksum FROM schema_migrations WHERE version = ?",
-                    (version,),
-                ).fetchone()
-                if table_exists(conn, "schema_migrations")
-                else None
+            assert_migration_registry_checksums(
+                conn, migrations_dir, expected_checksums=expected_checksums
             )
+            existing = conn.execute(
+                "SELECT checksum FROM schema_migrations WHERE version = ?",
+                (version,),
+            ).fetchone()
             if existing is not None:
                 if existing[0] != checksum:
                     raise RuntimeError(f"migration checksum mismatch: {version}")
@@ -522,14 +796,26 @@ def apply_migrations(
                 _ensure_legacy_fbr_table(conn)
                 expected_legacy_fbr_rows = _assert_legacy_fbr_links_migratable(conn)
             stamp = datetime.now(timezone.utc).strftime(_CANONICAL_UTC_FORMAT)
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS schema_migrations ("
-                "version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+            if payload is not None:
+                _execute_sql_payload(conn, payload)
+            baseline = (
+                run_migration_data_hook(
+                    conn, version=version, migration_instant=stamp
+                )
+                if version == PERFORMANCE_MIGRATION
+                else None
             )
-            _execute_sql_payload(conn, payload)
-            baseline = run_migration_data_hook(
-                conn, version=version, migration_instant=stamp
-            )
+            if python_migration is not None:
+                python_migration.apply(conn, stamp)
+            if disable_foreign_keys:
+                foreign_key_errors = conn.execute(
+                    "PRAGMA foreign_key_check"
+                ).fetchall()
+                if foreign_key_errors:
+                    raise MigrationInvariantError(
+                        "python migration foreign_key_check failed: "
+                        f"{foreign_key_errors!r}"
+                    )
             if (
                 expected_legacy_fbr_rows is not None
                 and (baseline is None or baseline.rows_seen != expected_legacy_fbr_rows)
@@ -552,5 +838,8 @@ def apply_migrations(
         except Exception:
             conn.rollback()
             raise
+        finally:
+            if disable_foreign_keys:
+                conn.execute("PRAGMA foreign_keys = ON")
         applied.append(version)
     return applied

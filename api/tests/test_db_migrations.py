@@ -691,12 +691,16 @@ def test_two_fresh_init_db_calls_share_locked_legacy_fbr_bootstrap(
     monkeypatch.setenv("SEO_OPS_DB", str(database))
     db_api = importlib.import_module("app.db")
     original_preflight = db_api._legacy_fbr_bootstrap_required
-    barrier = threading.Barrier(2)
+    observed_transactions = []
+    observations_lock = threading.Lock()
+    observed_connections: set[int] = set()
 
-    def synchronized_preflight(conn):
-        result = original_preflight(conn)
-        if result:
-            barrier.wait(timeout=2)
+    def synchronized_preflight(conn, **kwargs):
+        with observations_lock:
+            if id(conn) not in observed_connections:
+                observed_connections.add(id(conn))
+                observed_transactions.append(conn.in_transaction)
+        result = original_preflight(conn, **kwargs)
         return result
 
     monkeypatch.setattr(
@@ -707,10 +711,496 @@ def test_two_fresh_init_db_calls_share_locked_legacy_fbr_bootstrap(
         results = list(executor.map(lambda _: db_api.init_db(), range(2)))
 
     assert results == [None, None]
+    assert observed_transactions and all(observed_transactions)
     assert sqlite_object_type(database, "merchant_fbr_links") == "view"
     assert migration_versions(database) == ["0001_performance_history"]
     assert performance_table_counts(database)["merchant_fbr_binding_events"] == 0
     assert integrity_results(database) == ("ok", [])
+
+
+def test_two_legacy_init_db_calls_serialize_column_bridge(tmp_path, monkeypatch):
+    database = tmp_path / "legacy-column-bridge-race.db"
+    conn = sqlite3.connect(database)
+    conn.executescript(
+        """
+        CREATE TABLE merchants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          notes TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+          title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'todo',
+          created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    db_api = importlib.import_module("app.db")
+    original_migrate = db_api._migrate
+    observed_transactions = []
+    observations_lock = threading.Lock()
+
+    def synchronized_migrate(connection):
+        with observations_lock:
+            observed_transactions.append(connection.in_transaction)
+        original_migrate(connection)
+
+    monkeypatch.setattr(db_api, "_migrate", synchronized_migrate)
+
+    def initialize(_index):
+        return db_api.init_db()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(initialize, range(2)))
+
+    assert results == [None, None]
+    assert observed_transactions and all(observed_transactions)
+    assert migration_versions(database) == ["0001_performance_history"]
+    assert integrity_results(database) == ("ok", [])
+
+
+def test_exact_legacy_task_marker_set_folds_into_registered_combined_migration(
+    tmp_path,
+):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "task-migrations"
+    migrations_dir.mkdir()
+    sql_path = migrations_dir / "0002_task_workflows.sql"
+    sql_path.write_text(
+        "CREATE TABLE task_migration_must_not_replay(id INTEGER PRIMARY KEY);\n"
+    )
+    database = tmp_path / "legacy-ledger.db"
+    conn = sqlite3.connect(database)
+    conn.execute(
+        "CREATE TABLE schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO schema_migrations(name,applied_at) VALUES (?,?)",
+        [
+            ("task_workflow_v1", "2026-09-02T00:00:00+00:00"),
+            ("task_workflow_states_v2", "2026-09-02T00:01:00+00:00"),
+        ],
+    )
+    conn.commit()
+    hook_calls = []
+    validator_calls = []
+    hook_checksum = migrations.python_migration_checksum(
+        "0002_task_workflows", contract="task-workflows-schema-v2"
+    )
+
+    def apply_hook(_connection, _migration_instant):
+        hook_calls.append(True)
+
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=hook_checksum,
+        apply=apply_hook,
+        legacy_ledger_names=("task_workflow_v1", "task_workflow_states_v2"),
+        validate_legacy_adoption=lambda connection: validator_calls.append(
+            connection.in_transaction
+        ),
+    )
+
+    assert migrations.apply_migrations(
+        conn,
+        migrations_dir,
+        python_migrations=(migration,),
+    ) == []
+
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(schema_migrations)")
+    }
+    rows = conn.execute(
+        "SELECT version,checksum,applied_at FROM schema_migrations ORDER BY version"
+    ).fetchall()
+    conn.close()
+    assert columns == {"version", "checksum", "applied_at"}
+    assert rows == [
+        (
+            "0002_task_workflows",
+            migrations.combined_migration_checksum(
+                "0002_task_workflows",
+                sql_checksum=hashlib.sha256(sql_path.read_bytes()).hexdigest(),
+                python_checksum=hook_checksum,
+            ),
+            "2026-09-02T00:01:00+00:00",
+        )
+    ]
+    assert hook_calls == []
+    assert validator_calls == [True]
+    assert not table_exists_at_path(database, "task_migration_must_not_replay")
+
+
+@pytest.mark.parametrize(
+    "legacy_names",
+    [
+        ("task_workflow_v1",),
+        ("task_workflow_v1", "task_workflow_states_v2", "unknown_v3"),
+    ],
+)
+def test_partial_or_unknown_legacy_marker_set_fails_closed(
+    tmp_path, legacy_names
+):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "task-migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "0002_task_workflows.sql").write_text(
+        "CREATE TABLE task_migration_must_not_run(id INTEGER PRIMARY KEY);\n"
+    )
+    conn = sqlite3.connect(tmp_path / "legacy-ledger-invalid.db")
+    conn.execute(
+        "CREATE TABLE schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO schema_migrations(name,applied_at) VALUES (?,?)",
+        [(name, f"2026-09-02T00:0{index}:00+00:00") for index, name in enumerate(legacy_names)],
+    )
+    conn.commit()
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=migrations.python_migration_checksum(
+            "0002_task_workflows", contract="task-workflows-schema-v2"
+        ),
+        apply=lambda *_args: None,
+        legacy_ledger_names=("task_workflow_v1", "task_workflow_states_v2"),
+        validate_legacy_adoption=lambda _connection: None,
+    )
+
+    with pytest.raises(
+        migrations.MigrationInvariantError, match="legacy migration marker set"
+    ):
+        migrations.apply_migrations(
+            conn,
+            migrations_dir,
+            python_migrations=(migration,),
+        )
+
+    assert {
+        row[1] for row in conn.execute("PRAGMA table_info(schema_migrations)")
+    } == {"name", "applied_at"}
+    assert [
+        row[0]
+        for row in conn.execute("SELECT name FROM schema_migrations ORDER BY name")
+    ] == sorted(legacy_names)
+    assert "task_migration_must_not_run" not in table_names(conn)
+    conn.close()
+
+
+def test_legacy_adoption_validation_failure_preserves_name_ledger(tmp_path):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "task-migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "0002_task_workflows.sql").write_text(
+        "CREATE TABLE task_migration_must_not_run(id INTEGER PRIMARY KEY);\n"
+    )
+    conn = sqlite3.connect(tmp_path / "legacy-ledger-invalid-schema.db")
+    conn.execute(
+        "CREATE TABLE schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO schema_migrations(name,applied_at) VALUES (?,?)",
+        [
+            ("task_workflow_v1", "2026-09-02T00:00:00+00:00"),
+            ("task_workflow_states_v2", "2026-09-02T00:01:00+00:00"),
+        ],
+    )
+    conn.commit()
+
+    def reject_interim_schema(_connection):
+        raise migrations.MigrationInvariantError("legacy task schema is not final")
+
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=migrations.python_migration_checksum(
+            "0002_task_workflows", contract="task-workflows-schema-v2"
+        ),
+        apply=lambda *_args: None,
+        legacy_ledger_names=("task_workflow_v1", "task_workflow_states_v2"),
+        validate_legacy_adoption=reject_interim_schema,
+    )
+
+    with pytest.raises(
+        migrations.MigrationInvariantError, match="legacy task schema is not final"
+    ):
+        migrations.apply_migrations(
+            conn,
+            migrations_dir,
+            python_migrations=(migration,),
+        )
+
+    assert {
+        row[1] for row in conn.execute("PRAGMA table_info(schema_migrations)")
+    } == {"name", "applied_at"}
+    assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 2
+    assert "task_migration_must_not_run" not in table_names(conn)
+    conn.close()
+
+
+def test_shared_runner_combines_sql_and_python_hook_in_one_migration(tmp_path):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "combined-migrations"
+    migrations_dir.mkdir()
+    sql_path = migrations_dir / "0002_task_workflows.sql"
+    sql_path.write_text(
+        "CREATE TABLE task_workflow_marker(id INTEGER PRIMARY KEY, source TEXT);\n"
+    )
+    conn = sqlite3.connect(tmp_path / "combined-migration.db")
+    hook_calls = []
+
+    def apply_hook(connection, migration_instant):
+        hook_calls.append((connection.in_transaction, migration_instant))
+        assert table_exists(connection, "task_workflow_marker")
+        connection.execute(
+            "INSERT INTO task_workflow_marker(id,source) VALUES (1,'python-hook')"
+        )
+
+    hook_checksum = migrations.python_migration_checksum(
+        "0002_task_workflows", contract="task-workflows-schema-v2"
+    )
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=hook_checksum,
+        apply=apply_hook,
+    )
+
+    assert migrations.apply_migrations(
+        conn,
+        migrations_dir,
+        python_migrations=(migration,),
+    ) == ["0002_task_workflows"]
+    assert migrations.apply_migrations(
+        conn,
+        migrations_dir,
+        python_migrations=(migration,),
+    ) == []
+    persisted_checksum = conn.execute(
+        "SELECT checksum FROM schema_migrations WHERE version='0002_task_workflows'"
+    ).fetchone()[0]
+
+    assert persisted_checksum == migrations.combined_migration_checksum(
+        "0002_task_workflows",
+        sql_checksum=hashlib.sha256(sql_path.read_bytes()).hexdigest(),
+        python_checksum=hook_checksum,
+    )
+    assert conn.execute(
+        "SELECT id,source FROM task_workflow_marker"
+    ).fetchall() == [(1, "python-hook")]
+    assert len(hook_calls) == 1
+    assert hook_calls[0][0] is True
+    conn.close()
+
+
+def test_empty_legacy_name_ledger_becomes_canonical_then_runs_migration(tmp_path):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "empty-legacy-ledger-migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "0002_task_workflows.sql").write_text(
+        "CREATE TABLE task_workflow_marker(id INTEGER PRIMARY KEY);\n"
+    )
+    conn = sqlite3.connect(tmp_path / "empty-legacy-ledger.db")
+    conn.execute(
+        "CREATE TABLE schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.commit()
+
+    assert migrations.apply_migrations(conn, migrations_dir) == [
+        "0002_task_workflows"
+    ]
+    assert {
+        row[1] for row in conn.execute("PRAGMA table_info(schema_migrations)")
+    } == {"version", "checksum", "applied_at"}
+    assert migration_versions_from_conn(conn) == ["0002_task_workflows"]
+    assert "task_workflow_marker" in table_names(conn)
+    conn.close()
+
+
+def test_combined_sql_and_python_failure_rolls_back_both_parts(tmp_path):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "combined-failure-migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "0002_task_workflows.sql").write_text(
+        "CREATE TABLE partial_combined_task_workflow(id INTEGER PRIMARY KEY);\n"
+    )
+    conn = sqlite3.connect(tmp_path / "combined-failure.db")
+
+    def failing_hook(connection, _migration_instant):
+        assert table_exists(connection, "partial_combined_task_workflow")
+        raise RuntimeError("combined hook failed")
+
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=migrations.python_migration_checksum(
+            "0002_task_workflows", contract="task-workflows-schema-v2"
+        ),
+        apply=failing_hook,
+    )
+
+    with pytest.raises(RuntimeError, match="combined hook failed"):
+        migrations.apply_migrations(
+            conn,
+            migrations_dir,
+            python_migrations=(migration,),
+        )
+
+    assert "partial_combined_task_workflow" not in table_names(conn)
+    assert migration_versions_from_conn(conn) == []
+    conn.close()
+
+
+def test_shared_runner_executes_python_migration_once_under_its_transaction(
+    tmp_path,
+):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "empty-migrations"
+    migrations_dir.mkdir()
+    database = tmp_path / "python-migration.db"
+    conn = sqlite3.connect(database)
+    calls = []
+
+    def apply_hook(connection, migration_instant):
+        calls.append((connection.in_transaction, migration_instant))
+        connection.execute("CREATE TABLE task_workflow_marker(id INTEGER PRIMARY KEY)")
+
+    version = "0002_task_workflows"
+    checksum = migrations.python_migration_checksum(
+        version, contract="task-workflows-schema-v2"
+    )
+    migration = migrations.PythonMigration(
+        version=version,
+        checksum=checksum,
+        apply=apply_hook,
+    )
+
+    assert migrations.apply_migrations(
+        conn,
+        migrations_dir,
+        python_migrations=(migration,),
+    ) == [version]
+    assert migrations.apply_migrations(
+        conn,
+        migrations_dir,
+        python_migrations=(migration,),
+    ) == []
+    row = conn.execute(
+        "SELECT checksum FROM schema_migrations WHERE version=?", (version,)
+    ).fetchone()
+    conn.close()
+
+    assert row == (checksum,)
+    assert len(calls) == 1
+    assert calls[0][0] is True
+    assert len(calls[0][1]) == 27 and calls[0][1].endswith("Z")
+
+
+def test_init_db_threads_python_registry_through_pre_and_post_checks(
+    tmp_path, monkeypatch
+):
+    migrations = migrations_api()
+    database = tmp_path / "init-with-python-registry.db"
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    calls = []
+
+    def apply_hook(connection, _migration_instant):
+        calls.append(connection.in_transaction)
+        connection.execute(
+            "CREATE TABLE task_workflow_registry_marker(id INTEGER PRIMARY KEY)"
+        )
+
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=migrations.python_migration_checksum(
+            "0002_task_workflows", contract="task-workflows-schema-v2"
+        ),
+        apply=apply_hook,
+    )
+
+    init_db(python_migrations=(migration,))
+    init_db(python_migrations=(migration,))
+
+    assert calls == [True]
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0002_task_workflows",
+    ]
+    assert table_exists_at_path(database, "task_workflow_registry_marker")
+
+
+def test_shared_python_migration_failure_rolls_back_hook_and_ledger(tmp_path):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "empty-migrations"
+    migrations_dir.mkdir()
+    conn = sqlite3.connect(tmp_path / "python-migration-failure.db")
+
+    def failing_hook(connection, _migration_instant):
+        connection.execute("CREATE TABLE partial_task_workflow(id INTEGER PRIMARY KEY)")
+        raise RuntimeError("task workflow hook failed")
+
+    version = "0002_task_workflows"
+    migration = migrations.PythonMigration(
+        version=version,
+        checksum=migrations.python_migration_checksum(
+            version, contract="task-workflows-schema-v2"
+        ),
+        apply=failing_hook,
+    )
+
+    with pytest.raises(RuntimeError, match="task workflow hook failed"):
+        migrations.apply_migrations(
+            conn,
+            migrations_dir,
+            python_migrations=(migration,),
+        )
+
+    assert "partial_task_workflow" not in table_names(conn)
+    assert migration_versions_from_conn(conn) == []
+    conn.close()
+
+
+def test_python_migration_fk_off_mode_audits_before_commit_and_restores_fk(tmp_path):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "empty-migrations"
+    migrations_dir.mkdir()
+    conn = sqlite3.connect(tmp_path / "python-migration-fk.db")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(
+        "CREATE TABLE parent(id INTEGER PRIMARY KEY);"
+        "CREATE TABLE child(parent_id INTEGER REFERENCES parent(id));"
+    )
+
+    def corrupting_hook(connection, _migration_instant):
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+        connection.execute("INSERT INTO child(parent_id) VALUES (999)")
+
+    version = "0002_task_workflows"
+    migration = migrations.PythonMigration(
+        version=version,
+        checksum=migrations.python_migration_checksum(
+            version, contract="task-workflows-schema-v2"
+        ),
+        apply=corrupting_hook,
+        foreign_keys_off=True,
+    )
+
+    with pytest.raises(
+        migrations.MigrationInvariantError, match="foreign_key_check"
+    ):
+        migrations.apply_migrations(
+            conn,
+            migrations_dir,
+            python_migrations=(migration,),
+        )
+
+    assert conn.execute("SELECT count(*) FROM child").fetchone()[0] == 0
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert migration_versions_from_conn(conn) == []
+    conn.close()
 
 
 def test_migration_preflight_fails_closed_on_corrupt_location_binding_generations(tmp_path):
