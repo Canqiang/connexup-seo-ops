@@ -13,8 +13,8 @@
 ## Global Constraints
 
 - Work only in the isolated `codex/audit-report-workspace` worktree named in the roadmap.
-- Phase 1 has a hard dependency on the reviewed, full-suite-green Performance History foundation and its `0001_performance_history.sql`. If that foundation is absent, partially applied, or its postconditions fail, stop; do not create a parallel migration ledger or second location model.
-- Reuse `schema_migrations(version, checksum, applied_at)` and allocate Audit schema changes only after `0001_performance_history.sql`. Never introduce a second `sha256` ledger column or another `merchant_locations`/alias/source-binding table.
+- Phase 1 has a hard dependency on the reviewed, full-suite-green Performance History foundation and Task Workflow migration hook. If `0001_performance_history.sql` or `0002_task_workflows` is absent, partially applied, or its postconditions fail, stop; do not create a parallel migration ledger or second location model.
+- Reuse `schema_migrations(version, checksum, applied_at)` and allocate Audit schema changes only after `0001_performance_history.sql` and `0002_task_workflows`. Never introduce a second `sha256` ledger column or another `merchant_locations`/alias/source-binding table.
 - Do not change `audit_snapshots.py` or its v1 contract. Native v2 code lives in new modules.
 - Existing `merchant_gbp_profiles` rows are replaceable snapshots; never reference their integer IDs from a stable Audit subject.
 - Exact GBP location ID is the initial binding authority. Preserve Place ID observations as versioned aliases/evidence; do not merge identities by display name or address.
@@ -45,7 +45,7 @@ def apply_migrations(conn: sqlite3.Connection,
 
 Reuse the Performance foundation's `schema_migrations(version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)`. A file whose recorded checksum differs from its current bytes raises `RuntimeError("migration checksum mismatch: <version>")` before later migrations run.
 
-- [ ] First run the Performance migration tests and assert `0001_performance_history.sql`, the `checksum` ledger, all postconditions, and both blank/legacy upgrades are present. Do not proceed by recreating these primitives in Audit code.
+- [ ] First run the Performance and Task Workflow migration tests and assert `0001_performance_history.sql`, `0002_task_workflows`, the `checksum` ledger, all postconditions, and both blank/legacy upgrades are present. Do not proceed by recreating these primitives in Audit code.
 - [ ] Extend the existing tests with Audit-numbered temporary samples, filename ordering, no-op re-entry, checksum mismatch, and two connections that both end with one ledger row per migration and no partial schema.
 - [ ] Run the focused tests and confirm the missing runner/schema failures:
 
@@ -200,14 +200,14 @@ def build_canonical_report(*, producer: AuditProducerResultV2,
 
 **Files:**
 
-- Create: `api/migrations/0002_audit_core.sql`
+- Create: `api/migrations/0003_audit_core.sql`
 - Create: `api/app/audit_repository.py`
 - Create: `api/tests/test_audit_schema.py`
 - Create: `api/tests/test_audit_repository.py`
 
 **Schema scope:**
 
-Create all fields and discriminator CHECKs from Sections 7.1–7.12 of the spec for `audit_subjects`, `audit_subject_events`, `audit_policies`, `audit_runs`, `audit_run_attempts`, `audit_run_events`, `audit_rubric_versions`, `audit_versions`, `audit_criterion_results`, `audit_subject_heads`, `audit_assets`, `audit_version_assets`, `audit_exports`, `audit_export_attempts`, `audit_legacy_sources`, and `audit_change_alerts`. Reserve `audit_plan_selections`, `audit_plan_deliveries`, `audit_plan_delivery_attempts`, `audit_plan_delivery_events`, and `audit_plan_links` for Phase 6 migration `0004_audit_plan_delivery.sql`.
+Create all fields and discriminator CHECKs from Sections 7.1–7.12 of the spec for `audit_subjects`, `audit_subject_events`, `audit_policies`, `audit_runs`, `audit_run_attempts`, `audit_run_events`, `audit_rubric_versions`, `audit_versions`, `audit_criterion_results`, `audit_subject_heads`, `audit_assets`, `audit_version_assets`, `audit_exports`, `audit_export_attempts`, `audit_legacy_sources`, and `audit_change_alerts`. Reserve `audit_plan_selections`, `audit_plan_deliveries`, `audit_plan_delivery_attempts`, `audit_plan_delivery_events`, and `audit_plan_links` for Phase 6 migration `0005_audit_plan_delivery.sql`.
 
 Required database enforcement includes:
 

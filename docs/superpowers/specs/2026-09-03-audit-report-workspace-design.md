@@ -193,7 +193,7 @@ Audit 不复用通用 `runs` 的输出契约或 merchant-wide running lock。
 
 `audit_subject_events` 以 append-only 方式保存 created、identity_projection_changed、website_changed、archived 和 restored。每条事件保存前后 Audit generation、引用的共享 location lifecycle event、GBP source-scope binding generation、Place alias/evidence generation、规范化 identity manifest/hash、原因、operator/system actor 与时间，不复制或重写共享 alias 历史。
 
-Audit 不创建第二套门店主数据。它硬依赖 Performance History foundation 已部署并完成全量回归：复用 `api/app/migrations.py`、`schema_migrations(version, checksum, applied_at)`、整数键 `merchant_locations`、`source_scopes`/`source_scope_bindings`、`merchant_location_aliases` 和 `merchant_location_status_events`。Audit migration 从该 foundation 的 `0001_performance_history.sql` 之后编号；不能创建第二个 migration ledger、另一组 location/binding/alias 表，也不能把现有 `merchant_gbp_profiles.id` 或名称/地址当稳定键。
+Audit 不创建第二套门店主数据。它硬依赖 Performance History foundation 与 Task Workflow migration hook 已部署并完成全量回归：复用 `api/app/migrations.py`、`schema_migrations(version, checksum, applied_at)`、整数键 `merchant_locations`、`source_scopes`/`source_scope_bindings`、`merchant_location_aliases` 和 `merchant_location_status_events`。`0001_performance_history.sql` 与 `0002_task_workflows` 占用共同 migration 序列，Audit migration 从 `0003` 起编号；不能创建第二个 migration ledger、另一组 location/binding/alias 表，也不能把现有 `merchant_gbp_profiles.id` 或名称/地址当稳定键。
 
 Subject 由共享 Location Registry 投影创建，不由名称搜索临时生成：
 

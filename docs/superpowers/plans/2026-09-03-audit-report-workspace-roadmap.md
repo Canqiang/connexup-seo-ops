@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Execute only in `/Users/xander/git_repo/connexup-seo-ops/.worktrees/audit-report-workspace` on branch `codex/audit-report-workspace`. Do not switch, modify, stop, or restart `/Users/xander/git_repo/connexup-seo-ops`, because that checkout is reserved for the user's demo.
-- Do not begin Phase 1 until the Performance History migration foundation is merged, its complete API/Web regression is green, and `0001_performance_history.sql` postconditions read back successfully. Audit starts at migration `0002` and never forks the migration ledger or location identity model.
+- Do not begin Phase 1 until the Performance History migration foundation and Task Workflow migration hook are merged, their complete API/Web regression is green, and `0001_performance_history.sql` plus `0002_task_workflows` postconditions read back successfully. Audit starts at migration `0003` and never forks the migration ledger or location identity model.
 - Keep all SEO Ops implementation in this repository. Core AI, FBR, GBP, Local Falcon, and the future Plan service are external providers; do not modify or deploy them from these plans.
 - Preserve the existing v1 Audit snapshot endpoint, generic Run pages, keyword workflows, Local Falcon workflows, GBP/FBR sync, and current Task approval flow until the v2 replacement has passed readback acceptance.
 - Never create a stable location from fuzzy merchant name or address matching. A location must resolve through an exact external binding or remain unbound.
