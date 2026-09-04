@@ -946,6 +946,35 @@ def _is_valid_fbr_keyword_artifact(
     )
 
 
+def _trusted_keyword_artifact_source(
+    row: sqlite3.Row | None,
+    keyword_set: dict | None,
+    place_id: str | None,
+) -> str:
+    """Classify an artifact from persisted row evidence, never payload claims alone."""
+    if row is None or keyword_set is None or not place_id:
+        return "LEGACY"
+    if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id):
+        return "FBR"
+    if (
+        keyword_set.get("generation_method") == "UPSTREAM_DETERMINISTIC_ADAPTER"
+        and _keyword_artifact_paid_eligible(row, keyword_set, place_id)
+    ):
+        return "SKILL"
+    return "LEGACY"
+
+
+def _activation_reason_matches_keyword_source(
+    source: str,
+    activation_reason: str | None,
+) -> bool:
+    allowed_reasons = {
+        "FBR": {"ADOPT_FBR", "SYSTEM_BOOTSTRAP"},
+        "SKILL": {"SKILL_GENERATION", "RESTORE_SKILL", "SYSTEM_BOOTSTRAP"},
+    }
+    return activation_reason in allowed_reasons.get(source, set())
+
+
 def _ensure_keyword_head(
     conn: sqlite3.Connection,
     merchant_id: int,
@@ -976,10 +1005,8 @@ def _ensure_keyword_head(
             (
                 row["id"]
                 for row, keyword_set in candidates
-                if keyword_set.get("generation_method")
-                == "UPSTREAM_DETERMINISTIC_ADAPTER"
-                and _has_deterministic_scored_local_cohort(keyword_set)
-                and _keyword_artifact_paid_eligible(row, keyword_set, place_id)
+                if _trusted_keyword_artifact_source(row, keyword_set, place_id)
+                == "SKILL"
             ),
             None,
         )
@@ -988,7 +1015,8 @@ def _ensure_keyword_head(
                 (
                     row["id"]
                     for row, keyword_set in candidates
-                    if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id)
+                    if _trusted_keyword_artifact_source(row, keyword_set, place_id)
+                    == "FBR"
                 ),
                 None,
             )
@@ -1045,22 +1073,18 @@ def _move_keyword_head(
     ):
         raise ValueError("keyword activation target is not a ready exact-place artifact")
     try:
-        keyword_set = json.loads(artifact["payload_json"] or "null")
-    except (TypeError, json.JSONDecodeError) as exc:
+        keyword_set = _parse_keyword_set(artifact["payload_json"], merchant_id)
+    except (TypeError, ValueError, ValidationError) as exc:
         raise ValueError("keyword activation target payload is invalid") from exc
-    if not isinstance(keyword_set, dict):
-        raise ValueError("keyword activation target payload is invalid")
+    trusted_source = _trusted_keyword_artifact_source(
+        artifact,
+        keyword_set,
+        place_id,
+    )
     if activation_reason in {"SKILL_GENERATION", "RESTORE_SKILL"}:
-        if (
-            keyword_set.get("generation_method") != "UPSTREAM_DETERMINISTIC_ADAPTER"
-            or not _keyword_artifact_paid_eligible(
-                artifact,
-                keyword_set,
-                place_id,
-            )
-        ):
+        if trusted_source != "SKILL":
             raise ValueError("keyword activation target is not a verified scored Skill artifact")
-    elif not _is_valid_fbr_keyword_artifact(artifact, keyword_set, place_id):
+    elif trusted_source != "FBR":
         raise ValueError("keyword activation target is not a trusted FBR artifact")
 
     timestamp = now_iso()
@@ -1115,18 +1139,13 @@ def _active_ready_keyword_artifact(
         keyword_set = _parse_keyword_set(row["payload_json"], merchant_id)
     except (TypeError, ValueError, ValidationError) as exc:
         raise HTTPException(status_code=409, detail="active keyword artifact is invalid") from exc
+    trusted_source = _trusted_keyword_artifact_source(row, keyword_set, place_id)
+    if not _activation_reason_matches_keyword_source(
+        trusted_source,
+        head["activation_reason"],
+    ):
+        raise HTTPException(status_code=409, detail="active keyword artifact is invalid")
     return row, keyword_set
-
-
-def _keyword_version_source(keyword_set: dict) -> str | None:
-    generation_method = keyword_set.get("generation_method")
-    if generation_method == "UPSTREAM_DETERMINISTIC_ADAPTER":
-        return "SKILL"
-    if generation_method == "PERSISTED_FBR_READBACK":
-        return "FBR"
-    if generation_method is None:
-        return None
-    return "LEGACY"
 
 
 def _keyword_score_status(
@@ -1135,8 +1154,7 @@ def _keyword_score_status(
     place_id: str,
 ) -> str:
     if (
-        _keyword_version_source(keyword_set) == "SKILL"
-        and _keyword_artifact_paid_eligible(row, keyword_set, place_id)
+        _trusted_keyword_artifact_source(row, keyword_set, place_id) == "SKILL"
     ):
         return "VERIFIED_SKILL"
     keywords = keyword_set.get("keywords")
@@ -1165,6 +1183,11 @@ def _keyword_version_summaries(
     for row, keyword_set in _ready_keyword_artifact_candidates(
         conn, merchant_id, place_id
     ):
+        trusted_source = _trusted_keyword_artifact_source(
+            row,
+            keyword_set,
+            place_id,
+        )
         keywords = keyword_set.get("keywords")
         valid_keywords = (
             [item for item in keywords if isinstance(item, dict)]
@@ -1175,7 +1198,8 @@ def _keyword_version_summaries(
             {
                 "artifact_id": row["id"],
                 "place_id": place_id,
-                "source": _keyword_version_source(keyword_set),
+                "source": trusted_source,
+                "activation_eligible": trusted_source in {"FBR", "SKILL"},
                 "generation_method": keyword_set.get("generation_method"),
                 "keyword_count": len(valid_keywords),
                 "local_keyword_count": sum(
@@ -1275,7 +1299,7 @@ def _latest_fbr_keyword_import(
     for row, keyword_set in _ready_keyword_artifact_candidates(
         conn, merchant_id, place_id
     ):
-        if _is_valid_fbr_keyword_artifact(row, keyword_set, place_id):
+        if _trusted_keyword_artifact_source(row, keyword_set, place_id) == "FBR":
             return row, keyword_set
     return None, None
 
@@ -2770,7 +2794,13 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
             "keyword_set_artifact_id": active_artifact_id,
             "active_keyword_artifact_id": active_artifact_id,
             "active_keyword_source": (
-                _keyword_version_source(keyword_payload) if keyword_payload else None
+                _trusted_keyword_artifact_source(
+                    keyword_row,
+                    keyword_payload,
+                    current_place_id,
+                )
+                if keyword_payload
+                else None
             ),
             "active_keyword_activated_at": (
                 keyword_head["activated_at"] if keyword_head else None
@@ -2877,7 +2907,13 @@ def _state(conn: sqlite3.Connection, merchant_id: int, cycle_id: str | None = No
         "keyword_set_artifact_id": active_artifact_id,
         "active_keyword_artifact_id": active_artifact_id,
         "active_keyword_source": (
-            _keyword_version_source(keyword_payload) if keyword_payload else None
+            _trusted_keyword_artifact_source(
+                keyword_row,
+                keyword_payload,
+                current_place_id,
+            )
+            if keyword_payload
+            else None
         ),
         "active_keyword_activated_at": (
             keyword_head["activated_at"] if keyword_head else None
