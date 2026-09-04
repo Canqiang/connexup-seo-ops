@@ -27,7 +27,7 @@
 
 **Files:**
 
-- Create: `api/migrations/0003_audit_legacy.sql`
+- Create: `api/migrations/0004_audit_legacy.sql`
 - Create: `api/app/audit_legacy.py`
 - Create: `api/tests/test_audit_legacy.py`
 
@@ -49,7 +49,7 @@ def apply_legacy_subject_batch(conn: sqlite3.Connection, *,
                                candidates: tuple[LegacyCandidate, ...]) -> LegacyMigrationResult: ...
 ```
 
-`0003_audit_legacy.sql` adds immutable batch/entry records if they are not already represented by core tables: `audit_legacy_batches(id, manifest_json, manifest_sha256, status, created_at, completed_at)` and `audit_legacy_batch_entries(batch_id, source_kind, source_id, source_sha256, ordinal, outcome, reason_code, audit_version_id)`. Unique source identities and existing `audit_legacy_sources` remain the canonical replay/conflict guard.
+`0004_audit_legacy.sql` adds immutable batch/entry records if they are not already represented by core tables: `audit_legacy_batches(id, manifest_json, manifest_sha256, status, created_at, completed_at)` and `audit_legacy_batch_entries(batch_id, source_kind, source_id, source_sha256, ordinal, outcome, reason_code, audit_version_id)`. Unique source identities and existing `audit_legacy_sources` remain the canonical replay/conflict guard.
 
 - [ ] Add fixtures containing valid v1, malformed v1, exact-bound v1, ambiguous v1, canonical-ready Artifact, unknown Artifact schema, unscored known Artifact, source ID/hash conflict, equal report times, missing report time, and shuffled enumeration orders.
 - [ ] Freeze the full sorted `(source_kind, source_id, source_sha256)` manifest before validation. Derive batch ID and stable candidate Version IDs from namespace+source identity/hash, not enumeration or insertion time.
@@ -154,7 +154,7 @@ class PlanDeliveryClient(Protocol):
 
 **Files:**
 
-- Create: `api/migrations/0004_audit_plan_delivery.sql`
+- Create: `api/migrations/0005_audit_plan_delivery.sql`
 - Create: `api/app/audit_plan_delivery.py`
 - Modify: `api/app/audit_versions.py`
 - Modify: `api/app/main.py`
