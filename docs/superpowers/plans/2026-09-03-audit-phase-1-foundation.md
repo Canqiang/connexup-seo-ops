@@ -207,7 +207,7 @@ def build_canonical_report(*, producer: AuditProducerResultV2,
 
 **Schema scope:**
 
-Create all fields and discriminator CHECKs from Sections 7.1–7.12 of the spec for `audit_subjects`, `audit_subject_events`, `audit_policies`, `audit_runs`, `audit_run_attempts`, `audit_run_events`, `audit_rubric_versions`, `audit_versions`, `audit_criterion_results`, `audit_subject_heads`, `audit_assets`, `audit_version_assets`, `audit_exports`, `audit_export_attempts`, `audit_legacy_sources`, and `audit_change_alerts`. Reserve `audit_plan_selections`, `audit_plan_deliveries`, `audit_plan_delivery_attempts`, `audit_plan_delivery_events`, and `audit_plan_links` for Phase 6 migration `0005_audit_plan_delivery.sql`.
+Create all fields and discriminator CHECKs from Sections 7.1–7.12 of the spec for `audit_subjects`, `audit_subject_events`, `audit_policies`, `audit_runs`, `audit_run_attempts`, `audit_run_events`, `audit_rubric_versions`, `audit_versions`, `audit_criterion_results`, `audit_subject_heads`, `audit_assets`, `audit_asset_storage_attempts`, `audit_version_assets`, `audit_exports`, `audit_export_attempts`, `audit_legacy_sources`, and `audit_change_alerts`. Reserve `audit_plan_selections`, `audit_plan_deliveries`, `audit_plan_delivery_attempts`, `audit_plan_delivery_events`, and `audit_plan_links` for Phase 6 migration `0005_audit_plan_delivery.sql`.
 
 Required database enforcement includes:
 
@@ -217,7 +217,8 @@ Required database enforcement includes:
 - Version discriminator CHECKs for `native_v2`, `legacy_v1`, and `legacy_artifact`;
 - `ON DELETE RESTRICT` for accepted Version/Rubric/ready Asset history;
 - triggers rejecting UPDATE/DELETE of rubric rows, Versions, Criterion rows, Version-Asset links, terminal Attempts/events, ready Asset content metadata, and ready Export content metadata.
-- `audit_assets.status` CHECK explicitly covering `pending|ready|failed|deleting`, with transition guards allowing only `pending → ready|failed|deleting` and `failed → deleting`; a ready publisher CAS must match both `status='pending'` and the expected `lease_generation`, and `deleting` can never become ready.
+- `audit_assets.status` CHECK explicitly covering `pending|ready|failed|deleting|deleted`, with transition guards allowing only `pending → ready|failed|deleting`, `failed → deleting`, and `deleting → deleted`; a ready publisher CAS must match both `status='pending'` and the expected `lease_generation`, and `deleting|deleted` can never become ready.
+- `audit_asset_storage_attempts` unique `(audit_asset_id, lease_generation)` and globally unique final/staging keys; immutable owner/generation/keys; guarded `writing → verified|failed|deleting`, unreferenced `verified|failed → deleting`, and `deleting → deleted` transitions. An Asset can become ready only from its exact current verified attempt, while every superseded/deleted generation remains cleanup-visible with its non-content tombstone.
 - Attempt columns for bounded producer-response byte count and SHA-256 so validation failure preserves identity without exposing invalid raw output through operator APIs.
 
 **Repository interfaces:**
@@ -242,7 +243,7 @@ def verify_audit_version_readback(conn: sqlite3.Connection,
 - [ ] Write schema tests that attempt every invalid discriminator/status/null combination and every duplicate protected identity. Use two SQLite connections to prove the active Run/Attempt indexes under race.
 - [ ] Assert through `sqlite_master`, `PRAGMA foreign_key_list`, and `PRAGMA index_list` that all Location Registry and Audit core tables/indexes/triggers exist after both blank initialization and upgrade from a pre-migration database.
 - [ ] Write trigger tests proving immutable rows and ready content metadata cannot update/delete, while an Export projection may move from failed to queued only through a new explicit Attempt in its later service transaction.
-- [ ] Add Asset lifecycle tests for `pending → ready|failed|deleting`, `failed → deleting`, rejection of every other transition, publisher rejection after `deleting`, and stale `lease_generation` CAS failure.
+- [ ] Add Asset lifecycle tests for `pending → ready|failed|deleting → deleted`, `failed → deleting`, rejection of every other transition, publisher rejection after `deleting|deleted`, stale `lease_generation` CAS failure, unique Asset/attempt keys, exact verified-attempt publication, retained non-content tombstones, and cleanup visibility of superseded generations.
 - [ ] Add acceptance tests for atomic Version/Criteria/Asset-link/Attempt/Run/head/policy/alert/event commit and inject a failure before each write boundary to prove the whole transaction rolls back.
 - [ ] In `accept_audit_version`, re-read Run, Attempt, lease generation, current Subject status/generation/hash, ready Assets, prior generation head, and policy version. Fail with stable codes before inserting a Version if any fence changed.
 - [ ] Freeze `comparison_base_version_id` by searching all earlier compatible same-generation Versions using `(report_at, score tier, provenance tier, stable Version ID)` order; skip unscored and incompatible candidates rather than stopping at the head.
