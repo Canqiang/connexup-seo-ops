@@ -1,0 +1,15 @@
+{
+  "version": "0004_run_dispatch_contract",
+  "hook_revision": 1,
+  "entrypoint": "app.migrations.run_run_dispatch_contract_migration_hook",
+  "responsibilities": [
+    "install_fail_closed_run_dispatch_columns",
+    "backfill_legacy_dispatch_state",
+    "track_consecutive_provider_poll_failures",
+    "enforce_unique_provider_and_dispatch_identities",
+    "install_immutable_dispatch_reconciliation_ledger",
+    "extend_merchant_delete_guard_to_task_plans",
+    "extend_merchant_delete_guard_to_operator_commands",
+    "validate_exact_run_dispatch_schema_contract"
+  ]
+}

@@ -1,57 +1,353 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
-import { api, type AuditSnapshot, type Merchant, type Run, type Task } from '../api'
+import {
+  api,
+  type AuditSnapshot,
+  type Merchant,
+  type PlanTaskSummary,
+  type Run,
+  type RunDispatchReconciliation,
+  type TaskPlan,
+  type TaskWorkflowStatus,
+} from '../api'
 import AuditReport from '../components/AuditReport'
 import { formatTime } from '../format'
-import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
+import { CATEGORY_LABELS, RUN_STATUS_LABELS } from '../labels'
 import { reportForDisplay } from '../reportDisplay'
 import { formatRunDuration } from '../runPresentation'
+import { isTaskPlan } from '../taskPlan'
+
+const WORKFLOW_STATUS_LABELS: Record<TaskWorkflowStatus, string> = {
+  PENDING: '待办',
+  PREPARING: '准备中',
+  AWAITING_APPROVAL: '待内容审批',
+  EXECUTING: '执行中',
+  VERIFYING: '验证中',
+  DONE: '已完成',
+  NEEDS_ATTENTION: '需要人工处理',
+  CANCELLED: '已取消',
+}
+
+const WORKFLOW_STATUS_CLASSES: Record<TaskWorkflowStatus, string> = {
+  PENDING: 'todo',
+  PREPARING: 'doing',
+  AWAITING_APPROVAL: 'todo',
+  EXECUTING: 'doing',
+  VERIFYING: 'doing',
+  DONE: 'done',
+  NEEDS_ATTENTION: 'failed',
+  CANCELLED: 'cancelled',
+}
+
+type PlanReadState = 'loading' | 'ready' | 'missing' | 'error'
+const RUN_POLL_INTERVAL_MS = 10_000
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function isPollableRun(run: Run | null): run is Run {
+  return run?.status === 'running'
+    && (run.dispatch_state === 'DISPATCHING' || run.dispatch_state === 'DISPATCHED')
+}
+
+function currentPlanTasks(plan: TaskPlan, rows: PlanTaskSummary[]): PlanTaskSummary[] {
+  const expectedKeys = plan.current_revision.payload.tasks.map(item => item.key)
+  const expected = new Set(expectedKeys)
+  if (expected.size !== expectedKeys.length) throw new Error('当前批准 Plan 包含重复 Task key，请刷新 Plan')
+  const seen = new Set<string>()
+  for (const row of rows) {
+    if (seen.has(row.task_key)) throw new Error(`正式 Task 数据包含重复 key：${row.task_key}`)
+    seen.add(row.task_key)
+    if (row.plan_id !== plan.id || !row.plan || row.plan.id !== plan.id) {
+      throw new Error('正式 Task 数据与当前 Plan 不一致，请刷新 Plan')
+    }
+    if (row.plan.approved_revision !== plan.current_revision.revision) {
+      throw new Error('正式 Task 所属批准 revision 已变化，请刷新 Plan')
+    }
+    if (row.plan_revision > plan.current_revision.revision) {
+      throw new Error('正式 Task revision 晚于当前批准 Plan，请刷新 Plan')
+    }
+    if (row.plan.latest_revision !== plan.latest_revision
+      || row.plan.state !== plan.state
+      || row.plan.source_kind !== plan.source_kind) {
+      throw new Error('正式 Task 所属 Plan 已变化，请刷新 Plan')
+    }
+    if (!expected.has(row.task_key) && row.status !== 'CANCELLED') {
+      throw new Error(`正式 Task 数据包含当前批准 Plan 之外的 key：${row.task_key}，请刷新 Plan`)
+    }
+  }
+  const byKey = new Map(rows.map(row => [row.task_key, row]))
+  return expectedKeys.map(key => {
+    const row = byKey.get(key)
+    if (!row) throw new Error(`正式 Task 数据缺少当前批准 key：${key}，请刷新 Plan`)
+    return row
+  })
+}
 
 export default function RunDetail() {
   const { id } = useParams()
-  const runId = Number(id)
+  return <RunDetailPage key={id ?? 'invalid'} runId={Number(id)} />
+}
+
+function RunDetailPage({ runId }: { runId: number }) {
+  const validRunId = Number.isInteger(runId) && runId > 0
+  const mountedRef = useRef(false)
+  const planEpochRef = useRef(0)
+  const planControllerRef = useRef<AbortController | null>(null)
+  const auditEpochRef = useRef(0)
+  const auditControllerRef = useRef<AbortController | null>(null)
+  const pollControllerRef = useRef<AbortController | null>(null)
+  const reconciliationControllerRef = useRef<AbortController | null>(null)
   const [run, setRun] = useState<Run | null>(null)
   const [merchant, setMerchant] = useState<Merchant | null>(null)
-  const [tasks, setTasks] = useState<Task[]>([])
+  const [tasks, setTasks] = useState<PlanTaskSummary[]>([])
+  const [tasksLoading, setTasksLoading] = useState(false)
+  const [plan, setPlan] = useState<TaskPlan | null>(null)
+  const [planState, setPlanState] = useState<PlanReadState>(validRunId ? 'loading' : 'error')
   const [audit, setAudit] = useState<AuditSnapshot | null>(null)
-  const [error, setError] = useState('')
-  const [approving, setApproving] = useState(false)
+  const [runError, setRunError] = useState(validRunId ? '' : '分析 ID 无效')
+  const [merchantError, setMerchantError] = useState('')
+  const [planError, setPlanError] = useState(validRunId ? '' : '分析 ID 无效')
+  const [taskError, setTaskError] = useState('')
+  const [auditError, setAuditError] = useState('')
+  const [providerRunId, setProviderRunId] = useState('')
+  const [reconciliationReason, setReconciliationReason] = useState('')
+  const [reconciliationBusy, setReconciliationBusy] = useState(false)
+  const [reconciliationError, setReconciliationError] = useState('')
+  const [reconciliationNotice, setReconciliationNotice] = useState('')
 
-  useEffect(() => {
-    api.getRun(runId)
-      .then(fresh => {
-        setRun(fresh)
-        return api.getMerchant(fresh.merchant_id)
-      })
-      .then(setMerchant)
-      .catch(e => setError((e as Error).message))
-    api.listRunTasks(runId).then(setTasks).catch(() => {})
-    api.getRunAudit(runId).then(setAudit).catch(e => setError((e as Error).message))
+  const loadAudit = useCallback(async () => {
+    const epoch = ++auditEpochRef.current
+    auditControllerRef.current?.abort()
+    const controller = new AbortController()
+    auditControllerRef.current = controller
+    try {
+      const fresh = await api.getRunAudit(runId, controller.signal)
+      if (!mountedRef.current || auditEpochRef.current !== epoch || controller.signal.aborted) return
+      if (fresh !== null && fresh.run_id !== runId) throw new Error('Audit 响应与当前分析不一致')
+      setAudit(fresh)
+      setAuditError('')
+    } catch (error) {
+      if (isAbortError(error) || !mountedRef.current || auditEpochRef.current !== epoch) return
+      setAuditError((error as Error).message)
+    } finally {
+      if (auditControllerRef.current === controller) auditControllerRef.current = null
+    }
   }, [runId])
 
-  const approvePlan = async () => {
-    setApproving(true)
+  const loadPlan = useCallback(async () => {
+    const epoch = ++planEpochRef.current
+    planControllerRef.current?.abort()
+    const controller = new AbortController()
+    planControllerRef.current = controller
+    setPlan(null)
+    setTasks([])
+    setTasksLoading(false)
+    setPlanState('loading')
+    setPlanError('')
+    setTaskError('')
     try {
-      setRun(await api.approvePlan(runId))
-      setError('')
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setApproving(false)
+      const fresh = await api.getRunTaskPlan(runId, controller.signal)
+      if (!mountedRef.current || planEpochRef.current !== epoch || controller.signal.aborted) return
+      if (fresh === null) {
+        setPlanState('missing')
+        return
+      }
+      if (!isTaskPlan(fresh)
+        || fresh.current_revision.plan_id !== fresh.id
+        || fresh.latest_revision !== fresh.current_revision.revision
+        || fresh.source_run_id !== runId) {
+        throw new Error('Task Plan 响应格式或来源无效')
+      }
+      setPlan(fresh)
+      setPlanState('ready')
+
+      if (fresh.current_revision.decision_state !== 'APPROVED') return
+      if (fresh.approved_revision !== fresh.current_revision.revision) {
+        setTaskError('当前批准 revision 身份不一致，未载入正式 Task')
+        return
+      }
+      setTasksLoading(true)
+      try {
+        const rows = await api.listPlanTasks(fresh.id, controller.signal)
+        if (!mountedRef.current || planEpochRef.current !== epoch || controller.signal.aborted) return
+        setTasks(currentPlanTasks(fresh, rows))
+      } catch (error) {
+        if (isAbortError(error) || !mountedRef.current || planEpochRef.current !== epoch) return
+        setTasks([])
+        setTaskError((error as Error).message)
+      } finally {
+        if (mountedRef.current && planEpochRef.current === epoch) setTasksLoading(false)
+      }
+    } catch (error) {
+      if (isAbortError(error) || !mountedRef.current || planEpochRef.current !== epoch) return
+      setPlan(null)
+      setTasks([])
+      setPlanState('error')
+      setPlanError((error as Error).message)
     }
-  }
+  }, [runId])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      planEpochRef.current += 1
+      planControllerRef.current?.abort()
+      auditEpochRef.current += 1
+      auditControllerRef.current?.abort()
+      pollControllerRef.current?.abort()
+      reconciliationControllerRef.current?.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!validRunId) return
+    const runController = new AbortController()
+    let runAccepted = false
+
+    api.getRun(runId, runController.signal)
+      .then(fresh => {
+        if (!mountedRef.current || runController.signal.aborted) return null
+        if (fresh.id !== runId) throw new Error('分析响应与当前路由不一致')
+        runAccepted = true
+        setRun(fresh)
+        setProviderRunId(fresh.provider_candidate_run_id ?? fresh.coreai_run_id ?? '')
+        setRunError('')
+        return api.getMerchant(fresh.merchant_id, runController.signal)
+          .then(freshMerchant => ({ freshMerchant, expectedId: fresh.merchant_id }))
+      })
+      .then(result => {
+        if (!result || !mountedRef.current || runController.signal.aborted) return
+        if (result.freshMerchant.id !== result.expectedId) throw new Error('商户响应与分析记录不一致')
+        setMerchant(result.freshMerchant)
+        setMerchantError('')
+      })
+      .catch(error => {
+        if (isAbortError(error) || !mountedRef.current || runController.signal.aborted) return
+        if (runAccepted) setMerchantError((error as Error).message)
+        else setRunError((error as Error).message)
+      })
+
+    const auditTimer = window.setTimeout(() => void loadAudit(), 0)
+    const planTimer = window.setTimeout(() => void loadPlan(), 0)
+    return () => {
+      window.clearTimeout(auditTimer)
+      window.clearTimeout(planTimer)
+      runController.abort()
+    }
+  }, [loadAudit, loadPlan, runId, validRunId])
+
+  useEffect(() => {
+    if (!validRunId || !isPollableRun(run)) return
+    let stopped = false
+    let timer: number | null = null
+
+    const schedule = () => {
+      if (stopped) return
+      timer = window.setTimeout(() => void poll(), RUN_POLL_INTERVAL_MS)
+    }
+
+    const poll = async () => {
+      if (stopped || pollControllerRef.current !== null) return
+      const controller = new AbortController()
+      pollControllerRef.current = controller
+      let shouldContinue = false
+      try {
+        const fresh = await api.getRun(runId, controller.signal)
+        if (stopped || !mountedRef.current || controller.signal.aborted) return
+        if (fresh.id !== runId || fresh.merchant_id !== run.merchant_id) {
+          throw new Error('分析响应与当前路由不一致')
+        }
+        if (fresh.status !== 'running') {
+          setRun(fresh)
+          setRunError('')
+          void Promise.all([loadAudit(), loadPlan()])
+          return
+        }
+        setRun(fresh)
+        setRunError('')
+        shouldContinue = isPollableRun(fresh)
+      } catch (error) {
+        if (isAbortError(error) || stopped || !mountedRef.current || controller.signal.aborted) return
+        setRunError((error as Error).message)
+        shouldContinue = true
+      } finally {
+        if (pollControllerRef.current === controller) pollControllerRef.current = null
+        if (shouldContinue) schedule()
+      }
+    }
+
+    schedule()
+    return () => {
+      stopped = true
+      if (timer !== null) window.clearTimeout(timer)
+      pollControllerRef.current?.abort()
+      pollControllerRef.current = null
+    }
+  }, [loadAudit, loadPlan, run, runId, validRunId])
 
   if (!run) {
     return (
       <main aria-label="分析报告">
         <p className="breadcrumb"><Link to="/">← 商户台账</Link></p>
-        {error ? <p className="error">{error}</p> : <p>加载中…</p>}
+        {runError ? <p className="error">{runError}</p> : <p>加载中…</p>}
       </main>
     )
   }
 
+  const decision = plan?.current_revision.decision_state
+  const draftCount = plan?.current_revision.payload.tasks.length ?? 0
   const merchantArchived = merchant?.status === 'archived'
+  const needsDispatchReview = run.status === 'running' && run.dispatch_state === 'UNKNOWN'
+  const normalizedReason = reconciliationReason.trim()
+  const normalizedProviderRunId = providerRunId.trim()
+  const canConfirmNotCreated = run.coreai_run_id === null && run.provider_candidate_run_id === null
+
+  const reconcileDispatch = async (action: RunDispatchReconciliation['action']) => {
+    if (!needsDispatchReview || reconciliationBusy || !normalizedReason) return
+    if (action === 'BIND_EXISTING' && !normalizedProviderRunId) return
+    if (action === 'NOT_CREATED' && !window.confirm(
+      '请再次确认：Core AI 中没有创建本次运行。确认后本次分析会标记失败，之后才能重新发起诊断。',
+    )) return
+
+    const body: RunDispatchReconciliation = action === 'BIND_EXISTING'
+      ? { action, provider_run_id: normalizedProviderRunId, reason: normalizedReason }
+      : {
+          action,
+          expected_provider_candidate_run_id: null,
+          reason: normalizedReason,
+        }
+    const controller = new AbortController()
+    reconciliationControllerRef.current?.abort()
+    reconciliationControllerRef.current = controller
+    setReconciliationBusy(true)
+    setReconciliationError('')
+    setReconciliationNotice('')
+    try {
+      const fresh = await api.reconcileRunDispatch(run.id, body, controller.signal)
+      if (!mountedRef.current || controller.signal.aborted) return
+      if (fresh.id !== run.id || fresh.merchant_id !== run.merchant_id) {
+        throw new Error('人工核对响应与当前分析记录不一致')
+      }
+      setRun(fresh)
+      setReconciliationNotice(action === 'BIND_EXISTING'
+        ? fresh.dispatch_state === 'DISPATCHED'
+          ? '已绑定 Core AI 运行，分析状态已刷新。'
+          : '候选运行无法安全绑定；本次分析已标记失败，可返回商户页重新发起。'
+        : '已确认 Core AI 未创建运行；本次分析已标记失败，可返回商户页重新发起。')
+    } catch (error) {
+      if (isAbortError(error) || !mountedRef.current || controller.signal.aborted) return
+      setReconciliationError((error as Error).message)
+    } finally {
+      if (reconciliationControllerRef.current === controller) {
+        reconciliationControllerRef.current = null
+        if (mountedRef.current) setReconciliationBusy(false)
+      }
+    }
+  }
 
   return (
     <main aria-label="分析报告" className="run-report-page">
@@ -73,8 +369,71 @@ export default function RunDetail() {
           <span>{formatRunDuration(run.created_at, run.finished_at)}</span>
         </div>
       </header>
-      {error && <p className="error">{error}</p>}
-      {run.error && <p className="error">{run.error}</p>}
+      {runError && <p className="error">{runError}</p>}
+      {merchantError && <p className="error">{merchantError}</p>}
+      {auditError && <p className="error">{auditError}</p>}
+      {run.error && !needsDispatchReview && <p className="error">{run.error}</p>}
+      {reconciliationNotice && <p className="notice success dispatch-reconciliation-success" role="status">{reconciliationNotice}</p>}
+
+      {needsDispatchReview && (
+        <section className="dispatch-reconciliation" role="region" aria-labelledby="dispatch-reconciliation-title">
+          <div className="dispatch-reconciliation-copy">
+            <p className="section-code">CORE AI / DISPATCH REVIEW</p>
+            <h2 id="dispatch-reconciliation-title">派发结果人工核对</h2>
+            <p>不要重新触发诊断。请先在 Core AI 核实是否已创建对应运行。</p>
+          </div>
+          <form className="dispatch-reconciliation-form" onSubmit={event => event.preventDefault()}>
+            <label htmlFor="provider-run-id">
+              <span>Core AI Run ID</span>
+              <input
+                id="provider-run-id"
+                value={providerRunId}
+                onChange={event => setProviderRunId(event.target.value)}
+                disabled={reconciliationBusy}
+                autoComplete="off"
+              />
+            </label>
+            <label htmlFor="dispatch-reconciliation-reason">
+              <span>核对原因</span>
+              <textarea
+                id="dispatch-reconciliation-reason"
+                value={reconciliationReason}
+                onChange={event => setReconciliationReason(event.target.value)}
+                disabled={reconciliationBusy}
+                maxLength={1000}
+                placeholder="记录你在 Core AI 中核对的依据"
+              />
+            </label>
+            {run.error && (
+              <p className="dispatch-reconciliation-record">
+                <strong>持久化记录</strong>
+                <span>{run.error}</span>
+              </p>
+            )}
+            {reconciliationError && <p className="error" role="alert">{reconciliationError}</p>}
+            <div className="dispatch-reconciliation-actions" role="group" aria-label="人工核对操作">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void reconcileDispatch('BIND_EXISTING')}
+                disabled={reconciliationBusy || !normalizedReason || !normalizedProviderRunId}
+              >
+                {reconciliationBusy ? '提交中…' : '绑定已有运行'}
+              </button>
+              {canConfirmNotCreated && (
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={() => void reconcileDispatch('NOT_CREATED')}
+                  disabled={reconciliationBusy || !normalizedReason}
+                >
+                  确认未创建
+                </button>
+              )}
+            </div>
+          </form>
+        </section>
+      )}
 
       <div className="run-review-grid">
         <section className="panel report-panel" aria-label="报告正文">
@@ -90,32 +449,50 @@ export default function RunDetail() {
             <h2 id="run-tasks-title">本次生成任务</h2>
             <span className="result-count">{tasks.length} 项</span>
           </div>
-          {run.status === 'succeeded' && tasks.length > 0 && (
-            <section className={`plan-decision ${run.plan_approved_at ? 'approved' : ''}`} aria-label="Plan 审批">
-              {merchantArchived ? (
-                <>
-                  <strong>商户已归档</strong>
-                  <p>商户已归档，Plan 与生成任务仅供查看；恢复在营后可继续审批。</p>
-                </>
-              ) : run.plan_approved_at ? (
-                <>
-                  <strong>Plan 已确认</strong>
-                  <p>这些任务可以交给 Agent 执行。</p>
-                </>
-              ) : (
-                <>
-                  <strong>等待运营确认</strong>
-                  <p>确认后，这些任务才可交给 Agent 执行。</p>
-                  {merchant?.status === 'active' && (
-                    <button className="primary" onClick={approvePlan} disabled={approving}>
-                      {approving ? '确认中…' : '确认 Plan'}
-                    </button>
-                  )}
-                </>
-              )}
+          {run.status === 'succeeded' && planState === 'loading' && (
+            <div className="empty-state compact-empty">正在读取 Task Plan…</div>
+          )}
+          {run.status === 'succeeded' && planState === 'error' && (
+            <section className="plan-load-error" role="alert" aria-label="Task Plan 读取失败">
+              <strong>无法读取 Task Plan</strong>
+              <p>{planError}</p>
+              <button type="button" onClick={() => void loadPlan()}>重试读取 Plan</button>
             </section>
           )}
-          {tasks.length > 0 ? (
+          {run.status === 'succeeded' && planState === 'ready' && plan && (
+            <section className={`plan-decision ${decision === 'APPROVED' ? 'approved' : ''}`} aria-label="Plan 审批">
+              {merchantArchived && (
+                <p className="notice warning" role="status">商户已归档，Plan 与生成任务仅供查看；恢复在营后可继续审批。</p>
+              )}
+              <strong>
+                {decision === 'APPROVED'
+                  ? `Plan Revision ${plan.current_revision.revision} 已批准`
+                  : decision === 'REJECTED'
+                    ? `Plan Revision ${plan.current_revision.revision} 已拒绝`
+                    : `Plan Revision ${plan.current_revision.revision} 待审批`}
+              </strong>
+              <p>
+                {decision === 'DRAFT'
+                  ? plan.approved_revision == null
+                    ? `当前 Plan 草稿包含 ${draftCount} 项；尚未物化正式 Task。`
+                    : `当前 Plan 草稿包含 ${draftCount} 项；Revision ${plan.approved_revision} 的历史 Task 请到任务队列查看。`
+                  : decision === 'APPROVED'
+                    ? '完整 revision 已冻结，正式 Task 已进入运营队列。'
+                    : `当前 Plan 包含 ${draftCount} 项；该 revision 未获批准，不会创建正式 Task。`}
+              </p>
+              <Link className="plan-review-link" to={`/task-plans/${plan.id}`}>查看并编辑 Plan</Link>
+            </section>
+          )}
+          {run.status === 'succeeded' && planState === 'missing' && (
+            <div className="empty-state compact-empty">本次分析没有生成可编辑 Task Plan。</div>
+          )}
+          {taskError && (
+            <section className="plan-load-error" role="alert" aria-label="正式 Task 读取失败">
+              <p>{taskError}</p>
+              <button type="button" onClick={() => void loadPlan()}>重试读取 Plan</button>
+            </section>
+          )}
+          {decision === 'APPROVED' && tasks.length > 0 ? (
             <ul className="generated-task-list">
               {tasks.map(task => (
                 <li key={task.id}>
@@ -127,14 +504,16 @@ export default function RunDetail() {
                   </Link>
                   <div>
                     <span className="badge cat">{task.category ? CATEGORY_LABELS[task.category] ?? task.category : '未分类'}</span>
-                    <span className={`badge ${task.status}`}>{TASK_STATUS_LABELS[task.status]}</span>
+                    <span className={`badge ${WORKFLOW_STATUS_CLASSES[task.status]}`}>{WORKFLOW_STATUS_LABELS[task.status]}</span>
                   </div>
                 </li>
               ))}
             </ul>
-          ) : (
-            <div className="empty-state compact-empty">本次分析没有生成任务。</div>
-          )}
+          ) : decision === 'APPROVED' && tasksLoading ? (
+            <div className="empty-state compact-empty">正在载入当前批准 revision 的正式 Task。</div>
+          ) : decision === 'APPROVED' && !taskError ? (
+            <div className="empty-state compact-empty">当前批准 revision 暂无可显示的正式 Task。</div>
+          ) : null}
           <div className="panel-foot">
             <Link to={`/merchants/${run.merchant_id}`} className="panel-link">查看商户任务 →</Link>
           </div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import {
+  ApiError,
   api,
   type LocalFalconReconciliationRequest,
   type LocalFalconScanBatch,
@@ -26,6 +27,10 @@ const DAY_LABELS: Record<string, string> = {
 
 const POST_PREVIEW_COUNT = 5
 const MENU_PREVIEW_COUNT = 6
+
+const newFbrRelinkRequestId = (merchantId: number) => (
+  `seo-ops-fbr-relink-${merchantId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+)
 
 type LocalFalconConfirmationDraft = {
   requestId: string
@@ -1572,12 +1577,18 @@ export default function MerchantProfile() {
   const [selectedLocationId, setSelectedLocationId] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showFbrRelink, setShowFbrRelink] = useState(false)
+  const [newFbrMerchantId, setNewFbrMerchantId] = useState('')
+  const [fbrRelinkReason, setFbrRelinkReason] = useState('')
+  const [fbrRelinkConfirmed, setFbrRelinkConfirmed] = useState(false)
+  const [fbrRelinking, setFbrRelinking] = useState(false)
   const [seoBusy, setSeoBusy] = useState(false)
   const [seoRegenerating, setSeoRegenerating] = useState(false)
   const [localFalconBusy, setLocalFalconBusy] = useState(false)
   const performanceHashFocusedRef = useRef<string | null>(null)
   const profileMutationVersionRef = useRef(0)
   const profileMutationBusyRef = useRef(false)
+  const fbrRelinkRequestRef = useRef<{ key: string; requestId: string } | null>(null)
 
   useEffect(() => {
     let active = true
@@ -1716,6 +1727,83 @@ export default function MerchantProfile() {
     } finally {
       profileMutationBusyRef.current = false
       setBusy(false)
+    }
+  }
+
+  const cancelFbrRelink = () => {
+    if (fbrRelinking) return
+    setShowFbrRelink(false)
+    setNewFbrMerchantId('')
+    setFbrRelinkReason('')
+    setFbrRelinkConfirmed(false)
+    fbrRelinkRequestRef.current = null
+  }
+
+  const relinkFbr = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const nextFbrMerchantId = newFbrMerchantId.trim()
+    const reason = fbrRelinkReason.trim()
+    if (
+      fbrRelinking
+      || !fbrRelinkConfirmed
+      || !nextFbrMerchantId
+      || !reason
+      || nextFbrMerchantId === profile?.fbr_merchant_id
+      || profile?.binding_generation == null
+      || !profile.binding_sha256
+    ) return
+
+    const requestKey = JSON.stringify({
+      merchantId,
+      generation: profile.binding_generation,
+      sha256: profile.binding_sha256,
+      nextFbrMerchantId,
+      reason,
+    })
+    if (fbrRelinkRequestRef.current?.key !== requestKey) {
+      fbrRelinkRequestRef.current = {
+        key: requestKey,
+        requestId: newFbrRelinkRequestId(merchantId),
+      }
+    }
+
+    const mutationVersion = ++profileMutationVersionRef.current
+    profileMutationBusyRef.current = true
+    setFbrRelinking(true)
+    let relinkAccepted = false
+    try {
+      const result = await api.relinkMerchantFbr({
+        request_id: fbrRelinkRequestRef.current.requestId,
+        merchant_id: merchantId,
+        expected_current_binding_generation: profile.binding_generation,
+        expected_current_fbr_sha256: profile.binding_sha256,
+        new_fbr_merchant_id: nextFbrMerchantId,
+        reason,
+        confirmed: true,
+      })
+      relinkAccepted = true
+      const latest = await api.getMerchantProfile(merchantId)
+      if (mutationVersion !== profileMutationVersionRef.current) return
+      if (
+        latest.fbr_merchant_id !== result.binding.fbr_merchant_id
+        || latest.binding_generation !== result.binding.generation
+        || latest.binding_sha256 !== result.binding.canonical_fbr_merchant_sha256
+      ) {
+        throw new Error('FBR 重新绑定后的资料读回不一致，请停止操作并联系管理员')
+      }
+      setProfile(latest)
+      setFbrMerchantId(latest.fbr_merchant_id || '')
+      setSelectedLocationId('')
+      setError('')
+      cancelFbrRelink()
+    } catch (err) {
+      if (!relinkAccepted && err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        fbrRelinkRequestRef.current = null
+      }
+      setError((err as Error).message)
+    } finally {
+      profileMutationBusyRef.current = false
+      setFbrRelinking(false)
     }
   }
 
@@ -1874,6 +1962,7 @@ export default function MerchantProfile() {
 
   const isUnbound = profile.state === 'unbound'
   const hasLocations = profile.locations.length > 0
+  const isArchived = merchant.status === 'archived'
 
   return (
     <main aria-label="商户资料" className="merchant-workspace-page merchant-profile-page">
@@ -1892,6 +1981,7 @@ export default function MerchantProfile() {
 
       <MerchantSectionNav merchantId={merchantId} active="profile" />
       {error && <p className="error profile-error" role="alert">{error}</p>}
+      {isArchived && <p className="notice warning" role="status">商户已归档，恢复在营后可操作。</p>}
 
       {isUnbound ? (
         <section className="profile-connect-panel" aria-labelledby="profile-connect-title">
@@ -1900,24 +1990,92 @@ export default function MerchantProfile() {
             <h2 id="profile-connect-title">连接 FBR 商户资料</h2>
             <p>保存准确的 FBR Merchant ID 后，SEO Ops 可以只读同步已落库的 GBP 门店资料。</p>
           </div>
-          <form onSubmit={bind} className="profile-bind-form">
-            <label>FBR Merchant ID<input aria-label="FBR Merchant ID" value={fbrMerchantId} onChange={event => setFbrMerchantId(event.target.value)} required /></label>
-            <button className="primary" type="submit" disabled={busy}>{busy ? '保存中…' : '保存绑定'}</button>
-          </form>
+          {!isArchived && (
+            <form onSubmit={bind} className="profile-bind-form">
+              <label>FBR Merchant ID<input aria-label="FBR Merchant ID" value={fbrMerchantId} onChange={event => setFbrMerchantId(event.target.value)} required /></label>
+              <button className="primary" type="submit" disabled={busy}>{busy ? '保存中…' : '保存绑定'}</button>
+            </form>
+          )}
           <p className="source-boundary">这里只保存资源 ID 和资料快照，不保存 Google 授权凭证。</p>
         </section>
       ) : (
         <>
           <section className="profile-source-bar" aria-label="FBR 同步状态">
-            <div>
+            <div className="profile-source-summary">
               <span className={`source-status ${profile.state}`}>{profile.state === 'synced' ? 'FBR 已同步' : profile.state === 'failed' ? '同步失败' : '等待首次同步'}</span>
               <span className="source-id">Merchant ID · {profile.fbr_merchant_id}</span>
               {profile.last_synced_at && <span>最后同步 {formatTime(profile.last_synced_at)}</span>}
             </div>
-            <button className="primary" type="button" onClick={() => void sync()} disabled={busy}>
-              {busy ? '同步中…' : hasLocations ? '重新同步' : '同步 GBP 资料'}
-            </button>
+            {!isArchived && (
+              <div className="profile-source-actions">
+                <button
+                  type="button"
+                  onClick={() => setShowFbrRelink(value => !value)}
+                  disabled={busy || fbrRelinking || profile.binding_generation == null || !profile.binding_sha256}
+                >
+                  重新绑定 FBR
+                </button>
+                <button className="primary" type="button" onClick={() => void sync()} disabled={busy || fbrRelinking}>
+                  {busy ? '同步中…' : hasLocations ? '重新同步' : '同步 GBP 资料'}
+                </button>
+              </div>
+            )}
           </section>
+
+          {showFbrRelink && (
+            <form className="profile-relink-panel" aria-label="重新绑定 FBR Merchant ID" onSubmit={relinkFbr}>
+              <div className="profile-relink-intro">
+                <p className="section-code">IDENTITY CORRECTION</p>
+                <h2>纠正 FBR 资源绑定</h2>
+                <p>仅用于同一商户绑定错误的纠正。系统会保留旧绑定历史，并清空当前可替换的 GBP 快照；有活动任务时会拒绝操作。</p>
+              </div>
+              <label>
+                <span>新的 FBR Merchant ID</span>
+                <input
+                  aria-label="新的 FBR Merchant ID"
+                  value={newFbrMerchantId}
+                  onChange={event => setNewFbrMerchantId(event.target.value)}
+                  disabled={fbrRelinking}
+                  required
+                />
+              </label>
+              <label>
+                <span>重新绑定原因</span>
+                <textarea
+                  aria-label="重新绑定原因"
+                  value={fbrRelinkReason}
+                  onChange={event => setFbrRelinkReason(event.target.value)}
+                  disabled={fbrRelinking}
+                  required
+                />
+              </label>
+              <label className="profile-relink-confirmation">
+                <input
+                  type="checkbox"
+                  checked={fbrRelinkConfirmed}
+                  onChange={event => setFbrRelinkConfirmed(event.target.checked)}
+                  disabled={fbrRelinking}
+                />
+                <span>我确认这是同一商户的正确 FBR 资源，并理解当前 GBP 快照将被清空</span>
+              </label>
+              <div className="profile-relink-actions">
+                <button type="button" className="quiet" onClick={cancelFbrRelink} disabled={fbrRelinking}>取消</button>
+                <button
+                  type="submit"
+                  className="danger-button"
+                  disabled={
+                    fbrRelinking
+                    || !fbrRelinkConfirmed
+                    || !newFbrMerchantId.trim()
+                    || !fbrRelinkReason.trim()
+                    || newFbrMerchantId.trim() === profile.fbr_merchant_id
+                  }
+                >
+                  {fbrRelinking ? '正在重新绑定…' : '确认重新绑定'}
+                </button>
+              </div>
+            </form>
+          )}
 
           {profile.last_error && <p className="notice warning profile-sync-warning">上次同步失败：{profile.last_error}。已保留最后一次成功数据。</p>}
 

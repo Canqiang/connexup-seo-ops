@@ -585,7 +585,9 @@ def test_versioned_migration_is_atomic_checksum_locked_and_repeatable(tmp_path, 
     assert legacy_evidence_hashes(database) == before_hashes
     assert migration_versions(database) == [
         "0001_performance_history",
+        "0002_task_workflows",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     assert integrity_results(database) == ("ok", [])
 
@@ -599,7 +601,9 @@ def test_migrated_database_fresh_process_cold_start_skips_legacy_fbr_ddl(tmp_pat
     assert not index_exists_at_path(database, "idx_merchant_fbr_links_external")
     assert migration_versions(database) == [
         "0001_performance_history",
+        "0002_task_workflows",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     assert exact_database_fingerprint(database) == first
     assert integrity_results(database) == ("ok", [])
@@ -614,7 +618,9 @@ def test_fresh_database_init_db_twice_bootstraps_then_migrates_once(tmp_path, mo
     assert sqlite_object_type(database, "merchant_fbr_links") == "view"
     assert migration_versions(database) == [
         "0001_performance_history",
+        "0002_task_workflows",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     assert exact_database_fingerprint(database) == first
     assert integrity_results(database) == ("ok", [])
@@ -720,7 +726,8 @@ def test_deployed_sql_only_0001_with_gap_merchant_runs_forward_0003(tmp_path):
     conn.commit()
 
     assert migrations.apply_migrations(conn) == [
-        "0003_performance_lifecycle_baseline"
+        "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
 
     baseline = conn.execute(
@@ -745,6 +752,7 @@ def test_deployed_sql_only_0001_with_gap_merchant_runs_forward_0003(tmp_path):
     assert migration_versions_from_conn(conn) == [
         "0001_performance_history",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     conn.close()
 
@@ -849,7 +857,8 @@ def test_0003_accepts_valid_fbr_relink_after_an_unbound_gap(tmp_path):
     conn.commit()
 
     assert migrations.apply_migrations(conn) == [
-        "0003_performance_lifecycle_baseline"
+        "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     projection = conn.execute(
         "SELECT binding_event_id,fbr_merchant_id FROM merchant_fbr_links "
@@ -859,6 +868,7 @@ def test_0003_accepts_valid_fbr_relink_after_an_unbound_gap(tmp_path):
     assert migration_versions_from_conn(conn) == [
         "0001_performance_history",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     conn.close()
 
@@ -920,7 +930,9 @@ def test_0003_missing_status_baseline_rolls_back_hook_and_ledger(
     init_db()
     assert migration_versions(database) == [
         "0001_performance_history",
+        "0002_task_workflows",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     assert not table_exists_at_path(database, "merchant_fbr_links_legacy")
     assert performance_table_counts(database)["merchant_status_events"] == 2
@@ -1127,11 +1139,13 @@ def test_two_connections_reread_migration_ledger_after_acquiring_write_lock(tmp_
         [
             "0001_performance_history",
             "0003_performance_lifecycle_baseline",
+            "0004_run_dispatch_contract",
         ],
     ]
     assert migration_versions(database) == [
         "0001_performance_history",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     assert integrity_results(database) == ("ok", [])
 
@@ -1167,7 +1181,9 @@ def test_two_fresh_init_db_calls_share_locked_legacy_fbr_bootstrap(
     assert sqlite_object_type(database, "merchant_fbr_links") == "view"
     assert migration_versions(database) == [
         "0001_performance_history",
+        "0002_task_workflows",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     assert performance_table_counts(database)["merchant_fbr_binding_events"] == 0
     assert integrity_results(database) == ("ok", [])
@@ -1202,10 +1218,10 @@ def test_two_legacy_init_db_calls_serialize_column_bridge(tmp_path, monkeypatch)
     observed_transactions = []
     observations_lock = threading.Lock()
 
-    def synchronized_migrate(connection):
+    def synchronized_migrate(connection, **kwargs):
         with observations_lock:
             observed_transactions.append(connection.in_transaction)
-        original_migrate(connection)
+        original_migrate(connection, **kwargs)
 
     monkeypatch.setattr(db_api, "_migrate", synchronized_migrate)
 
@@ -1219,7 +1235,9 @@ def test_two_legacy_init_db_calls_serialize_column_bridge(tmp_path, monkeypatch)
     assert observed_transactions and all(observed_transactions)
     assert migration_versions(database) == [
         "0001_performance_history",
+        "0002_task_workflows",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
     ]
     assert integrity_results(database) == ("ok", [])
 
@@ -1572,9 +1590,9 @@ def test_init_db_threads_python_registry_through_pre_and_post_checks(
         )
 
     migration = migrations.PythonMigration(
-        version="0002_task_workflows",
+        version="0004_test_task_registry",
         checksum=migrations.python_migration_checksum(
-            "0002_task_workflows", contract="task-workflows-schema-v2"
+            "0004_test_task_registry", contract="task-workflows-schema-v2"
         ),
         apply=apply_hook,
     )
@@ -1587,8 +1605,78 @@ def test_init_db_threads_python_registry_through_pre_and_post_checks(
         "0001_performance_history",
         "0002_task_workflows",
         "0003_performance_lifecycle_baseline",
+        "0004_run_dispatch_contract",
+        "0004_test_task_registry",
     ]
     assert table_exists_at_path(database, "task_workflow_registry_marker")
+
+
+def test_only_versions_executes_selected_hook_without_running_0001(tmp_path):
+    migrations = migrations_api()
+    conn = sqlite3.connect(tmp_path / "selected-migration.db")
+    calls = []
+
+    def selected_hook(connection, _migration_instant):
+        calls.append(connection.in_transaction)
+        connection.execute(
+            "CREATE TABLE selected_task_migration(id INTEGER PRIMARY KEY)"
+        )
+
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=migrations.python_migration_checksum(
+            "0002_task_workflows", contract="selected-task-migration-v1"
+        ),
+        apply=selected_hook,
+    )
+
+    assert migrations.apply_migrations(
+        conn,
+        python_migrations=(migration,),
+        only_versions=frozenset({"0002_task_workflows"}),
+    ) == ["0002_task_workflows"]
+    assert calls == [True]
+    assert not table_exists(conn, "merchant_locations")
+    assert table_exists(conn, "selected_task_migration")
+    assert migration_versions_from_conn(conn) == ["0002_task_workflows"]
+    conn.close()
+
+
+def test_only_versions_still_rejects_tampered_unselected_0001(tmp_path):
+    migrations = migrations_api()
+    conn = sqlite3.connect(tmp_path / "tampered-unselected-migration.db")
+    calls = []
+
+    migration = migrations.PythonMigration(
+        version="0002_task_workflows",
+        checksum=migrations.python_migration_checksum(
+            "0002_task_workflows", contract="selected-task-migration-v1"
+        ),
+        apply=lambda *_args: calls.append(True),
+    )
+    conn.execute(
+        "CREATE TABLE schema_migrations("
+        "version TEXT PRIMARY KEY,checksum TEXT NOT NULL,applied_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES (?,?,?)",
+        ("0001_performance_history", "0" * 64, NOW),
+    )
+    conn.commit()
+
+    with pytest.raises(
+        RuntimeError, match="migration checksum mismatch: 0001_performance_history"
+    ):
+        migrations.apply_migrations(
+            conn,
+            python_migrations=(migration,),
+            only_versions=frozenset({"0002_task_workflows"}),
+        )
+
+    assert calls == []
+    assert not table_exists(conn, "selected_task_migration")
+    assert migration_versions_from_conn(conn) == ["0001_performance_history"]
+    conn.close()
 
 
 def test_shared_python_migration_failure_rolls_back_hook_and_ledger(tmp_path):

@@ -5,6 +5,7 @@ from pathlib import Path
 from app.migrations import (
     PERFORMANCE_LIFECYCLE_MIGRATION,
     PERFORMANCE_MIGRATION,
+    RUN_DISPATCH_MIGRATION,
     MigrationInvariantError,
     PythonMigration,
     apply_migrations,
@@ -12,6 +13,15 @@ from app.migrations import (
     assert_migration_registry_checksums,
     execute_sql_payload,
     register_sqlite_invariants,
+    validate_run_dispatch_migration_input,
+)
+from app.task_migrations import (
+    TASK_WORKFLOW_MIGRATION,
+    assert_task_workflow_migration_postconditions,
+    assert_task_workflow_table_contracts,
+    assert_unique_coreai_run_bindings as _assert_unique_coreai_run_bindings,
+    task_table_kind,
+    task_workflow_python_migrations,
 )
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
@@ -38,7 +48,21 @@ MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "primary_location": "TEXT",
         "website_url": "TEXT",
     },
-    "runs": {"plan_approved_at": "TEXT"},
+    "runs": {
+        "plan_approved_at": "TEXT",
+        "dispatch_state": (
+            "TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK "
+            "(dispatch_state IN ('DISPATCHING','DISPATCHED','UNKNOWN','FAILED'))"
+        ),
+        "dispatch_token": "TEXT",
+        "dispatch_started_at": "TEXT",
+        "poll_failure_started_at": "TEXT",
+        "provider_candidate_run_id": "TEXT",
+        "source_agent_id": "TEXT",
+        "merchant_lifecycle_generation": "INTEGER",
+        "merchant_lifecycle_sha256": "TEXT",
+        "input_sha256": "TEXT",
+    },
     "merchant_seo_artifacts": {
         "provenance_json": "TEXT",
         "verification_started_at": "TEXT",
@@ -62,8 +86,29 @@ MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
 }
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
+_RUN_DISPATCH_COLUMNS = {
+    "dispatch_state",
+    "dispatch_token",
+    "dispatch_started_at",
+    "poll_failure_started_at",
+    "provider_candidate_run_id",
+    "source_agent_id",
+    "merchant_lifecycle_generation",
+    "merchant_lifecycle_sha256",
+    "input_sha256",
+}
+
+
+def _migrate(
+    conn: sqlite3.Connection, *, include_run_dispatch_fields: bool = True
+) -> None:
     for table, cols in MIGRATION_COLUMNS.items():
+        if table == "runs" and not include_run_dispatch_fields:
+            cols = {
+                name: declaration
+                for name, declaration in cols.items()
+                if name not in _RUN_DISPATCH_COLUMNS
+            }
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if not existing:
             continue  # 全新库，表还没建，executescript 已带新列
@@ -77,6 +122,51 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 "UPDATE runs SET plan_approved_at = COALESCE(finished_at, created_at)"
                 " WHERE status = 'succeeded'"
             )
+        if table == "runs" and "dispatch_state" in added:
+            conn.execute(
+                "UPDATE runs SET dispatch_state = CASE "
+                "WHEN status = 'failed' THEN 'FAILED' "
+                "WHEN status = 'succeeded' AND coreai_run_id IS NOT NULL "
+                "THEN 'DISPATCHED' "
+                "ELSE 'UNKNOWN' END"
+            )
+    if include_run_dispatch_fields and _object_type(
+        conn, "runs"
+    ) == "table" and "dispatch_token" in {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(runs)")
+    }:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_coreai_run_id "
+            "ON runs(coreai_run_id) WHERE coreai_run_id IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_dispatch_token "
+            "ON runs(dispatch_token) WHERE dispatch_token IS NOT NULL"
+        )
+
+
+def _bootstrap_runs_for_legacy_tasks(conn: sqlite3.Connection) -> None:
+    """Create only the parent table required by the legacy Task conversion."""
+
+    if _object_type(conn, "runs") == "table":
+        return
+    conn.execute(
+        """
+        CREATE TABLE runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+          coreai_run_id TEXT,
+          status TEXT NOT NULL DEFAULT 'running'
+            CHECK (status IN ('running','succeeded','failed')),
+          trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('manual','auto')),
+          report_text TEXT,
+          error TEXT,
+          plan_approved_at TEXT,
+          created_at TEXT NOT NULL,
+          finished_at TEXT
+        )
+        """
+    )
 
 
 def _object_type(conn: sqlite3.Connection, name: str) -> str | None:
@@ -169,47 +259,116 @@ def _legacy_fbr_bootstrap_required(
 def init_db(*, python_migrations: tuple[PythonMigration, ...] = ()) -> None:
     Path(db_path()).parent.mkdir(parents=True, exist_ok=True)
     conn = connect()
+    registered_migrations = (
+        *task_workflow_python_migrations(),
+        *python_migrations,
+    )
     try:
-        # Serialize the legacy column bridge and base schema installation.  In
-        # particular, never let two cold starts both observe a missing column
-        # before either ALTER TABLE commits.
+        # Validate an already-recorded Task workflow before the run-dispatch
+        # contract.  Migration 0004 owns a merchant-delete guard that refers
+        # to ``task_plans``; rebuilding that table can make SQLite drop the
+        # guard as a side effect.  Checking the owning table contract first
+        # keeps cold-start diagnostics stable and identifies the actual drift
+        # instead of reporting the dependent guard as the root cause.
+        if _migration_recorded(conn, TASK_WORKFLOW_MIGRATION):
+            assert_task_workflow_table_contracts(conn)
+
+        # Classify dispatch schema before any compatibility bridge can add a
+        # missing column or CREATE IF NOT EXISTS object and thereby conceal a
+        # partial/forged contract.
+        validate_run_dispatch_migration_input(conn)
+
+        # Normalize and checksum-check the complete registry before any schema
+        # bridge. ``only_versions`` filters execution only, so legacy Task
+        # marker adoption and every known checksum remain fail-closed here.
+        apply_migrations(
+            conn,
+            python_migrations=registered_migrations,
+            only_versions=frozenset(),
+        )
+
+        # Serialize legacy prerequisite bridging and the fresh-schema path.
+        # The formal schema contains indexes that are invalid against the old
+        # lowercase Task table, so legacy Task conversion must run first.
         conn.execute("BEGIN IMMEDIATE")
         try:
             _legacy_fbr_bootstrap_required(
                 conn,
-                python_migrations=python_migrations,
+                python_migrations=registered_migrations,
             )
-            _migrate(conn)
+            kind = task_table_kind(conn)
+            if kind != "missing":
+                _assert_unique_coreai_run_bindings(conn)
+                _bootstrap_runs_for_legacy_tasks(conn)
+            _migrate(conn, include_run_dispatch_fields=False)
+            if kind == "missing":
+                execute_sql_payload(conn, SCHEMA_PATH.read_bytes())
+                _migrate(conn, include_run_dispatch_fields=False)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        if kind != "missing":
+            apply_migrations(
+                conn,
+                python_migrations=registered_migrations,
+                only_versions=frozenset({TASK_WORKFLOW_MIGRATION}),
+            )
+
+        # The operator command ledger is owned by 0001 and the 0004 merchant
+        # delete guard references it.  Once any legacy Task table has been
+        # converted, install 0001 explicitly so the dependent trigger can be
+        # created and validated atomically by 0004.
+        apply_migrations(
+            conn,
+            python_migrations=registered_migrations,
+            only_versions=frozenset({PERFORMANCE_MIGRATION}),
+        )
+
+        # 0004 is deliberately applied before the full-schema bridge. Legacy
+        # databases enter here only with every dispatch field absent; fresh
+        # databases already have the exact schema and atomically adopt it.
+        apply_migrations(
+            conn,
+            python_migrations=registered_migrations,
+            only_versions=frozenset({RUN_DISPATCH_MIGRATION}),
+        )
+
+        # Once Task 0002 has replaced any legacy table, the complete schema is
+        # safe to install. Keep this bridge under one writer lock as well.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _migrate(conn, include_run_dispatch_fields=False)
             execute_sql_payload(conn, SCHEMA_PATH.read_bytes())
-            # Existing databases may already contain the scan batch table while
-            # the confirmation table is introduced by the schema above.
-            _migrate(conn)
+            _migrate(conn, include_run_dispatch_fields=False)
             conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source_key"
-                " ON tasks(source_key) WHERE source_key IS NOT NULL"
-            )
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_falcon_scan_batch_confirmation"
-                " ON merchant_local_falcon_scan_batches(confirmation_id)"
-                " WHERE confirmation_id IS NOT NULL"
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_local_falcon_scan_batch_confirmation "
+                "ON merchant_local_falcon_scan_batches(confirmation_id) "
+                "WHERE confirmation_id IS NOT NULL"
             )
             conn.commit()
         except Exception:
             conn.rollback()
             raise
-        apply_migrations(conn, python_migrations=python_migrations)
+
+        apply_migrations(conn, python_migrations=registered_migrations)
         assert_migration_registry_checksums(
             conn,
-            python_migrations=python_migrations,
+            python_migrations=registered_migrations,
         )
         if _legacy_fbr_bootstrap_required(
             conn,
-            python_migrations=python_migrations,
+            python_migrations=registered_migrations,
         ):
             raise MigrationInvariantError("fbr_migration_did_not_complete")
         assert_migration_postconditions(
             conn, version=PERFORMANCE_LIFECYCLE_MIGRATION
         )
+        assert_task_workflow_migration_postconditions(conn)
+        if conn.execute("PRAGMA foreign_key_check").fetchall():
+            raise RuntimeError("database initialization left broken foreign keys")
     finally:
         conn.close()
 

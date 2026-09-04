@@ -12,6 +12,7 @@ export function formatRunDuration(startedAt: string, finishedAt: string | null) 
 }
 
 export function runResult(run: Run) {
+  if (run.status === 'running' && run.dispatch_state === 'UNKNOWN') return '需人工核对'
   if (run.status === 'running') return '生成中'
   if (run.status === 'failed') return run.error || '分析失败'
   return '已生成报告'

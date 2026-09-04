@@ -1,6 +1,3 @@
-import pytest
-
-
 VALID_REPORT = """# 分析报告
 
 一些前文。
@@ -50,183 +47,38 @@ def test_extract_plan_no_block_or_bad_json_returns_empty():
     assert extract_plan(None) == []
 
 
-def test_create_tasks_idempotent(client):
-    """通过 client fixture 拿到已初始化的库；直接用底层连接验证幂等。"""
+def test_legacy_plan_materialization_is_disabled_and_creates_no_formal_tasks(client):
+    import pytest
+
     from app.db import connect
     from app.plan_parser import create_tasks_from_plan, extract_plan
 
     m = client.post(
-        "/api/merchants", json={"name": "M", "primary_location": "Mineola, NY"}
+        "/api/merchants",
+        json={"name": "M", "primary_location": "New York, NY"},
     ).json()
     conn = connect()
     try:
         conn.execute(
             "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
-            " VALUES (?, 'core-r1', 'succeeded', 'manual', '2026-08-31T00:00:00+00:00')",
+            " VALUES (?, 'core-r1', 'running', 'manual', '2026-08-31T00:00:00+00:00')",
             (m["id"],),
         )
         run_id = conn.execute("SELECT id FROM runs").fetchone()["id"]
         items = extract_plan(VALID_REPORT)
-        assert create_tasks_from_plan(conn, m["id"], run_id, "core-r1", items) == 2
-        assert create_tasks_from_plan(conn, m["id"], run_id, "core-r1", items) == 0  # 幂等
-        conn.commit()
+        with pytest.raises(
+            RuntimeError,
+            match="legacy Plan materialization is disabled; use strict Plan persistence and approval",
+        ):
+            create_tasks_from_plan(conn, m["id"], run_id, "core-r1", items)
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     finally:
-        conn.close()
-
-    tasks = client.get(f"/api/merchants/{m['id']}/tasks").json()
-    assert len(tasks) == 2
-    by_key = {t["source_key"]: t for t in tasks}
-    assert set(by_key) == {"plan-core-r1-item-1", "plan-core-r1-item-2"}
-    t1 = by_key["plan-core-r1-item-1"]
-    assert t1["status"] == "todo"
-    assert t1["rationale"] == "营业时间与官网不一致"
-    assert t1["source_run_id"] == run_id
-
-
-def test_create_tasks_from_plan_rejects_an_archived_merchant(client):
-    from app.db import connect
-    from app.plan_parser import create_tasks_from_plan, extract_plan
-
-    merchant = client.post(
-        "/api/merchants",
-        json={"name": "Archived plan", "primary_location": "Mineola, NY"},
-    ).json()
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO runs (merchant_id,coreai_run_id,status,trigger_kind,created_at)"
-            " VALUES (?,'archived-plan-run','succeeded','manual',"
-            "'2026-09-01T00:00:00+00:00')",
-            (merchant["id"],),
-        )
-        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.commit()
-    finally:
-        conn.close()
-    assert client.patch(
-        f"/api/merchants/{merchant['id']}", json={"status": "archived"}
-    ).status_code == 200
-
-    conn = connect()
-    try:
-        with pytest.raises(ValueError, match="merchant is archived"):
-            create_tasks_from_plan(
-                conn,
-                merchant["id"],
-                run_id,
-                "archived-plan-run",
-                extract_plan(VALID_REPORT),
-            )
-        assert conn.execute(
-            "SELECT count(*) FROM tasks WHERE merchant_id=?", (merchant["id"],)
-        ).fetchone()[0] == 0
-    finally:
+        conn.rollback()
         conn.close()
 
 
-def test_create_tasks_from_plan_rejects_cross_merchant_run(client):
-    from app.db import connect
-    from app.plan_parser import create_tasks_from_plan, extract_plan
-
-    merchant_a = client.post(
-        "/api/merchants",
-        json={"name": "Merchant A", "primary_location": "Mineola, NY"},
-    ).json()
-    merchant_b = client.post(
-        "/api/merchants",
-        json={"name": "Merchant B", "primary_location": "Queens, NY"},
-    ).json()
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO runs(merchant_id,coreai_run_id,status,trigger_kind,created_at) "
-            "VALUES (?,'merchant-b-run','succeeded','manual',"
-            "'2026-09-01T00:00:00+00:00')",
-            (merchant_b["id"],),
-        )
-        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.commit()
-
-        with pytest.raises(ValueError, match="run does not belong to merchant"):
-            create_tasks_from_plan(
-                conn,
-                merchant_a["id"],
-                run_id,
-                "merchant-b-run",
-                extract_plan(VALID_REPORT),
-            )
-        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
-    finally:
-        conn.close()
-
-
-def test_create_tasks_from_plan_rejects_coreai_run_id_mismatch(client):
-    from app.db import connect
-    from app.plan_parser import create_tasks_from_plan, extract_plan
-
-    merchant = client.post(
-        "/api/merchants",
-        json={"name": "Run mismatch", "primary_location": "Mineola, NY"},
-    ).json()
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO runs(merchant_id,coreai_run_id,status,trigger_kind,created_at) "
-            "VALUES (?,'persisted-core-run','succeeded','manual',"
-            "'2026-09-01T00:00:00+00:00')",
-            (merchant["id"],),
-        )
-        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.commit()
-
-        with pytest.raises(ValueError, match="core ai run id mismatch"):
-            create_tasks_from_plan(
-                conn,
-                merchant["id"],
-                run_id,
-                "different-core-run",
-                extract_plan(VALID_REPORT),
-            )
-        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
-    finally:
-        conn.close()
-
-
-@pytest.mark.parametrize("status", ["running", "failed"])
-def test_create_tasks_from_plan_requires_succeeded_run(client, status):
-    from app.db import connect
-    from app.plan_parser import create_tasks_from_plan, extract_plan
-
-    merchant = client.post(
-        "/api/merchants",
-        json={"name": f"Run {status}", "primary_location": "Mineola, NY"},
-    ).json()
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO runs(merchant_id,coreai_run_id,status,trigger_kind,created_at) "
-            "VALUES (?,?,?,'manual','2026-09-01T00:00:00+00:00')",
-            (merchant["id"], f"core-{status}", status),
-        )
-        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.commit()
-
-        with pytest.raises(ValueError, match="run has not succeeded"):
-            create_tasks_from_plan(
-                conn,
-                merchant["id"],
-                run_id,
-                f"core-{status}",
-                extract_plan(VALID_REPORT),
-            )
-        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
-    finally:
-        conn.close()
-
-
-def test_extract_plan_carries_expected_outcome(client):
-    from app.db import connect
-    from app.plan_parser import create_tasks_from_plan, extract_plan
+def test_extract_plan_carries_expected_outcome():
+    from app.plan_parser import extract_plan
 
     report = (
         '```json\n'
@@ -237,25 +89,6 @@ def test_extract_plan_carries_expected_outcome(client):
     items = extract_plan(report)
     assert items[0]["expected_outcome"] == "E"
     assert items[1]["expected_outcome"] is None
-
-    m = client.post(
-        "/api/merchants", json={"name": "M", "primary_location": "Mineola, NY"}
-    ).json()
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
-            " VALUES (?, 'core-eo', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00')",
-            (m["id"],),
-        )
-        run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-eo'").fetchone()["id"]
-        create_tasks_from_plan(conn, m["id"], run_id, "core-eo", items)
-        conn.commit()
-    finally:
-        conn.close()
-    by_key = {t["source_key"]: t for t in client.get(f"/api/merchants/{m['id']}/tasks").json()}
-    assert by_key["plan-core-eo-a"]["expected_outcome"] == "E"
-    assert by_key["plan-core-eo-b"]["expected_outcome"] is None
 
 
 def test_extract_plan_tolerates_unclosed_fence():
@@ -303,25 +136,31 @@ def test_extract_plan_start_after_days_to_scheduled_start():
     assert items[3]["scheduled_start"] is None
 
 
-def test_create_tasks_persists_scheduled_start(client):
+def test_legacy_plan_materialization_with_schedule_is_disabled(client):
+    import pytest
+
     from app.db import connect
     from app.plan_parser import create_tasks_from_plan, extract_plan
 
     report = '```json\n[{"id": "a", "title": "T", "rationale": "R", "start_after_days": 1}]\n```'
     m = client.post(
-        "/api/merchants", json={"name": "M", "primary_location": "Mineola, NY"}
+        "/api/merchants",
+        json={"name": "M", "primary_location": "New York, NY"},
     ).json()
     conn = connect()
     try:
         conn.execute(
             "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
-            " VALUES (?, 'core-ss', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00')",
+            " VALUES (?, 'core-ss', 'running', 'manual', '2026-09-01T00:00:00+00:00')",
             (m["id"],),
         )
         run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-ss'").fetchone()["id"]
-        create_tasks_from_plan(conn, m["id"], run_id, "core-ss", extract_plan(report))
-        conn.commit()
+        with pytest.raises(
+            RuntimeError,
+            match="legacy Plan materialization is disabled; use strict Plan persistence and approval",
+        ):
+            create_tasks_from_plan(conn, m["id"], run_id, "core-ss", extract_plan(report))
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     finally:
+        conn.rollback()
         conn.close()
-    t = client.get(f"/api/merchants/{m['id']}/tasks").json()[0]
-    assert t["scheduled_start"] is not None

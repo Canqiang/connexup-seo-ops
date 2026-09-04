@@ -1,12 +1,14 @@
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .auth import require_operator
 from .db import get_db
 from .fbr_gbp import (
     GBP_FIELDS,
@@ -17,9 +19,17 @@ from .fbr_gbp import (
     fbr_gbp_client,
     normalize_gbp_location,
 )
-from .merchants import fetch_active_merchant, fetch_merchant
+from .merchants import (
+    fetch_active_merchant,
+    fetch_merchant,
+    merchant_has_active_work,
+)
 
 router = APIRouter(prefix="/api/merchants", tags=["merchant-profile"])
+identity_router = APIRouter(
+    prefix="/api/performance-identities",
+    tags=["performance-identities"],
+)
 
 
 FIELD_COLUMNS = {
@@ -65,6 +75,23 @@ class FbrLinkBody(BaseModel):
     fbr_merchant_id: str = Field(min_length=1, max_length=200)
 
 
+class FbrRelinkRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=200)
+    merchant_id: int = Field(ge=1)
+    expected_current_binding_generation: int = Field(ge=1)
+    expected_current_fbr_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    new_fbr_merchant_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+    confirmed: Literal[True]
+
+    @field_validator("request_id", "new_fbr_merchant_id", "reason", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -78,6 +105,152 @@ def _utc_now(current_time: datetime | None = None) -> datetime:
 
 def _canonical_utc_instant(current_time: datetime | None = None) -> str:
     return _utc_now(current_time).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _current_fbr_binding_checked(
+    conn: sqlite3.Connection, merchant_id: int
+) -> sqlite3.Row:
+    state = conn.execute(
+        "SELECT merchant_id FROM merchant_fbr_link_state WHERE merchant_id=?",
+        (merchant_id,),
+    ).fetchone()
+    events = conn.execute(
+        "SELECT * FROM merchant_fbr_binding_events "
+        "WHERE merchant_id=? AND valid_to IS NULL",
+        (merchant_id,),
+    ).fetchall()
+    projection = conn.execute(
+        "SELECT fbr_merchant_id,binding_event_id FROM merchant_fbr_links "
+        "WHERE merchant_id=?",
+        (merchant_id,),
+    ).fetchone()
+    if state is None and not events and projection is None:
+        raise HTTPException(status_code=409, detail="FBR Merchant ID 未绑定")
+    if state is None or len(events) != 1 or projection is None:
+        raise HTTPException(status_code=409, detail="FBR 绑定历史不一致")
+    event = events[0]
+    maximum_generation = conn.execute(
+        "SELECT MAX(generation) FROM merchant_fbr_binding_events WHERE merchant_id=?",
+        (merchant_id,),
+    ).fetchone()[0]
+    if (
+        int(event["generation"]) != int(maximum_generation)
+        or int(projection["binding_event_id"]) != int(event["id"])
+        or projection["fbr_merchant_id"] != event["fbr_merchant_id"]
+    ):
+        raise HTTPException(status_code=409, detail="FBR 绑定历史不一致")
+    return event
+
+
+def _fbr_binding_response(event: sqlite3.Row) -> dict[str, object]:
+    return {
+        "event_id": int(event["id"]),
+        "merchant_id": int(event["merchant_id"]),
+        "fbr_merchant_id": str(event["fbr_merchant_id"]),
+        "canonical_fbr_merchant_sha256": str(event["canonical_fbr_merchant_sha256"]),
+        "generation": int(event["generation"]),
+        "valid_from": str(event["valid_from"]),
+        "valid_to": event["valid_to"],
+        "content_sha256": str(event["content_sha256"]),
+        "close_content_sha256": event["close_content_sha256"],
+    }
+
+
+def _commit_fbr_relink_command_result(
+    conn: sqlite3.Connection,
+    *,
+    operator: str,
+    request_id: str,
+    envelope_json: str,
+    envelope_sha256: str,
+    target_stable_id: str,
+    http_status: int,
+    result: dict[str, object],
+    fbr_binding_event_id: int | None,
+    created_at: str,
+) -> Response:
+    """Persist and byte-freeze one deterministic FBR relink outcome."""
+
+    result_json = _canonical_json(result)
+    result_sha256 = _sha256_text(result_json)
+    conn.execute(
+        "INSERT INTO operator_command_ledger("
+        "command_kind,requested_by,request_id,command_envelope_json,"
+        "command_envelope_sha256,target_kind,target_stable_id,http_status,"
+        "result_json,result_sha256,fbr_binding_event_id,created_at"
+        ") VALUES ('FBR_RELINK',?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            operator,
+            request_id,
+            envelope_json,
+            envelope_sha256,
+            "MERCHANT",
+            target_stable_id,
+            http_status,
+            result_json,
+            result_sha256,
+            fbr_binding_event_id,
+            created_at,
+        ),
+    )
+    readback = conn.execute(
+        "SELECT command_envelope_json,command_envelope_sha256,http_status,"
+        "result_json,result_sha256,fbr_binding_event_id "
+        "FROM operator_command_ledger WHERE requested_by=? AND request_id=?",
+        (operator, request_id),
+    ).fetchone()
+    if (
+        readback is None
+        or readback["command_envelope_json"] != envelope_json
+        or readback["command_envelope_sha256"] != envelope_sha256
+        or int(readback["http_status"]) != http_status
+        or readback["result_json"] != result_json
+        or readback["result_sha256"] != result_sha256
+        or readback["fbr_binding_event_id"] != fbr_binding_event_id
+    ):
+        raise RuntimeError("FBR relink command ledger readback failed")
+    conn.commit()
+    return Response(
+        content=result_json,
+        status_code=http_status,
+        media_type="application/json",
+    )
+
+
+def _commit_fbr_relink_rejection(
+    conn: sqlite3.Connection,
+    *,
+    operator: str,
+    request_id: str,
+    envelope_json: str,
+    envelope_sha256: str,
+    target_stable_id: str,
+    status_code: int,
+    detail: object,
+    created_at: str,
+) -> Response:
+    if not 400 <= status_code < 500:
+        raise RuntimeError("FBR relink rejection must be a deterministic 4xx")
+    return _commit_fbr_relink_command_result(
+        conn,
+        operator=operator,
+        request_id=request_id,
+        envelope_json=envelope_json,
+        envelope_sha256=envelope_sha256,
+        target_stable_id=target_stable_id,
+        http_status=status_code,
+        result={"detail": detail},
+        fbr_binding_event_id=None,
+        created_at=created_at,
+    )
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -120,7 +293,12 @@ def get_fbr_client() -> FbrGbpClient | None:
 def _profile_response(conn: sqlite3.Connection, merchant_id: int) -> dict[str, Any]:
     fetch_merchant(conn, merchant_id)
     link = conn.execute(
-        "SELECT * FROM merchant_fbr_links WHERE merchant_id = ?",
+        "SELECT link.*,event.generation AS binding_generation,"
+        "event.canonical_fbr_merchant_sha256 AS binding_sha256 "
+        "FROM merchant_fbr_links AS link "
+        "JOIN merchant_fbr_binding_events AS event "
+        "ON event.id=link.binding_event_id AND event.valid_to IS NULL "
+        "WHERE link.merchant_id = ?",
         (merchant_id,),
     ).fetchone()
     if link is None:
@@ -128,6 +306,8 @@ def _profile_response(conn: sqlite3.Connection, merchant_id: int) -> dict[str, A
             "merchant_id": merchant_id,
             "state": "unbound",
             "fbr_merchant_id": None,
+            "binding_generation": None,
+            "binding_sha256": None,
             "sync_status": None,
             "last_synced_at": None,
             "last_error": None,
@@ -156,6 +336,8 @@ def _profile_response(conn: sqlite3.Connection, merchant_id: int) -> dict[str, A
         "merchant_id": merchant_id,
         "state": link["sync_status"],
         "fbr_merchant_id": link["fbr_merchant_id"],
+        "binding_generation": link["binding_generation"],
+        "binding_sha256": link["binding_sha256"],
         "sync_status": link["sync_status"],
         "last_synced_at": link["last_synced_at"],
         "last_error": link["last_error"],
@@ -200,11 +382,15 @@ def _label(value: object) -> str | None:
         return None
     labels = value.get("labels")
     if not isinstance(labels, list):
-        return _safe_text(value.get("display_name")) or _safe_text(value.get("displayName"))
+        return _safe_text(value.get("display_name")) or _safe_text(
+            value.get("displayName")
+        )
     for candidate in labels:
         if not isinstance(candidate, dict):
             continue
-        text = _safe_text(candidate.get("display_name")) or _safe_text(candidate.get("displayName"))
+        text = _safe_text(candidate.get("display_name")) or _safe_text(
+            candidate.get("displayName")
+        )
         if text:
             return text
     return None
@@ -278,9 +464,7 @@ def _menu_summary(raw: str | None) -> dict[str, Any]:
             count = len(items) if isinstance(items, list) else 0
             item_count += count
             section_name = _label(section) or f"分类 {index}"
-            section_summaries.append(
-                {"name": section_name, "item_count": count}
-            )
+            section_summaries.append({"name": section_name, "item_count": count})
             for item in items if isinstance(items, list) else []:
                 if not isinstance(item, dict):
                     continue
@@ -320,20 +504,30 @@ def _post_summary(raw: str | None) -> dict[str, Any]:
         if state == "LIVE":
             live_count += 1
         media = post.get("media")
-        first_media = media[0] if isinstance(media, list) and media and isinstance(media[0], dict) else {}
+        first_media = (
+            media[0]
+            if isinstance(media, list) and media and isinstance(media[0], dict)
+            else {}
+        )
         call_to_action = post.get("call_to_action") or post.get("callToAction")
         call_to_action = call_to_action if isinstance(call_to_action, dict) else {}
         recent_posts.append(
             {
-                "post_id": _safe_text(post.get("post_id")) or _safe_text(post.get("postId")),
+                "post_id": _safe_text(post.get("post_id"))
+                or _safe_text(post.get("postId")),
                 "state": state,
                 "summary": _safe_text(post.get("summary")),
-                "created_at": _safe_text(post.get("create_time")) or _safe_text(post.get("createTime")),
-                "updated_at": _safe_text(post.get("update_time")) or _safe_text(post.get("updateTime")),
+                "created_at": _safe_text(post.get("create_time"))
+                or _safe_text(post.get("createTime")),
+                "updated_at": _safe_text(post.get("update_time"))
+                or _safe_text(post.get("updateTime")),
                 "media_count": len(media) if isinstance(media, list) else 0,
-                "media_url": _safe_text(first_media.get("google_url")) or _safe_text(first_media.get("googleUrl")),
-                "media_format": _safe_text(first_media.get("media_format")) or _safe_text(first_media.get("mediaFormat")),
-                "cta_type": _safe_text(call_to_action.get("action_type")) or _safe_text(call_to_action.get("actionType")),
+                "media_url": _safe_text(first_media.get("google_url"))
+                or _safe_text(first_media.get("googleUrl")),
+                "media_format": _safe_text(first_media.get("media_format"))
+                or _safe_text(first_media.get("mediaFormat")),
+                "cta_type": _safe_text(call_to_action.get("action_type"))
+                or _safe_text(call_to_action.get("actionType")),
                 "cta_url": _safe_text(call_to_action.get("url")),
             }
         )
@@ -370,22 +564,45 @@ def _review_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
         reviewer_name = (
             _safe_text(review.get("reviewer_name"))
             or _safe_text(review.get("reviewerName"))
-            or (_safe_text(reviewer.get("display_name")) if isinstance(reviewer, dict) else None)
-            or (_safe_text(reviewer.get("displayName")) if isinstance(reviewer, dict) else None)
+            or (
+                _safe_text(reviewer.get("display_name"))
+                if isinstance(reviewer, dict)
+                else None
+            )
+            or (
+                _safe_text(reviewer.get("displayName"))
+                if isinstance(reviewer, dict)
+                else None
+            )
         )
-        reply = review.get("reply") or review.get("review_reply") or review.get("reviewReply")
+        reply = (
+            review.get("reply")
+            or review.get("review_reply")
+            or review.get("reviewReply")
+        )
         recent_reviews.append(
             {
-                "review_id": _safe_text(review.get("google_review_id")) or _safe_text(review.get("reviewId")),
-                "rating": _rating(review.get("rating") if "rating" in review else review.get("star_rating")),
-                "content": _safe_text(review.get("content")) or _safe_text(review.get("comment")),
+                "review_id": _safe_text(review.get("google_review_id"))
+                or _safe_text(review.get("reviewId")),
+                "rating": _rating(
+                    review.get("rating")
+                    if "rating" in review
+                    else review.get("star_rating")
+                ),
+                "content": _safe_text(review.get("content"))
+                or _safe_text(review.get("comment")),
                 "reviewer_name": reviewer_name,
-                "created_at": _safe_text(review.get("created_time")) or _safe_text(review.get("createTime")),
+                "created_at": _safe_text(review.get("created_time"))
+                or _safe_text(review.get("createTime")),
                 "has_reply": bool(reply),
             }
         )
     total = payload.get("total") if payload else None
-    review_count = total if isinstance(total, int) and not isinstance(total, bool) else len(reviews)
+    review_count = (
+        total
+        if isinstance(total, int) and not isinstance(total, bool)
+        else len(reviews)
+    )
     return {"review_count": review_count, "recent_reviews": recent_reviews[:5]}
 
 
@@ -598,7 +815,9 @@ def _fetch_location(
             review_scope = "recent_month"
             review_average_rating = _rating(overview.get("current_month_rating"))
             reply_rate = overview.get("reply_rate")
-            if isinstance(reply_rate, (int, float)) and not isinstance(reply_rate, bool):
+            if isinstance(reply_rate, (int, float)) and not isinstance(
+                reply_rate, bool
+            ):
                 review_reply_rate = float(reply_rate)
     if persisted_review_ready and persisted_review_total != 0:
         review_source_ready = True
@@ -684,7 +903,9 @@ def _fetch_location(
         "source_name": source_name,
         "source_title": source_title,
         "fields": fields,
-        "normalized_json": json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),
+        "normalized_json": json.dumps(
+            normalized, ensure_ascii=False, separators=(",", ":")
+        ),
         "source_updated_at": source_updated_at,
         "synced_at": None,
     }
@@ -696,7 +917,12 @@ def get_profile(merchant_id: int, conn=Depends(get_db)):
 
 
 @router.put("/{merchant_id}/fbr-link")
-def put_fbr_link(merchant_id: int, body: FbrLinkBody, conn=Depends(get_db)):
+def put_fbr_link(
+    merchant_id: int,
+    body: FbrLinkBody,
+    conn=Depends(get_db),
+    operator: str = Depends(require_operator),
+):
     fbr_merchant_id = body.fbr_merchant_id.strip()
     if not fbr_merchant_id:
         raise HTTPException(status_code=422, detail="FBR Merchant ID 不能为空")
@@ -730,8 +956,8 @@ def put_fbr_link(merchant_id: int, body: FbrLinkBody, conn=Depends(get_db)):
         conn.execute(
             "INSERT INTO merchant_fbr_binding_events("
             "merchant_id,fbr_merchant_id,generation,valid_from,opened_by,open_reason,created_at"
-            ") VALUES (?,?,1,?,'merchant_profile','initial_fbr_link',?)",
-            (merchant_id, fbr_merchant_id, now, now),
+            ") VALUES (?,?,1,?,?,'initial_fbr_link',?)",
+            (merchant_id, fbr_merchant_id, now, operator, now),
         )
         conn.execute(
             "INSERT INTO merchant_fbr_link_state("
@@ -754,10 +980,9 @@ def put_fbr_link(merchant_id: int, body: FbrLinkBody, conn=Depends(get_db)):
         raise
     except sqlite3.IntegrityError as exc:
         conn.rollback()
-        if (
-            "fbr_identity_interval_overlap" in str(exc)
-            or "merchant_fbr_binding_events.fbr_merchant_id" in str(exc)
-        ):
+        if "fbr_identity_interval_overlap" in str(
+            exc
+        ) or "merchant_fbr_binding_events.fbr_merchant_id" in str(exc):
             raise HTTPException(
                 status_code=409,
                 detail="FBR Merchant ID 已绑定到其他商户",
@@ -767,6 +992,249 @@ def put_fbr_link(merchant_id: int, body: FbrLinkBody, conn=Depends(get_db)):
         conn.rollback()
         raise
     return _profile_response(conn, merchant_id)
+
+
+@identity_router.post("/fbr/relink")
+def relink_fbr_merchant(
+    body: FbrRelinkRequestV1,
+    conn=Depends(get_db),
+    operator: str = Depends(require_operator),
+) -> Response:
+    request_payload = body.model_dump(mode="json")
+    envelope_json = _canonical_json(
+        {
+            "command_kind": "FBR_RELINK",
+            "request": request_payload,
+            "schema_version": "seo_ops.fbr_relink_command.v1",
+        }
+    )
+    envelope_sha256 = _sha256_text(envelope_json)
+    target_stable_id = str(body.merchant_id)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Idempotency is the first database decision. A network replay must not
+        # be reinterpreted against a later binding, lifecycle, or server clock.
+        previous_command = conn.execute(
+            "SELECT * FROM operator_command_ledger "
+            "WHERE requested_by=? AND request_id=?",
+            (operator, body.request_id),
+        ).fetchone()
+        if previous_command is not None:
+            if (
+                previous_command["command_kind"] != "FBR_RELINK"
+                or previous_command["target_kind"] != "MERCHANT"
+                or previous_command["target_stable_id"] != target_stable_id
+                or previous_command["command_envelope_json"] != envelope_json
+                or previous_command["command_envelope_sha256"] != envelope_sha256
+            ):
+                raise HTTPException(status_code=409, detail="request_id_body_conflict")
+            result_json = str(previous_command["result_json"])
+            if _sha256_text(result_json) != previous_command["result_sha256"]:
+                raise RuntimeError("FBR relink command result readback failed")
+            status_code = int(previous_command["http_status"])
+            conn.commit()
+            return Response(
+                content=result_json,
+                status_code=status_code,
+                media_type="application/json",
+            )
+
+        command_at = _canonical_utc_instant()
+        try:
+            fetch_active_merchant(conn, body.merchant_id)
+        except HTTPException as exc:
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=exc.status_code,
+                detail=exc.detail,
+                created_at=command_at,
+            )
+        if merchant_has_active_work(conn, body.merchant_id):
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=409,
+                detail="merchant has active work; resolve it before relinking FBR",
+                created_at=command_at,
+            )
+        try:
+            current = _current_fbr_binding_checked(conn, body.merchant_id)
+        except HTTPException as exc:
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=exc.status_code,
+                detail=exc.detail,
+                created_at=command_at,
+            )
+        if (
+            int(current["generation"]) != body.expected_current_binding_generation
+            or current["canonical_fbr_merchant_sha256"]
+            != body.expected_current_fbr_sha256
+        ):
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=409,
+                detail="stale_fbr_binding",
+                created_at=command_at,
+            )
+        if current["fbr_merchant_id"] == body.new_fbr_merchant_id:
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=409,
+                detail="new_fbr_identity_matches_current",
+                created_at=command_at,
+            )
+        conflicting_owner = conn.execute(
+            "SELECT merchant_id FROM merchant_fbr_binding_events "
+            "WHERE fbr_merchant_id=? AND valid_to IS NULL LIMIT 1",
+            (body.new_fbr_merchant_id,),
+        ).fetchone()
+        if conflicting_owner is not None:
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=409,
+                detail="FBR Merchant ID 已绑定到其他商户",
+                created_at=command_at,
+            )
+
+        effective_at = command_at
+        if effective_at <= current["valid_from"]:
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=409,
+                detail="fbr_relink_clock_not_monotonic",
+                created_at=command_at,
+            )
+        closed = conn.execute(
+            "UPDATE merchant_fbr_binding_events "
+            "SET valid_to=?,closed_by=?,close_reason=? "
+            "WHERE id=? AND merchant_id=? AND generation=? AND valid_to IS NULL "
+            "AND canonical_fbr_merchant_sha256=?",
+            (
+                effective_at,
+                operator,
+                body.reason,
+                current["id"],
+                body.merchant_id,
+                body.expected_current_binding_generation,
+                body.expected_current_fbr_sha256,
+            ),
+        )
+        if closed.rowcount != 1:
+            return _commit_fbr_relink_rejection(
+                conn,
+                operator=operator,
+                request_id=body.request_id,
+                envelope_json=envelope_json,
+                envelope_sha256=envelope_sha256,
+                target_stable_id=target_stable_id,
+                status_code=409,
+                detail="stale_fbr_binding",
+                created_at=command_at,
+            )
+
+        inserted = conn.execute(
+            "INSERT INTO merchant_fbr_binding_events("
+            "merchant_id,fbr_merchant_id,generation,valid_from,opened_by,open_reason,created_at"
+            ") VALUES (?,?,?,?,?,?,?)",
+            (
+                body.merchant_id,
+                body.new_fbr_merchant_id,
+                body.expected_current_binding_generation + 1,
+                effective_at,
+                operator,
+                body.reason,
+                effective_at,
+            ),
+        )
+        replacement_event_id = int(inserted.lastrowid)
+        reset = conn.execute(
+            "UPDATE merchant_fbr_link_state SET sync_status='not_synced',"
+            "last_synced_at=NULL,last_error=NULL,updated_at=? WHERE merchant_id=?",
+            (effective_at, body.merchant_id),
+        )
+        if reset.rowcount != 1:
+            raise RuntimeError("FBR link-state reset readback failed")
+
+        replacement = _current_fbr_binding_checked(conn, body.merchant_id)
+        projection = conn.execute(
+            "SELECT binding_event_id FROM merchant_fbr_links WHERE merchant_id=?",
+            (body.merchant_id,),
+        ).fetchone()
+        if (
+            int(replacement["id"]) != replacement_event_id
+            or int(replacement["generation"])
+            != body.expected_current_binding_generation + 1
+            or replacement["fbr_merchant_id"] != body.new_fbr_merchant_id
+            or int(projection["binding_event_id"]) != replacement_event_id
+        ):
+            raise RuntimeError("FBR replacement projection readback failed")
+
+        # These rows are replaceable current snapshots. Historical binding,
+        # observations, reports, and source-scope records are retained.
+        conn.execute(
+            "DELETE FROM merchant_gbp_profiles WHERE merchant_id=?",
+            (body.merchant_id,),
+        )
+        result = {
+            "request_id": body.request_id,
+            "previous_event_id": int(current["id"]),
+            "binding": _fbr_binding_response(replacement),
+            "projection_binding_event_id": replacement_event_id,
+        }
+        return _commit_fbr_relink_command_result(
+            conn,
+            operator=operator,
+            request_id=body.request_id,
+            envelope_json=envelope_json,
+            envelope_sha256=envelope_sha256,
+            target_stable_id=target_stable_id,
+            http_status=200,
+            result=result,
+            fbr_binding_event_id=replacement_event_id,
+            created_at=effective_at,
+        )
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _claim_gbp_sync(
@@ -973,9 +1441,7 @@ def _persist_gbp_snapshots(
     finished = conn.execute(
         "UPDATE merchant_fbr_link_state"
         " SET sync_status = 'synced', last_synced_at = ?, last_error = NULL, updated_at = ?"
-        " WHERE"
-        + _claim_where_sql()
-        + " RETURNING merchant_id",
+        " WHERE" + _claim_where_sql() + " RETURNING merchant_id",
         (
             synced_at,
             synced_at,

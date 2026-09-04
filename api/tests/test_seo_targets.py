@@ -4172,11 +4172,13 @@ def test_local_falcon_sync_discards_stale_result_across_archive_restore_aba(
                         merchant_id,
                         MerchantPatch(status="archived"),
                         lifecycle_connection,
+                        operator="test",
                     )
                     patch_merchant(
                         merchant_id,
                         MerchantPatch(status="active"),
                         lifecycle_connection,
+                        operator="test",
                     )
                 finally:
                     lifecycle_connection.close()

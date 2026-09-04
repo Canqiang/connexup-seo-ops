@@ -15,10 +15,13 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 MIGRATION_NAME = re.compile(r"^(?P<version>\d{4}_[a-z0-9_]+)\.sql$")
 MIGRATION_VERSION = re.compile(r"^\d{4}_[a-z0-9_]+$")
 PERFORMANCE_MIGRATION = "0001_performance_history"
+PERFORMANCE_DELETE_GUARD_NAME = "guard_merchants_delete_with_durable_history"
 PERFORMANCE_LIFECYCLE_MIGRATION = "0003_performance_lifecycle_baseline"
 PERFORMANCE_LIFECYCLE_HOOK_MANIFEST = (
     f"{PERFORMANCE_LIFECYCLE_MIGRATION}.hook.json"
 )
+RUN_DISPATCH_MIGRATION = "0004_run_dispatch_contract"
+RUN_DISPATCH_HOOK_MANIFEST = f"{RUN_DISPATCH_MIGRATION}.hook.json"
 _PERFORMANCE_LIFECYCLE_HOOK_CONTRACT = {
     "version": PERFORMANCE_LIFECYCLE_MIGRATION,
     "hook_revision": 1,
@@ -30,6 +33,21 @@ _PERFORMANCE_LIFECYCLE_HOOK_CONTRACT = {
         "bootstrap_missing_merchant_status_baselines",
         "validate_complete_merchant_lifecycle_history",
         "remove_legacy_fbr_projection_table",
+    ],
+}
+_RUN_DISPATCH_HOOK_CONTRACT = {
+    "version": RUN_DISPATCH_MIGRATION,
+    "hook_revision": 1,
+    "entrypoint": "app.migrations.run_run_dispatch_contract_migration_hook",
+    "responsibilities": [
+        "install_fail_closed_run_dispatch_columns",
+        "backfill_legacy_dispatch_state",
+        "track_consecutive_provider_poll_failures",
+        "enforce_unique_provider_and_dispatch_identities",
+        "install_immutable_dispatch_reconciliation_ledger",
+        "extend_merchant_delete_guard_to_task_plans",
+        "extend_merchant_delete_guard_to_operator_commands",
+        "validate_exact_run_dispatch_schema_contract",
     ],
 }
 _CANONICAL_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -58,6 +76,9 @@ class PythonMigration:
     foreign_keys_off: bool = False
     legacy_ledger_names: tuple[str, ...] = ()
     validate_legacy_adoption: Callable[[sqlite3.Connection], None] | None = None
+    compatible_checksums: tuple[
+        tuple[str, Callable[[sqlite3.Connection], None]], ...
+    ] = ()
 
 
 def _sha256_text(value: str) -> str:
@@ -153,6 +174,437 @@ def table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return _object_type(conn, name) == "table"
 
 
+_RUN_DISPATCH_COLUMN_DEFINITIONS = {
+    "dispatch_state": (
+        "dispatch_state TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK "
+        "(dispatch_state IN ('DISPATCHING','DISPATCHED','UNKNOWN','FAILED'))"
+    ),
+    "dispatch_token": "dispatch_token TEXT",
+    "dispatch_started_at": "dispatch_started_at TEXT",
+    "poll_failure_started_at": "poll_failure_started_at TEXT",
+    "provider_candidate_run_id": "provider_candidate_run_id TEXT",
+    "source_agent_id": "source_agent_id TEXT",
+    "merchant_lifecycle_generation": "merchant_lifecycle_generation INTEGER",
+    "merchant_lifecycle_sha256": "merchant_lifecycle_sha256 TEXT",
+    "input_sha256": "input_sha256 TEXT",
+}
+_PRE_POLL_RUN_DISPATCH_COLUMNS = (
+    set(_RUN_DISPATCH_COLUMN_DEFINITIONS) - {"poll_failure_started_at"}
+)
+
+
+def _run_dispatch_schema_statements() -> dict[str, tuple[str, str, str]]:
+    """Return the frozen objects owned by migration 0004."""
+
+    return {
+        "idx_runs_coreai_run_id": (
+            "index",
+            "runs",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_coreai_run_id "
+            "ON runs(coreai_run_id) WHERE coreai_run_id IS NOT NULL",
+        ),
+        "idx_runs_dispatch_token": (
+            "index",
+            "runs",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_dispatch_token "
+            "ON runs(dispatch_token) WHERE dispatch_token IS NOT NULL",
+        ),
+        "run_dispatch_reconciliations": (
+            "table",
+            "run_dispatch_reconciliations",
+            """
+            CREATE TABLE IF NOT EXISTS run_dispatch_reconciliations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id) ON DELETE RESTRICT,
+              action TEXT NOT NULL CHECK (action IN ('NOT_CREATED','BIND_EXISTING')),
+              provider_run_id TEXT,
+              operator_id TEXT NOT NULL CHECK (length(trim(operator_id)) > 0),
+              prior_dispatch_state TEXT NOT NULL
+                CHECK (prior_dispatch_state IN ('DISPATCHING','DISPATCHED','UNKNOWN','FAILED')),
+              result_dispatch_state TEXT NOT NULL
+                CHECK (result_dispatch_state IN ('DISPATCHING','DISPATCHED','UNKNOWN','FAILED')),
+              reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+              created_at TEXT NOT NULL
+            )
+            """,
+        ),
+        "idx_run_dispatch_reconciliations_run": (
+            "index",
+            "run_dispatch_reconciliations",
+            "CREATE INDEX IF NOT EXISTS idx_run_dispatch_reconciliations_run "
+            "ON run_dispatch_reconciliations(run_id, id)",
+        ),
+        "trg_run_dispatch_reconciliations_no_update": (
+            "trigger",
+            "run_dispatch_reconciliations",
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_run_dispatch_reconciliations_no_update
+            BEFORE UPDATE ON run_dispatch_reconciliations
+            BEGIN
+              SELECT RAISE(ABORT, 'run dispatch reconciliations are append-only');
+            END
+            """,
+        ),
+        "trg_run_dispatch_reconciliations_no_delete": (
+            "trigger",
+            "run_dispatch_reconciliations",
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_run_dispatch_reconciliations_no_delete
+            BEFORE DELETE ON run_dispatch_reconciliations
+            BEGIN
+              SELECT RAISE(ABORT, 'run dispatch reconciliations are append-only');
+            END
+            """,
+        ),
+        "guard_merchants_delete_with_task_plan_history": (
+            "trigger",
+            "merchants",
+            """
+            CREATE TRIGGER IF NOT EXISTS guard_merchants_delete_with_task_plan_history
+            BEFORE DELETE ON merchants
+            WHEN EXISTS (SELECT 1 FROM task_plans WHERE merchant_id=OLD.id)
+            BEGIN
+              SELECT RAISE(ABORT, 'merchant_has_durable_history');
+            END
+            """,
+        ),
+        "guard_merchants_delete_with_operator_command_history": (
+            "trigger",
+            "merchants",
+            """
+            CREATE TRIGGER IF NOT EXISTS guard_merchants_delete_with_operator_command_history
+            BEFORE DELETE ON merchants
+            WHEN EXISTS (
+              SELECT 1 FROM operator_command_ledger
+              WHERE target_kind='MERCHANT'
+                AND target_stable_id=CAST(OLD.id AS TEXT)
+                AND http_status != 404
+            )
+            BEGIN
+              SELECT RAISE(ABORT, 'merchant_has_durable_history');
+            END
+            """,
+        ),
+    }
+
+
+def _normalized_contract_ddl(value: str) -> str:
+    normalized = " ".join(value.strip().rstrip(";").split())
+    normalized = re.sub(
+        r"^(CREATE(?: UNIQUE)? (?:TABLE|INDEX|TRIGGER)) IF NOT EXISTS ",
+        r"\1 ",
+        normalized,
+        count=1,
+    )
+    return re.sub(
+        r'(?:"([a-z_][a-z0-9_]*)"|`([a-z_][a-z0-9_]*)`|\[([a-z_][a-z0-9_]*)\])',
+        lambda match: next(group for group in match.groups() if group is not None),
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+
+def _split_table_definitions(table_sql: str) -> list[str]:
+    """Split CREATE TABLE column/constraint clauses at top-level commas."""
+
+    start = table_sql.find("(")
+    end = table_sql.rfind(")")
+    if start < 0 or end <= start:
+        raise MigrationInvariantError("runs table contract is not parseable")
+    body = table_sql[start + 1 : end]
+    definitions: list[str] = []
+    pending: list[str] = []
+    depth = 0
+    quote: str | None = None
+    index = 0
+    while index < len(body):
+        char = body[index]
+        pending.append(char)
+        if quote is not None:
+            if char == quote:
+                if index + 1 < len(body) and body[index + 1] == quote:
+                    pending.append(body[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        elif char in {"'", '"', "`"}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            pending.pop()
+            definitions.append("".join(pending).strip())
+            pending.clear()
+        index += 1
+    if quote is not None or depth != 0:
+        raise MigrationInvariantError("runs table contract is not parseable")
+    if pending:
+        definitions.append("".join(pending).strip())
+    return definitions
+
+
+def _assert_run_dispatch_column_definitions(
+    conn: sqlite3.Connection, names: set[str]
+) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'"
+    ).fetchone()
+    if row is None or not isinstance(row[0], str):
+        raise MigrationInvariantError("runs table contract is missing")
+    definitions: dict[str, str] = {}
+    for definition in _split_table_definitions(row[0]):
+        normalized = _normalized_contract_ddl(definition)
+        name = normalized.split(" ", 1)[0].lower() if normalized else ""
+        definitions[name] = normalized
+    for name in sorted(names):
+        expected_definition = _RUN_DISPATCH_COLUMN_DEFINITIONS[name]
+        if definitions.get(name) != _normalized_contract_ddl(expected_definition):
+            raise MigrationInvariantError(f"runs column contract mismatch: {name}")
+
+
+def _run_dispatch_column_contract_state(conn: sqlite3.Connection) -> str:
+    """Classify runs as missing, legacy, pre-poll, or complete; reject drift."""
+
+    if not table_exists(conn, "runs"):
+        return "missing"
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
+    expected = set(_RUN_DISPATCH_COLUMN_DEFINITIONS)
+    present = columns & expected
+    if not present:
+        return "legacy"
+    if present == _PRE_POLL_RUN_DISPATCH_COLUMNS:
+        _assert_run_dispatch_column_definitions(
+            conn, _PRE_POLL_RUN_DISPATCH_COLUMNS
+        )
+        return "pre_poll"
+    if present != expected:
+        missing = sorted(expected - present)
+        raise MigrationInvariantError(
+            "partial run-dispatch column contract: "
+            f"present={sorted(present)!r},missing={missing!r}"
+        )
+    _assert_run_dispatch_column_definitions(conn, expected)
+    return "complete"
+
+
+def _assert_exact_schema_object(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    expected_type: str,
+    expected_table: str,
+    expected_sql: str,
+    allow_missing: bool = False,
+) -> None:
+    row = conn.execute(
+        "SELECT type,tbl_name,sql FROM sqlite_master WHERE name=?", (name,)
+    ).fetchone()
+    if row is None and allow_missing:
+        return
+    if (
+        row is None
+        or row[0] != expected_type
+        or row[1] != expected_table
+        or not isinstance(row[2], str)
+        or _normalized_contract_ddl(row[2])
+        != _normalized_contract_ddl(expected_sql)
+    ):
+        raise MigrationInvariantError(f"run-dispatch object contract mismatch: {name}")
+
+
+def _assert_run_dispatch_objects(
+    conn: sqlite3.Connection,
+    *,
+    state: str,
+    require_complete: bool,
+    allowed_missing: frozenset[str] = frozenset(),
+) -> None:
+    contracts = _run_dispatch_schema_statements()
+    for name, (expected_type, expected_table, expected_sql) in contracts.items():
+        allow_missing = not require_complete or name in allowed_missing
+        if state == "legacy" and name == "idx_runs_coreai_run_id":
+            # This unique index existed before dispatch lifecycle tracking and
+            # is valid either absent or already canonical on a legacy database.
+            allow_missing = True
+        _assert_exact_schema_object(
+            conn,
+            name=name,
+            expected_type=expected_type,
+            expected_table=expected_table,
+            expected_sql=expected_sql,
+            allow_missing=allow_missing,
+        )
+
+
+def _assert_run_dispatch_unique_index_contracts(
+    conn: sqlite3.Connection,
+) -> None:
+    expected_unique_indexes = {
+        "runs": {
+            (
+                "idx_runs_coreai_run_id",
+                ("coreai_run_id",),
+                True,
+                "c",
+            ),
+            (
+                "idx_runs_dispatch_token",
+                ("dispatch_token",),
+                True,
+                "c",
+            ),
+        },
+        "run_dispatch_reconciliations": {
+            (None, ("run_id",), False, "u"),
+        },
+    }
+    for table_name, expected in expected_unique_indexes.items():
+        actual: set[tuple[str | None, tuple[str, ...], bool, str]] = set()
+        for index_row in conn.execute(f"PRAGMA index_list({table_name})"):
+            if not bool(index_row[2]):
+                continue
+            index_name = str(index_row[1])
+            origin = str(index_row[3])
+            columns = tuple(
+                str(column_row[2])
+                for column_row in conn.execute(f"PRAGMA index_info({index_name})")
+            )
+            actual.add(
+                (
+                    None if origin == "u" else index_name,
+                    columns,
+                    bool(index_row[4]),
+                    origin,
+                )
+            )
+        if actual != expected:
+            raise MigrationInvariantError(
+                f"run-dispatch unique-index contract mismatch: {table_name}"
+            )
+
+
+def _run_dispatch_migration_recorded(conn: sqlite3.Connection) -> bool:
+    if not table_exists(conn, "schema_migrations"):
+        return False
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)")
+    }
+    if columns == {"version", "checksum", "applied_at"}:
+        key = "version"
+    elif columns == {"name", "applied_at"}:
+        key = "name"
+    else:
+        raise MigrationInvariantError("unrecognized schema_migrations layout")
+    return (
+        conn.execute(
+            f"SELECT 1 FROM schema_migrations WHERE {key}=?",
+            (RUN_DISPATCH_MIGRATION,),
+        ).fetchone()
+        is not None
+    )
+
+
+def validate_run_dispatch_migration_input(conn: sqlite3.Connection) -> str:
+    """Read-only cold-start gate that prevents bridge code masking drift."""
+
+    state = _run_dispatch_column_contract_state(conn)
+    if state == "missing":
+        for name in _run_dispatch_schema_statements():
+            if _object_type(conn, name) is not None:
+                raise MigrationInvariantError(
+                    f"run-dispatch object exists without runs table: {name}"
+                )
+        return state
+    if state in {"complete", "pre_poll"}:
+        recorded = _run_dispatch_migration_recorded(conn)
+        allowed_missing = (
+            frozenset({"guard_merchants_delete_with_operator_command_history"})
+            if not recorded
+            else frozenset()
+        )
+        _assert_run_dispatch_objects(
+            conn,
+            state=state,
+            require_complete=True,
+            allowed_missing=allowed_missing,
+        )
+        _assert_run_dispatch_unique_index_contracts(conn)
+        if state == "pre_poll" and recorded:
+            raise MigrationInvariantError(
+                "recorded run-dispatch migration is missing "
+                "poll_failure_started_at"
+            )
+        return state
+    _assert_run_dispatch_objects(
+        conn,
+        state=state,
+        require_complete=False,
+    )
+    # A legacy database must be wholly legacy. A reconciliation table or any
+    # new-field object is evidence of a partial interrupted/hand-built change.
+    if state == "legacy":
+        for name in _run_dispatch_schema_statements():
+            if name == "idx_runs_coreai_run_id":
+                continue
+            if _object_type(conn, name) is not None:
+                raise MigrationInvariantError(
+                    f"partial run-dispatch object contract: {name}"
+                )
+    return state
+
+
+def assert_run_dispatch_migration_postconditions(
+    conn: sqlite3.Connection,
+) -> None:
+    state = _run_dispatch_column_contract_state(conn)
+    if state != "complete":
+        raise MigrationInvariantError(
+            f"run-dispatch migration schema is incomplete: {state}"
+        )
+    _assert_run_dispatch_objects(conn, state=state, require_complete=True)
+    _assert_run_dispatch_unique_index_contracts(conn)
+
+
+def run_run_dispatch_contract_migration_hook(
+    conn: sqlite3.Connection, _migration_instant: str
+) -> None:
+    """Install the run dispatch lifecycle under the migration transaction."""
+
+    if not conn.in_transaction:
+        raise MigrationInvariantError(
+            "run-dispatch migration hook requires an active transaction"
+        )
+    state = validate_run_dispatch_migration_input(conn)
+    if state == "missing":
+        raise MigrationInvariantError("runs table is missing for run-dispatch migration")
+    if state == "legacy":
+        for definition in _RUN_DISPATCH_COLUMN_DEFINITIONS.values():
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {definition}")
+        conn.execute(
+            "UPDATE runs SET dispatch_state = CASE "
+            "WHEN status = 'failed' THEN 'FAILED' "
+            "WHEN status = 'succeeded' AND coreai_run_id IS NOT NULL "
+            "THEN 'DISPATCHED' ELSE 'UNKNOWN' END"
+        )
+        for _name, (_object_type_name, _table_name, statement) in (
+            _run_dispatch_schema_statements().items()
+        ):
+            conn.execute(statement)
+    elif state == "pre_poll":
+        conn.execute(
+            "ALTER TABLE runs ADD COLUMN poll_failure_started_at TEXT"
+        )
+    if not _run_dispatch_migration_recorded(conn):
+        name = "guard_merchants_delete_with_operator_command_history"
+        if _object_type(conn, name) is None:
+            conn.execute(_run_dispatch_schema_statements()[name][2])
+    assert_run_dispatch_migration_postconditions(conn)
+
+
 def _migration_files(migrations_dir: Path) -> list[tuple[Path, str, bytes, str]]:
     result: list[tuple[Path, str, bytes, str]] = []
     for path in sorted(migrations_dir.glob("*.sql")):
@@ -188,6 +640,39 @@ def execute_sql_payload(conn: sqlite3.Connection, payload: bytes) -> None:
     """Execute complete SQL statements without ``executescript`` auto-commits."""
 
     _execute_sql_payload(conn, payload)
+
+
+def performance_delete_guard_contract_sql(
+    migrations_dir: Path = MIGRATIONS_DIR,
+) -> str:
+    """Return the canonical delete-guard DDL owned by migration 0001.
+
+    Task migration 0002 must temporarily remove this trigger while replacing
+    ``tasks``.  Resolve the contract from the immutable migration artifact so
+    the Task hook never carries or recreates a second, drifting definition.
+    """
+
+    payload = (migrations_dir / f"{PERFORMANCE_MIGRATION}.sql").read_text(
+        encoding="utf-8"
+    )
+    pending: list[str] = []
+    matches: list[str] = []
+    for line in payload.splitlines(keepends=True):
+        pending.append(line)
+        statement = "".join(pending)
+        if not sqlite3.complete_statement(statement):
+            continue
+        normalized = " ".join(statement.strip().rstrip(";").split())
+        if normalized.startswith(
+            f"CREATE TRIGGER {PERFORMANCE_DELETE_GUARD_NAME} "
+        ):
+            matches.append(statement.strip().rstrip(";"))
+        pending.clear()
+    if "".join(pending).strip() or len(matches) != 1:
+        raise MigrationInvariantError(
+            "performance delete-guard migration contract is missing or ambiguous"
+        )
+    return matches[0]
 
 
 def python_migration_checksum(version: str, *, contract: str) -> str:
@@ -327,6 +812,18 @@ def _index_python_migrations(
                 "legacy migration validator requires marker names: "
                 f"{migration.version}"
             )
+        compatible_checksums: set[str] = set()
+        for checksum, validator in migration.compatible_checksums:
+            if (
+                re.fullmatch(r"[a-f0-9]{64}", checksum) is None
+                or checksum == migration.checksum
+                or checksum in compatible_checksums
+                or not callable(validator)
+            ):
+                raise ValueError(
+                    f"invalid compatible migration checksum: {migration.version}"
+                )
+            compatible_checksums.add(checksum)
         hooks_by_version[migration.version] = migration
     return hooks_by_version
 
@@ -363,7 +860,7 @@ def _builtin_python_migrations(
             "migration hook contract mismatch: "
             f"{PERFORMANCE_LIFECYCLE_HOOK_MANIFEST}"
         )
-    return (
+    migrations = [
         PythonMigration(
             version=PERFORMANCE_LIFECYCLE_MIGRATION,
             checksum=python_migration_checksum(
@@ -375,7 +872,45 @@ def _builtin_python_migrations(
                 performance_sql_checksum=sql_by_version[PERFORMANCE_MIGRATION][1],
             ),
         ),
-    )
+    ]
+    run_dispatch_manifest_path = migrations_dir / RUN_DISPATCH_HOOK_MANIFEST
+    if (
+        migrations_dir.resolve() == MIGRATIONS_DIR.resolve()
+        or run_dispatch_manifest_path.exists()
+    ):
+        try:
+            run_dispatch_contract = run_dispatch_manifest_path.read_text(
+                encoding="utf-8"
+            )
+        except FileNotFoundError as exc:
+            raise MigrationInvariantError(
+                f"migration hook contract missing: {RUN_DISPATCH_HOOK_MANIFEST}"
+            ) from exc
+        try:
+            run_dispatch_manifest = json.loads(run_dispatch_contract)
+        except json.JSONDecodeError as exc:
+            raise MigrationInvariantError(
+                f"migration hook contract invalid: {RUN_DISPATCH_HOOK_MANIFEST}"
+            ) from exc
+        if (
+            not isinstance(run_dispatch_manifest, dict)
+            or type(run_dispatch_manifest.get("hook_revision")) is not int
+            or run_dispatch_manifest != _RUN_DISPATCH_HOOK_CONTRACT
+        ):
+            raise MigrationInvariantError(
+                f"migration hook contract mismatch: {RUN_DISPATCH_HOOK_MANIFEST}"
+            )
+        migrations.append(
+            PythonMigration(
+                version=RUN_DISPATCH_MIGRATION,
+                checksum=python_migration_checksum(
+                    RUN_DISPATCH_MIGRATION,
+                    contract=run_dispatch_contract,
+                ),
+                apply=run_run_dispatch_contract_migration_hook,
+            )
+        )
+    return tuple(migrations)
 
 
 def _all_python_migrations(
@@ -462,6 +997,51 @@ def assert_migration_registry_checksums(
             )
         if checksum != expected_checksum:
             raise RuntimeError(f"migration checksum mismatch: {version}")
+
+
+def _upgrade_compatible_migration_checksums(
+    conn: sqlite3.Connection,
+    *,
+    expected_checksums: dict[str, str],
+    hooks_by_version: dict[str, PythonMigration],
+) -> None:
+    """Validate and atomically advance explicitly compatible ledger rows.
+
+    Compatibility is deliberately opt-in by exact historical checksum. The
+    validator must prove that the already-applied schema and data satisfy the
+    newer frozen contract before the ledger is advanced.
+    """
+
+    compatible_by_version = {
+        version: dict(migration.compatible_checksums)
+        for version, migration in hooks_by_version.items()
+        if migration.compatible_checksums
+    }
+    for version, actual_checksum in conn.execute(
+        "SELECT version,checksum FROM schema_migrations ORDER BY version"
+    ).fetchall():
+        expected_checksum = expected_checksums.get(str(version))
+        if expected_checksum is None:
+            raise MigrationInvariantError(
+                f"unknown migration registry row: {version}"
+            )
+        if actual_checksum == expected_checksum:
+            continue
+        validator = compatible_by_version.get(str(version), {}).get(
+            str(actual_checksum)
+        )
+        if validator is None:
+            raise RuntimeError(f"migration checksum mismatch: {version}")
+        validator(conn)
+        updated = conn.execute(
+            "UPDATE schema_migrations SET checksum=? "
+            "WHERE version=? AND checksum=?",
+            (expected_checksum, version, actual_checksum),
+        )
+        if updated.rowcount != 1:
+            raise MigrationInvariantError(
+                f"migration compatibility ledger race: {version}"
+            )
 
 
 def _assert_existing_source_scope_binding_generations_valid(
@@ -1007,11 +1587,15 @@ def assert_migration_postconditions(
     version: str,
     expected_legacy_fbr_rows: int | None = None,
 ) -> None:
+    if version == RUN_DISPATCH_MIGRATION:
+        assert_run_dispatch_migration_postconditions(conn)
+        return
     if version not in {
         PERFORMANCE_MIGRATION,
         PERFORMANCE_LIFECYCLE_MIGRATION,
     }:
         return
+    _assert_performance_delete_guard_postcondition(conn)
     _assert_performance_history_schema_present(conn)
     lifecycle_complete = version == PERFORMANCE_LIFECYCLE_MIGRATION
     if lifecycle_complete and table_exists(conn, "merchant_fbr_links_legacy"):
@@ -1035,11 +1619,57 @@ def assert_migration_postconditions(
     _assert_existing_source_scope_binding_generations_valid(conn)
 
 
+def _assert_performance_delete_guard_postcondition(
+    conn: sqlite3.Connection,
+) -> None:
+    """Require 0001's exact durable-history delete guard once recorded."""
+
+    if not table_exists(conn, "schema_migrations"):
+        return
+    columns = _migration_ledger_columns(conn)
+    if columns != {"version", "checksum", "applied_at"}:
+        return
+    recorded = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=?",
+        (PERFORMANCE_MIGRATION,),
+    ).fetchone()
+    if recorded is None:
+        return
+    row = conn.execute(
+        "SELECT type,tbl_name,sql FROM sqlite_master WHERE name=?",
+        (PERFORMANCE_DELETE_GUARD_NAME,),
+    ).fetchone()
+    expected_sql = performance_delete_guard_contract_sql()
+    if (
+        row is None
+        or row[0] != "trigger"
+        or row[1] != "merchants"
+        or not isinstance(row[2], str)
+        or " ".join(row[2].strip().rstrip(";").split())
+        != " ".join(expected_sql.strip().rstrip(";").split())
+    ):
+        raise MigrationInvariantError(
+            "performance_delete_guard_contract_mismatch"
+        )
+
+
+def _assert_recorded_migration_postconditions(
+    conn: sqlite3.Connection,
+) -> None:
+    """Revalidate repository-owned postconditions on every cold start."""
+
+    for (version,) in conn.execute(
+        "SELECT version FROM schema_migrations ORDER BY version"
+    ).fetchall():
+        assert_migration_postconditions(conn, version=str(version))
+
+
 def apply_migrations(
     conn: sqlite3.Connection,
     migrations_dir: Path = MIGRATIONS_DIR,
     *,
     python_migrations: tuple[PythonMigration, ...] = (),
+    only_versions: frozenset[str] | None = None,
 ) -> list[str]:
     if conn.in_transaction:
         raise MigrationInvariantError("migration_connection_has_active_transaction")
@@ -1060,6 +1690,17 @@ def apply_migrations(
         hooks_by_version,
     )
     versions = sorted(expected_checksums)
+    if only_versions is None:
+        executable_versions = versions
+    else:
+        unknown_versions = sorted(set(only_versions) - set(versions))
+        if unknown_versions:
+            raise MigrationInvariantError(
+                f"unknown requested migration versions: {unknown_versions!r}"
+            )
+        executable_versions = [
+            version for version in versions if version in only_versions
+        ]
 
     legacy_adoptions: dict[
         frozenset[str],
@@ -1085,21 +1726,27 @@ def apply_migrations(
             validator,
         )
 
-    if not versions:
+    if not executable_versions:
         try:
             conn.execute("BEGIN IMMEDIATE")
             ensure_migration_ledger(conn, legacy_adoptions=legacy_adoptions)
             _assert_existing_source_scope_binding_generations_valid(conn)
+            _upgrade_compatible_migration_checksums(
+                conn,
+                expected_checksums=expected_checksums,
+                hooks_by_version=hooks_by_version,
+            )
             assert_migration_registry_checksums(
                 conn, migrations_dir, expected_checksums=expected_checksums
             )
+            _assert_recorded_migration_postconditions(conn)
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         return applied
 
-    for version in versions:
+    for version in executable_versions:
         sql_migration = sql_by_version.get(version)
         python_migration = hooks_by_version.get(version)
         payload = None if sql_migration is None else sql_migration[0]
@@ -1115,9 +1762,15 @@ def apply_migrations(
             conn.execute("BEGIN IMMEDIATE")
             ensure_migration_ledger(conn, legacy_adoptions=legacy_adoptions)
             _assert_existing_source_scope_binding_generations_valid(conn)
+            _upgrade_compatible_migration_checksums(
+                conn,
+                expected_checksums=expected_checksums,
+                hooks_by_version=hooks_by_version,
+            )
             assert_migration_registry_checksums(
                 conn, migrations_dir, expected_checksums=expected_checksums
             )
+            _assert_recorded_migration_postconditions(conn)
             existing = conn.execute(
                 "SELECT checksum FROM schema_migrations WHERE version = ?",
                 (version,),

@@ -3,7 +3,6 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from .merchants import now_iso
 from .tasks import TASK_CATEGORIES
 
 JSON_BLOCK_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -67,43 +66,8 @@ def create_tasks_from_plan(
     coreai_run_id: str,
     items: list[dict],
 ) -> int:
-    owns_transaction = not conn.in_transaction
-    if owns_transaction:
-        conn.execute("BEGIN IMMEDIATE")
-    try:
-        merchant = conn.execute(
-            "SELECT status FROM merchants WHERE id=?", (merchant_id,)
-        ).fetchone()
-        if merchant is None:
-            raise ValueError("merchant not found")
-        if merchant["status"] != "active":
-            raise ValueError("merchant is archived")
-        run = conn.execute(
-            "SELECT merchant_id,coreai_run_id,status FROM runs WHERE id=?",
-            (run_id,),
-        ).fetchone()
-        if run is None:
-            raise ValueError("run not found")
-        if int(run["merchant_id"]) != merchant_id:
-            raise ValueError("run does not belong to merchant")
-        if run["coreai_run_id"] != coreai_run_id:
-            raise ValueError("core ai run id mismatch")
-        if run["status"] != "succeeded":
-            raise ValueError("run has not succeeded")
-        created = 0
-        for item in items:
-            source_key = f"plan-{coreai_run_id}-{item['id']}"
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO tasks"
-                " (merchant_id, title, description, rationale, expected_outcome, category, scheduled_start, source_run_id, source_key, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (merchant_id, item["title"], item["description"], item["rationale"], item["expected_outcome"], item["category"], item["scheduled_start"], run_id, source_key, now_iso()),
-            )
-            created += cur.rowcount
-        if owns_transaction:
-            conn.commit()
-        return created
-    except Exception:
-        if owns_transaction:
-            conn.rollback()
-        raise
+    """Reject the removed legacy write path while preserving loose report parsing."""
+
+    raise RuntimeError(
+        "legacy Plan materialization is disabled; use strict Plan persistence and approval"
+    )

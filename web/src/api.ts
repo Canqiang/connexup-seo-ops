@@ -1,3 +1,7 @@
+import type { TaskPlan, TaskPlanPayload } from './taskPlan'
+
+export type { TaskPlan, TaskPlanItem, TaskPlanPayload, TaskPlanRevision } from './taskPlan'
+
 export type Merchant = {
   id: number
   name: string
@@ -9,66 +13,289 @@ export type Merchant = {
   created_at: string
 }
 
-export type TaskStatus = 'todo' | 'doing' | 'done' | 'cancelled'
-export type TaskExecutionStatus = 'running' | 'ready' | 'failed' | 'approved' | 'returned'
+export type TaskStatus =
+  | 'PENDING'
+  | 'PREPARING'
+  | 'AWAITING_APPROVAL'
+  | 'EXECUTING'
+  | 'VERIFYING'
+  | 'DONE'
+  | 'NEEDS_ATTENTION'
+  | 'CANCELLED'
+
+export type TaskWorkflowStatus = TaskStatus
+export type TaskReadiness = 'READY' | 'BLOCKED'
+export type TaskSourceKind = 'AGENT' | 'OPERATOR' | 'MIGRATION'
+export type TaskCategory = 'gbp' | 'content' | 'review' | 'citation' | 'technical' | 'other'
+export type TaskExecutionStage = 'PREPARATION' | 'PUBLICATION' | 'VERIFICATION'
+export type TaskExecutionStatus =
+  | 'PENDING'
+  | 'DISPATCHING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'UNKNOWN'
+  | 'CANCELLED'
+
+export type TaskPreparationTrust =
+  | 'REVIEWABLE'
+  | 'UNKNOWN_NO_TOOL'
+  | 'RETRYABLE'
+  | 'UNTRUSTED'
+
+export type TaskBlockerCode =
+  | 'MERCHANT_ARCHIVED'
+  | 'REVISION_INACTIVE'
+  | 'SCHEDULED_FOR_FUTURE'
+  | 'UPSTREAM_NOT_DONE'
+
+export type TaskBlocker =
+  | { code: 'MERCHANT_ARCHIVED' }
+  | { code: 'REVISION_INACTIVE' }
+  | { code: 'SCHEDULED_FOR_FUTURE'; scheduled_start: string }
+  | { code: 'UPSTREAM_NOT_DONE'; task_id: number; task_key: string; task_title: string }
+
+export type TaskExecutionRequest = Record<string, unknown> & {
+  definition_checksum?: string
+  executor_kind?: string
+  llm_call_id?: string
+  stage?: TaskExecutionStage
+  task_id?: number
+  workflow_version?: number
+}
 
 export type TaskExecution = {
   id: number
   task_id: number
-  coreai_run_id: string | null
+  stage: TaskExecutionStage
   status: TaskExecutionStatus
   attempt: number
-  output_text: string | null
+  approval_id: number | null
+  artifact_id: number | null
+  request_checksum: string
+  idempotency_key: string
+  dispatch_started_at: string | null
+  coreai_run_id: string | null
+  provider_resource_id: string | null
+  preparation_trust: TaskPreparationTrust
+  request: TaskExecutionRequest
+  evidence: string[]
+  result: unknown
+  result_checksum: string | null
+  legacy_result?: { unverified: true; output_text: string }
   error: string | null
   review_note: string | null
+  next_attempt_at: string | null
   created_at: string
   finished_at: string | null
   reviewed_at: string | null
 }
 
-export type Task = {
+export type TaskPlanContext = {
+  id: number
+  source_kind: TaskSourceKind
+  state: TaskPlan['state']
+  latest_revision: number
+  approved_revision: number | null
+}
+
+export type TaskSummary = {
   id: number
   merchant_id: number
+  merchant_name: string
+  plan_id: number
+  plan_revision: number
+  task_key: string
+  task_type: 'PREPARE_ONLY'
+  workflow_version: number
+  parameters: Record<string, unknown>
+  definition_checksum: string
   title: string
   description: string | null
   rationale: string | null
   expected_outcome: string | null
-  category: string | null
+  category: TaskCategory | null
   scheduled_start: string | null
   status: TaskStatus
-  execution_status?: TaskExecutionStatus | null
+  version: number
+  assignee: string | null
+  labels: string[]
+  operator_note: string | null
   evidence_note: string | null
   source_run_id: number | null
-  source_plan_approved: boolean
   source_key: string | null
+  replaces_task_id: number | null
+  replaced_by_task_id: number | null
+  plan: TaskPlanContext
+  source_plan_approved: boolean
+  readiness: TaskReadiness
+  blocker: TaskBlocker | null
+  execution_status: TaskExecutionStatus | null
   created_at: string
+  updated_at: string | null
+  started_at: string | null
   completed_at: string | null
+  cancelled_at: string | null
   merchant_status?: 'active' | 'archived'
+}
+
+export type TaskEvent = {
+  id: number
+  entity_type: 'TASK'
+  entity_id: number
+  event_type: string
+  actor_type: string
+  actor_id: string | null
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export type TaskDetail = TaskSummary & {
+  upstream: TaskSummary[]
+  downstream: TaskSummary[]
+  executions: TaskExecution[]
+  events: TaskEvent[]
+}
+
+/** Compatibility name for existing consumers; formal Task rows are server summaries. */
+export type Task = TaskSummary
+export type PlanTaskSummary = TaskSummary
+
+export type TaskQuery = {
+  merchant_id?: number
+  include_archived?: boolean
+  plan_id?: number
+  plan_revision?: number
+  task_type?: 'PREPARE_ONLY'
+  status?: TaskStatus
+  readiness?: TaskReadiness
+  blocker_code?: TaskBlockerCode
+  source_kind?: TaskSourceKind
+  scheduled_before?: string
+  scheduled_after?: string
+}
+
+type OperatorTaskCreateBase = {
+  task_type: 'PREPARE_ONLY'
+  title: string
+  rationale: string
+  expected_outcome: string
+  scheduled_start: string | null
+  parameters: { description?: string | null; category?: TaskCategory | null }
+}
+
+type OperatorTaskReplacement =
+  | { replaces_task_id: number; replaces_task_version: number }
+  | { replaces_task_id?: never; replaces_task_version?: never }
+
+export type OperatorTaskCreate = OperatorTaskCreateBase & OperatorTaskReplacement
+
+type TaskMetadataFields = {
+  assignee: string | null
+  labels: string[] | null
+  operator_note: string | null
+}
+
+export type TaskMetadataUpdate = { expected_version: number } & (
+  | ({ assignee: TaskMetadataFields['assignee'] } & Partial<Omit<TaskMetadataFields, 'assignee'>>)
+  | ({ labels: TaskMetadataFields['labels'] } & Partial<Omit<TaskMetadataFields, 'labels'>>)
+  | ({ operator_note: TaskMetadataFields['operator_note'] } & Partial<Omit<TaskMetadataFields, 'operator_note'>>)
+)
+
+export type TaskReviewIdentity = {
+  expected_version: number
+  expected_execution_id: number
+  expected_result_checksum: string
+}
+
+const PLAN_VALIDATION_LABELS: Record<string, string> = {
+  cycle: '存在循环依赖',
+  duplicate_dependency: '存在重复依赖',
+  duplicate_edge: '存在重复依赖边',
+  duplicate_key: '存在重复 Task key',
+  missing_dependency: '引用了不存在的前置任务',
+  parameters: 'Task 参数不符合当前类型约束',
+  parameters_size: 'Task 参数超过大小限制',
+  parameters_too_large: 'Task 参数超过大小限制',
+  plan_size: 'Plan 超过大小限制',
+  plan_too_large: 'Plan 超过大小限制',
+  scheduled_start: '计划时间格式不正确',
+  self_dependency: 'Task 不能依赖自身',
+  task_count: 'Task 数量必须为 1–50',
+  task_type_disabled: 'Task 类型当前未启用',
+  task_key: 'Task key 格式不正确',
+  unknown_field: '包含不支持的字段',
+}
+
+function errorDetail(body: unknown, status: number, statusText: string): string {
+  if (body && typeof body === 'object' && 'detail' in body) {
+    const detail = (body as { detail: unknown }).detail
+    if (typeof detail === 'string') return detail
+    if (detail && typeof detail === 'object' && 'codes' in detail) {
+      const codes = (detail as { codes: unknown }).codes
+      if (Array.isArray(codes)) {
+        const labels = codes.map(code => PLAN_VALIDATION_LABELS[String(code)] ?? String(code))
+        return `Plan 校验失败：${labels.join('；')}`
+      }
+    }
+    if (Array.isArray(detail)) {
+      const messages = detail.flatMap(item => {
+        if (!item || typeof item !== 'object') return []
+        const issue = item as { loc?: unknown; msg?: unknown }
+        const location = Array.isArray(issue.loc) ? issue.loc.map(String).join('.') : 'request'
+        return typeof issue.msg === 'string' ? [`${location}：${issue.msg}`] : []
+      })
+      if (messages.length > 0) return `请求校验失败：${messages.join('；')}`
+    }
+  }
+  return `${status} ${statusText}`
+}
+
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    const detail = body && typeof body.detail === 'string' ? body.detail : `${res.status} ${res.statusText}`
-    throw new Error(detail)
+    throw new ApiError(res.status, errorDetail(body, res.status, res.statusText))
   }
   if (res.status === 204) return undefined as T
   return res.json()
 }
 
-async function requestOptional<T>(path: string): Promise<T | null> {
-  const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' } })
+async function requestOptional<T>(path: string, init?: RequestInit): Promise<T | null> {
+  const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
   if (res.status === 404) return null
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    const detail = body && typeof body.detail === 'string' ? body.detail : `${res.status} ${res.statusText}`
-    throw new Error(detail)
+    throw new ApiError(res.status, errorDetail(body, res.status, res.statusText))
   }
   return res.json()
 }
 
+function taskQueryPath(filters: TaskQuery = {}): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+  }
+  const query = params.toString()
+  return `/api/tasks${query ? `?${query}` : ''}`
+}
+
 export type RunStatus = 'running' | 'succeeded' | 'failed'
+export type RunDispatchState = 'DISPATCHING' | 'DISPATCHED' | 'UNKNOWN' | 'FAILED' | null
+
+export type RunDispatchReconciliation =
+  | { action: 'BIND_EXISTING'; provider_run_id: string; reason: string }
+  | { action: 'NOT_CREATED'; expected_provider_candidate_run_id: null; reason: string }
 
 export type MerchantStats = Merchant & {
   todo_count: number
@@ -76,12 +303,16 @@ export type MerchantStats = Merchant & {
   has_running_run: boolean
   last_run_at: string | null
   last_run_status: RunStatus | null
+  can_delete: boolean
 }
 
 export type Run = {
   id: number
   merchant_id: number
   coreai_run_id: string | null
+  provider_candidate_run_id?: string | null
+  dispatch_state: RunDispatchState
+  needs_attention: boolean
   status: RunStatus
   trigger_kind: 'manual' | 'auto'
   report_text?: string | null
@@ -234,10 +465,39 @@ export type MerchantProfile = {
   merchant_id: number
   state: 'unbound' | 'not_synced' | 'syncing' | 'synced' | 'failed'
   fbr_merchant_id: string | null
+  binding_generation: number | null
+  binding_sha256: string | null
   sync_status: string | null
   last_synced_at: string | null
   last_error: string | null
   locations: MerchantGbpLocation[]
+}
+
+export type FbrRelinkRequest = {
+  request_id: string
+  merchant_id: number
+  expected_current_binding_generation: number
+  expected_current_fbr_sha256: string
+  new_fbr_merchant_id: string
+  reason: string
+  confirmed: true
+}
+
+export type FbrRelinkResult = {
+  request_id: string
+  previous_event_id: number
+  binding: {
+    event_id: number
+    merchant_id: number
+    fbr_merchant_id: string
+    canonical_fbr_merchant_sha256: string
+    generation: number
+    valid_from: string
+    valid_to: string | null
+    content_sha256: string
+    close_content_sha256: string | null
+  }
+  projection_binding_event_id: number
 }
 
 export type SeoKeyword = {
@@ -518,7 +778,8 @@ export const api = {
     request<MerchantStats[]>(`/api/merchants${status ? `?status=${status}` : ''}`),
   createMerchant: (body: { name: string; notes?: string; primary_location?: string; website_url?: string }) =>
     request<Merchant>('/api/merchants', { method: 'POST', body: JSON.stringify(body) }),
-  getMerchant: (id: number) => request<Merchant>(`/api/merchants/${id}`),
+  deleteMerchant: (id: number) => request<void>(`/api/merchants/${id}`, { method: 'DELETE' }),
+  getMerchant: (id: number, signal?: AbortSignal) => request<Merchant>(`/api/merchants/${id}`, { signal }),
   getMerchantProfile: (id: number) => request<MerchantProfile>(`/api/merchants/${id}/profile`),
   getSeoTargets: (id: number) => request<SeoTargetState>(`/api/merchants/${id}/seo-targets`),
   refreshSeoTargets: (id: number) =>
@@ -561,30 +822,54 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ fbr_merchant_id: fbrMerchantId }),
     }),
+  relinkMerchantFbr: (body: FbrRelinkRequest) =>
+    request<FbrRelinkResult>('/api/performance-identities/fbr/relink', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   syncMerchantGbp: (id: number) =>
     request<MerchantProfile>(`/api/merchants/${id}/gbp-sync`, { method: 'POST' }),
   patchMerchant: (id: number, body: Partial<Pick<Merchant, 'name' | 'status' | 'notes' | 'primary_location' | 'website_url' | 'auto_run_interval_days'>>) =>
     request<Merchant>(`/api/merchants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  deleteMerchant: (id: number) => request<void>(`/api/merchants/${id}`, { method: 'DELETE' }),
-  listTasks: (merchantId: number) => request<Task[]>(`/api/merchants/${merchantId}/tasks`),
-  createTask: (merchantId: number, body: { title: string; description?: string; rationale?: string; expected_outcome?: string; category?: string }) =>
-    request<Task>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body) }),
-  getTask: (id: number) => request<Task>(`/api/tasks/${id}`),
-  getTaskExecution: (id: number) => requestOptional<TaskExecution>(`/api/tasks/${id}/execution`),
-  executeTask: (id: number) => request<TaskExecution>(`/api/tasks/${id}/execute`, { method: 'POST' }),
-  approveTaskExecution: (id: number) => request<{ task: Task; execution: TaskExecution }>(`/api/tasks/${id}/approve-execution`, { method: 'POST' }),
-  returnTaskExecution: (id: number, reason: string) => request<TaskExecution>(`/api/tasks/${id}/return-execution`, { method: 'POST', body: JSON.stringify({ reason }) }),
-  patchTask: (id: number, body: Partial<Pick<Task, 'title' | 'description' | 'rationale' | 'expected_outcome' | 'category' | 'evidence_note' | 'status'>>) =>
-    request<Task>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  listRuns: (merchantId: number) => request<Run[]>(`/api/merchants/${merchantId}/runs`),
+  listTasks: (merchantId: number, signal?: AbortSignal) =>
+    request<TaskSummary[]>(`/api/merchants/${merchantId}/tasks`, { signal }),
+  createTask: (merchantId: number, body: OperatorTaskCreate, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body), signal }),
+  getTask: (id: number, signal?: AbortSignal) => request<TaskDetail>(`/api/tasks/${id}`, { signal }),
+  getTaskExecution: (id: number, signal?: AbortSignal) => requestOptional<TaskExecution>(`/api/tasks/${id}/execution`, { signal }),
+  patchTaskMetadata: (id: number, body: TaskMetadataUpdate, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body), signal }),
+  cancelTask: (id: number, body: { expected_version: number; reason: string }, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/tasks/${id}/cancel`, { method: 'POST', body: JSON.stringify(body), signal }),
+  retryTaskPreparation: (id: number, body: { expected_version: number; reason: string }, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/tasks/${id}/retry-preparation`, { method: 'POST', body: JSON.stringify(body), signal }),
+  executeTask: (id: number, body: { expected_version: number }, signal?: AbortSignal) =>
+    request<TaskExecution>(`/api/tasks/${id}/execute`, { method: 'POST', body: JSON.stringify(body), signal }),
+  approveTaskExecution: (id: number, body: TaskReviewIdentity, signal?: AbortSignal) =>
+    request<{ task: TaskDetail; execution: TaskExecution }>(`/api/tasks/${id}/approve-execution`, { method: 'POST', body: JSON.stringify(body), signal }),
+  returnTaskExecution: (id: number, body: TaskReviewIdentity & { reason: string }, signal?: AbortSignal) =>
+    request<{ task: TaskDetail; execution: TaskExecution }>(`/api/tasks/${id}/return-execution`, { method: 'POST', body: JSON.stringify(body), signal }),
+  listRuns: (merchantId: number, signal?: AbortSignal) => request<Run[]>(`/api/merchants/${merchantId}/runs`, { signal }),
   createRun: (merchantId: number) => request<Run>(`/api/merchants/${merchantId}/runs`, { method: 'POST' }),
-  getRun: (id: number) => request<Run>(`/api/runs/${id}`),
-  getRunAudit: (id: number) => requestOptional<AuditSnapshot>(`/api/runs/${id}/audit`),
-  approvePlan: (id: number) => request<Run>(`/api/runs/${id}/approve-plan`, { method: 'POST' }),
-  listRunTasks: (id: number) => request<Task[]>(`/api/runs/${id}/tasks`),
-  listAllTasks: (includeArchived = false) => request<(Task & { merchant_name: string })[]>(
-    `/api/tasks${includeArchived ? '?include_archived=true' : ''}`,
-  ),
-  batchTasks: (ids: number[], status: TaskStatus) =>
-    request<{ updated: number[]; skipped: number[] }>('/api/tasks/batch', { method: 'POST', body: JSON.stringify({ ids, status }) }),
+  getRun: (id: number, signal?: AbortSignal) => request<Run>(`/api/runs/${id}`, { signal }),
+  reconcileRunDispatch: (id: number, body: RunDispatchReconciliation, signal?: AbortSignal) =>
+    request<Run>(`/api/runs/${id}/reconcile-dispatch`, { method: 'POST', body: JSON.stringify(body), signal }),
+  getRunAudit: (id: number, signal?: AbortSignal) => requestOptional<AuditSnapshot>(`/api/runs/${id}/audit`, { signal }),
+  getRunTaskPlan: (id: number, signal?: AbortSignal) => requestOptional<TaskPlan>(`/api/runs/${id}/task-plan`, { signal }),
+  getTaskPlan: (id: number, signal?: AbortSignal) => request<TaskPlan>(`/api/task-plans/${id}`, { signal }),
+  replaceTaskPlanDraft: (
+    id: number,
+    body: {
+      expected_revision: number
+      plan: TaskPlanPayload
+      removals: Array<{ key: string; reason: string }>
+    },
+    signal?: AbortSignal,
+  ) => request<TaskPlan>(`/api/task-plans/${id}/draft`, { method: 'PUT', body: JSON.stringify(body), signal }),
+  approveTaskPlan: (id: number, body: { revision: number; checksum: string }, signal?: AbortSignal) =>
+    request<TaskPlan>(`/api/task-plans/${id}/approve`, { method: 'POST', body: JSON.stringify(body), signal }),
+  rejectTaskPlan: (id: number, body: { expected_revision: number; reason: string }, signal?: AbortSignal) =>
+    request<TaskPlan>(`/api/task-plans/${id}/reject`, { method: 'POST', body: JSON.stringify(body), signal }),
+  listPlanTasks: (id: number, signal?: AbortSignal) => request<PlanTaskSummary[]>(taskQueryPath({ plan_id: id, include_archived: true }), { signal }),
+  listAllTasks: (filters: TaskQuery = {}, signal?: AbortSignal) => request<TaskSummary[]>(taskQueryPath(filters), { signal }),
 }
