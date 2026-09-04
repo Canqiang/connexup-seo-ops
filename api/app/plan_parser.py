@@ -78,6 +78,18 @@ def create_tasks_from_plan(
             raise ValueError("merchant not found")
         if merchant["status"] != "active":
             raise ValueError("merchant is archived")
+        run = conn.execute(
+            "SELECT merchant_id,coreai_run_id,status FROM runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise ValueError("run not found")
+        if int(run["merchant_id"]) != merchant_id:
+            raise ValueError("run does not belong to merchant")
+        if run["coreai_run_id"] != coreai_run_id:
+            raise ValueError("core ai run id mismatch")
+        if run["status"] != "succeeded":
+            raise ValueError("run has not succeeded")
         created = 0
         for item in items:
             source_key = f"plan-{coreai_run_id}-{item['id']}"

@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from app.migrations import (
+    PERFORMANCE_LIFECYCLE_MIGRATION,
     PERFORMANCE_MIGRATION,
     MigrationInvariantError,
     PythonMigration,
@@ -85,7 +86,9 @@ def _object_type(conn: sqlite3.Connection, name: str) -> str | None:
     return None if row is None else str(row[0])
 
 
-def _migration_recorded(conn: sqlite3.Connection) -> bool:
+def _migration_recorded(
+    conn: sqlite3.Connection, version: str = PERFORMANCE_MIGRATION
+) -> bool:
     if _object_type(conn, "schema_migrations") != "table":
         return False
     columns = {
@@ -100,7 +103,7 @@ def _migration_recorded(conn: sqlite3.Connection) -> bool:
     return (
         conn.execute(
             "SELECT 1 FROM schema_migrations WHERE version = ?",
-            (PERFORMANCE_MIGRATION,),
+            (version,),
         ).fetchone()
         is not None
     )
@@ -126,6 +129,9 @@ def _legacy_fbr_bootstrap_required(
             python_migrations=python_migrations,
         )
     recorded = _migration_recorded(conn)
+    lifecycle_recorded = _migration_recorded(
+        conn, PERFORMANCE_LIFECYCLE_MIGRATION
+    )
     compatibility_type = _object_type(conn, "merchant_fbr_links")
     legacy_renamed = _object_type(conn, "merchant_fbr_links_legacy")
     history_type = _object_type(conn, "merchant_fbr_binding_events")
@@ -134,7 +140,10 @@ def _legacy_fbr_bootstrap_required(
     if recorded:
         if (
             compatibility_type == "view"
-            and legacy_renamed is None
+            and (
+                legacy_renamed is None
+                or (legacy_renamed == "table" and not lifecycle_recorded)
+            )
             and history_type == "table"
             and state_type == "table"
         ):
@@ -198,7 +207,9 @@ def init_db(*, python_migrations: tuple[PythonMigration, ...] = ()) -> None:
             python_migrations=python_migrations,
         ):
             raise MigrationInvariantError("fbr_migration_did_not_complete")
-        assert_migration_postconditions(conn, version=PERFORMANCE_MIGRATION)
+        assert_migration_postconditions(
+            conn, version=PERFORMANCE_LIFECYCLE_MIGRATION
+        )
     finally:
         conn.close()
 

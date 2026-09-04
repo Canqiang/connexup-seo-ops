@@ -1,0 +1,11 @@
+{
+  "version": "0003_performance_lifecycle_baseline",
+  "hook_revision": 1,
+  "entrypoint": "app.migrations.run_performance_lifecycle_baseline_migration_hook",
+  "responsibilities": [
+    "bootstrap_legacy_fbr_binding_baselines",
+    "bootstrap_missing_merchant_status_baselines",
+    "validate_complete_merchant_lifecycle_history",
+    "remove_legacy_fbr_projection_table"
+  ]
+}

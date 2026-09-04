@@ -90,6 +90,95 @@ def build_legacy_database_with_blank_fbr_identity(database, fbr_merchant_id):
     return database
 
 
+def build_deployed_sql_only_0001_database(database):
+    """Reproduce the immutable 0001 deployment contract from before hooks were versioned.
+
+    The deployed runner stored the SQL checksum while applying the original data
+    transformation in the same transaction.  Keep this fixture independent of
+    the forward 0003 hook so it can catch accidental 0001 redefinition.
+    """
+
+    build_legacy_database(database)
+    migrations = migrations_api()
+    sql_path = migrations.MIGRATIONS_DIR / "0001_performance_history.sql"
+    sql_checksum = hashlib.sha256(sql_path.read_bytes()).hexdigest()
+    applied_at = "2026-09-03T09:00:00.000000Z"
+    actor = "schema_migration:0001_performance_history"
+    conn = open_database(database)
+    legacy_links = conn.execute(
+        "SELECT merchant_id,fbr_merchant_id,sync_status,last_synced_at,last_error,"
+        "created_at,updated_at FROM merchant_fbr_links ORDER BY merchant_id"
+    ).fetchall()
+    merchants = conn.execute(
+        "SELECT id,status FROM merchants ORDER BY id"
+    ).fetchall()
+    conn.execute("BEGIN IMMEDIATE")
+    migrations.execute_sql_payload(conn, sql_path.read_bytes())
+    for row in legacy_links:
+        exact_fbr_id = row["fbr_merchant_id"].strip()
+        conn.execute(
+            "INSERT INTO merchant_fbr_binding_events("
+            "merchant_id,fbr_merchant_id,generation,valid_from,opened_by,open_reason,created_at"
+            ") VALUES (?,?,1,?,?,?,?)",
+            (
+                row["merchant_id"],
+                exact_fbr_id,
+                applied_at,
+                actor,
+                "legacy_fbr_binding_baseline",
+                applied_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO merchant_fbr_link_state("
+            "merchant_id,sync_status,last_synced_at,last_error,created_at,updated_at"
+            ") VALUES (?,?,?,?,?,?)",
+            (
+                row["merchant_id"],
+                row["sync_status"],
+                row["last_synced_at"],
+                row["last_error"],
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+    for row in merchants:
+        digest = migrations.content_sha256(
+            row["id"],
+            row["status"],
+            applied_at,
+            1,
+            actor,
+            "legacy_status_baseline",
+        )
+        conn.execute(
+            "INSERT INTO merchant_status_events("
+            "merchant_id,status,effective_at,generation,actor,reason,content_sha256,created_at"
+            ") VALUES (?,?,?,1,?,?,?,?)",
+            (
+                row["id"],
+                row["status"],
+                applied_at,
+                actor,
+                "legacy_status_baseline",
+                digest,
+                applied_at,
+            ),
+        )
+    conn.execute("DROP TABLE merchant_fbr_links_legacy")
+    conn.execute(
+        "CREATE TABLE schema_migrations("
+        "version TEXT PRIMARY KEY,checksum TEXT NOT NULL,applied_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES (?,?,?)",
+        ("0001_performance_history", sql_checksum, applied_at),
+    )
+    conn.commit()
+    conn.close()
+    return database
+
+
 def _hash_rows(conn, table, columns):
     quoted = ",".join(f'"{column}"' for column in columns)
     rows = conn.execute(f'SELECT {quoted} FROM "{table}" ORDER BY {quoted}').fetchall()
@@ -494,7 +583,10 @@ def test_versioned_migration_is_atomic_checksum_locked_and_repeatable(tmp_path, 
 
     assert first == second
     assert legacy_evidence_hashes(database) == before_hashes
-    assert migration_versions(database) == ["0001_performance_history"]
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
     assert integrity_results(database) == ("ok", [])
 
 
@@ -505,7 +597,10 @@ def test_migrated_database_fresh_process_cold_start_skips_legacy_fbr_ddl(tmp_pat
     run_init_db_in_fresh_process(database)
     assert sqlite_object_type(database, "merchant_fbr_links") == "view"
     assert not index_exists_at_path(database, "idx_merchant_fbr_links_external")
-    assert migration_versions(database) == ["0001_performance_history"]
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
     assert exact_database_fingerprint(database) == first
     assert integrity_results(database) == ("ok", [])
 
@@ -517,16 +612,21 @@ def test_fresh_database_init_db_twice_bootstraps_then_migrates_once(tmp_path, mo
     first = exact_database_fingerprint(database)
     init_db()
     assert sqlite_object_type(database, "merchant_fbr_links") == "view"
-    assert migration_versions(database) == ["0001_performance_history"]
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
     assert exact_database_fingerprint(database) == first
     assert integrity_results(database) == ("ok", [])
 
 
-def test_0001_backfills_legacy_fbr_projection_at_migration_instant_only(tmp_path):
+def test_0003_backfills_legacy_fbr_projection_at_migration_instant_only(tmp_path):
     database = build_legacy_database(tmp_path / "legacy-fbr.db")
     legacy = legacy_fbr_projection(database)
     migrations_api().apply_migrations(sqlite3.connect(database))
-    applied_at = migration_row(database, "0001_performance_history").applied_at
+    applied_at = migration_row(
+        database, "0003_performance_lifecycle_baseline"
+    ).applied_at
     event = fbr_binding_events(database, merchant_id=legacy.merchant_id)
     assert len(event) == 1
     assert event[0].generation == 1
@@ -542,37 +642,258 @@ def test_0001_backfills_legacy_fbr_projection_at_migration_instant_only(tmp_path
     assert exact_database_fingerprint(database) == before_replay
 
 
-def test_0001_registry_checksum_binds_frozen_data_hook_contract():
+def test_0001_keeps_deployed_sql_checksum_and_0003_binds_frozen_hook_contract():
     migrations = migrations_api()
     sql_path = migrations.MIGRATIONS_DIR / "0001_performance_history.sql"
-    hook_path = migrations.MIGRATIONS_DIR / "0001_performance_history.hook.json"
+    hook_path = (
+        migrations.MIGRATIONS_DIR
+        / "0003_performance_lifecycle_baseline.hook.json"
+    )
 
     checksums = migrations.migration_registry_checksums()
     sql_checksum = hashlib.sha256(sql_path.read_bytes()).hexdigest()
     hook_checksum = migrations.python_migration_checksum(
-        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
         contract=hook_path.read_text(),
     )
 
-    assert checksums["0001_performance_history"] == (
-        migrations.combined_migration_checksum(
-            "0001_performance_history",
-            sql_checksum=sql_checksum,
-            python_checksum=hook_checksum,
-        )
+    assert checksums["0001_performance_history"] == sql_checksum
+    assert checksums["0003_performance_lifecycle_baseline"] == hook_checksum
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", "0003_wrong"),
+        ("hook_revision", 2),
+        ("hook_revision", True),
+        ("hook_revision", 1.0),
+        ("entrypoint", "app.migrations.wrong"),
+        ("responsibilities", ["bootstrap_missing_merchant_status_baselines"]),
+        ("unexpected", True),
+    ],
+)
+def test_0003_hook_manifest_schema_is_strict(tmp_path, field, value):
+    migrations = migrations_api()
+    migrations_dir = tmp_path / "strict-hook-migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "0001_performance_history.sql").write_bytes(
+        (migrations.MIGRATIONS_DIR / "0001_performance_history.sql").read_bytes()
     )
-    assert checksums["0001_performance_history"] != sql_checksum
+    manifest = {
+        "version": "0003_performance_lifecycle_baseline",
+        "hook_revision": 1,
+        "entrypoint": (
+            "app.migrations.run_performance_lifecycle_baseline_migration_hook"
+        ),
+        "responsibilities": [
+            "bootstrap_legacy_fbr_binding_baselines",
+            "bootstrap_missing_merchant_status_baselines",
+            "validate_complete_merchant_lifecycle_history",
+            "remove_legacy_fbr_projection_table",
+        ],
+    }
+    manifest[field] = value
+    (migrations_dir / "0003_performance_lifecycle_baseline.hook.json").write_text(
+        __import__("json").dumps(manifest)
+    )
+
+    with pytest.raises(
+        migrations.MigrationInvariantError,
+        match="migration hook contract mismatch: "
+        "0003_performance_lifecycle_baseline.hook.json",
+    ):
+        migrations.migration_registry_checksums(migrations_dir)
 
 
-def test_0001_missing_status_baseline_rolls_back_hook_schema_and_ledger(
+def test_deployed_sql_only_0001_with_gap_merchant_runs_forward_0003(tmp_path):
+    migrations = migrations_api()
+    database = build_deployed_sql_only_0001_database(
+        tmp_path / "deployed-0001-gap.db"
+    )
+    conn = open_database(database)
+    conn.execute(
+        "INSERT INTO merchants(id,name,status,created_at) "
+        "VALUES (3,'Post 0001 Gap','archived',?)",
+        (T1,),
+    )
+    conn.commit()
+
+    assert migrations.apply_migrations(conn) == [
+        "0003_performance_lifecycle_baseline"
+    ]
+
+    baseline = conn.execute(
+        "SELECT status,effective_at,generation,actor,reason,content_sha256,created_at "
+        "FROM merchant_status_events WHERE merchant_id=3"
+    ).fetchone()
+    assert baseline["status"] == "archived"
+    assert baseline["generation"] == 1
+    assert baseline["actor"] == (
+        "schema_migration:0003_performance_lifecycle_baseline"
+    )
+    assert baseline["reason"] == "lifecycle_gap_baseline"
+    assert baseline["created_at"] == baseline["effective_at"]
+    assert baseline["content_sha256"] == migrations.content_sha256(
+        3,
+        "archived",
+        baseline["effective_at"],
+        1,
+        baseline["actor"],
+        baseline["reason"],
+    )
+    assert migration_versions_from_conn(conn) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
+    conn.close()
+
+
+def test_0003_gap_backfill_is_atomic_when_existing_chain_is_invalid(tmp_path):
+    migrations = migrations_api()
+    database = build_deployed_sql_only_0001_database(
+        tmp_path / "deployed-0001-invalid-chain.db"
+    )
+    conn = open_database(database)
+    conn.execute(
+        "INSERT INTO merchants(id,name,status,created_at) "
+        "VALUES (3,'Post 0001 Gap','active',?)",
+        (T1,),
+    )
+    conn.execute("UPDATE merchants SET status='archived' WHERE id=1")
+    conn.commit()
+
+    with pytest.raises(
+        migrations.MigrationInvariantError,
+        match="merchant_status_latest_mismatch: merchant_id=1",
+    ):
+        migrations.apply_migrations(conn)
+
+    assert conn.execute(
+        "SELECT count(*) FROM merchant_status_events WHERE merchant_id=3"
+    ).fetchone()[0] == 0
+    assert migration_versions_from_conn(conn) == ["0001_performance_history"]
+    conn.close()
+
+
+def test_0003_rejects_fbr_event_without_state_and_rolls_back_gap(tmp_path):
+    migrations = migrations_api()
+    database = build_deployed_sql_only_0001_database(
+        tmp_path / "deployed-0001-partial-fbr.db"
+    )
+    conn = open_database(database)
+    conn.execute(
+        "INSERT INTO merchants(id,name,status,created_at) "
+        "VALUES (3,'Partial FBR Gap','active',?)",
+        (T1,),
+    )
+    direct_insert_fbr_binding_event(conn, 3, "partial-fbr", 1, T1)
+    conn.commit()
+
+    with pytest.raises(
+        migrations.MigrationInvariantError,
+        match="fbr_binding_state_set_mismatch",
+    ):
+        migrations.apply_migrations(conn)
+
+    assert conn.execute(
+        "SELECT count(*) FROM merchant_status_events WHERE merchant_id=3"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM merchant_fbr_binding_events WHERE merchant_id=3"
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT count(*) FROM merchant_fbr_link_state WHERE merchant_id=3"
+    ).fetchone()[0] == 0
+    assert migration_versions_from_conn(conn) == ["0001_performance_history"]
+    conn.close()
+
+
+def test_0003_rejects_fbr_generation_gap_before_recording_ledger(tmp_path):
+    migrations = migrations_api()
+    database = build_deployed_sql_only_0001_database(
+        tmp_path / "deployed-0001-fbr-generation-gap.db"
+    )
+    conn = open_database(database)
+    current = conn.execute(
+        "SELECT id FROM merchant_fbr_binding_events WHERE merchant_id=1"
+    ).fetchone()
+    direct_close_fbr_binding_event(conn, current["id"], T1, "tamper-test")
+    conn.execute("DROP TRIGGER validate_fbr_binding_generation_insert")
+    direct_insert_fbr_binding_event(conn, 1, "replacement-fbr", 3, T1)
+    conn.commit()
+
+    with pytest.raises(
+        migrations.MigrationInvariantError,
+        match="fbr_binding_generation_invalid: merchant_id=1",
+    ):
+        migrations.apply_migrations(conn)
+
+    assert migration_versions_from_conn(conn) == ["0001_performance_history"]
+    conn.close()
+
+
+def test_0003_accepts_valid_fbr_relink_after_an_unbound_gap(tmp_path):
+    migrations = migrations_api()
+    database = build_deployed_sql_only_0001_database(
+        tmp_path / "deployed-0001-fbr-relink-gap.db"
+    )
+    conn = open_database(database)
+    current = conn.execute(
+        "SELECT id FROM merchant_fbr_binding_events WHERE merchant_id=1"
+    ).fetchone()
+    direct_close_fbr_binding_event(conn, current["id"], T1, "relink-test")
+    replacement = direct_insert_fbr_binding_event(
+        conn, 1, "replacement-fbr", 2, T2
+    )
+    conn.commit()
+
+    assert migrations.apply_migrations(conn) == [
+        "0003_performance_lifecycle_baseline"
+    ]
+    projection = conn.execute(
+        "SELECT binding_event_id,fbr_merchant_id FROM merchant_fbr_links "
+        "WHERE merchant_id=1"
+    ).fetchone()
+    assert tuple(projection) == (replacement.id, "replacement-fbr")
+    assert migration_versions_from_conn(conn) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
+    conn.close()
+
+
+def test_deployed_0001_tampered_checksum_fails_before_0003(tmp_path):
+    migrations = migrations_api()
+    database = build_deployed_sql_only_0001_database(
+        tmp_path / "deployed-0001-tampered.db"
+    )
+    conn = open_database(database)
+    conn.execute(
+        "UPDATE schema_migrations SET checksum=? "
+        "WHERE version='0001_performance_history'",
+        ("0" * 64,),
+    )
+    conn.commit()
+
+    with pytest.raises(
+        RuntimeError, match="migration checksum mismatch: 0001_performance_history"
+    ):
+        migrations.apply_migrations(conn)
+
+    assert migration_versions_from_conn(conn) == ["0001_performance_history"]
+    conn.close()
+
+
+def test_0003_missing_status_baseline_rolls_back_hook_and_ledger(
     tmp_path, monkeypatch
 ):
     migrations = migrations_api()
     database = build_legacy_database(tmp_path / "legacy-status-noop.db")
-    before_fingerprint = exact_database_fingerprint(database)
+    original_backfill = migrations._bootstrap_missing_merchant_status_baselines
     monkeypatch.setattr(
         migrations,
-        "_bootstrap_legacy_merchant_status_baselines",
+        "_bootstrap_missing_merchant_status_baselines",
         lambda *_args, **_kwargs: None,
     )
 
@@ -582,12 +903,30 @@ def test_0001_missing_status_baseline_rolls_back_hook_schema_and_ledger(
     ):
         migrations.apply_migrations(sqlite3.connect(database))
 
-    assert exact_database_fingerprint(database) == before_fingerprint
-    assert migration_versions(database) == []
-    assert sqlite_object_type(database, "merchant_fbr_links") == "table"
+    assert migration_versions(database) == ["0001_performance_history"]
+    assert sqlite_object_type(database, "merchant_fbr_links") == "view"
+    assert table_exists_at_path(database, "merchant_fbr_links_legacy")
+    assert performance_table_counts(database)["merchant_status_events"] == 0
+
+    # A restart resumes from the immutable SQL-only 0001 ledger row.  The
+    # failed 0003 transaction must leave enough staging state to retry exactly
+    # once without replaying or redefining 0001.
+    monkeypatch.setattr(
+        migrations,
+        "_bootstrap_missing_merchant_status_baselines",
+        original_backfill,
+    )
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    init_db()
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
+    assert not table_exists_at_path(database, "merchant_fbr_links_legacy")
+    assert performance_table_counts(database)["merchant_status_events"] == 2
 
 
-def test_0001_backfills_traceable_status_baseline_for_every_legacy_merchant(tmp_path):
+def test_0003_backfills_traceable_status_baseline_for_every_legacy_merchant(tmp_path):
     migrations = migrations_api()
     database = build_legacy_database(tmp_path / "legacy-status-baseline.db")
 
@@ -611,8 +950,10 @@ def test_0001_backfills_traceable_status_baseline_for_every_legacy_merchant(tmp_
     ]
     for row in rows:
         assert row["generation"] == 1
-        assert row["actor"] == "schema_migration:0001_performance_history"
-        assert row["reason"] == "legacy_status_baseline"
+        assert row["actor"] == (
+            "schema_migration:0003_performance_lifecycle_baseline"
+        )
+        assert row["reason"] == "lifecycle_gap_baseline"
         assert row["created_at"] == row["effective_at"]
         assert row["content_sha256"] == migrations.content_sha256(
             row["merchant_id"],
@@ -622,9 +963,9 @@ def test_0001_backfills_traceable_status_baseline_for_every_legacy_merchant(tmp_
             row["actor"],
             row["reason"],
         )
-    assert persisted_checksum == migrations.migration_registry_checksums()[
-        "0001_performance_history"
-    ]
+    assert persisted_checksum == hashlib.sha256(
+        (migrations.MIGRATIONS_DIR / "0001_performance_history.sql").read_bytes()
+    ).hexdigest()
 
 
 def test_replayed_0001_rejects_merchant_status_without_a_latest_event(tmp_path):
@@ -781,8 +1122,17 @@ def test_two_connections_reread_migration_ledger_after_acquiring_write_lock(tmp_
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda _: migrate_once(), range(2)))
 
-    assert sorted(results, key=len) == [[], ["0001_performance_history"]]
-    assert migration_versions(database) == ["0001_performance_history"]
+    assert sorted(results, key=len) == [
+        [],
+        [
+            "0001_performance_history",
+            "0003_performance_lifecycle_baseline",
+        ],
+    ]
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
     assert integrity_results(database) == ("ok", [])
 
 
@@ -815,7 +1165,10 @@ def test_two_fresh_init_db_calls_share_locked_legacy_fbr_bootstrap(
     assert results == [None, None]
     assert observed_transactions and all(observed_transactions)
     assert sqlite_object_type(database, "merchant_fbr_links") == "view"
-    assert migration_versions(database) == ["0001_performance_history"]
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
     assert performance_table_counts(database)["merchant_fbr_binding_events"] == 0
     assert integrity_results(database) == ("ok", [])
 
@@ -864,7 +1217,10 @@ def test_two_legacy_init_db_calls_serialize_column_bridge(tmp_path, monkeypatch)
 
     assert results == [None, None]
     assert observed_transactions and all(observed_transactions)
-    assert migration_versions(database) == ["0001_performance_history"]
+    assert migration_versions(database) == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
     assert integrity_results(database) == ("ok", [])
 
 
@@ -1230,6 +1586,7 @@ def test_init_db_threads_python_registry_through_pre_and_post_checks(
     assert migration_versions(database) == [
         "0001_performance_history",
         "0002_task_workflows",
+        "0003_performance_lifecycle_baseline",
     ]
     assert table_exists_at_path(database, "task_workflow_registry_marker")
 

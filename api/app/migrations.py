@@ -6,6 +6,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,7 +15,23 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 MIGRATION_NAME = re.compile(r"^(?P<version>\d{4}_[a-z0-9_]+)\.sql$")
 MIGRATION_VERSION = re.compile(r"^\d{4}_[a-z0-9_]+$")
 PERFORMANCE_MIGRATION = "0001_performance_history"
-PERFORMANCE_HOOK_MANIFEST = f"{PERFORMANCE_MIGRATION}.hook.json"
+PERFORMANCE_LIFECYCLE_MIGRATION = "0003_performance_lifecycle_baseline"
+PERFORMANCE_LIFECYCLE_HOOK_MANIFEST = (
+    f"{PERFORMANCE_LIFECYCLE_MIGRATION}.hook.json"
+)
+_PERFORMANCE_LIFECYCLE_HOOK_CONTRACT = {
+    "version": PERFORMANCE_LIFECYCLE_MIGRATION,
+    "hook_revision": 1,
+    "entrypoint": (
+        "app.migrations.run_performance_lifecycle_baseline_migration_hook"
+    ),
+    "responsibilities": [
+        "bootstrap_legacy_fbr_binding_baselines",
+        "bootstrap_missing_merchant_status_baselines",
+        "validate_complete_merchant_lifecycle_history",
+        "remove_legacy_fbr_projection_table",
+    ],
+}
 _CANONICAL_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 _PYTHON_MIGRATION_CHECKSUM_PREFIX = "seo-ops-python-migration-v1:"
 _COMBINED_MIGRATION_CHECKSUM_PREFIX = "seo-ops-combined-migration-v1:"
@@ -322,31 +339,41 @@ def _builtin_python_migrations(
 
     if PERFORMANCE_MIGRATION not in sql_by_version:
         return ()
-    manifest_path = migrations_dir / PERFORMANCE_HOOK_MANIFEST
+    manifest_path = migrations_dir / PERFORMANCE_LIFECYCLE_HOOK_MANIFEST
     try:
         contract = manifest_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise MigrationInvariantError(
-            f"migration hook contract missing: {PERFORMANCE_HOOK_MANIFEST}"
+            "migration hook contract missing: "
+            f"{PERFORMANCE_LIFECYCLE_HOOK_MANIFEST}"
         ) from exc
     try:
         manifest = json.loads(contract)
     except json.JSONDecodeError as exc:
         raise MigrationInvariantError(
-            f"migration hook contract invalid: {PERFORMANCE_HOOK_MANIFEST}"
+            "migration hook contract invalid: "
+            f"{PERFORMANCE_LIFECYCLE_HOOK_MANIFEST}"
         ) from exc
-    if not isinstance(manifest, dict) or manifest.get("version") != PERFORMANCE_MIGRATION:
+    if (
+        not isinstance(manifest, dict)
+        or type(manifest.get("hook_revision")) is not int
+        or manifest != _PERFORMANCE_LIFECYCLE_HOOK_CONTRACT
+    ):
         raise MigrationInvariantError(
-            f"migration hook contract version mismatch: {PERFORMANCE_HOOK_MANIFEST}"
+            "migration hook contract mismatch: "
+            f"{PERFORMANCE_LIFECYCLE_HOOK_MANIFEST}"
         )
     return (
         PythonMigration(
-            version=PERFORMANCE_MIGRATION,
+            version=PERFORMANCE_LIFECYCLE_MIGRATION,
             checksum=python_migration_checksum(
-                PERFORMANCE_MIGRATION,
+                PERFORMANCE_LIFECYCLE_MIGRATION,
                 contract=contract,
             ),
-            apply=run_performance_history_migration_hook,
+            apply=partial(
+                run_performance_lifecycle_baseline_migration_hook,
+                performance_sql_checksum=sql_by_version[PERFORMANCE_MIGRATION][1],
+            ),
         ),
     )
 
@@ -655,8 +682,8 @@ def bootstrap_legacy_fbr_binding_baselines(
     return LegacyFbrBaselineResult(len(rows), inserted_events, inserted_states)
 
 
-def _bootstrap_legacy_merchant_status_baselines(
-    conn: sqlite3.Connection, *, stamp: str, actor: str
+def _bootstrap_missing_merchant_status_baselines(
+    conn: sqlite3.Connection, *, stamp: str, actor: str, reason: str
 ) -> None:
     for merchant_id, status in conn.execute(
         "SELECT id,status FROM merchants ORDER BY id"
@@ -674,39 +701,110 @@ def _bootstrap_legacy_merchant_status_baselines(
                 stamp,
                 1,
                 actor,
-                "legacy_status_baseline",
+                reason,
                 _content_sha256(
                     merchant_id,
                     status,
                     stamp,
                     1,
                     actor,
-                    "legacy_status_baseline",
+                    reason,
                 ),
                 stamp,
             ),
         )
 
 
-def run_performance_history_migration_hook(
-    conn: sqlite3.Connection, migration_instant: str
-) -> None:
-    """Apply the frozen 0001 data transformation inside the runner transaction."""
+def _assert_performance_history_schema_present(conn: sqlite3.Connection) -> None:
+    expected_objects = {
+        "merchant_status_events": "table",
+        "merchant_fbr_binding_events": "table",
+        "merchant_fbr_link_state": "table",
+        "merchant_fbr_links": "view",
+    }
+    for name, expected_type in expected_objects.items():
+        if _object_type(conn, name) != expected_type:
+            raise MigrationInvariantError(
+                f"performance_history_schema_missing: object={name}"
+            )
+    legacy_type = _object_type(conn, "merchant_fbr_links_legacy")
+    if legacy_type not in {None, "table"}:
+        raise MigrationInvariantError("legacy_fbr_projection_object_invalid")
+    if legacy_type == "table":
+        event_count = conn.execute(
+            "SELECT count(*) FROM merchant_fbr_binding_events"
+        ).fetchone()[0]
+        state_count = conn.execute(
+            "SELECT count(*) FROM merchant_fbr_link_state"
+        ).fetchone()[0]
+        if event_count or state_count:
+            raise MigrationInvariantError(
+                "legacy_and_migrated_fbr_objects_conflict"
+            )
 
+
+def _assert_performance_sql_migration_prerequisite(
+    conn: sqlite3.Connection, *, expected_checksum: str
+) -> None:
+    row = conn.execute(
+        "SELECT checksum FROM schema_migrations WHERE version=?",
+        (PERFORMANCE_MIGRATION,),
+    ).fetchone()
+    if row is None:
+        raise MigrationInvariantError(
+            "performance_lifecycle_prerequisite_missing: "
+            f"{PERFORMANCE_MIGRATION}"
+        )
+    if row[0] != expected_checksum:
+        raise RuntimeError(f"migration checksum mismatch: {PERFORMANCE_MIGRATION}")
+
+
+def run_performance_lifecycle_baseline_migration_hook(
+    conn: sqlite3.Connection,
+    migration_instant: str,
+    *,
+    performance_sql_checksum: str,
+) -> None:
+    """Apply the frozen forward lifecycle baseline under the runner transaction."""
+
+    _assert_performance_sql_migration_prerequisite(
+        conn, expected_checksum=performance_sql_checksum
+    )
+    _assert_performance_history_schema_present(conn)
+    _assert_merchant_status_history_valid(conn, allow_missing=True)
+    _assert_fbr_binding_history_valid(conn)
     instant = datetime.strptime(migration_instant, _CANONICAL_UTC_FORMAT).replace(
         tzinfo=timezone.utc
     )
-    actor = "schema_migration:0001_performance_history"
-    bootstrap_legacy_fbr_binding_baselines(
-        conn, baseline_at=instant, actor=actor
+    actor = "schema_migration:0003_performance_lifecycle_baseline"
+    if table_exists(conn, "merchant_fbr_links_legacy"):
+        baseline = bootstrap_legacy_fbr_binding_baselines(
+            conn, baseline_at=instant, actor=actor
+        )
+        if (
+            baseline.events_inserted != baseline.rows_seen
+            or baseline.states_inserted != baseline.rows_seen
+        ):
+            raise MigrationInvariantError(
+                "legacy_fbr_projection_not_one_to_one: "
+                f"expected={baseline.rows_seen},"
+                f"actual={(baseline.events_inserted, baseline.states_inserted)}"
+            )
+        conn.execute("DROP TABLE merchant_fbr_links_legacy")
+    _bootstrap_missing_merchant_status_baselines(
+        conn,
+        stamp=migration_instant,
+        actor=actor,
+        reason="lifecycle_gap_baseline",
     )
-    _bootstrap_legacy_merchant_status_baselines(
-        conn, stamp=migration_instant, actor=actor
+    assert_migration_postconditions(
+        conn, version=PERFORMANCE_LIFECYCLE_MIGRATION
     )
-    conn.execute("DROP TABLE merchant_fbr_links_legacy")
 
 
-def _assert_merchant_status_history_valid(conn: sqlite3.Connection) -> None:
+def _assert_merchant_status_history_valid(
+    conn: sqlite3.Connection, *, allow_missing: bool = False
+) -> None:
     if not table_exists(conn, "merchant_status_events"):
         raise MigrationInvariantError("merchant_status_history_missing")
     for merchant_id, current_status in conn.execute(
@@ -718,6 +816,8 @@ def _assert_merchant_status_history_valid(conn: sqlite3.Connection) -> None:
             (merchant_id,),
         ).fetchall()
         if not events:
+            if allow_missing:
+                continue
             raise MigrationInvariantError(
                 f"merchant_status_history_missing: merchant_id={merchant_id}"
             )
@@ -750,35 +850,174 @@ def _assert_merchant_status_history_valid(conn: sqlite3.Connection) -> None:
             )
 
 
+def _assert_fbr_binding_history_valid(conn: sqlite3.Connection) -> None:
+    """Replay the complete FBR binding projection from its immutable events."""
+
+    rows = conn.execute(
+        "SELECT id,merchant_id,fbr_merchant_id,canonical_fbr_merchant_sha256,"
+        "generation,valid_from,valid_to,opened_by,open_reason,content_sha256,"
+        "closed_by,close_reason,close_content_sha256,created_at "
+        "FROM merchant_fbr_binding_events ORDER BY merchant_id,generation"
+    ).fetchall()
+    chains: dict[int, list[Any]] = {}
+    identity_intervals: dict[str, list[tuple[str, str | None, int]]] = {}
+    for row in rows:
+        merchant_id = int(row[1])
+        chains.setdefault(merchant_id, []).append(row)
+        identity_intervals.setdefault(str(row[2]), []).append(
+            (str(row[5]), None if row[6] is None else str(row[6]), int(row[0]))
+        )
+
+    state_merchants = {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT merchant_id FROM merchant_fbr_link_state ORDER BY merchant_id"
+        ).fetchall()
+    }
+    event_merchants = set(chains)
+    if event_merchants != state_merchants:
+        raise MigrationInvariantError(
+            "fbr_binding_state_set_mismatch: "
+            f"events={sorted(event_merchants)},states={sorted(state_merchants)}"
+        )
+
+    projection_rows = conn.execute(
+        "SELECT merchant_id,binding_event_id,fbr_merchant_id "
+        "FROM merchant_fbr_links ORDER BY merchant_id"
+    ).fetchall()
+    projection_by_merchant = {int(row[0]): row for row in projection_rows}
+    if (
+        len(projection_by_merchant) != len(projection_rows)
+        or set(projection_by_merchant) != event_merchants
+    ):
+        raise MigrationInvariantError(
+            "fbr_binding_projection_set_mismatch: "
+            f"events={sorted(event_merchants)},"
+            f"projection={sorted(projection_by_merchant)}"
+        )
+
+    for merchant_id, events in chains.items():
+        generations = [int(event[4]) for event in events]
+        if generations != list(range(1, len(events) + 1)):
+            raise MigrationInvariantError(
+                f"fbr_binding_generation_invalid: merchant_id={merchant_id}"
+            )
+
+        for index, event in enumerate(events):
+            (
+                event_id,
+                _merchant_id,
+                fbr_merchant_id,
+                identity_digest,
+                generation,
+                valid_from,
+                valid_to,
+                opened_by,
+                open_reason,
+                open_digest,
+                closed_by,
+                close_reason,
+                close_digest,
+                created_at,
+            ) = event
+            canonical_fbr_id = _canonical_fbr_id(fbr_merchant_id)
+            if (
+                not canonical_fbr_id
+                or canonical_fbr_id != fbr_merchant_id
+                or not isinstance(opened_by, str)
+                or not opened_by.strip()
+                or not isinstance(open_reason, str)
+                or not open_reason.strip()
+                or not _is_canonical_utc_instant(valid_from)
+                or not _is_canonical_utc_instant(created_at)
+            ):
+                raise MigrationInvariantError(
+                    f"fbr_binding_provenance_invalid: event_id={event_id}"
+                )
+            if (
+                identity_digest != _fbr_identity_sha256(fbr_merchant_id)
+                or open_digest
+                != _fbr_binding_open_sha256(
+                    merchant_id,
+                    fbr_merchant_id,
+                    generation,
+                    valid_from,
+                    opened_by,
+                    open_reason,
+                )
+            ):
+                raise MigrationInvariantError(
+                    f"fbr_binding_hash_invalid: event_id={event_id}"
+                )
+
+            is_current = index == len(events) - 1
+            if is_current:
+                if any(
+                    value is not None
+                    for value in (valid_to, closed_by, close_reason, close_digest)
+                ):
+                    raise MigrationInvariantError(
+                        f"fbr_binding_current_event_closed: merchant_id={merchant_id}"
+                    )
+                projected = projection_by_merchant[merchant_id]
+                if int(projected[1]) != int(event_id) or projected[2] != fbr_merchant_id:
+                    raise MigrationInvariantError(
+                        f"fbr_binding_projection_invalid: merchant_id={merchant_id}"
+                    )
+                continue
+
+            if (
+                not _is_canonical_utc_instant(valid_to)
+                or valid_to <= valid_from
+                or not isinstance(closed_by, str)
+                or not closed_by.strip()
+                or not isinstance(close_reason, str)
+                or not close_reason.strip()
+                or close_digest
+                != _fbr_binding_close_sha256(
+                    event_id,
+                    open_digest,
+                    valid_to,
+                    closed_by,
+                    close_reason,
+                )
+            ):
+                raise MigrationInvariantError(
+                    f"fbr_binding_close_invalid: event_id={event_id}"
+                )
+            next_valid_from = events[index + 1][5]
+            if next_valid_from < valid_to:
+                raise MigrationInvariantError(
+                    f"fbr_binding_interval_overlap: merchant_id={merchant_id}"
+                )
+
+    for exact_id, intervals in identity_intervals.items():
+        ordered = sorted(intervals, key=lambda interval: (interval[0], interval[2]))
+        for previous, current in zip(ordered, ordered[1:]):
+            if previous[1] is None or current[0] < previous[1]:
+                raise MigrationInvariantError(
+                    "fbr_identity_interval_overlap: "
+                    f"fbr_sha256={_sha256_text(exact_id)}"
+                )
+
+
 def assert_migration_postconditions(
     conn: sqlite3.Connection,
     *,
     version: str,
     expected_legacy_fbr_rows: int | None = None,
 ) -> None:
-    if version != PERFORMANCE_MIGRATION:
+    if version not in {
+        PERFORMANCE_MIGRATION,
+        PERFORMANCE_LIFECYCLE_MIGRATION,
+    }:
         return
-    if _object_type(conn, "merchant_fbr_links") != "view":
-        raise MigrationInvariantError("merchant_fbr_links_projection_missing")
-    if table_exists(conn, "merchant_fbr_links_legacy"):
+    _assert_performance_history_schema_present(conn)
+    lifecycle_complete = version == PERFORMANCE_LIFECYCLE_MIGRATION
+    if lifecycle_complete and table_exists(conn, "merchant_fbr_links_legacy"):
         raise MigrationInvariantError("legacy_fbr_table_not_removed")
-    bad_state = conn.execute(
-        "SELECT state.merchant_id FROM merchant_fbr_link_state state "
-        "LEFT JOIN merchant_fbr_links link ON link.merchant_id=state.merchant_id "
-        "WHERE link.binding_event_id IS NULL LIMIT 1"
-    ).fetchone()
-    if bad_state is not None:
-        raise MigrationInvariantError(
-            f"fbr_projection_missing_open_event: merchant_id={bad_state[0]}"
-        )
-    bad_hash = conn.execute(
-        "SELECT id FROM merchant_fbr_binding_events "
-        "WHERE canonical_fbr_merchant_sha256 != fbr_identity_sha256(fbr_merchant_id) "
-        "OR content_sha256 != fbr_binding_open_sha256(merchant_id,fbr_merchant_id,"
-        "generation,valid_from,opened_by,open_reason) LIMIT 1"
-    ).fetchone()
-    if bad_hash is not None:
-        raise MigrationInvariantError(f"fbr_binding_hash_invalid: event_id={bad_hash[0]}")
+    if lifecycle_complete:
+        _assert_fbr_binding_history_valid(conn)
     if expected_legacy_fbr_rows is not None:
         counts = (
             conn.execute("SELECT count(*) FROM merchant_fbr_binding_events").fetchone()[0],
@@ -790,7 +1029,9 @@ def assert_migration_postconditions(
                 "legacy_fbr_projection_not_one_to_one: "
                 f"expected={expected_legacy_fbr_rows},actual={counts}"
             )
-    _assert_merchant_status_history_valid(conn)
+    _assert_merchant_status_history_valid(
+        conn, allow_missing=not lifecycle_complete
+    )
     _assert_existing_source_scope_binding_generations_valid(conn)
 
 
@@ -888,10 +1129,9 @@ def apply_migrations(
                 conn.commit()
                 continue
 
-            expected_legacy_fbr_rows = None
             if version == PERFORMANCE_MIGRATION:
                 _ensure_legacy_fbr_table(conn)
-                expected_legacy_fbr_rows = _assert_legacy_fbr_links_migratable(conn)
+                _assert_legacy_fbr_links_migratable(conn)
             stamp = datetime.now(timezone.utc).strftime(_CANONICAL_UTC_FORMAT)
             if payload is not None:
                 _execute_sql_payload(conn, payload)
@@ -909,7 +1149,6 @@ def apply_migrations(
             assert_migration_postconditions(
                 conn,
                 version=version,
-                expected_legacy_fbr_rows=expected_legacy_fbr_rows,
             )
             conn.execute(
                 "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES (?,?,?)",

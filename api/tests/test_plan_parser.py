@@ -62,7 +62,7 @@ def test_create_tasks_idempotent(client):
     try:
         conn.execute(
             "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
-            " VALUES (?, 'core-r1', 'running', 'manual', '2026-08-31T00:00:00+00:00')",
+            " VALUES (?, 'core-r1', 'succeeded', 'manual', '2026-08-31T00:00:00+00:00')",
             (m["id"],),
         )
         run_id = conn.execute("SELECT id FROM runs").fetchone()["id"]
@@ -124,6 +124,106 @@ def test_create_tasks_from_plan_rejects_an_archived_merchant(client):
         conn.close()
 
 
+def test_create_tasks_from_plan_rejects_cross_merchant_run(client):
+    from app.db import connect
+    from app.plan_parser import create_tasks_from_plan, extract_plan
+
+    merchant_a = client.post(
+        "/api/merchants",
+        json={"name": "Merchant A", "primary_location": "Mineola, NY"},
+    ).json()
+    merchant_b = client.post(
+        "/api/merchants",
+        json={"name": "Merchant B", "primary_location": "Queens, NY"},
+    ).json()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs(merchant_id,coreai_run_id,status,trigger_kind,created_at) "
+            "VALUES (?,'merchant-b-run','succeeded','manual',"
+            "'2026-09-01T00:00:00+00:00')",
+            (merchant_b["id"],),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+
+        with pytest.raises(ValueError, match="run does not belong to merchant"):
+            create_tasks_from_plan(
+                conn,
+                merchant_a["id"],
+                run_id,
+                "merchant-b-run",
+                extract_plan(VALID_REPORT),
+            )
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_create_tasks_from_plan_rejects_coreai_run_id_mismatch(client):
+    from app.db import connect
+    from app.plan_parser import create_tasks_from_plan, extract_plan
+
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": "Run mismatch", "primary_location": "Mineola, NY"},
+    ).json()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs(merchant_id,coreai_run_id,status,trigger_kind,created_at) "
+            "VALUES (?,'persisted-core-run','succeeded','manual',"
+            "'2026-09-01T00:00:00+00:00')",
+            (merchant["id"],),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+
+        with pytest.raises(ValueError, match="core ai run id mismatch"):
+            create_tasks_from_plan(
+                conn,
+                merchant["id"],
+                run_id,
+                "different-core-run",
+                extract_plan(VALID_REPORT),
+            )
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("status", ["running", "failed"])
+def test_create_tasks_from_plan_requires_succeeded_run(client, status):
+    from app.db import connect
+    from app.plan_parser import create_tasks_from_plan, extract_plan
+
+    merchant = client.post(
+        "/api/merchants",
+        json={"name": f"Run {status}", "primary_location": "Mineola, NY"},
+    ).json()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO runs(merchant_id,coreai_run_id,status,trigger_kind,created_at) "
+            "VALUES (?,?,?,'manual','2026-09-01T00:00:00+00:00')",
+            (merchant["id"], f"core-{status}", status),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+
+        with pytest.raises(ValueError, match="run has not succeeded"):
+            create_tasks_from_plan(
+                conn,
+                merchant["id"],
+                run_id,
+                f"core-{status}",
+                extract_plan(VALID_REPORT),
+            )
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_extract_plan_carries_expected_outcome(client):
     from app.db import connect
     from app.plan_parser import create_tasks_from_plan, extract_plan
@@ -145,7 +245,7 @@ def test_extract_plan_carries_expected_outcome(client):
     try:
         conn.execute(
             "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
-            " VALUES (?, 'core-eo', 'running', 'manual', '2026-09-01T00:00:00+00:00')",
+            " VALUES (?, 'core-eo', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00')",
             (m["id"],),
         )
         run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-eo'").fetchone()["id"]
@@ -215,7 +315,7 @@ def test_create_tasks_persists_scheduled_start(client):
     try:
         conn.execute(
             "INSERT INTO runs (merchant_id, coreai_run_id, status, trigger_kind, created_at)"
-            " VALUES (?, 'core-ss', 'running', 'manual', '2026-09-01T00:00:00+00:00')",
+            " VALUES (?, 'core-ss', 'succeeded', 'manual', '2026-09-01T00:00:00+00:00')",
             (m["id"],),
         )
         run_id = conn.execute("SELECT id FROM runs WHERE coreai_run_id = 'core-ss'").fetchone()["id"]

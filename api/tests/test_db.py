@@ -18,7 +18,10 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
     conn.close()
     assert {"merchants", "tasks"} <= names
     assert fbr_object == "view"
-    assert versions == ["0001_performance_history"]
+    assert versions == [
+        "0001_performance_history",
+        "0003_performance_lifecycle_baseline",
+    ]
 
 
 def test_migration_adds_columns_and_runs_table(tmp_path, monkeypatch):
