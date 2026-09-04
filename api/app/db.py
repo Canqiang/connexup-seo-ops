@@ -74,10 +74,30 @@ def _bootstrap_runs_for_legacy_tasks(conn: sqlite3.Connection) -> None:
     )
 
 
+def _assert_unique_coreai_run_bindings(conn: sqlite3.Connection) -> None:
+    sources: list[str] = []
+    for table in ("runs", "task_executions"):
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "coreai_run_id" in columns:
+            sources.append(
+                f"SELECT coreai_run_id FROM {table} WHERE coreai_run_id IS NOT NULL"
+            )
+    if not sources:
+        return
+    duplicate = conn.execute(
+        "SELECT coreai_run_id FROM ("
+        + " UNION ALL ".join(sources)
+        + ") GROUP BY coreai_run_id HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicate is not None:
+        raise RuntimeError("database contains duplicate coreai_run_id bindings")
+
+
 def init_db() -> None:
     Path(db_path()).parent.mkdir(parents=True, exist_ok=True)
     conn = connect()
     try:
+        _assert_unique_coreai_run_bindings(conn)
         _migrate(conn)
         conn.commit()
         kind = task_table_kind(conn)

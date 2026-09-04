@@ -16,7 +16,25 @@ MAX_COREAI_TIMESTAMP_CHARS = 128
 MAX_PERSISTED_COREAI_ERROR_CHARS = 500
 
 _CREDENTIAL_RE = re.compile(
-    r"(?i)\b(authorization|api[ _-]?key)\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"
+    r"""(?ix)
+    (?<![\w-])
+    ["']?
+    (?P<key>
+        authorization
+        | api[ _-]?key
+        | access[ _-]?token
+        | client[ _-]?secret
+        | password
+    )
+    (?![\w-])
+    ["']?
+    \s*[:=]\s*
+    (?:
+        "(?:\\.|[^"\\])*"
+        | '(?:\\.|[^'\\])*'
+        | (?:bearer\s+)?[^\s,;}&]+
+    )
+    """
 )
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 
@@ -28,7 +46,7 @@ def sanitize_coreai_error(value: object, fallback: str = "core-ai request failed
     text = "".join(
         " " if unicodedata.category(char).startswith("C") else char for char in text
     )
-    text = _CREDENTIAL_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = _CREDENTIAL_RE.sub(lambda match: f"{match.group('key')}=<redacted>", text)
     text = _BEARER_RE.sub("Bearer <redacted>", text)
     text = " ".join(text.split())
     if not text:
@@ -91,6 +109,16 @@ def validate_run_detail(body: object, run_id: str) -> dict:
     if isinstance(completed_at, str) and len(completed_at) > MAX_COREAI_TIMESTAMP_CHARS:
         raise CoreAiError(0, "core-ai run detail completed_at is too long")
     normalized = dict(body)
+    if status in TERMINAL_STATUSES:
+        for field in ("output", "error"):
+            value = normalized.get(field)
+            if value is not None and not isinstance(value, str):
+                normalized["status"] = "FAILED"
+                normalized.pop("output", None)
+                normalized["error"] = (
+                    f"core-ai terminal response has invalid {field}"
+                )
+                return normalized
     if "error" in normalized and normalized["error"] is not None:
         normalized["error"] = sanitize_coreai_error(
             normalized["error"], f"core-ai status {status}"

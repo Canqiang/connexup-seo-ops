@@ -153,6 +153,47 @@ def test_get_run_rejects_a_missing_or_mismatched_run_id(response):
         make_client(handler).get_run("expected-run")
 
 
+@pytest.mark.parametrize(
+    "unsafe_output",
+    [
+        {"password": "output-object-secret"},
+        ["output-list-secret"],
+    ],
+)
+def test_get_run_converts_non_text_completed_output_to_safe_failure(unsafe_output):
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"id": "terminal-run", "status": "COMPLETED", "output": unsafe_output},
+        )
+
+    detail = make_client(handler).get_run("terminal-run")
+
+    assert detail["status"] == "FAILED"
+    assert "invalid output" in detail["error"]
+    assert "output" not in detail
+    assert "output-object-secret" not in str(detail)
+    assert "output-list-secret" not in str(detail)
+
+
+def test_get_run_replaces_non_text_terminal_error_with_safe_failure():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "id": "terminal-run",
+                "status": "FAILED",
+                "error": {"client_secret": "structured-error-secret"},
+            },
+        )
+
+    detail = make_client(handler).get_run("terminal-run")
+
+    assert detail["status"] == "FAILED"
+    assert detail["error"] == "core-ai terminal response has invalid error"
+    assert "structured-error-secret" not in str(detail)
+
+
 def test_http_error_surfaces_status_and_message():
     from app.coreai import CoreAiError
 
@@ -185,6 +226,32 @@ def test_http_error_message_is_redacted_single_line_and_bounded():
     assert "\x00" not in stored
     assert "\n" not in stored
     assert "\r" not in stored
+
+
+def test_http_error_redacts_common_plain_and_quoted_credential_forms():
+    from app.coreai import CoreAiError
+
+    malicious = (
+        "access_token=access-token-value "
+        "client_secret:'client-secret-value' "
+        "password=\"password-value\" "
+        '{"api_key":"quoted-api-key-value"}'
+    )
+
+    def handler(_request):
+        return httpx.Response(500, json={"message": malicious})
+
+    with pytest.raises(CoreAiError) as caught:
+        make_client(handler).get_run("r-secret")
+
+    stored = str(caught.value)
+    for secret in (
+        "access-token-value",
+        "client-secret-value",
+        "password-value",
+        "quoted-api-key-value",
+    ):
+        assert secret not in stored
 
 
 def test_declared_oversized_response_is_rejected_without_reading_its_body():

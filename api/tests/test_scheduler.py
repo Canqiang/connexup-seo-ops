@@ -160,6 +160,25 @@ def test_poll_sanitizes_a_malicious_run_error_before_persistence(client):
     assert "\r" not in stored
 
 
+@pytest.mark.parametrize("unsafe_output", [{"unexpected": "object"}, ["list"]])
+def test_poll_completed_non_text_run_output_fails_closed(client, unsafe_output):
+    from app.scheduler import poll_runs_once
+
+    fake = FakeCoreAi()
+    _merchant, run = make_merchant_with_run(client, fake)
+    fake.runs[run["coreai_run_id"]] = {
+        "status": "COMPLETED",
+        "output": unsafe_output,
+    }
+
+    poll_runs_once(fake)
+
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "failed"
+    assert detail["report_text"] is None
+    assert "invalid output" in detail["error"]
+
+
 def test_poll_leaves_nonterminal_running(client):
     from app.scheduler import poll_runs_once
 
@@ -497,7 +516,14 @@ def test_task_poll_sanitizes_a_malicious_terminal_error_before_persistence(clien
     )
     fake.runs["unsafe-error-run"] = {
         "status": "FAILED",
-        "error": "\x00 forged\napi_key=upstream-secret\r\n" + "x" * 1000,
+        "error": (
+            "\x00 forged\n"
+            "access_token=access-token-value "
+            "client_secret:'client-secret-value' "
+            "password=\"password-value\" "
+            '{"api_key":"quoted-api-key-value"}\r\n'
+            + "x" * 1000
+        ),
     }
 
     poll_task_executions_once(fake)
@@ -507,10 +533,46 @@ def test_task_poll_sanitizes_a_malicious_terminal_error_before_persistence(clien
     event_error = detail["events"][-1]["payload"]["error"]
     assert event_error == stored
     assert len(stored) <= 500
-    assert "upstream-secret" not in stored
+    for secret in (
+        "access-token-value",
+        "client-secret-value",
+        "password-value",
+        "quoted-api-key-value",
+    ):
+        assert secret not in stored
     assert "\x00" not in stored
     assert "\n" not in stored
     assert "\r" not in stored
+
+
+def test_task_poll_completed_non_text_output_fails_closed(client):
+    from app.scheduler import poll_task_executions_once
+
+    fake = FakeCoreAi()
+    merchant = client.post(
+        "/api/merchants", json={"name": "Unsafe terminal output"}
+    ).json()
+    task = _operator_task(client, merchant["id"])
+    execution_id = _insert_historical_execution(
+        task,
+        status="RUNNING",
+        coreai_run_id="unsafe-output-run",
+        dispatch_started_at=datetime.now(timezone.utc).isoformat(),
+    )
+    fake.runs["unsafe-output-run"] = {
+        "status": "COMPLETED",
+        "output": {"password": "must-not-be-bound-or-persisted"},
+    }
+
+    poll_task_executions_once(fake)
+
+    detail = client.get(f"/api/tasks/{task['id']}").json()
+    execution = detail["executions"][-1]
+    assert detail["status"] == "NEEDS_ATTENTION"
+    assert execution["id"] == execution_id
+    assert execution["status"] == "FAILED"
+    assert "invalid output" in execution["error"]
+    assert "must-not-be-bound-or-persisted" not in str(detail)
 
 
 def test_poll_never_approves_historical_agent_completed_output(client):

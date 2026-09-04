@@ -753,6 +753,49 @@ def test_mixed_merchant_run_group_aborts_without_cross_merchant_plan(
     conn.close()
 
 
+@pytest.mark.parametrize(
+    "duplicate_scope",
+    ["runs", "task_executions", "cross_table"],
+)
+def test_legacy_upgrade_rejects_preexisting_duplicate_coreai_run_bindings(
+    tmp_path, monkeypatch, duplicate_scope
+):
+    path = tmp_path / f"duplicate-coreai-{duplicate_scope}.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    if duplicate_scope == "runs":
+        conn.execute(
+            "INSERT INTO runs "
+            "(id, merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at) "
+            "VALUES (30, 1, 'approved-core-run', 'succeeded', 'manual', "
+            "'2026-08-08T00:00:00+00:00', '2026-08-08T01:00:00+00:00')"
+        )
+    elif duplicate_scope == "task_executions":
+        conn.execute(
+            "INSERT INTO task_executions "
+            "(id, task_id, coreai_run_id, status, attempt, created_at, finished_at) "
+            "VALUES (104, 1, 'exec-approved', 'failed', 1, "
+            "'2026-08-08T00:00:00+00:00', '2026-08-08T01:00:00+00:00')"
+        )
+    else:
+        conn.execute(
+            "UPDATE task_executions SET coreai_run_id = 'approved-core-run' "
+            "WHERE id = 103"
+        )
+    conn.commit()
+    before = _legacy_failure_snapshot(conn)
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+
+    with pytest.raises(RuntimeError, match="duplicate coreai_run_id bindings"):
+        init_db()
+
+    conn = sqlite3.connect(path)
+    assert _legacy_failure_snapshot(conn) == before
+    conn.close()
+
+
 def test_orphan_execution_aborts_before_swap_when_foreign_keys_were_disabled(
     tmp_path, monkeypatch
 ):
