@@ -917,11 +917,10 @@ def _ready_keyword_artifact_candidates(
         if _keyword_artifact_place_id(row) != place_id:
             continue
         try:
-            keyword_set = json.loads(row["payload_json"])
-        except (TypeError, json.JSONDecodeError):
+            keyword_set = _parse_keyword_set(row["payload_json"], merchant_id)
+        except (TypeError, ValueError, ValidationError):
             continue
-        if isinstance(keyword_set, dict):
-            candidates.append((row, keyword_set))
+        candidates.append((row, keyword_set))
     return candidates
 
 
@@ -1113,11 +1112,9 @@ def _active_ready_keyword_artifact(
     ):
         raise HTTPException(status_code=409, detail="active keyword artifact is invalid")
     try:
-        keyword_set = json.loads(row["payload_json"])
-    except (TypeError, json.JSONDecodeError) as exc:
+        keyword_set = _parse_keyword_set(row["payload_json"], merchant_id)
+    except (TypeError, ValueError, ValidationError) as exc:
         raise HTTPException(status_code=409, detail="active keyword artifact is invalid") from exc
-    if not isinstance(keyword_set, dict):
-        raise HTTPException(status_code=409, detail="active keyword artifact is invalid")
     return row, keyword_set
 
 

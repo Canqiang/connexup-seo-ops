@@ -1020,6 +1020,16 @@ function KeywordRanking({
   const activeScoreLabel = activeVersion
     ? KEYWORD_SCORE_STATUS_LABELS[activeVersion.score_status]
     : null
+  const keywordScoreHeading = state?.active_keyword_source === 'FBR'
+    ? 'FBR 评分 / 排名'
+    : state?.active_keyword_source === 'LEGACY'
+      ? '当前版本评分 / 排名'
+      : 'Skill 评分 / 排名'
+  const keywordScoreDescription = state?.active_keyword_source === 'FBR'
+    ? '评分来自当前采用的 FBR 关键词版本，尚未通过 Skill 来源验证。表格按评分降序展示；P0–P3 是运营优先级，不参与排序。Local Falcon 的 Top 20 仍只从本地关键词中选择。'
+    : state?.active_keyword_source === 'LEGACY'
+      ? '评分来自当前采用的历史关键词版本，来源验证状态以“SEO Ops 当前版本”提示为准。表格按评分降序展示；P0–P3 是运营优先级，不参与排序。'
+      : '评分来自专用 Agent 依次加载 Seed 与 Ranking Skill 后返回的关键词产物。表格按该评分统一降序展示；P0–P3 是运营优先级，不参与排序。Local Falcon 的 Top 20 仍只从本地关键词中选择。'
   const comparison = state?.latest_fbr_import?.comparison
 
   return (
@@ -1029,7 +1039,7 @@ function KeywordRanking({
           <p className="section-code">SEO TARGETS</p>
           <div className="field-label-line">
             <h3 id="seo-keywords-title">SEO 目标关键词与排名</h3>
-            <FieldHelp label="目标关键词" description="优先读取 FBR 已落库关键词，页面加载和“从 FBR 重新读取”都不会触发生成。只有运营人员点击“重新生成关键词并评分”时，系统才会运行已配置的 Seed + Ranking Skill 工作流。" />
+            <FieldHelp label="目标关键词" description="页面加载读取 SEO Ops 当前采用的本地关键词版本，不会访问 FBR 或触发生成。FBR 只在运营人员明确点击“从 FBR 重新读取”时导入候选版本；只有点击“重新生成关键词并评分”才会运行已配置的 Seed + Ranking Skill 工作流。" />
           </div>
         </div>
         <div className={`seo-target-actions${isGenerationRunning ? ' is-running' : ''}`}>
@@ -1096,8 +1106,10 @@ function KeywordRanking({
           </div>
         </div>
       </div>
-      {state?.cycle_status === 'failed' && (
-        <p className="seo-target-message error" role="alert">关键词同步失败：{state.error || '未能读取 FBR 关键词库'}</p>
+      {(state?.cycle_status === 'failed' || Boolean(state?.error)) && (
+        <p className="seo-target-message error" role="alert">
+          {state?.cycle_status === 'failed' ? '关键词同步失败' : '关键词版本激活冲突'}：{state?.error || '未能读取 FBR 关键词库'}
+        </p>
       )}
       {activeVersion && (
         <p className="seo-active-version" role="status">
@@ -1200,7 +1212,7 @@ function KeywordRanking({
               <thead>
                 <tr>
                   <th>关键词 / 优先级</th>
-                  <th><span className="field-label-line align-right">Skill 评分 / 排名<FieldHelp label="关键词评分" description="评分来自专用 Agent 依次加载 Seed 与 Ranking Skill 后返回的关键词产物。表格按该评分统一降序展示；P0–P3 是运营优先级，不参与排序。Local Falcon 的 Top 20 仍只从本地关键词中选择。" align="end" /></span></th>
+                  <th><span className="field-label-line align-right">{keywordScoreHeading}<FieldHelp label="关键词评分" description={keywordScoreDescription} align="end" /></span></th>
                   <th><span className="local-falcon-heatmap-head"><span>热力图</span><LocalFalconLegend /></span></th>
                   <th><span className="field-label-line align-right">ARP<FieldHelp label="ARP" description="Local Falcon 网格中各采样点排名的平均值；数值越低越好。" align="end" /></span></th>
                   <th><span className="field-label-line align-right">ATRP<FieldHelp label="ATRP" description="商户被发现的采样点中，各点排名的平均值；数值越低越好。" align="end" /></span></th>

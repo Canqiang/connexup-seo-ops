@@ -3395,6 +3395,33 @@ def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_witho
         " 'fbr-keyword-store', ?, '{', '2026-09-02T11:00:00Z', '2026-09-02T11:01:00Z')",
         (merchant_id, json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID})),
     )
+    invalid_object_cursor = conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, payload_json, created_at, completed_at)"
+        " VALUES (?, 'invalid-object-payload', 'KEYWORD_SET', 'seo_ops.keyword_set.v2', 'ready',"
+        " 'fbr-keyword-store', ?, ?, '2026-09-02T12:00:00Z', '2026-09-02T12:01:00Z')",
+        (
+            merchant_id,
+            json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID}),
+            json.dumps(
+                {
+                    "schema_version": "seo_ops.keyword_set.v2",
+                    "merchant_id": str(merchant_id),
+                    "market": {
+                        "country_code": "US",
+                        "language": "en-US",
+                        "search_engine": "GOOGLE",
+                    },
+                    "generation_method": "PERSISTED_FBR_READBACK",
+                    "title": "Invalid FBR payload",
+                    "summary": "The object shape is invalid despite valid provenance.",
+                    "keywords": "not-a-list",
+                    "evidence_gaps": [],
+                }
+            ),
+        ),
+    )
     conn.commit()
     conn.row_factory = sqlite3.Row
     trusted_head = seo_targets._ensure_keyword_head(conn, merchant_id, TEST_PLACE_ID)
@@ -3403,6 +3430,35 @@ def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_witho
     fallback_merchant_id = create_uws_merchant(client, monkeypatch)
     fallback_fbr_id = insert_unscored_fbr_keyword_inventory(fallback_merchant_id)
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    invalid_fallback_cursor = conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, payload_json, created_at, completed_at)"
+        " VALUES (?, 'newer-invalid-fbr-object', 'KEYWORD_SET', 'seo_ops.keyword_set.v2',"
+        " 'ready', 'fbr-keyword-store', ?, ?, '2026-09-02T13:00:00Z',"
+        " '2026-09-02T13:01:00Z')",
+        (
+            fallback_merchant_id,
+            json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID}),
+            json.dumps(
+                {
+                    "schema_version": "seo_ops.keyword_set.v2",
+                    "merchant_id": str(fallback_merchant_id),
+                    "market": {
+                        "country_code": "US",
+                        "language": "en-US",
+                        "search_engine": "GOOGLE",
+                    },
+                    "generation_method": "PERSISTED_FBR_READBACK",
+                    "title": "Invalid fallback FBR payload",
+                    "summary": "This candidate must be skipped.",
+                    "keywords": "not-a-list",
+                    "evidence_gaps": [],
+                }
+            ),
+        ),
+    )
+    conn.commit()
     conn.row_factory = sqlite3.Row
     fallback_head = seo_targets._ensure_keyword_head(
         conn,
@@ -3412,7 +3468,62 @@ def test_keyword_head_bootstrap_excludes_invalid_history_and_uses_fbr_only_witho
     conn.close()
 
     assert trusted_head["active_artifact_id"] == trusted_skill_id
+    assert trusted_head["active_artifact_id"] != invalid_object_cursor.lastrowid
     assert fallback_head["active_artifact_id"] == fallback_fbr_id
+    assert fallback_head["active_artifact_id"] != invalid_fallback_cursor.lastrowid
+
+
+def test_get_seo_targets_rejects_an_active_head_with_invalid_keyword_object(
+    client, monkeypatch
+):
+    merchant_id = create_uws_merchant(client, monkeypatch)
+    conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
+    invalid_cursor = conn.execute(
+        "INSERT INTO merchant_seo_artifacts"
+        " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
+        " request_json, payload_json, created_at, completed_at)"
+        " VALUES (?, 'invalid-active-object', 'KEYWORD_SET', 'seo_ops.keyword_set.v2', 'ready',"
+        " 'fbr-keyword-store', ?, ?, '2026-09-02T12:00:00Z', '2026-09-02T12:01:00Z')",
+        (
+            merchant_id,
+            json.dumps({"source": "FBR_KEYWORD_STORE", "place_id": TEST_PLACE_ID}),
+            json.dumps(
+                {
+                    "schema_version": "seo_ops.keyword_set.v2",
+                    "merchant_id": str(merchant_id),
+                    "market": {
+                        "country_code": "US",
+                        "language": "en-US",
+                        "search_engine": "GOOGLE",
+                    },
+                    "generation_method": "PERSISTED_FBR_READBACK",
+                    "title": "Invalid active FBR payload",
+                    "summary": "The head must fail closed.",
+                    "keywords": "not-a-list",
+                    "evidence_gaps": [],
+                }
+            ),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO merchant_keyword_heads"
+        " (merchant_id, place_id, active_artifact_id, activated_by, activation_reason,"
+        " activated_at, updated_at) VALUES (?, ?, ?, 'test', 'ADOPT_FBR', ?, ?)",
+        (
+            merchant_id,
+            TEST_PLACE_ID,
+            invalid_cursor.lastrowid,
+            "2026-09-02T12:02:00Z",
+            "2026-09-02T12:02:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get(f"/api/merchants/{merchant_id}/seo-targets")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "active keyword artifact is invalid"}
 
 
 def test_keyword_head_bootstrap_rejects_newer_fbr_payload_from_another_source(

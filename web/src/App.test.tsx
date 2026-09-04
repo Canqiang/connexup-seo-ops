@@ -2656,6 +2656,63 @@ describe('关键词版本 controls', () => {
     screen.getByText('active local truth')
   })
 
+  it('keeps a ready activation conflict visible to the operator', async () => {
+    renderWithState(activeState({
+      cycle_status: 'ready',
+      error: 'keyword activation conflict: active version changed while Skill generation was running',
+    }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('关键词版本激活冲突')
+    expect(alert.textContent).toContain('active version changed')
+  })
+
+  it('labels an adopted scored FBR version without claiming Skill verification', async () => {
+    const scoredFbrVersion = {
+      artifact_id: 98,
+      place_id: 'place-3',
+      source: 'FBR',
+      generation_method: 'PERSISTED_FBR_READBACK',
+      keyword_count: 1,
+      local_keyword_count: 1,
+      organic_keyword_count: 0,
+      scored_keyword_count: 1,
+      score_status: 'SCORED_UNVERIFIED',
+      completed_at: '2026-09-03T00:04:00Z',
+      is_active: true,
+    }
+    renderWithState(activeState({
+      active_keyword_artifact_id: 98,
+      keyword_set_artifact_id: 98,
+      active_keyword_source: 'FBR',
+      keyword_versions: [scoredFbrVersion],
+      latest_fbr_import: null,
+      keyword_set: {
+        schema_version: 'seo_ops.keyword_set.v2', merchant_id: '3',
+        market: { country_code: 'US', language: 'en-US', search_engine: 'GOOGLE', location_name: 'Brooklyn' },
+        generation_method: 'PERSISTED_FBR_READBACK', title: 'Scored FBR', summary: 'Imported FBR scores.',
+        keywords: [{ keyword: 'fbr scored keyword', strategy: 'LOCAL', intent: 'LOCAL', priority: 'P0', score: 88, score_rank: 1, local_falcon_selected: true, rationale: 'FBR', source_tags: ['FBR_KEYWORD_STORE'], target_surface_types: ['GBP'], target_location: 'Brooklyn' }],
+        evidence_gaps: [],
+      },
+    }))
+
+    await screen.findByText('fbr scored keyword')
+    screen.getByRole('columnheader', { name: /FBR 评分 \/ 排名/ })
+    expect(screen.queryByRole('columnheader', { name: /Skill 评分/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '说明：关键词评分' }))
+    screen.getByText(/评分来自当前采用的 FBR 关键词版本，尚未通过 Skill 来源验证/)
+  })
+
+  it('explains that page load reads the active local keyword version', async () => {
+    renderWithState(activeState())
+    await screen.findByText('active local truth')
+
+    fireEvent.click(screen.getByRole('button', { name: '说明：目标关键词' }))
+
+    screen.getByText(/页面加载读取 SEO Ops 当前采用的本地关键词版本/)
+    screen.getByText(/FBR 只在运营人员明确点击“从 FBR 重新读取”时导入候选版本/)
+  })
+
   it('renders API comparison counts without recomputing truncated details', async () => {
     renderWithState(activeState())
     await screen.findByRole('button', { name: '查看版本' })
