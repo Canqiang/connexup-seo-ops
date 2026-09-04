@@ -2,6 +2,15 @@ import os
 import sqlite3
 from pathlib import Path
 
+from app.migrations import (
+    PERFORMANCE_MIGRATION,
+    MigrationInvariantError,
+    apply_migrations,
+    assert_migration_postconditions,
+    assert_migration_registry_checksums,
+    register_sqlite_invariants,
+)
+
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "seo-ops-v3.db"
 
@@ -15,6 +24,7 @@ def connect() -> sqlite3.Connection:
     # 每个请求独享一条连接、顺序使用，因此跨线程是安全的。
     conn = sqlite3.connect(db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    register_sqlite_invariants(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -66,10 +76,65 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
 
 
+def _object_type(conn: sqlite3.Connection, name: str) -> str | None:
+    row = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name = ?", (name,)
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _migration_recorded(conn: sqlite3.Connection) -> bool:
+    if _object_type(conn, "schema_migrations") != "table":
+        return False
+    return (
+        conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = ?",
+            (PERFORMANCE_MIGRATION,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _legacy_fbr_bootstrap_required(conn: sqlite3.Connection) -> bool:
+    """Validate the FBR schema boundary without mutating it."""
+    assert_migration_registry_checksums(conn)
+    recorded = _migration_recorded(conn)
+    compatibility_type = _object_type(conn, "merchant_fbr_links")
+    legacy_renamed = _object_type(conn, "merchant_fbr_links_legacy")
+    history_type = _object_type(conn, "merchant_fbr_binding_events")
+    state_type = _object_type(conn, "merchant_fbr_link_state")
+
+    if recorded:
+        if (
+            compatibility_type == "view"
+            and legacy_renamed is None
+            and history_type == "table"
+            and state_type == "table"
+        ):
+            return False
+        raise MigrationInvariantError("recorded_fbr_migration_schema_inconsistent")
+
+    if compatibility_type == "table":
+        if legacy_renamed is None and history_type is None and state_type is None:
+            return False
+        raise MigrationInvariantError("legacy_and_migrated_fbr_objects_conflict")
+
+    if (
+        compatibility_type is None
+        and legacy_renamed is None
+        and history_type is None
+        and state_type is None
+    ):
+        return True
+
+    raise MigrationInvariantError("unrecorded_or_partial_fbr_migration_schema")
+
+
 def init_db() -> None:
     Path(db_path()).parent.mkdir(parents=True, exist_ok=True)
     conn = connect()
     try:
+        _legacy_fbr_bootstrap_required(conn)
         _migrate(conn)
         conn.executescript(SCHEMA_PATH.read_text())
         # Existing databases may already contain the scan batch table while the
@@ -84,7 +149,11 @@ def init_db() -> None:
             " ON merchant_local_falcon_scan_batches(confirmation_id)"
             " WHERE confirmation_id IS NOT NULL"
         )
-        conn.commit()
+        apply_migrations(conn)
+        assert_migration_registry_checksums(conn)
+        if _legacy_fbr_bootstrap_required(conn):
+            raise MigrationInvariantError("fbr_migration_did_not_complete")
+        assert_migration_postconditions(conn, version=PERFORMANCE_MIGRATION)
     finally:
         conn.close()
 

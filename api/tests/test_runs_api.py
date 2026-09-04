@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from helpers import FakeCoreAi, cleanup_override, override_coreai
+from helpers import FakeCoreAi, cleanup_override, override_coreai, seed_fbr_link
 
 
 def insert_fbr_link(
@@ -18,11 +18,13 @@ def insert_fbr_link(
     last_error: str | None = None,
 ) -> None:
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
-    conn.execute(
-        "INSERT INTO merchant_fbr_links"
-        " (merchant_id, fbr_merchant_id, sync_status, last_synced_at, last_error, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, '2026-09-03T00:00:00+00:00', '2026-09-03T00:00:00+00:00')",
-        (merchant_id, fbr_merchant_id, sync_status, last_synced_at, last_error),
+    seed_fbr_link(
+        conn,
+        merchant_id,
+        fbr_merchant_id=fbr_merchant_id,
+        sync_status=sync_status,
+        last_synced_at=last_synced_at,
+        last_error=last_error,
     )
     conn.commit()
     conn.close()

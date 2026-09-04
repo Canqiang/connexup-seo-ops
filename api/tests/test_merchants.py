@@ -166,18 +166,16 @@ def test_delete_requires_an_archived_merchant_without_related_records(client):
     assert client.get(f"/api/merchants/{m['id']}").status_code == 404
 
 
-def test_delete_archived_merchant_cascades_tasks_and_related_business_data(client):
+def test_delete_archived_merchant_preserves_tasks_and_related_business_data(client):
     m = client.post(
         "/api/merchants",
         json={"name": "Archived with history", "primary_location": "Mineola, NY"},
     ).json()
+    assert client.put(
+        f"/api/merchants/{m['id']}/fbr-link",
+        json={"fbr_merchant_id": "fbr-connected"},
+    ).status_code == 200
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
-    conn.execute(
-        "INSERT INTO merchant_fbr_links"
-        " (merchant_id, fbr_merchant_id, created_at, updated_at)"
-        " VALUES (?, 'fbr-connected', '2026-09-02T00:00:00+00:00', '2026-09-02T00:00:00+00:00')",
-        (m["id"],),
-    )
     conn.execute(
         "INSERT INTO runs"
         " (merchant_id, coreai_run_id, status, trigger_kind, created_at, finished_at)"
@@ -253,8 +251,9 @@ def test_delete_archived_merchant_cascades_tasks_and_related_business_data(clien
 
     response = client.delete(f"/api/merchants/{m['id']}")
 
-    assert response.status_code == 204
-    assert client.get(f"/api/merchants/{m['id']}").status_code == 404
+    assert response.status_code == 409
+    assert response.json()["detail"] == "merchant has durable history; archive preserves it"
+    assert client.get(f"/api/merchants/{m['id']}").status_code == 200
     conn = sqlite3.connect(os.environ["SEO_OPS_DB"])
     remaining = {
         "tasks": conn.execute("SELECT COUNT(*) FROM tasks WHERE merchant_id = ?", (m["id"],)).fetchone()[0],
@@ -276,7 +275,7 @@ def test_delete_archived_merchant_cascades_tasks_and_related_business_data(clien
         ).fetchone()[0],
     }
     conn.close()
-    assert remaining == {table: 0 for table in remaining}
+    assert remaining == {table: 1 for table in remaining}
 
 
 def test_archive_rejects_merchant_with_active_work(client):

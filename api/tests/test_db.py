@@ -7,10 +7,18 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
 
     init_db()
     init_db()  # 幂等
-    conn = sqlite3.connect(tmp_path / "t.db")
+    from app.db import connect
+
+    conn = connect()
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    fbr_object = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name='merchant_fbr_links'"
+    ).fetchone()[0]
+    versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations")]
     conn.close()
     assert {"merchants", "tasks"} <= names
+    assert fbr_object == "view"
+    assert versions == ["0001_performance_history"]
 
 
 def test_migration_adds_columns_and_runs_table(tmp_path, monkeypatch):

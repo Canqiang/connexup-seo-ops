@@ -9,20 +9,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS merchant_fbr_links (
-  merchant_id INTEGER PRIMARY KEY REFERENCES merchants(id) ON DELETE CASCADE,
-  fbr_merchant_id TEXT NOT NULL,
-  sync_status TEXT NOT NULL DEFAULT 'not_synced'
-    CHECK (sync_status IN ('not_synced','syncing','synced','failed')),
-  last_synced_at TEXT,
-  last_error TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_merchant_fbr_links_external
-  ON merchant_fbr_links(fbr_merchant_id);
-
 CREATE TABLE IF NOT EXISTS merchant_gbp_profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,

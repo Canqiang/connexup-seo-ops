@@ -9,25 +9,6 @@ from .db import get_db
 
 router = APIRouter(prefix="/api/merchants", tags=["merchants"])
 
-MERCHANT_DELETE_STATEMENTS = (
-    "DELETE FROM merchant_local_falcon_scan_items WHERE batch_id IN"
-    " (SELECT id FROM merchant_local_falcon_scan_batches WHERE merchant_id = ?)",
-    "DELETE FROM merchant_local_falcon_scan_batches WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_scan_confirmations WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_approvals WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_reports WHERE merchant_id = ?",
-    "DELETE FROM merchant_local_falcon_syncs WHERE merchant_id = ?",
-    "DELETE FROM task_executions WHERE task_id IN"
-    " (SELECT id FROM tasks WHERE merchant_id = ?)",
-    "DELETE FROM tasks WHERE merchant_id = ?",
-    "DELETE FROM audit_snapshots WHERE merchant_id = ?",
-    "DELETE FROM runs WHERE merchant_id = ?",
-    "DELETE FROM merchant_seo_artifacts WHERE merchant_id = ?",
-    "DELETE FROM merchant_gbp_profiles WHERE merchant_id = ?",
-    "DELETE FROM merchant_fbr_links WHERE merchant_id = ?",
-)
-
-
 class MerchantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     notes: str | None = None
@@ -168,9 +149,15 @@ def delete_merchant(merchant_id: int, conn=Depends(get_db)):
         merchant = fetch_merchant(conn, merchant_id)
         if merchant["status"] != "archived":
             raise HTTPException(status_code=409, detail="archive merchant before deleting it")
-        for statement in MERCHANT_DELETE_STATEMENTS:
-            conn.execute(statement, (merchant_id,))
         conn.execute("DELETE FROM merchants WHERE id = ?", (merchant_id,))
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        if "merchant_has_durable_history" in str(exc):
+            raise HTTPException(
+                status_code=409,
+                detail="merchant has durable history; archive preserves it",
+            ) from exc
+        raise
     except Exception:
         conn.rollback()
         raise
