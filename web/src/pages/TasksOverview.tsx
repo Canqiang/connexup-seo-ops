@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type TaskBlockerCode, type TaskReadiness, type TaskSourceKind, type TaskStatus, type TaskSummary } from '../api'
+import { api, type TaskBlockerCode, type TaskReadiness, type TaskSourceKind, type TaskStatus, type TaskSummary, isAbortError } from '../api'
 import TaskTable from '../components/TaskTable'
 import { TASK_STATUS_LABELS } from '../labels'
 
@@ -21,10 +21,6 @@ const BLOCKER_OPTIONS: Array<[TaskBlockerCode, string]> = [
   ['MERCHANT_ARCHIVED', '商户已归档'],
   ['REVISION_INACTIVE', 'Plan revision 已停用'],
 ]
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError'
-}
 
 export default function TasksOverview() {
   const mountedRef = useRef(false)

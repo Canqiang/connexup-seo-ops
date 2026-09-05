@@ -251,6 +251,12 @@ function errorDetail(body: unknown, status: number, statusText: string): string 
   return `${status} ${statusText}`
 }
 
+export function isAbortError(error: unknown): boolean {
+  // fetch raises a DOMException, which extends Error in browsers and jsdom;
+  // polyfills and test doubles may raise a plain Error with the same name.
+  return error instanceof Error && error.name === 'AbortError'
+}
+
 export class ApiError extends Error {
   readonly status: number
 

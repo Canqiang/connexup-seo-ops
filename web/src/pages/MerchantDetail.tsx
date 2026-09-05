@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { api, type Merchant, type MerchantProfile, type Run, type Task, type TaskCategory, type TaskPlan, type TaskStatus } from '../api'
+import { api, type Merchant, type MerchantProfile, type Run, type Task, type TaskCategory, type TaskPlan, type TaskStatus, isAbortError } from '../api'
 import TaskTable from '../components/TaskTable'
 import MerchantSectionNav from '../components/MerchantSectionNav'
 import { formatTime } from '../format'
@@ -36,10 +36,6 @@ const isConnectedProfileReady = (profile: MerchantProfile) => profile.state === 
   && profile.locations.length > 0
 
 type PlanReadState = 'idle' | 'loading' | 'ready' | 'missing' | 'error'
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError'
-}
 
 function taskBlocksArchive(task: Task): boolean {
   return ARCHIVE_BLOCKING_TASK_STATUSES.includes(task.status)

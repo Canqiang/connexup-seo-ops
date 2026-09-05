@@ -1,19 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
-import type { TaskBlocker, TaskSummary } from '../api'
+import type { TaskSummary } from '../api'
 import { formatTime } from '../format'
-import { CATEGORY_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS } from '../labels'
-
-function blockerSummary(blocker: TaskBlocker | null): string {
-  if (!blocker) return '可执行'
-  if (blocker.code === 'UPSTREAM_NOT_DONE') {
-    return blocker.task_title ? `被「${blocker.task_title}」阻塞` : '等待上游任务完成'
-  }
-  if (blocker.code === 'SCHEDULED_FOR_FUTURE') {
-    return blocker.scheduled_start ? `等待至 ${formatTime(blocker.scheduled_start)}` : '等待计划时间'
-  }
-  if (blocker.code === 'MERCHANT_ARCHIVED') return '商户已归档'
-  return 'Plan revision 已停用'
-}
+import { CATEGORY_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS, blockerSummary } from '../labels'
 
 export default function TaskTable({ tasks, showSource = true, showMerchant = false }: {
   tasks: TaskSummary[]

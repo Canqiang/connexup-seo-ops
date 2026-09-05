@@ -1158,3 +1158,47 @@ def test_archived_merchant_rejects_every_plan_mutation_without_changes(client):
         (409, "merchant is archived"),
     ]
     assert formal_workflow_snapshot() == before
+
+
+def test_approval_that_removes_a_dependent_task_keeps_cold_start_projection_valid(client):
+    from app.db import connect, init_db
+    from app.task_migrations import assert_task_workflow_migration_postconditions
+
+    _merchant, _run, draft_plan = create_draft_plan(client, two_wave_plan_payload())
+    first_approval = client.post(
+        f"/api/task-plans/{draft_plan['id']}/approve",
+        json={"revision": 1, "checksum": draft_plan["current_revision"]["checksum"]},
+    )
+    assert first_approval.status_code == 200, first_approval.text
+    edited = client.put(
+        f"/api/task-plans/{draft_plan['id']}/draft",
+        json={
+            "expected_revision": 1,
+            "plan": {"schema_version": "seo_ops.task_plan.v1", "tasks": [plan_task("draft")]},
+            "removals": [{"key": "review", "reason": "Review is handled elsewhere."}],
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    second_approval = client.post(
+        f"/api/task-plans/{draft_plan['id']}/approve",
+        json={"revision": 2, "checksum": edited.json()["current_revision"]["checksum"]},
+    )
+    assert second_approval.status_code == 200, second_approval.text
+
+    conn = connect()
+    try:
+        review = conn.execute(
+            "SELECT * FROM tasks WHERE plan_id = ? AND task_key = 'review'", (draft_plan["id"],)
+        ).fetchone()
+        assert review["status"] == "CANCELLED"
+        assert review["plan_revision"] == 1
+        edges = conn.execute(
+            "SELECT parent.task_key FROM task_dependencies d "
+            "JOIN tasks parent ON parent.id = d.depends_on_task_id WHERE d.task_id = ?",
+            (review["id"],),
+        ).fetchall()
+        assert [row[0] for row in edges] == ["draft"]
+        assert_task_workflow_migration_postconditions(conn)
+    finally:
+        conn.close()
+    init_db()
