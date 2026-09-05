@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, ApiError, type Merchant, type TaskPlan, type TaskPlanItem, type TaskPlanPayload } from '../api'
+import { api, ApiError, type Merchant, type TaskPlan, type TaskPlanItem, type TaskPlanPayload, isAbortError } from '../api'
 import { executionWaves, isTaskPlan, taskPlanSnapshot, taskPlanValidationErrors } from '../taskPlan'
 
 type EditorTask = TaskPlanItem & {
@@ -231,10 +231,6 @@ function PlanTaskEditor({
       )}
     </article>
   )
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 export default function PlanReview() {

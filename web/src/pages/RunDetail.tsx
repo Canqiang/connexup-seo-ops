@@ -9,43 +9,17 @@ import {
   type Run,
   type RunDispatchReconciliation,
   type TaskPlan,
-  type TaskWorkflowStatus,
+  isAbortError,
 } from '../api'
 import AuditReport from '../components/AuditReport'
 import { formatTime } from '../format'
-import { CATEGORY_LABELS, RUN_STATUS_LABELS } from '../labels'
+import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS } from '../labels'
 import { reportForDisplay } from '../reportDisplay'
 import { formatRunDuration } from '../runPresentation'
 import { isTaskPlan } from '../taskPlan'
 
-const WORKFLOW_STATUS_LABELS: Record<TaskWorkflowStatus, string> = {
-  PENDING: '待办',
-  PREPARING: '准备中',
-  AWAITING_APPROVAL: '待内容审批',
-  EXECUTING: '执行中',
-  VERIFYING: '验证中',
-  DONE: '已完成',
-  NEEDS_ATTENTION: '需要人工处理',
-  CANCELLED: '已取消',
-}
-
-const WORKFLOW_STATUS_CLASSES: Record<TaskWorkflowStatus, string> = {
-  PENDING: 'todo',
-  PREPARING: 'doing',
-  AWAITING_APPROVAL: 'todo',
-  EXECUTING: 'doing',
-  VERIFYING: 'doing',
-  DONE: 'done',
-  NEEDS_ATTENTION: 'failed',
-  CANCELLED: 'cancelled',
-}
-
 type PlanReadState = 'loading' | 'ready' | 'missing' | 'error'
 const RUN_POLL_INTERVAL_MS = 10_000
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
-}
 
 function isPollableRun(run: Run | null): run is Run {
   return run?.status === 'running'
@@ -504,7 +478,7 @@ function RunDetailPage({ runId }: { runId: number }) {
                   </Link>
                   <div>
                     <span className="badge cat">{task.category ? CATEGORY_LABELS[task.category] ?? task.category : '未分类'}</span>
-                    <span className={`badge ${WORKFLOW_STATUS_CLASSES[task.status]}`}>{WORKFLOW_STATUS_LABELS[task.status]}</span>
+                    <span className={`badge ${TASK_STATUS_CLASSES[task.status]}`}>{TASK_STATUS_LABELS[task.status]}</span>
                   </div>
                 </li>
               ))}

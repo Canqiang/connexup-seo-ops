@@ -2794,6 +2794,45 @@ describe('desktop operator shell', () => {
     expect(within(taskPanel).queryByText('Removed history')).toBeNull()
   })
 
+  it('labels generated tasks on the run page with the shared task status vocabulary', async () => {
+    window.history.pushState({}, '', '/runs/1')
+    const approved = planView({
+      approved_revision: 1,
+      current_revision: { ...planView().current_revision, decision_state: 'APPROVED' },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/runs/1/audit') return response({ detail: 'accepted audit not found' }, 404)
+      if (input === '/api/runs/1') return response({
+        id: 1,
+        merchant_id: 1,
+        coreai_run_id: 'run-1',
+        status: 'succeeded',
+        trigger_kind: 'manual',
+        report_text: '# Report',
+        error: null,
+        plan_approved_at: '2026-09-01T00:02:00Z',
+        created_at: '2026-09-01T00:00:00Z',
+        finished_at: '2026-09-01T00:01:00Z',
+      })
+      if (input === '/api/runs/1/task-plan') return response(approved)
+      if (input === '/api/tasks?plan_id=7&include_archived=true') return response([
+        { id: 11, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'draft', task_type: 'PREPARE_ONLY', title: 'Publishing task', category: 'content', status: 'EXECUTING', source_run_id: 1, plan: canonicalPlanContext(1) },
+        { id: 12, merchant_id: 1, plan_id: 7, plan_revision: 1, task_key: 'review', task_type: 'PREPARE_ONLY', title: 'Awaiting task', category: 'review', status: 'AWAITING_APPROVAL', source_run_id: 1, plan: canonicalPlanContext(1) },
+      ])
+      return response({ id: 1, name: 'Merchant', status: 'active', notes: null, auto_run_interval_days: null, created_at: '2026-09-01T00:00:00Z' })
+    }))
+
+    render(<App />)
+
+    const taskPanel = await screen.findByRole('complementary', { name: '本次生成任务' })
+    await within(taskPanel).findByRole('link', { name: 'Publishing task' })
+    const executing = within(taskPanel).getByText('发布中')
+    expect(executing.className).toBe('badge executing')
+    const awaiting = within(taskPanel).getByText('待内容审批')
+    expect(awaiting.className).toBe('badge awaiting')
+    expect(within(taskPanel).queryByText('执行中')).toBeNull()
+  })
+
   it('does not mix an older approved task set into a latest draft revision', async () => {
     window.history.pushState({}, '', '/runs/1')
     const calls: string[] = []

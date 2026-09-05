@@ -1,4 +1,5 @@
-import type { RunStatus, TaskStatus } from './api'
+import type { RunStatus, TaskBlocker, TaskStatus } from './api'
+import { formatTime } from './format'
 
 export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   PENDING: '待办',
@@ -35,4 +36,16 @@ export const CATEGORY_LABELS: Record<string, string> = {
   citation: '信息一致性',
   technical: '技术优化',
   other: '其他',
+}
+
+export function blockerSummary(blocker: TaskBlocker | null): string {
+  if (!blocker) return '可执行'
+  if (blocker.code === 'UPSTREAM_NOT_DONE') {
+    return blocker.task_title ? `被「${blocker.task_title}」阻塞` : '等待上游任务完成'
+  }
+  if (blocker.code === 'SCHEDULED_FOR_FUTURE') {
+    return blocker.scheduled_start ? `等待至 ${formatTime(blocker.scheduled_start)}` : '等待计划时间'
+  }
+  if (blocker.code === 'MERCHANT_ARCHIVED') return '商户已归档'
+  return 'Plan revision 已停用'
 }
