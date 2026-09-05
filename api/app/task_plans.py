@@ -316,9 +316,14 @@ def materialize_plan_revision(
     mutable_rows = [row for row in existing_rows if row["status"] == "PENDING"]
     changed_at = now_iso()
 
-    # Remove only the edge sets owned by still-pending downstream Tasks.  Edges
-    # attached to started/terminal Tasks are immutable history.
+    # Remove only the edge sets owned by still-pending downstream Tasks that
+    # this revision redefines.  Edges attached to started/terminal Tasks are
+    # immutable history, and a pending Task that this revision removes keeps
+    # its edges too: it stays bound to the revision that defined it, and the
+    # cold-start projection checks its edges against that frozen definition.
     for task in mutable_rows:
+        if str(task["task_key"]) not in target:
+            continue
         conn.execute("DELETE FROM task_dependencies WHERE task_id = ?", (task["id"],))
 
     for task in mutable_rows:

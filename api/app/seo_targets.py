@@ -52,12 +52,6 @@ RANKING_SKILL_OUTPUT_ADAPTER_VERSION = "seo_ops.ranking_skill_output_adapter.v1"
 RANKING_SKILL_KEYWORD_SET_ADAPTER_VERSION = (
     "seo_ops.ranking_skill_keyword_set_adapter.v2"
 )
-KEYWORD_ACTIVATION_REASONS = {
-    "SKILL_GENERATION",
-    "SYSTEM_BOOTSTRAP",
-    "RESTORE_SKILL",
-    "ADOPT_FBR",
-}
 # The current Local Falcon report contract has neither a timezone-aware
 # submission timestamp nor a batch/request correlation id. A report with the
 # same keyword and scan parameters could therefore belong to another paid run.

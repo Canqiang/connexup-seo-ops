@@ -1773,3 +1773,28 @@ def test_execute_rejects_archive_restore_aba_during_llm_call(client):
     finally:
         fake.release.set()
         clear_preparation_llm_call()
+
+
+def test_cancelling_an_awaiting_approval_task_releases_the_merchant_for_archive(client):
+    from helpers import FakeCoreAi
+
+    merchant = make_merchant(client)
+    task = make_task(client, merchant["id"])
+    override_preparation_llm_call(FakeCoreAi())
+    try:
+        executed = execute_current(client, task["id"])
+    finally:
+        clear_preparation_llm_call()
+    assert executed.status_code == 201, executed.text
+    awaiting = client.get(f"/api/tasks/{task['id']}").json()
+    assert awaiting["status"] == "AWAITING_APPROVAL"
+
+    cancelled = client.post(
+        f"/api/tasks/{task['id']}/cancel",
+        json={"expected_version": awaiting["version"], "reason": "No longer needed"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED"
+
+    archived = client.patch(f"/api/merchants/{merchant['id']}", json={"status": "archived"})
+    assert archived.status_code == 200, archived.text

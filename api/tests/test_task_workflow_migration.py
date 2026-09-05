@@ -1648,3 +1648,73 @@ def test_events_tasks_and_revision_payloads_are_database_immutable(tmp_path, mon
             "DELETE FROM task_plan_revisions WHERE plan_id = ? AND revision = 1", (plan_id,)
         )
     conn.close()
+
+
+def test_legacy_cancelled_task_stays_cancelled_despite_failed_execution(tmp_path, monkeypatch):
+    path = tmp_path / "legacy-cancelled.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO tasks (id, merchant_id, title, description, rationale, expected_outcome, category, "
+        "scheduled_start, status, evidence_note, source_run_id, source_key, created_at, completed_at) "
+        "VALUES (6, 1, 'Cancelled after failure', 'd', 'r', 'o', 'content', NULL, 'cancelled', "
+        "'gave up', NULL, 'cancelled-after-failure', '2026-08-03T05:00:00+00:00', '2026-08-08T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO task_executions (id, task_id, coreai_run_id, status, attempt, output_text, error, "
+        "review_note, created_at, finished_at, reviewed_at) VALUES (105, 6, 'exec-cancelled-failed', "
+        "'failed', 1, NULL, 'provider failed', NULL, '2026-08-07T08:00:00+00:00', "
+        "'2026-08-07T09:00:00+00:00', NULL)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+    from app.task_migrations import assert_task_workflow_migration_postconditions
+
+    init_db()
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    task = conn.execute("SELECT * FROM tasks WHERE id = 6").fetchone()
+    assert task["status"] == "CANCELLED"
+    assert task["cancelled_at"] == "2026-08-08T00:00:00+00:00"
+    assert conn.execute("SELECT status FROM task_executions WHERE id = 105").fetchone()[0] == "FAILED"
+    assert_task_workflow_migration_postconditions(conn)
+    conn.close()
+
+
+def test_legacy_running_execution_without_run_id_becomes_unknown_attention(tmp_path, monkeypatch):
+    path = tmp_path / "legacy-orphan-dispatch.db"
+    _seed_legacy_database(path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO tasks (id, merchant_id, title, description, rationale, expected_outcome, category, "
+        "scheduled_start, status, evidence_note, source_run_id, source_key, created_at, completed_at) "
+        "VALUES (7, 1, 'Crashed during dispatch', 'd', 'r', 'o', 'content', NULL, 'doing', "
+        "NULL, NULL, 'crashed-dispatch', '2026-08-03T06:00:00+00:00', NULL)"
+    )
+    conn.execute(
+        "INSERT INTO task_executions (id, task_id, coreai_run_id, status, attempt, output_text, error, "
+        "review_note, created_at, finished_at, reviewed_at) VALUES (106, 7, NULL, 'running', 1, NULL, "
+        "NULL, NULL, '2026-08-07T10:00:00+00:00', NULL, NULL)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_DB", str(path))
+    from app.db import init_db
+    from app.task_migrations import (
+        LEGACY_EXECUTION_DISPATCH_UNKNOWN_ERROR,
+        assert_task_workflow_migration_postconditions,
+    )
+
+    init_db()
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    assert conn.execute("SELECT status FROM tasks WHERE id = 7").fetchone()[0] == "NEEDS_ATTENTION"
+    execution = conn.execute("SELECT * FROM task_executions WHERE id = 106").fetchone()
+    assert execution["status"] == "UNKNOWN"
+    assert execution["coreai_run_id"] is None
+    assert execution["error"] == LEGACY_EXECUTION_DISPATCH_UNKNOWN_ERROR
+    assert execution["finished_at"] is not None
+    assert_task_workflow_migration_postconditions(conn)
+    conn.close()

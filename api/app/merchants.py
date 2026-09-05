@@ -114,7 +114,8 @@ def merchant_has_active_work(conn: sqlite3.Connection, merchant_id: int) -> bool
             "SELECT 1 FROM task_executions te JOIN tasks t ON t.id = te.task_id"
             " WHERE t.merchant_id = ? AND ("
             "te.status IN ('PENDING','DISPATCHING','RUNNING') OR "
-            "(te.status='SUCCEEDED' AND te.reviewed_at IS NULL)) LIMIT 1",
+            "(te.status='SUCCEEDED' AND te.reviewed_at IS NULL "
+            "AND t.status NOT IN ('DONE','CANCELLED'))) LIMIT 1",
             (merchant_id,),
         ),
         (

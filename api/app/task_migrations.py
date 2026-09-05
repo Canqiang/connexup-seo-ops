@@ -416,13 +416,24 @@ def _validate_legacy_execution_owners(
     return [int(row[0]) for row in executions]
 
 
+LEGACY_EXECUTION_DISPATCH_UNKNOWN_ERROR = (
+    "legacy execution has no core-ai run id; dispatch outcome unknown"
+)
+
+
 def _task_status(task: dict[str, Any], executions: list[dict[str, Any]]) -> str:
+    task_status = str(task.get("status")).lower()
+    if task_status in {"done", "cancelled"}:
+        # The operator already closed this Task; a stale execution outcome
+        # must not resurrect it as actionable work.
+        return {"done": "DONE", "cancelled": "CANCELLED"}[task_status]
     latest = executions[-1] if executions else None
     execution_status = str(latest.get("status")).lower() if latest else None
     if execution_status == "approved":
         return "DONE"
     if execution_status == "running":
-        return "PREPARING"
+        # A run id was never recorded, so nothing can ever poll this row.
+        return "PREPARING" if latest.get("coreai_run_id") else "NEEDS_ATTENTION"
     if execution_status == "ready":
         return "AWAITING_APPROVAL"
     if execution_status in {"failed", "returned"}:
@@ -509,6 +520,14 @@ def _materialize_execution(conn: sqlite3.Connection, execution: dict[str, Any]) 
         "failed": "FAILED",
         "returned": "FAILED",
     }[str(execution["status"])]
+    error = execution.get("error")
+    finished_at = execution.get("finished_at")
+    if status == "RUNNING" and not execution.get("coreai_run_id"):
+        # The legacy API committed the row before dispatch; without a run id
+        # the outcome is unknowable, so fail closed instead of polling forever.
+        status = "UNKNOWN"
+        error = LEGACY_EXECUTION_DISPATCH_UNKNOWN_ERROR
+        finished_at = finished_at or execution["created_at"]
     conn.execute(
         "INSERT INTO _task_workflow_task_executions "
         "(id, task_id, stage, status, attempt, approval_id, artifact_id, request_json, request_checksum, idempotency_key, "
@@ -526,10 +545,10 @@ def _materialize_execution(conn: sqlite3.Connection, execution: dict[str, Any]) 
             execution["created_at"] if status == "RUNNING" else None,
             execution.get("coreai_run_id"),
             execution.get("output_text"),
-            execution.get("error"),
+            error,
             execution.get("review_note"),
             execution["created_at"],
-            execution.get("finished_at"),
+            finished_at,
             execution.get("reviewed_at"),
         ),
     )
