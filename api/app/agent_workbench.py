@@ -2529,7 +2529,8 @@ def best_effort_record_started_run(
                 return None
             updated = conn.execute(
                 "UPDATE seo_ops_agent_runs SET source_kind=?,source_local_id=?,"
-                "merchant_id=? WHERE coreai_run_id=? AND seo_ops_agent_id=? "
+                "merchant_id=?,last_synced_at=NULL "
+                "WHERE coreai_run_id=? AND seo_ops_agent_id=? "
                 "AND source_kind IS NULL AND source_local_id IS NULL",
                 (
                     source_kind,
@@ -2806,10 +2807,7 @@ def _apply_sync_run_tx(
     terminal_observed_at = existing["terminal_observed_at"]
     receipt_expires_at = existing["receipt_expires_at"]
     if existing_status in KNOWN_TERMINAL:
-        conflict = (
-            incoming_status != existing_status
-            and incoming_status not in KNOWN_NONTERMINAL
-        )
+        conflict = incoming_status != existing_status
         warning_json = _merge_warning_codes(
             existing["data_warning_codes_json"],
             (*warnings, *(("TERMINAL_STATUS_CONFLICT",) if conflict else ())),
@@ -3082,21 +3080,29 @@ def commit_discovery_cycle(
             return False
         before = _projection_semantic_tuple(conn, lease.local_agent_id)
         original_revision = joined["projection_revision"]
-        existing_ids = {
-            row[0]
+        existing_statuses = {
+            row["coreai_run_id"]: row["raw_status"]
             for row in conn.execute(
-                "SELECT coreai_run_id FROM seo_ops_agent_runs "
+                "SELECT coreai_run_id,raw_status FROM seo_ops_agent_runs "
                 "WHERE seo_ops_agent_id=?",
                 (lease.local_agent_id,),
             )
         }
+        existing_ids = set(existing_statuses)
         valid = [outcome for outcome in result.outcomes if outcome.page is not None]
         unfiltered = next((item for item in valid if item.status is None), None)
         statuses_by_id: dict[str, set[str]] = {}
+        transition_conflicts: set[str] = set()
         observed_ids: set[str] = set()
         unfiltered_ids: set[str] = set()
         for outcome in valid:
             for run in outcome.page.runs:
+                previous_status = existing_statuses.get(run.coreai_run_id)
+                if (
+                    previous_status in KNOWN_TERMINAL
+                    and run.raw_status != previous_status
+                ):
+                    transition_conflicts.add(run.coreai_run_id)
                 repeated_in_cycle = run.coreai_run_id in observed_ids
                 statuses_by_id.setdefault(run.coreai_run_id, set()).add(run.raw_status)
                 observed_ids.add(run.coreai_run_id)
@@ -3109,7 +3115,7 @@ def commit_discovery_cycle(
                     result.observed_at,
                     allow_equal=repeated_in_cycle,
                 )
-        conflicts = {
+        conflicts = transition_conflicts | {
             run_id for run_id, statuses in statuses_by_id.items() if len(statuses) > 1
         }
         absent_fast_rows = []
@@ -3284,7 +3290,7 @@ def commit_discovery_cycle(
         all_exact = all(values[prefix][3] == "exact" for prefix in values)
         epoch_match = joined["local_event_epoch"] == lease.local_event_epoch
         complete = bool(all_exact and unknown_count == 0 and epoch_match and not conflicts)
-        sync_pending = 0 if complete else 1
+        sync_pending = 0 if complete else int(bool(joined["sync_pending"]))
         cycle_errors = [item for item in result.outcomes if item.page is None]
         if conflicts:
             current_error = "SAME_CYCLE_STATUS_CONFLICT: Run 状态证明冲突"
