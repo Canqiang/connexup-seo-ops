@@ -875,7 +875,8 @@ def upsert_projected_run(
                 run.coreai_run_id, "conflict_ignored", conflict_warnings
             )
         if existing is not None and (
-            existing["raw_status"] == run.raw_status
+            existing["raw_status"] is None
+            or existing["raw_status"] == run.raw_status
             or existing["raw_status"] in KNOWN_NONTERMINAL
             or _is_unknown_status(existing["raw_status"])
         ):
