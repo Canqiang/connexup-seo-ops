@@ -27,7 +27,6 @@ function syncHeadline(
 export default function AgentWorkbench() {
   const [range, setRange] = useState<WorkbenchRange>('30d')
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null)
-  const [copyAnnouncement, setCopyAnnouncement] = useState<{ hookSequence: number; message: string } | null>(null)
   const result = useAgentWorkbenchPolling(range)
   const { snapshot, presentation, loading, refreshing, error, autoUpdate, requestRefresh, setAutoUpdate } = result
   const displayedRange = snapshot?.range ?? '30d'
@@ -36,10 +35,6 @@ export default function AgentWorkbench() {
   const previousSignalsRef = useRef<readonly WorkbenchSignal[]>([])
   const selectedWasFocusedRef = useRef(false)
   const focusedSignalIdRef = useRef<string | null>(null)
-  const hookAnnouncementSequence = result.eventAnnouncement?.sequence ?? 0
-  const announcement = copyAnnouncement?.hookSequence === hookAnnouncementSequence
-    ? copyAnnouncement.message
-    : result.eventAnnouncement?.message ?? ''
 
   useLayoutEffect(() => () => {
     selectedWasFocusedRef.current = selectedSignalId !== null && focusedSignalIdRef.current === selectedSignalId
@@ -134,7 +129,7 @@ export default function AgentWorkbench() {
           onSelectSignal={setSelectedSignalId}
           headingRef={headingRef}
           tabRefs={tabRefs}
-          onAnnouncement={message => setCopyAnnouncement({ hookSequence: hookAnnouncementSequence, message })}
+          onAnnouncement={result.publishAnnouncement}
           onFocusedSignalChange={id => { focusedSignalIdRef.current = id }}
           lastCompleted={lastCompleted}
         />
@@ -159,7 +154,14 @@ export default function AgentWorkbench() {
         </section>
       )}
 
-      <div className="agent-workbench__announcer" aria-live="polite" aria-atomic="true">{announcement}</div>
+      <div className="agent-workbench__announcer" aria-live="polite" aria-atomic="true">
+        {result.eventAnnouncement && (
+          <span key={result.eventAnnouncement.sequence}>
+            <span>{result.eventAnnouncement.message}</span>
+            <span aria-hidden="true">{result.eventAnnouncement.sequence}</span>
+          </span>
+        )}
+      </div>
     </main>
   )
 }

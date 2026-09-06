@@ -761,11 +761,10 @@ describe('Agent Workbench', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
-    expect(screen.getByText(/Run run-a 已变为终态：COMPLETED/).textContent).toContain('手动刷新完成')
+    await waitFor(() => expect(screen.getByText(/Run run-a 已变为终态：COMPLETED/).textContent).toContain('手动刷新完成'))
 
     fireEvent.click(screen.getByRole('button', { name: '复制完整 Run ID run-a' }))
-    await act(async () => { await Promise.resolve() })
-    expect(screen.getByText('已复制 Run ID：run-a')).not.toBeNull()
+    await waitFor(() => expect(screen.getByText('已复制 Run ID：run-a')).not.toBeNull())
     expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1)
   })
 
@@ -782,7 +781,74 @@ describe('Agent Workbench', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
     expect(screen.getByText(/当前状态新鲜度已恢复/).textContent).toContain('手动刷新完成')
+  })
+
+  it('serializes a delayed copy after a completed network announcement', async () => {
+    const copy = deferred<void>()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockReturnValue(copy.promise) },
+    })
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(liveSnapshot({ signals: [makeSignal({ coreai_run_id: 'run-delayed-copy' })] }))
+    const { container } = render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    const region = container.querySelector<HTMLElement>('[aria-live="polite"]')!
+    const mutations: string[] = []
+    const observer = new MutationObserver(() => mutations.push(region.textContent ?? ''))
+    observer.observe(region, { childList: true, characterData: true, subtree: true })
+
+    fireEvent.click(screen.getByRole('button', { name: '复制完整 Run ID run-delayed-copy' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
+    await waitFor(() => expect(mutations.some(value => value.includes('手动刷新完成'))).toBe(true))
+    copy.resolve()
+    await waitFor(() => expect(mutations.some(value => value.includes('已复制 Run ID：run-delayed-copy'))).toBe(true))
+
+    const manualIndex = mutations.findIndex(value => value.includes('手动刷新完成'))
+    const copyIndex = mutations.findIndex(value => value.includes('已复制 Run ID：run-delayed-copy'))
+    expect(manualIndex).toBeGreaterThanOrEqual(0)
+    expect(copyIndex).toBeGreaterThan(manualIndex)
+    observer.disconnect()
+  })
+
+  it('mutates the polite region for repeated identical manual refresh completions', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    const { container } = render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    const region = container.querySelector<HTMLElement>('[aria-live="polite"]')!
+    const mutations: string[] = []
+    const observer = new MutationObserver(() => mutations.push(region.textContent ?? ''))
+    observer.observe(region, { childList: true, characterData: true, subtree: true })
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
+    await waitFor(() => expect(mutations.filter(value => value.includes('手动刷新完成'))).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
+    await waitFor(() => expect(mutations.filter(value => value.includes('手动刷新完成'))).toHaveLength(2))
+    expect(mutations[1]).not.toBe(mutations[0])
+    observer.disconnect()
+  })
+
+  it('mutates the polite region for repeated copy completion of the same Run', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(liveSnapshot({ signals: [makeSignal({ coreai_run_id: 'run-repeat-copy' })] }))
+    const { container } = render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    const region = container.querySelector<HTMLElement>('[aria-live="polite"]')!
+    const mutations: string[] = []
+    const observer = new MutationObserver(() => mutations.push(region.textContent ?? ''))
+    observer.observe(region, { childList: true, characterData: true, subtree: true })
+    const copyButton = screen.getByRole('button', { name: '复制完整 Run ID run-repeat-copy' })
+
+    fireEvent.click(copyButton)
+    await waitFor(() => expect(mutations.filter(value => value.includes('已复制 Run ID：run-repeat-copy'))).toHaveLength(1))
+    fireEvent.click(copyButton)
+    await waitFor(() => expect(mutations.filter(value => value.includes('已复制 Run ID：run-repeat-copy'))).toHaveLength(2))
+    expect(mutations[1]).not.toBe(mutations[0])
+    observer.disconnect()
   })
 
   it('sync health unavailable keeps persisted data static', async () => {

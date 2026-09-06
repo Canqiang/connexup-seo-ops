@@ -95,6 +95,7 @@ export type AgentWorkbenchPolling = {
   setAutoUpdate: (enabled: boolean) => void
   snapshotAgeSeconds: number | null
   eventAnnouncement: { sequence: number; message: string } | null
+  publishAnnouncement: (message: string) => void
 }
 
 export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchPolling {
@@ -106,7 +107,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [snapshotAgeSeconds, setSnapshotAgeSeconds] = useState<number | null>(null)
-  const [eventAnnouncement, setEventAnnouncement] = useState<{ sequence: number; message: string } | null>(null)
+  const [announcementQueue, setAnnouncementQueue] = useState<Array<{ sequence: number; message: string }>>([])
   const [autoUpdate, setAutoUpdateState] = useState(initiallyAutoUpdating)
   const autoUpdateRef = useRef(autoUpdate)
   const stateRef = useRef(presentationState)
@@ -125,6 +126,12 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
   const requestRef = useRef<(reason: WorkbenchRefreshReason) => void>(() => undefined)
   const announcementSequenceRef = useRef(0)
 
+  const publishAnnouncement = useCallback((message: string) => {
+    if (message.length === 0) return
+    const announcement = { sequence: ++announcementSequenceRef.current, message }
+    setAnnouncementQueue(queue => [...queue, announcement])
+  }, [])
+
   const commitState = useCallback((next: PresentationState, context?: WorkbenchEventDiffContext) => {
     const previous = stateRef.current
     stateRef.current = next
@@ -134,14 +141,17 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
         context.kind === 'snapshot' && context.reason === 'manual' ? next.presentation : null
       )
       const messages = diffWorkbenchEvents(previousPresentation, next.presentation, context)
-      if (messages.length > 0) {
-        setEventAnnouncement({
-          sequence: ++announcementSequenceRef.current,
-          message: messages.join('；'),
-        })
-      }
+      if (messages.length > 0) publishAnnouncement(messages.join('；'))
     }
-  }, [])
+  }, [publishAnnouncement])
+
+  useEffect(() => {
+    if (announcementQueue.length < 2) return
+    const timer = window.setTimeout(() => {
+      setAnnouncementQueue(queue => queue.length > 1 ? queue.slice(1) : queue)
+    }, 100)
+    return () => window.clearTimeout(timer)
+  }, [announcementQueue])
 
   const clearRefreshTimer = useCallback(() => {
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current)
@@ -406,6 +416,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
     requestRefresh,
     setAutoUpdate,
     snapshotAgeSeconds,
-    eventAnnouncement,
+    eventAnnouncement: announcementQueue[0] ?? null,
+    publishAnnouncement,
   }
 }
