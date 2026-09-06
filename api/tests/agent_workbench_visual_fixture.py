@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sqlite3
+import stat
 import sys
 import uuid
 from contextlib import contextmanager
@@ -84,15 +85,36 @@ def _reject_default_tree(path: Path) -> None:
         raise ValueError("fixture path overlaps configured database tree")
 
 
+def _validate_owned_directory(path: Path) -> os.stat_result:
+    try:
+        entry = os.lstat(path)
+    except OSError:
+        raise ValueError("output path must be a directory") from None
+    if not stat.S_ISDIR(entry.st_mode) or stat.S_ISLNK(entry.st_mode):
+        raise ValueError("output path must be a non-symlink directory")
+    if entry.st_uid != os.geteuid() or entry.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError("output directory must be owned and write-guarded")
+    return entry
+
+
+def _single_link_regular_file(path: Path) -> os.stat_result:
+    try:
+        entry = os.lstat(path)
+    except OSError:
+        raise ValueError("fixture database is missing") from None
+    if not stat.S_ISREG(entry.st_mode) or entry.st_nlink != 1:
+        raise ValueError("fixture database must be a single-link regular file")
+    return entry
+
+
 def validate_generation_directory(raw_path: str | os.PathLike[str]) -> Path:
     path = Path(raw_path).expanduser().absolute()
+    _validate_owned_directory(path)
     canonical = path.resolve(strict=True)
-    if not canonical.is_dir():
-        raise ValueError("output path must be a directory")
     _reject_default_tree(canonical)
     if any(canonical.iterdir()):
         raise ValueError("output directory must be empty")
-    return path
+    return canonical
 
 
 @contextmanager
@@ -109,9 +131,17 @@ def _database_environment(path: Path) -> Iterator[None]:
 
 
 def _new_database(path: Path, scenario: str) -> sqlite3.Connection:
+    expected = _single_link_regular_file(path)
     with _database_environment(path):
         app_db.init_db()
-    conn = sqlite3.connect(path)
+    initialized = _single_link_regular_file(path)
+    if (initialized.st_dev, initialized.st_ino) != (expected.st_dev, expected.st_ino):
+        raise ValueError("fixture database changed during initialization")
+    conn = sqlite3.connect(f"file:{path}?mode=rw", uri=True)
+    opened = _single_link_regular_file(path)
+    if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        conn.close()
+        raise ValueError("fixture database changed before SQLite open")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(
@@ -576,6 +606,50 @@ SEEDERS = {
 }
 
 
+def _open_generation_directory(directory: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(directory, flags)
+    except OSError:
+        raise ValueError("output directory cannot be opened safely") from None
+    try:
+        opened = os.fstat(descriptor)
+        current = _validate_owned_directory(directory)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or os.listdir(descriptor)
+        ):
+            raise ValueError("output directory changed or is not empty")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _create_database_placeholder(directory_fd: int, name: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, 0o600, dir_fd=directory_fd)
+    except OSError:
+        raise ValueError("fixture database already exists") from None
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            raise ValueError("fixture database placeholder is unsafe")
+    finally:
+        os.close(descriptor)
+
+
+def _unlink_fixture_files(directory_fd: int, database_names: list[str]) -> None:
+    for name in database_names:
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            try:
+                os.unlink(name + suffix, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+
 def generate_fixtures(
     output_dir: str | os.PathLike[str],
     *,
@@ -583,15 +657,18 @@ def generate_fixtures(
 ) -> dict:
     directory = validate_generation_directory(output_dir)
     generated_at = _aware_utc(now_factory())
+    directory_fd = _open_generation_directory(directory)
     paths: dict[str, str] = {}
-    created: list[Path] = []
+    created_names: list[str] = []
     try:
         for scenario in SCENARIOS:
-            path = directory / f"{scenario}.db"
-            if path.exists():
-                raise ValueError("fixture database already exists")
+            name = f"{scenario}.db"
+            path = directory / name
+            # Register the exact directory entry before creation so every
+            # partial base file and SQLite sidecar is removed on failure.
+            created_names.append(name)
+            _create_database_placeholder(directory_fd, name)
             conn = _new_database(path, scenario)
-            created.append(path)
             try:
                 conn.execute(
                     f"INSERT INTO {MARKER_TABLE} (scenario,created_at,marker_version) "
@@ -604,13 +681,10 @@ def generate_fixtures(
                 conn.close()
             paths[scenario] = str(path)
     except BaseException:
-        for path in created:
-            for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
-                try:
-                    candidate.unlink()
-                except FileNotFoundError:
-                    pass
+        _unlink_fixture_files(directory_fd, created_names)
         raise
+    finally:
+        os.close(directory_fd)
     return {
         "database_paths": paths,
         "generated_at": _wire_time(generated_at),
@@ -635,11 +709,14 @@ def _read_marker(conn: sqlite3.Connection) -> tuple[str, str]:
 
 def validate_refresh_database(raw_path: str | os.PathLike[str]) -> tuple[Path, str]:
     path = Path(raw_path).expanduser().absolute()
+    expected = _single_link_regular_file(path)
     canonical = path.resolve(strict=True)
-    if not canonical.is_file():
-        raise ValueError("refresh path must be a database file")
     _reject_default_tree(canonical.parent)
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{canonical}?mode=ro", uri=True)
+    opened = _single_link_regular_file(canonical)
+    if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        conn.close()
+        raise ValueError("fixture database changed before refresh")
     conn.row_factory = sqlite3.Row
     try:
         scenario, _version = _read_marker(conn)
@@ -649,7 +726,7 @@ def validate_refresh_database(raw_path: str | os.PathLike[str]) -> tuple[Path, s
         raise ValueError("fixture scenario cannot be refreshed")
     if path.name != f"{scenario}.db":
         raise ValueError("fixture marker does not match filename")
-    return path, scenario
+    return canonical, scenario
 
 
 def _refresh_common_agent_proof(

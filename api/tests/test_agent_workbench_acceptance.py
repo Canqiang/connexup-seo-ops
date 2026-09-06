@@ -17,6 +17,7 @@ import os
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -1104,6 +1105,7 @@ def test_live_gate_lifespan_parks_both_ordinary_schedulers_and_awaits_workbench(
 ):
     from fastapi.testclient import TestClient
     from app import main
+    from app.coreai import CoreAiClient
 
     _require_task7()
     _, conn = _open_database(tmp_path, monkeypatch, "live-lifespan.db")
@@ -1127,6 +1129,12 @@ def test_live_gate_lifespan_parks_both_ordinary_schedulers_and_awaits_workbench(
     monkeypatch.setattr(main, "scheduler_loop", forbidden_scheduler)
     monkeypatch.setattr(main, "fbr_scheduler_loop", forbidden_scheduler)
 
+    def forbidden_trigger(self, *_args, **_kwargs):
+        trigger_calls.append(type(self).__name__)
+        raise AssertionError("live gate must never trigger a Core AI run")
+
+    monkeypatch.setattr(CoreAiClient, "trigger", forbidden_trigger)
+
     def parked(name, *, raises=False):
         async def run():
             starts[name].set()
@@ -1147,15 +1155,25 @@ def test_live_gate_lifespan_parks_both_ordinary_schedulers_and_awaits_workbench(
     )
 
     def route_shape(value):
-        return {
+        def dependency_shape(dependant):
+            return (
+                dependant.call,
+                tuple(dependency_shape(child) for child in dependant.dependencies),
+            )
+
+        return [
             (
                 route.path,
                 tuple(sorted(route.methods or ())),
-                len(route.dependant.dependencies),
+                route.endpoint,
+                tuple(
+                    dependency_shape(dependency)
+                    for dependency in route.dependant.dependencies
+                ),
             )
             for route in value.routes
             if hasattr(route, "dependant")
-        }
+        ]
 
     assert route_shape(application) == route_shape(main.app)
     with TestClient(application) as client:
@@ -1212,11 +1230,90 @@ def test_restart_read_connection_installs_write_denial_authorizer(tmp_path):
             "DELETE FROM guarded",
             "CREATE TABLE denied(value TEXT)",
             "ATTACH DATABASE ':memory:' AS denied",
+            "PRAGMA wal_checkpoint",
+            "PRAGMA user_version",
+            "PRAGMA query_only=OFF",
         ):
             with pytest.raises(sqlite3.DatabaseError):
                 guarded.execute(sql)
     finally:
         guarded.close()
+
+
+def test_restart_guard_rejects_existing_links_and_non_regular_files(
+    tmp_path, monkeypatch
+):
+    module = importlib.import_module("agent_workbench_live_app")
+    guarded = tmp_path / "restart-guard"
+    guarded.mkdir()
+    database = guarded / "restart.db"
+    marker = guarded / module.RESTART_MARKER_NAME
+    marker.write_text(database.name, encoding="utf-8")
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    monkeypatch.setenv(module.RESTART_MARKER_ENV, str(marker))
+    assert stat.S_ISREG(os.lstat(marker).st_mode)
+    assert module.validate_restart_database(must_exist=False) == database
+
+    database.write_bytes(b"existing")
+    with pytest.raises(RuntimeError):
+        module.validate_restart_database(must_exist=False)
+    database.unlink()
+
+    outside = tmp_path / "outside.db"
+    outside.write_bytes(b"outside")
+    database.symlink_to(outside)
+    with pytest.raises(RuntimeError):
+        module.validate_restart_database(must_exist=True)
+    database.unlink()
+
+    os.link(outside, database)
+    assert os.lstat(database).st_nlink == 2
+    with pytest.raises(RuntimeError):
+        module.validate_restart_database(must_exist=True)
+    database.unlink()
+
+    database.mkdir()
+    with pytest.raises(RuntimeError):
+        module.validate_restart_database(must_exist=True)
+    database.rmdir()
+
+    marker.unlink()
+    marker_target = tmp_path / "marker-target"
+    marker_target.write_text(database.name, encoding="utf-8")
+    marker.symlink_to(marker_target)
+    with pytest.raises(RuntimeError):
+        module.validate_restart_database(must_exist=False)
+    marker.unlink()
+
+    os.link(marker_target, marker)
+    with pytest.raises(RuntimeError):
+        module.validate_restart_database(must_exist=False)
+
+
+def test_restart_write_startup_revalidates_created_database(tmp_path, monkeypatch):
+    module = importlib.import_module("agent_workbench_live_app")
+    guarded = tmp_path / "restart-post-create"
+    guarded.mkdir()
+    database = guarded / "restart.db"
+    marker = guarded / module.RESTART_MARKER_NAME
+    marker.write_text(database.name, encoding="utf-8")
+    outside = tmp_path / "outside-write-target.db"
+    outside.write_bytes(b"unchanged")
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    monkeypatch.setenv(module.RESTART_MARKER_ENV, str(marker))
+
+    class Main:
+        @staticmethod
+        def initialize_writable_application():
+            database.symlink_to(outside)
+
+    seeded = []
+    monkeypatch.setattr(module, "_task7_main", lambda: Main)
+    monkeypatch.setattr(module, "_seed_restart_fixture", lambda: seeded.append(True))
+    with pytest.raises(RuntimeError):
+        module.restart_write_startup()
+    assert seeded == []
+    assert outside.read_bytes() == b"unchanged"
 
 
 def _reserve_loopback_port():
@@ -2007,6 +2104,190 @@ def test_live_readback_retry_outcomes():
     )
 
 
+def test_live_readback_clock_only_heartbeat_keeps_segment_stable():
+    first = _bundle_from_rows(
+        [_run("stable-running", "RUNNING")],
+    )
+    second = _bundle_from_rows(
+        [_run("stable-running", "RUNNING")],
+    )
+    assert first["pages"]["ALL"].observed_at == second["pages"]["ALL"].observed_at
+    moved = {}
+    for name, page in second["pages"].items():
+        moved[name] = type(page)(
+            runs=page.runs,
+            total=page.total,
+            returned_count=page.returned_count,
+            observed_at=(NOW + timedelta(seconds=30)).isoformat(),
+        )
+    second = {"coreai_agent_id": CORE_ID, "pages": moved}
+    assert (
+        live_readback._bundle_fingerprint(first)
+        == live_readback._bundle_fingerprint(second)
+    )
+    changed = _bundle_from_rows(
+        [_run("stable-running", "PAUSED")],
+    )
+    assert (
+        live_readback._bundle_fingerprint(first)
+        != live_readback._bundle_fingerprint(changed)
+    )
+
+
+def test_live_readback_semantic_marker_excludes_only_lease_and_clock_fields(
+    tmp_path, monkeypatch
+):
+    _, conn = _open_database(tmp_path, monkeypatch, "semantic-marker.db")
+    _seed_agent(conn, monkeypatch)
+    before = live_readback._agent_marker(conn, LOCAL_ID)
+    conn.execute(
+        "UPDATE seo_ops_agents SET last_verification_attempt_at=?,last_verified_at=?,"
+        "next_verification_at=?,metadata_lease_owner=?,metadata_lease_epoch="
+        "metadata_lease_epoch+1,metadata_lease_until=? WHERE id=?",
+        (
+            (NOW + timedelta(seconds=30)).isoformat(),
+            (NOW + timedelta(seconds=30)).isoformat(),
+            (NOW + timedelta(days=2)).isoformat(),
+            "other-worker",
+            (NOW + timedelta(minutes=1)).isoformat(),
+            LOCAL_ID,
+        ),
+    )
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET last_discovery_attempt_at=?,"
+        "current_state_checked_at=?,lease_owner=?,lease_epoch=lease_epoch+1,"
+        "lease_until=? WHERE seo_ops_agent_id=?",
+        (
+            (NOW + timedelta(seconds=30)).isoformat(),
+            (NOW + timedelta(seconds=30)).isoformat(),
+            "other-worker",
+            (NOW + timedelta(minutes=1)).isoformat(),
+            LOCAL_ID,
+        ),
+    )
+    conn.commit()
+    assert live_readback._agent_marker(conn, LOCAL_ID) == before
+    conn.execute(
+        "UPDATE seo_ops_agents SET display_name='Materially changed' WHERE id=?",
+        (LOCAL_ID,),
+    )
+    conn.commit()
+    assert live_readback._agent_marker(conn, LOCAL_ID) != before
+    conn.close()
+
+
+def test_live_readback_local_bracket_discards_one_unstable_attempt(monkeypatch):
+    calls = []
+    outcomes = iter(
+        (
+            live_readback.GateFailure(live_readback.RESULT_UNSTABLE),
+            ({"snapshot_at": NOW.isoformat()}, "stable-hash"),
+        )
+    )
+
+    def bracket(*_args, **_kwargs):
+        calls.append("read")
+        outcome = next(outcomes)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(live_readback, "_local_bracket", bracket)
+    sleeps = []
+    result = live_readback._stable_local_bracket(
+        object(),
+        "http://127.0.0.1:8000",
+        "30d",
+        {},
+        live_readback.Deadline.start(60),
+        object,
+        sleeps.append,
+    )
+    assert result == ({"snapshot_at": NOW.isoformat()}, "stable-hash")
+    assert calls == ["read", "read"]
+    assert sleeps == [live_readback.NORMAL_PROOF_INTERVAL_SECONDS]
+
+    monkeypatch.setattr(
+        live_readback,
+        "_local_bracket",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            live_readback.GateFailure(live_readback.RESULT_UNSTABLE)
+        ),
+    )
+    with pytest.raises(live_readback.GateFailure) as caught:
+        live_readback._stable_local_bracket(
+            object(),
+            "http://127.0.0.1:8000",
+            "30d",
+            {},
+            live_readback.Deadline.start(60),
+            object,
+            lambda _seconds: None,
+        )
+    assert caught.value.code == live_readback.RESULT_UNSTABLE
+
+
+def test_live_readback_global_deadline_joins_all_workers(monkeypatch):
+    core_ids = tuple(f"agent-{index:02d}" for index in range(17))
+    registry = {
+        core_id: {"id": f"local-{index:02d}"}
+        for index, core_id in enumerate(core_ids)
+    }
+    monkeypatch.setattr(live_readback, "_agent_marker", lambda *_args: "stable")
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+    constructed = []
+    closed = []
+
+    class SlowClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+            constructed.append(self)
+
+        def get_agent(self, agent_id):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(self.timeout + 0.01)
+                return {"id": agent_id}
+            finally:
+                with lock:
+                    active -= 1
+
+        def list_agent_runs(self, *_args):
+            return {"runs": [], "total": 0}
+
+        def close(self):
+            closed.append(self)
+
+    def factory(_url, _key, *, timeout):
+        return SlowClient(timeout)
+
+    started = time.monotonic()
+    with pytest.raises(live_readback.GateFailure) as caught:
+        live_readback._collect_segment_attempts(
+            object(),
+            core_ids,
+            registry,
+            {
+                "COREAI_BASE_URL": "https://core.example",
+                "COREAI_API_KEY": "secret",
+            },
+            live_readback.Deadline.start(0.05),
+            factory,
+        )
+    elapsed = time.monotonic() - started
+    assert caught.value.code == live_readback.RESULT_TIMEOUT
+    assert active == 0
+    assert len(closed) == len(constructed)
+    assert {id(client) for client in closed} == {id(client) for client in constructed}
+    assert peak <= live_readback.MAX_LIVE_READBACK_WORKERS
+    assert elapsed < 0.5
+
+
 def _eligible_aggregate(run_id, status="RUNNING"):
     signal = {
         "coreai_run_id": run_id,
@@ -2175,6 +2456,127 @@ def test_live_readback_observe_mode_times_out_honestly_on_token_mismatch(
     assert caught.value.code == live_readback.RESULT_MISMATCH
 
 
+def test_live_readback_observe_requires_running_to_be_reestablished_after_gap(
+    tmp_path, monkeypatch
+):
+    path, conn = _open_database(tmp_path, monkeypatch, "observe-gap.db")
+    _seed_agent(conn, monkeypatch)
+    conn.close()
+    run_id = "observe-gap"
+    paused = _eligible_aggregate(run_id, "PAUSED")
+    terminal = _eligible_aggregate(run_id, "COMPLETED")
+    responses = iter((_eligible_aggregate(run_id), paused, terminal))
+    request_count = 0
+
+    def request(*_args, **_kwargs):
+        nonlocal request_count
+        request_count += 1
+        return next(responses)
+
+    class Clock:
+        value = 0.0
+
+        def __call__(self):
+            return self.value
+
+        def sleep(self, seconds):
+            self.value += seconds
+
+    clock = Clock()
+    monkeypatch.setattr(live_readback, "_request_aggregate", request)
+    with pytest.raises(live_readback.GateFailure) as caught:
+        live_readback.observe_transition(
+            {
+                "SEO_OPS_DB": str(path),
+                "COREAI_BASE_URL": "https://core.example",
+                "COREAI_API_KEY": "secret",
+            },
+            "http://127.0.0.1:8000",
+            "30d",
+            run_id,
+            3,
+            timeout_seconds=10,
+            sleep=clock.sleep,
+            monotonic=clock,
+            core_client_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("terminal without a renewed RUNNING proof is ineligible")
+            ),
+        )
+    assert caught.value.code == live_readback.RESULT_TRANSITION_MISSING
+    # Initial RUNNING plus two in-bound polls. The request at exactly stop_at
+    # is forbidden even though a terminal response would be available.
+    assert request_count == 3
+
+
+def test_live_readback_observe_accepts_terminal_after_running_is_reestablished(
+    tmp_path, monkeypatch
+):
+    path, conn = _open_database(tmp_path, monkeypatch, "observe-renewed.db")
+    _seed_agent(conn, monkeypatch)
+    conn.close()
+    run_id = "observe-renewed"
+    terminal = _eligible_aggregate(run_id, "COMPLETED")
+    responses = iter(
+        (
+            _eligible_aggregate(run_id),
+            _eligible_aggregate(run_id, "PAUSED"),
+            _eligible_aggregate(run_id),
+            terminal,
+        )
+    )
+    monkeypatch.setattr(
+        live_readback, "_request_aggregate", lambda *_args, **_kwargs: next(responses)
+    )
+    monkeypatch.setattr(
+        live_readback,
+        "_stable_local_bracket",
+        lambda *_args, **_kwargs: (terminal, "terminal-hash"),
+    )
+    attempt = live_readback.SegmentAttempt(
+        result_code=live_readback.RESULT_OK,
+        fingerprint="renewed",
+        marker_before="stable",
+        marker_after="stable",
+        observed_from=NOW.isoformat(),
+        observed_through=NOW.isoformat(),
+        segment={},
+        bundle={},
+    )
+    monkeypatch.setattr(
+        live_readback,
+        "_collect_segment_attempts",
+        lambda _conn, core_ids, *_args, **_kwargs: {next(iter(core_ids)): attempt},
+    )
+    monkeypatch.setattr(live_readback, "_require_terminal_match", lambda *_args: None)
+
+    class Clock:
+        value = 0.0
+
+        def __call__(self):
+            return self.value
+
+        def sleep(self, seconds):
+            self.value += seconds
+
+    clock = Clock()
+    report = live_readback.observe_transition(
+        {
+            "SEO_OPS_DB": str(path),
+            "COREAI_BASE_URL": "https://core.example",
+            "COREAI_API_KEY": "secret",
+        },
+        "http://127.0.0.1:8000",
+        "30d",
+        run_id,
+        4,
+        timeout_seconds=10,
+        sleep=clock.sleep,
+        monotonic=clock,
+    )
+    assert report["result_code"] == live_readback.RESULT_OK
+    assert report["final_raw_status"] == "COMPLETED"
+
+
 def test_visual_fixture_rejects_unsafe_paths(tmp_path, monkeypatch):
     configured = tmp_path / "configured" / "seo.db"
     configured.parent.mkdir()
@@ -2198,6 +2600,64 @@ def test_visual_fixture_rejects_unsafe_paths(tmp_path, monkeypatch):
     sqlite3.connect(unmarked).close()
     with pytest.raises(ValueError):
         visual_fixture.validate_refresh_database(unmarked)
+
+
+def test_visual_fixture_rejects_symlink_directory_and_cleans_partial_sidecars(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "fixture-target"
+    target.mkdir()
+    linked = tmp_path / "fixture-link"
+    linked.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    with pytest.raises(ValueError):
+        visual_fixture.validate_generation_directory(linked)
+
+    output = tmp_path / "partial-cleanup"
+    output.mkdir()
+
+    def fail_after_sidecars(path, _scenario):
+        assert path.is_file()
+        assert not path.is_symlink()
+        Path(f"{path}-journal").write_bytes(b"journal")
+        Path(f"{path}-wal").write_bytes(b"wal")
+        Path(f"{path}-shm").write_bytes(b"shm")
+        raise sqlite3.OperationalError("fixed fixture failure")
+
+    monkeypatch.setattr(visual_fixture, "_new_database", fail_after_sidecars)
+    with pytest.raises(sqlite3.OperationalError):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    assert list(output.iterdir()) == []
+
+
+def test_visual_fixture_rejects_database_replaced_by_symlink_before_sqlite_open(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "atomic-fixture"
+    output.mkdir()
+    outside = tmp_path / "outside-fixture.db"
+    outside.write_bytes(b"unchanged")
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+
+    def replace_with_symlink():
+        database = Path(os.environ["SEO_OPS_DB"])
+        assert database.is_file()
+        database.unlink()
+        database.symlink_to(outside)
+
+    monkeypatch.setattr(visual_fixture.app_db, "init_db", replace_with_symlink)
+    with pytest.raises(ValueError):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    assert outside.read_bytes() == b"unchanged"
+    assert list(output.iterdir()) == []
 
 
 def test_visual_fixture_generation_output_is_canonical(tmp_path, monkeypatch):

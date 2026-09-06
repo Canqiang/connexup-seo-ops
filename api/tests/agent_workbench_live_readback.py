@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -59,6 +60,69 @@ TERMINAL = frozenset({"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"})
 FILTERS = (None, "PENDING", "RUNNING", "PAUSED")
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ID = re.compile(r"^[^\x00-\x1f\x7f]{1,200}$")
+_AGENT_SEMANTIC_FIELDS = (
+    "id",
+    "agent_key",
+    "coreai_agent_id",
+    "display_name",
+    "role",
+    "sort_order",
+    "status",
+    "coreai_name",
+    "coreai_model",
+    "coreai_timeout_hint_seconds",
+    "suspect_after_seconds",
+    "last_verification_error",
+    "verification_failure_count",
+)
+_SYNC_SEMANTIC_FIELDS = (
+    "seo_ops_agent_id",
+    "remote_total_runs",
+    "last_discovery_error",
+    "last_discovery_returned_count",
+    "coverage_start_at",
+    "finite_range_proven_start_at",
+    "pending_observed_count",
+    "pending_upstream_total",
+    "pending_set_quality",
+    "running_observed_count",
+    "running_upstream_total",
+    "running_set_quality",
+    "paused_observed_count",
+    "paused_upstream_total",
+    "paused_set_quality",
+    "unresolved_unknown_status_count",
+    "current_state_complete",
+    "current_state_error",
+    "sync_pending",
+    "local_event_epoch",
+    "history_event_epoch",
+    "unfiltered_proven_event_epoch",
+    "projection_revision",
+    "last_fast_poll_error",
+    "discovery_failure_count",
+    "fast_poll_failure_count",
+)
+_RUN_SEMANTIC_FIELDS = (
+    "coreai_run_id",
+    "seo_ops_agent_id",
+    "raw_status",
+    "trigger_type",
+    "started_at",
+    "completed_at",
+    "terminal_observed_at",
+    "receipt_expires_at",
+    "input_tokens",
+    "output_tokens",
+    "trace_id",
+    "error_summary",
+    "source_kind",
+    "source_local_id",
+    "merchant_id",
+    "first_seen_at",
+    "last_poll_error",
+    "data_warning_codes_json",
+)
 
 
 class GateFailure(Exception):
@@ -284,6 +348,36 @@ def _local_bracket(
     return aggregate, before
 
 
+def _stable_local_bracket(
+    conn: sqlite3.Connection,
+    api_url: str,
+    range_key: str,
+    values: Mapping[str, str],
+    deadline: Deadline,
+    client_factory: Callable[..., httpx.Client],
+    sleep: Callable[[float], None],
+) -> tuple[dict, str]:
+    """Discard one locally moving snapshot, then require a stable bracket."""
+
+    for attempt in range(2):
+        try:
+            return _local_bracket(
+                conn, api_url, range_key, values, deadline, client_factory
+            )
+        except GateFailure as failure:
+            if failure.code != RESULT_UNSTABLE or attempt == 1:
+                raise
+            sleep(min(NORMAL_PROOF_INTERVAL_SECONDS, deadline.remaining()))
+    raise AssertionError("unreachable stable-bracket retry state")
+
+
+def _allowlisted_row(row: sqlite3.Row, fields: tuple[str, ...]) -> dict:
+    available = set(row.keys())
+    if not set(fields).issubset(available):
+        raise GateFailure(RESULT_MISMATCH)
+    return {field: row[field] for field in fields}
+
+
 def _agent_marker(conn: sqlite3.Connection, local_id: str) -> str:
     agent = conn.execute(
         "SELECT * FROM seo_ops_agents WHERE id=?", (local_id,)
@@ -298,27 +392,22 @@ def _agent_marker(conn: sqlite3.Connection, local_id: str) -> str:
     ).fetchall()
     if agent is None or sync is None:
         raise GateFailure(RESULT_MISMATCH)
-    ignored = {
-        "last_discovery_attempt_at",
-        "last_discovery_success_at",
-        "current_state_checked_at",
-        "pending_last_observed_at",
-        "running_last_observed_at",
-        "paused_last_observed_at",
-        "next_discovery_at",
-        "last_fast_poll_attempt_at",
-        "last_fast_poll_success_at",
-        "next_fast_poll_at",
-        "lease_owner",
-        "lease_until",
-    }
-    sync_semantic = {key: sync[key] for key in sync.keys() if key not in ignored}
+    run_semantics = []
+    for row in runs:
+        association, local_running = agent_workbench._run_association(conn, row)
+        run_semantics.append(
+            {
+                "association": association,
+                "confirmed": row["last_synced_at"] is not None,
+                "local_running": local_running,
+                "poll_attempted": row["last_poll_attempt_at"] is not None,
+                "run": _allowlisted_row(row, _RUN_SEMANTIC_FIELDS),
+            }
+        )
     payload = {
-        "event_epoch": sync["local_event_epoch"],
-        "projection_revision": sync["projection_revision"],
-        "agent": dict(agent),
-        "sync": sync_semantic,
-        "runs": [dict(row) for row in runs],
+        "agent": _allowlisted_row(agent, _AGENT_SEMANTIC_FIELDS),
+        "sync": _allowlisted_row(sync, _SYNC_SEMANTIC_FIELDS),
+        "runs": run_semantics,
     }
     return hashlib.sha256(_canonical(payload).encode()).hexdigest()
 
@@ -340,14 +429,31 @@ def _normal_tokens(row: Mapping[str, object]) -> tuple[int, int] | None:
     return left, right
 
 
+def _request_time_remaining(
+    deadline: Deadline, cancel_event: threading.Event | None
+) -> float:
+    if cancel_event is not None and cancel_event.is_set():
+        raise GateFailure(RESULT_TIMEOUT)
+    return min(30.0, deadline.remaining())
+
+
+def _bind_core_request_timeout(client: object, timeout: float) -> None:
+    """Narrow production CoreAiClient's next request to the global deadline."""
+
+    underlying = getattr(client, "_client", None)
+    if isinstance(underlying, httpx.Client):
+        underlying.timeout = httpx.Timeout(timeout)
+
+
 def _direct_bundle(
     core_id: str,
     values: Mapping[str, str],
     deadline: Deadline,
     *,
     core_client_factory: Callable[..., object] = CoreAiClient,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
-    request_timeout = min(30.0, deadline.remaining())
+    request_timeout = _request_time_remaining(deadline, cancel_event)
     base_url = _required(values, "COREAI_BASE_URL").rstrip("/")
     api_key = _required(values, "COREAI_API_KEY")
     try:
@@ -358,12 +464,15 @@ def _direct_bundle(
         # remaining global bound so a worker cannot outlive the gate forever.
         client = core_client_factory(base_url, api_key)
     try:
+        request_timeout = _request_time_remaining(deadline, cancel_event)
+        _bind_core_request_timeout(client, request_timeout)
         metadata = client.get_agent(core_id)
         if not isinstance(metadata, dict) or metadata.get("id") != core_id:
             raise GateFailure(RESULT_UNAVAILABLE)
         pages = {}
         for status in FILTERS:
-            deadline.remaining()
+            request_timeout = _request_time_remaining(deadline, cancel_event)
+            _bind_core_request_timeout(client, request_timeout)
             page = client.list_agent_runs(core_id, status, LIST_LIMIT)
             pages[status or "ALL"] = agent_workbench.parse_agent_run_page(
                 core_id,
@@ -509,7 +618,6 @@ def _bundle_fingerprint(bundle: dict) -> dict:
     pages = {}
     for name, page in sorted(bundle["pages"].items()):
         pages[name] = {
-            "observed_at": page.observed_at,
             "returned_count": page.returned_count,
             "runs": [
                 {
@@ -597,6 +705,7 @@ def _collect_segment_attempts(
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=min(MAX_LIVE_READBACK_WORKERS, len(selected))
     )
+    cancel_event = threading.Event()
     futures = {
         executor.submit(
             _direct_bundle,
@@ -604,6 +713,7 @@ def _collect_segment_attempts(
             values,
             deadline,
             core_client_factory=core_client_factory,
+            cancel_event=cancel_event,
         ): core_id
         for core_id in selected
     }
@@ -622,11 +732,13 @@ def _collect_segment_attempts(
                 datetime.now(timezone.utc),
             )
     except concurrent.futures.TimeoutError:
+        cancel_event.set()
         for future in futures:
             future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
+        executor.shutdown(wait=True, cancel_futures=True)
         raise GateFailure(RESULT_TIMEOUT) from None
     except BaseException:
+        cancel_event.set()
         for future in futures:
             future.cancel()
         executor.shutdown(wait=True, cancel_futures=True)
@@ -724,8 +836,14 @@ def reconcile(
     deadline = Deadline.start(timeout_seconds, monotonic)
     conn = _read_connection(_required(values, "SEO_OPS_DB"))
     try:
-        aggregate, _local_hash_value = _local_bracket(
-            conn, api_url, range_key, values, deadline, http_client_factory
+        aggregate, _local_hash_value = _stable_local_bracket(
+            conn,
+            api_url,
+            range_key,
+            values,
+            deadline,
+            http_client_factory,
+            sleep,
         )
         registry = _table_rows(conn, "seo_ops_agents")
         registry_by_core = {row["coreai_agent_id"]: row for row in registry}
@@ -761,8 +879,14 @@ def reconcile(
             deadline,
             core_client_factory,
         )
-        final_aggregate, final_hash = _local_bracket(
-            conn, api_url, range_key, values, deadline, http_client_factory
+        final_aggregate, final_hash = _stable_local_bracket(
+            conn,
+            api_url,
+            range_key,
+            values,
+            deadline,
+            http_client_factory,
+            sleep,
         )
         retry_ids = {
             core_id
@@ -783,8 +907,14 @@ def reconcile(
                 deadline,
                 core_client_factory,
             )
-            final_aggregate, final_hash = _local_bracket(
-                conn, api_url, range_key, values, deadline, http_client_factory
+            final_aggregate, final_hash = _stable_local_bracket(
+                conn,
+                api_url,
+                range_key,
+                values,
+                deadline,
+                http_client_factory,
+                sleep,
             )
             for core_id in sorted(retry_ids):
                 first = first_attempts[core_id]
@@ -857,11 +987,13 @@ def observe_transition(
     )
     if candidate is None:
         raise GateFailure(RESULT_TRANSITION_MISSING)
+    running_proven = True
     stop_at = monotonic() + observe_seconds
     while monotonic() < stop_at:
         cadence = max(1.0, min(60.0, initial.get("refresh_after_ms", 30000) / 1000))
         sleep(min(cadence, max(0.0, stop_at - monotonic())))
-        deadline = Deadline.start(timeout_seconds, monotonic)
+        if monotonic() >= stop_at:
+            break
         current = _request_aggregate(
             api_url, range_key, values, deadline, client_factory=http_client_factory
         )
@@ -881,7 +1013,7 @@ def observe_transition(
         terminal = signal if signal and signal.get("raw_status") in TERMINAL else (
             history[0] if history and history[0].get("raw_status") in TERMINAL else None
         )
-        if terminal is not None:
+        if terminal is not None and running_proven:
             local_id = candidate["local_agent_id"]
             conn = _read_connection(_required(values, "SEO_OPS_DB"))
             try:
@@ -906,13 +1038,14 @@ def observe_transition(
                         if attempt.result_code == RESULT_MISMATCH
                         else attempt.result_code
                     )
-                final, _ = _local_bracket(
+                final, _ = _stable_local_bracket(
                     conn,
                     api_url,
                     range_key,
                     values,
                     deadline,
                     http_client_factory,
+                    sleep,
                 )
                 final_terminal = next(
                     (
@@ -961,6 +1094,17 @@ def observe_transition(
                 "terminal_token_match": True,
                 "transition_observed": True,
             }
+        renewed_candidate = next(
+            (
+                item
+                for item in _motion_candidates(current)
+                if item["coreai_run_id"] == run_id
+            ),
+            None,
+        )
+        running_proven = renewed_candidate is not None
+        if renewed_candidate is not None:
+            candidate = renewed_candidate
         initial = current
     raise GateFailure(RESULT_TRANSITION_MISSING)
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import quote
@@ -105,8 +106,45 @@ def _contains(parent: Path, child: Path) -> bool:
     return True
 
 
-def validate_restart_database() -> Path:
-    """Return the marked disposable DB path or fail without touching it."""
+def _single_link_regular_file(path: Path, label: str) -> os.stat_result:
+    """Validate an exact directory entry without following links."""
+
+    try:
+        entry = os.lstat(path)
+    except OSError:
+        raise RuntimeError(f"{label} is missing") from None
+    if not stat.S_ISREG(entry.st_mode) or entry.st_nlink != 1:
+        raise RuntimeError(f"{label} is not a single-link regular file")
+    return entry
+
+
+def _read_restart_marker(marker: Path) -> str:
+    before = _single_link_regular_file(marker, "restart database marker")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(marker, flags)
+    except OSError:
+        raise RuntimeError("restart database marker is unreadable") from None
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise RuntimeError("restart database marker changed during validation")
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            descriptor = -1
+            return handle.read().strip()
+    except (OSError, UnicodeError):
+        raise RuntimeError("restart database marker is unreadable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def validate_restart_database(*, must_exist: bool) -> Path:
+    """Return the marked disposable DB path for one explicit lifecycle phase."""
 
     from app.db import DEFAULT_DB_PATH, db_path
 
@@ -126,14 +164,19 @@ def validate_restart_database() -> Path:
         if marker_value
         else parent / RESTART_MARKER_NAME
     )
-    if marker.parent.resolve(strict=True) != parent or not marker.is_file():
-        raise RuntimeError("restart database marker is missing")
     try:
-        marked_name = marker.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
-        raise RuntimeError("restart database marker is unreadable") from None
+        marker_parent = marker.parent.resolve(strict=True)
+    except OSError:
+        raise RuntimeError("restart database marker is missing") from None
+    if marker_parent != parent:
+        raise RuntimeError("restart database marker is missing")
+    marked_name = _read_restart_marker(marker)
     if marked_name != database.name:
         raise RuntimeError("restart database marker mismatch")
+    if must_exist:
+        _single_link_regular_file(database, "restart database")
+    elif os.path.lexists(database):
+        raise RuntimeError("restart database already exists")
     return database
 
 
@@ -181,11 +224,17 @@ def restart_write_denial_authorizer(
     _database_name: str | None,
     _trigger_name: str | None,
 ) -> int:
-    """Deny DML/DDL/attach and any PRAGMA assignment, allow reads."""
+    """Deny writes and every PRAGMA except reading query_only itself."""
 
     if action_code in WRITE_ACTION_CODES:
         return sqlite3.SQLITE_DENY
-    if action_code == sqlite3.SQLITE_PRAGMA and second_argument is not None:
+    if action_code == sqlite3.SQLITE_PRAGMA:
+        if (
+            isinstance(first_argument, str)
+            and first_argument.casefold() == "query_only"
+            and second_argument is None
+        ):
+            return sqlite3.SQLITE_OK
         return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
 
@@ -216,7 +265,7 @@ def open_restart_read_connection(
 
 
 def restart_read_db_dependency():
-    database = validate_restart_database()
+    database = validate_restart_database(must_exist=True)
     connection = open_restart_read_connection(database)
     try:
         yield connection
@@ -229,8 +278,8 @@ def _seed_restart_fixture() -> None:
     from app.config import BootstrapAgentSlot
     from app.db import connect
 
-    database = validate_restart_database()
-    if database.exists() and database.stat().st_size <= 0:
+    database = validate_restart_database(must_exist=True)
+    if database.stat().st_size <= 0:
         raise RuntimeError("restart database was not initialized")
     observed_at = agent_workbench._parse_time(RESTART_OBSERVED_AT)
     if observed_at is None:
@@ -310,15 +359,14 @@ def _seed_restart_fixture() -> None:
 
 def restart_write_startup() -> None:
     main = _task7_main()
-    validate_restart_database()
+    validate_restart_database(must_exist=False)
     main.initialize_writable_application()
+    validate_restart_database(must_exist=True)
     _seed_restart_fixture()
 
 
 def restart_read_startup() -> None:
-    database = validate_restart_database()
-    if not database.is_file():
-        raise RuntimeError("restart database is missing")
+    database = validate_restart_database(must_exist=True)
     connection = open_restart_read_connection(database)
     try:
         before = connection.total_changes
