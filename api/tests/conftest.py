@@ -24,6 +24,8 @@ def client(tmp_path, monkeypatch):
         "FBR_SEO_BASE_URL",
         "FBR_SEO_BEARER_TOKEN",
         "FBR_SEO_TIMEOUT_SECONDS",
+        "SEO_OPS_OPERATOR_TIMEZONE",
+        "SEO_OPS_AGENT_HISTORY_LIMIT",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("SEO_OPS_DB", str(tmp_path / "test.db"))

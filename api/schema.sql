@@ -537,3 +537,231 @@ WHEN NEW.coreai_run_id IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'core-ai run id already bound');
 END;
+
+CREATE TABLE IF NOT EXISTS seo_ops_agents (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_key TEXT NOT NULL,
+  coreai_agent_id TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(sort_order) = 'integer' AND sort_order BETWEEN -10000 AND 10000
+  ),
+  status TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'retired')),
+  coreai_name TEXT,
+  coreai_model TEXT,
+  coreai_timeout_hint_seconds INTEGER CHECK (
+    coreai_timeout_hint_seconds IS NULL OR (
+      typeof(coreai_timeout_hint_seconds) = 'integer'
+      AND coreai_timeout_hint_seconds > 0
+    )
+  ),
+  suspect_after_seconds INTEGER NOT NULL DEFAULT 1800
+    CHECK (
+      typeof(suspect_after_seconds) = 'integer'
+      AND suspect_after_seconds BETWEEN 60 AND 86400
+    ),
+  last_verification_attempt_at TEXT,
+  last_verified_at TEXT,
+  last_verification_error TEXT,
+  verification_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(verification_failure_count) = 'integer'
+    AND verification_failure_count >= 0
+  ),
+  next_verification_at TEXT,
+  metadata_lease_owner TEXT,
+  metadata_lease_epoch INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(metadata_lease_epoch) = 'integer' AND metadata_lease_epoch >= 0
+  ),
+  metadata_lease_until TEXT,
+  retired_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (length(trim(agent_key)) BETWEEN 1 AND 80),
+  CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
+  CHECK (length(trim(role)) BETWEEN 1 AND 240),
+  CHECK (
+    (status = 'retired' AND retired_at IS NOT NULL)
+    OR (status <> 'retired' AND retired_at IS NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS seo_ops_agent_runs (
+  coreai_run_id TEXT PRIMARY KEY NOT NULL,
+  seo_ops_agent_id TEXT NOT NULL REFERENCES seo_ops_agents(id),
+  raw_status TEXT CHECK (raw_status IS NULL OR length(trim(raw_status)) > 0),
+  trigger_type TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  terminal_observed_at TEXT,
+  receipt_expires_at TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  trace_id TEXT,
+  error_summary TEXT,
+  source_kind TEXT CHECK (
+    source_kind IS NULL OR source_kind IN ('run', 'task_execution', 'merchant_seo_artifact')
+  ),
+  source_local_id INTEGER CHECK (
+    source_local_id IS NULL OR (
+      typeof(source_local_id) = 'integer' AND source_local_id > 0
+    )
+  ),
+  merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
+  first_seen_at TEXT NOT NULL CHECK (datetime(first_seen_at) IS NOT NULL),
+  last_poll_attempt_at TEXT,
+  last_synced_at TEXT,
+  last_poll_error TEXT,
+  data_warning_codes_json TEXT NOT NULL DEFAULT '[]',
+  CHECK (
+    (source_kind IS NULL AND source_local_id IS NULL)
+    OR (source_kind IS NOT NULL AND source_local_id IS NOT NULL)
+  ),
+  CHECK ((input_tokens IS NULL) = (output_tokens IS NULL)),
+  CHECK (
+    input_tokens IS NULL OR (
+      typeof(input_tokens) = 'integer' AND input_tokens >= 0
+    )
+  ),
+  CHECK (
+    output_tokens IS NULL OR (
+      typeof(output_tokens) = 'integer' AND output_tokens >= 0
+    )
+  ),
+  CHECK (
+    raw_status IS NOT NULL OR (
+      source_kind IS NOT NULL
+      AND source_local_id IS NOT NULL
+      AND trigger_type IS NULL
+      AND started_at IS NULL
+      AND completed_at IS NULL
+      AND terminal_observed_at IS NULL
+      AND receipt_expires_at IS NULL
+      AND input_tokens IS NULL
+      AND output_tokens IS NULL
+      AND trace_id IS NULL
+      AND error_summary IS NULL
+      AND last_poll_attempt_at IS NULL
+      AND last_synced_at IS NULL
+      AND last_poll_error IS NULL
+    )
+  )
+);
+
+CREATE TABLE IF NOT EXISTS seo_ops_agent_sync_state (
+  seo_ops_agent_id TEXT PRIMARY KEY NOT NULL REFERENCES seo_ops_agents(id),
+  remote_total_runs INTEGER CHECK (
+    remote_total_runs IS NULL OR (typeof(remote_total_runs) = 'integer' AND remote_total_runs >= 0)
+  ),
+  last_discovery_attempt_at TEXT,
+  last_discovery_success_at TEXT,
+  last_discovery_error TEXT,
+  last_discovery_returned_count INTEGER CHECK (
+    last_discovery_returned_count IS NULL OR (
+      typeof(last_discovery_returned_count) = 'integer' AND last_discovery_returned_count >= 0
+    )
+  ),
+  coverage_start_at TEXT,
+  finite_range_proven_start_at TEXT CHECK (
+    finite_range_proven_start_at IS NULL OR datetime(finite_range_proven_start_at) IS NOT NULL
+  ),
+  current_state_checked_at TEXT,
+  pending_observed_count INTEGER CHECK (
+    pending_observed_count IS NULL OR (typeof(pending_observed_count) = 'integer' AND pending_observed_count >= 0)
+  ),
+  pending_upstream_total INTEGER CHECK (
+    pending_upstream_total IS NULL OR (typeof(pending_upstream_total) = 'integer' AND pending_upstream_total >= 0)
+  ),
+  pending_last_observed_at TEXT,
+  pending_set_quality TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (pending_set_quality IN ('exact', 'lower_bound', 'unknown')),
+  running_observed_count INTEGER CHECK (
+    running_observed_count IS NULL OR (typeof(running_observed_count) = 'integer' AND running_observed_count >= 0)
+  ),
+  running_upstream_total INTEGER CHECK (
+    running_upstream_total IS NULL OR (typeof(running_upstream_total) = 'integer' AND running_upstream_total >= 0)
+  ),
+  running_last_observed_at TEXT,
+  running_set_quality TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (running_set_quality IN ('exact', 'lower_bound', 'unknown')),
+  paused_observed_count INTEGER CHECK (
+    paused_observed_count IS NULL OR (typeof(paused_observed_count) = 'integer' AND paused_observed_count >= 0)
+  ),
+  paused_upstream_total INTEGER CHECK (
+    paused_upstream_total IS NULL OR (typeof(paused_upstream_total) = 'integer' AND paused_upstream_total >= 0)
+  ),
+  paused_last_observed_at TEXT,
+  paused_set_quality TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (paused_set_quality IN ('exact', 'lower_bound', 'unknown')),
+  unresolved_unknown_status_count INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(unresolved_unknown_status_count) = 'integer' AND unresolved_unknown_status_count >= 0
+  ),
+  current_state_complete INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(current_state_complete) = 'integer' AND current_state_complete IN (0, 1)
+  ),
+  current_state_error TEXT,
+  sync_pending INTEGER NOT NULL DEFAULT 1 CHECK (
+    typeof(sync_pending) = 'integer' AND sync_pending IN (0, 1)
+  ),
+  local_event_epoch INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(local_event_epoch) = 'integer' AND local_event_epoch >= 0
+  ),
+  history_event_epoch INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(history_event_epoch) = 'integer' AND history_event_epoch >= 0
+  ),
+  unfiltered_proven_event_epoch INTEGER CHECK (
+    unfiltered_proven_event_epoch IS NULL OR (
+      typeof(unfiltered_proven_event_epoch) = 'integer'
+      AND unfiltered_proven_event_epoch >= 0
+      AND unfiltered_proven_event_epoch <= history_event_epoch
+    )
+  ),
+  projection_revision INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(projection_revision) = 'integer' AND projection_revision >= 0
+  ),
+  next_discovery_at TEXT,
+  last_fast_poll_attempt_at TEXT,
+  last_fast_poll_success_at TEXT,
+  last_fast_poll_error TEXT,
+  next_fast_poll_at TEXT,
+  discovery_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(discovery_failure_count) = 'integer' AND discovery_failure_count >= 0
+  ),
+  fast_poll_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(fast_poll_failure_count) = 'integer' AND fast_poll_failure_count >= 0
+  ),
+  lease_owner TEXT,
+  lease_epoch INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(lease_epoch) = 'integer' AND lease_epoch >= 0
+  ),
+  lease_until TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_seo_ops_agents_current_key
+ON seo_ops_agents(agent_key) WHERE status <> 'retired';
+
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agents_next_verification_at
+ON seo_ops_agents(next_verification_at);
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agents_metadata_lease_until
+ON seo_ops_agents(metadata_lease_until);
+
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agent_runs_agent_effective_history
+ON seo_ops_agent_runs(
+  seo_ops_agent_id,
+  COALESCE(started_at, first_seen_at) DESC,
+  coreai_run_id DESC
+);
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agent_runs_raw_status
+ON seo_ops_agent_runs(raw_status);
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agent_runs_source
+ON seo_ops_agent_runs(source_kind, source_local_id);
+
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agent_sync_next_discovery_at
+ON seo_ops_agent_sync_state(next_discovery_at);
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agent_sync_next_fast_poll_at
+ON seo_ops_agent_sync_state(next_fast_poll_at);
+CREATE INDEX IF NOT EXISTS idx_seo_ops_agent_sync_lease_until
+ON seo_ops_agent_sync_state(lease_until);
+
+CREATE INDEX IF NOT EXISTS idx_task_executions_coreai_run_id
+ON task_executions(coreai_run_id) WHERE coreai_run_id IS NOT NULL;
