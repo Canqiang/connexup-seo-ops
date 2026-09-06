@@ -38,6 +38,7 @@ SCHEMA_VERSION = "agent_workbench_live_readback.v1"
 MAX_LIVE_READBACK_WORKERS = 8
 LIST_LIMIT = 200
 DEFAULT_TIMEOUT_SECONDS = 240
+NORMAL_PROOF_INTERVAL_SECONDS = 30
 RESULT_OK = "LIVE_GATE_OK"
 RESULT_UNAVAILABLE = "LIVE_GATE_UNAVAILABLE"
 RESULT_MISMATCH = "LIVE_GATE_MISMATCH"
@@ -344,13 +345,18 @@ def _direct_bundle(
     values: Mapping[str, str],
     deadline: Deadline,
     *,
-    core_client_factory: Callable[[str, str], object] = CoreAiClient,
+    core_client_factory: Callable[..., object] = CoreAiClient,
 ) -> dict:
-    deadline.remaining()
-    client = core_client_factory(
-        _required(values, "COREAI_BASE_URL").rstrip("/"),
-        _required(values, "COREAI_API_KEY"),
-    )
+    request_timeout = min(30.0, deadline.remaining())
+    base_url = _required(values, "COREAI_BASE_URL").rstrip("/")
+    api_key = _required(values, "COREAI_API_KEY")
+    try:
+        client = core_client_factory(base_url, api_key, timeout=request_timeout)
+    except TypeError:
+        # Small list-only test doubles intentionally expose the historical
+        # two-argument constructor. Production CoreAiClient receives the
+        # remaining global bound so a worker cannot outlive the gate forever.
+        client = core_client_factory(base_url, api_key)
     try:
         metadata = client.get_agent(core_id)
         if not isinstance(metadata, dict) or metadata.get("id") != core_id:
@@ -396,6 +402,12 @@ def _compare_bundle(
     )
     if unconfirmed:
         raise GateFailure(RESULT_UNCONFIRMED)
+    sync = conn.execute(
+        "SELECT * FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+        (local_id,),
+    ).fetchone()
+    if sync is None:
+        raise GateFailure(RESULT_MISMATCH)
     merged = {}
     conflict = False
     for page in bundle["pages"].values():
@@ -413,10 +425,23 @@ def _compare_bundle(
     if conflict:
         raise GateFailure(RESULT_MISMATCH)
     for run_id, run in merged.items():
+        owner = conn.execute(
+            "SELECT seo_ops_agent_id FROM seo_ops_agent_runs WHERE coreai_run_id=?",
+            (run_id,),
+        ).fetchone()
         local = local_rows.get(run_id)
-        if local is None or local["seo_ops_agent_id"] != local_id:
+        if (
+            owner is None
+            or owner["seo_ops_agent_id"] != local_id
+            or local is None
+            or local["seo_ops_agent_id"] != local_id
+        ):
             raise GateFailure(RESULT_MISMATCH)
         if local["raw_status"] != run.raw_status:
+            raise GateFailure(RESULT_MISMATCH)
+        if (local["input_tokens"] is None) != (local["output_tokens"] is None):
+            raise GateFailure(RESULT_MISMATCH)
+        if (run.input_tokens is None) != (run.output_tokens is None):
             raise GateFailure(RESULT_MISMATCH)
         if (local["input_tokens"], local["output_tokens"]) != (
             run.input_tokens,
@@ -428,6 +453,27 @@ def _compare_bundle(
     exact = all_page.returned_count == all_page.total
     if exact and set(all_ids) != set(local_rows):
         raise GateFailure(RESULT_MISMATCH)
+    recorded_remote_total = sync["remote_total_runs"]
+    if recorded_remote_total is not None and recorded_remote_total != all_page.total:
+        raise GateFailure(RESULT_MISMATCH)
+    for status, prefix in (
+        ("PENDING", "pending"),
+        ("RUNNING", "running"),
+        ("PAUSED", "paused"),
+    ):
+        page = bundle["pages"][status]
+        if (
+            page.returned_count == page.total
+            and sync[f"{prefix}_set_quality"] == "exact"
+        ):
+            expected = {
+                run_id
+                for run_id, row in local_rows.items()
+                if row["raw_status"] == status
+            }
+            returned = {run.coreai_run_id for run in page.runs}
+            if returned != expected:
+                raise GateFailure(RESULT_MISMATCH)
     known = [
         run for run in all_page.runs
         if run.input_tokens is not None and run.output_tokens is not None
@@ -441,6 +487,7 @@ def _compare_bundle(
         "returned_ids": all_ids,
         "returned_count": all_page.returned_count,
         "remote_total": all_page.total,
+        "projected_remote_total": recorded_remote_total,
         "comparison": "exact" if exact else "bounded_overlap",
         "raw_status_counts": raw_status_counts,
         "known_token_runs": len(known),
@@ -450,6 +497,189 @@ def _compare_bundle(
             run.input_tokens + run.output_tokens for run in known
         ),
     }
+
+
+def _wire_time(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _bundle_fingerprint(bundle: dict) -> dict:
+    """Return only reconciliation fields, never arbitrary upstream payloads."""
+
+    pages = {}
+    for name, page in sorted(bundle["pages"].items()):
+        pages[name] = {
+            "observed_at": page.observed_at,
+            "returned_count": page.returned_count,
+            "runs": [
+                {
+                    "agent_id": run.coreai_agent_id,
+                    "id": run.coreai_run_id,
+                    "input_tokens": run.input_tokens,
+                    "output_tokens": run.output_tokens,
+                    "status": run.raw_status,
+                }
+                for run in page.runs
+            ],
+            "total": page.total,
+        }
+    return {"coreai_agent_id": bundle["coreai_agent_id"], "pages": pages}
+
+
+@dataclass(frozen=True)
+class SegmentAttempt:
+    result_code: str
+    fingerprint: str
+    marker_before: str
+    marker_after: str
+    observed_from: str
+    observed_through: str
+    segment: dict | None
+    bundle: dict
+
+
+def _segment_attempt_record(
+    conn: sqlite3.Connection,
+    local_id: str,
+    bundle: dict,
+    marker_before: str,
+    observed_from: datetime,
+    observed_through: datetime,
+) -> SegmentAttempt:
+    marker_after = _agent_marker(conn, local_id)
+    result_code = RESULT_OK
+    segment = None
+    if marker_before != marker_after:
+        result_code = RESULT_UNSTABLE
+    else:
+        try:
+            segment = _compare_bundle(conn, local_id, bundle)
+        except GateFailure as failure:
+            if failure.code not in {RESULT_MISMATCH, RESULT_UNSTABLE}:
+                raise
+            result_code = failure.code
+    fingerprint_payload = {
+        "bundle": _bundle_fingerprint(bundle),
+        "marker_after": marker_after,
+        "marker_before": marker_before,
+        "result_code": result_code,
+    }
+    return SegmentAttempt(
+        result_code=result_code,
+        fingerprint=hashlib.sha256(
+            _canonical(fingerprint_payload).encode()
+        ).hexdigest(),
+        marker_before=marker_before,
+        marker_after=marker_after,
+        observed_from=_wire_time(observed_from),
+        observed_through=_wire_time(observed_through),
+        segment=segment,
+        bundle=bundle,
+    )
+
+
+def _collect_segment_attempts(
+    conn: sqlite3.Connection,
+    core_ids: Iterable[str],
+    registry_by_core: Mapping[str, Mapping[str, object]],
+    values: Mapping[str, str],
+    deadline: Deadline,
+    core_client_factory: Callable[..., object],
+) -> dict[str, SegmentAttempt]:
+    selected = tuple(sorted(core_ids))
+    if not selected:
+        return {}
+    markers = {
+        core_id: _agent_marker(conn, str(registry_by_core[core_id]["id"]))
+        for core_id in selected
+    }
+    started = {core_id: datetime.now(timezone.utc) for core_id in selected}
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(MAX_LIVE_READBACK_WORKERS, len(selected))
+    )
+    futures = {
+        executor.submit(
+            _direct_bundle,
+            core_id,
+            values,
+            deadline,
+            core_client_factory=core_client_factory,
+        ): core_id
+        for core_id in selected
+    }
+    attempts: dict[str, SegmentAttempt] = {}
+    try:
+        for future in concurrent.futures.as_completed(
+            futures, timeout=deadline.remaining()
+        ):
+            core_id = futures[future]
+            attempts[core_id] = _segment_attempt_record(
+                conn,
+                str(registry_by_core[core_id]["id"]),
+                future.result(),
+                markers[core_id],
+                started[core_id],
+                datetime.now(timezone.utc),
+            )
+    except concurrent.futures.TimeoutError:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise GateFailure(RESULT_TIMEOUT) from None
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    return attempts
+
+
+def _retry_failure(first: SegmentAttempt, second: SegmentAttempt) -> str:
+    if second.result_code == RESULT_OK:
+        return RESULT_OK
+    if (
+        first.result_code == RESULT_MISMATCH
+        and second.result_code == RESULT_MISMATCH
+        and first.fingerprint == second.fingerprint
+    ):
+        return RESULT_MISMATCH
+    return RESULT_UNSTABLE
+
+
+def _require_terminal_match(
+    conn: sqlite3.Connection,
+    local_id: str,
+    run_id: str,
+    raw_status: str,
+    bundle: dict,
+) -> None:
+    local = conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id=?",
+        (run_id,),
+    ).fetchone()
+    matches = [
+        run
+        for run in bundle["pages"]["ALL"].runs
+        if run.coreai_run_id == run_id
+    ]
+    if (
+        local is None
+        or local["seo_ops_agent_id"] != local_id
+        or local["raw_status"] != raw_status
+        or len(matches) != 1
+        or matches[0].raw_status != raw_status
+    ):
+        raise GateFailure(RESULT_MISMATCH)
+    remote_tokens = (matches[0].input_tokens, matches[0].output_tokens)
+    local_tokens = (local["input_tokens"], local["output_tokens"])
+    if (
+        (remote_tokens[0] is None) != (remote_tokens[1] is None)
+        or (local_tokens[0] is None) != (local_tokens[1] is None)
+        or remote_tokens != local_tokens
+    ):
+        raise GateFailure(RESULT_MISMATCH)
 
 
 def _motion_candidates(aggregate: dict) -> list[dict]:
@@ -485,15 +715,16 @@ def reconcile(
     *,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
     http_client_factory: Callable[..., httpx.Client] = httpx.Client,
-    core_client_factory: Callable[[str, str], object] = CoreAiClient,
+    core_client_factory: Callable[..., object] = CoreAiClient,
 ) -> dict:
     if range_key not in agent_workbench.WORKBENCH_RANGES:
         raise GateFailure(RESULT_UNAVAILABLE)
     deadline = Deadline.start(timeout_seconds, monotonic)
     conn = _read_connection(_required(values, "SEO_OPS_DB"))
     try:
-        aggregate, local_hash = _local_bracket(
+        aggregate, _local_hash_value = _local_bracket(
             conn, api_url, range_key, values, deadline, http_client_factory
         )
         registry = _table_rows(conn, "seo_ops_agents")
@@ -522,47 +753,72 @@ def reconcile(
         )
         if not registry or not direct_ids:
             raise GateFailure(RESULT_UNAVAILABLE)
-        markers_before = {
-            core_id: _agent_marker(conn, registry_by_core[core_id]["id"])
-            for core_id in direct_ids
-        }
-        segments: dict[str, dict] = {}
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(MAX_LIVE_READBACK_WORKERS, len(direct_ids))
-        ) as executor:
-            futures = {
-                executor.submit(
-                    _direct_bundle,
-                    core_id,
-                    values,
-                    deadline,
-                    core_client_factory=core_client_factory,
-                ): core_id
-                for core_id in direct_ids
-            }
-            try:
-                for future in concurrent.futures.as_completed(
-                    futures, timeout=deadline.remaining()
-                ):
-                    core_id = futures[future]
-                    bundle = future.result()
-                    local_id = registry_by_core[core_id]["id"]
-                    after = _agent_marker(conn, local_id)
-                    if after != markers_before[core_id]:
-                        raise GateFailure(RESULT_UNSTABLE)
-                    segments[core_id] = _compare_bundle(conn, local_id, bundle)
-            except concurrent.futures.TimeoutError:
-                for future in futures:
-                    future.cancel()
-                raise GateFailure(RESULT_TIMEOUT) from None
+        first_attempts = _collect_segment_attempts(
+            conn,
+            direct_ids,
+            registry_by_core,
+            values,
+            deadline,
+            core_client_factory,
+        )
         final_aggregate, final_hash = _local_bracket(
             conn, api_url, range_key, values, deadline, http_client_factory
         )
-        if final_hash != local_hash:
-            raise GateFailure(RESULT_UNSTABLE)
+        retry_ids = {
+            core_id
+            for core_id, attempt in first_attempts.items()
+            if attempt.result_code != RESULT_OK
+            or _agent_marker(
+                conn, str(registry_by_core[core_id]["id"])
+            ) != attempt.marker_after
+        }
+        attempts = dict(first_attempts)
+        if retry_ids:
+            sleep(min(NORMAL_PROOF_INTERVAL_SECONDS, deadline.remaining()))
+            second_attempts = _collect_segment_attempts(
+                conn,
+                retry_ids,
+                registry_by_core,
+                values,
+                deadline,
+                core_client_factory,
+            )
+            final_aggregate, final_hash = _local_bracket(
+                conn, api_url, range_key, values, deadline, http_client_factory
+            )
+            for core_id in sorted(retry_ids):
+                first = first_attempts[core_id]
+                second = second_attempts[core_id]
+                if (
+                    second.result_code == RESULT_OK
+                    and _agent_marker(
+                        conn, str(registry_by_core[core_id]["id"])
+                    ) == second.marker_after
+                ):
+                    attempts[core_id] = second
+                    continue
+                failure_code = _retry_failure(first, second)
+                raise GateFailure(failure_code)
+        for core_id, attempt in attempts.items():
+            if attempt.result_code != RESULT_OK or attempt.segment is None:
+                raise GateFailure(attempt.result_code)
+            if _agent_marker(
+                conn, str(registry_by_core[core_id]["id"])
+            ) != attempt.marker_after:
+                raise GateFailure(RESULT_UNSTABLE)
+        segments = []
+        for core_id in sorted(attempts):
+            attempt = attempts[core_id]
+            segments.append(
+                {
+                    **attempt.segment,
+                    "observed_from": attempt.observed_from,
+                    "observed_through": attempt.observed_through,
+                }
+            )
         return {
             "active_transition_candidates": _motion_candidates(final_aggregate),
-            "agent_segments": [segments[key] for key in sorted(segments)],
+            "agent_segments": segments,
             "configured_not_registered": [],
             "local_snapshot_hash": final_hash,
             "range": range_key,
@@ -584,6 +840,7 @@ def observe_transition(
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     http_client_factory: Callable[..., httpx.Client] = httpx.Client,
+    core_client_factory: Callable[..., object] = CoreAiClient,
 ) -> dict:
     if not _ID.fullmatch(run_id) or not 1 <= observe_seconds <= 3600:
         raise GateFailure(RESULT_UNAVAILABLE)
@@ -604,6 +861,7 @@ def observe_transition(
     while monotonic() < stop_at:
         cadence = max(1.0, min(60.0, initial.get("refresh_after_ms", 30000) / 1000))
         sleep(min(cadence, max(0.0, stop_at - monotonic())))
+        deadline = Deadline.start(timeout_seconds, monotonic)
         current = _request_aggregate(
             api_url, range_key, values, deadline, client_factory=http_client_factory
         )
@@ -624,6 +882,75 @@ def observe_transition(
             history[0] if history and history[0].get("raw_status") in TERMINAL else None
         )
         if terminal is not None:
+            local_id = candidate["local_agent_id"]
+            conn = _read_connection(_required(values, "SEO_OPS_DB"))
+            try:
+                owner = conn.execute(
+                    "SELECT * FROM seo_ops_agents WHERE id=?", (local_id,)
+                ).fetchone()
+                if owner is None or owner["status"] != "active":
+                    raise GateFailure(RESULT_MISMATCH)
+                registry = {owner["coreai_agent_id"]: dict(owner)}
+                attempts = _collect_segment_attempts(
+                    conn,
+                    (owner["coreai_agent_id"],),
+                    registry,
+                    values,
+                    deadline,
+                    core_client_factory,
+                )
+                attempt = attempts[owner["coreai_agent_id"]]
+                if attempt.result_code != RESULT_OK:
+                    raise GateFailure(
+                        RESULT_MISMATCH
+                        if attempt.result_code == RESULT_MISMATCH
+                        else attempt.result_code
+                    )
+                final, _ = _local_bracket(
+                    conn,
+                    api_url,
+                    range_key,
+                    values,
+                    deadline,
+                    http_client_factory,
+                )
+                final_terminal = next(
+                    (
+                        row
+                        for row in final.get("signals", [])
+                        if isinstance(row, dict)
+                        and row.get("coreai_run_id") == run_id
+                        and row.get("raw_status") in TERMINAL
+                    ),
+                    None,
+                )
+                if final_terminal is None:
+                    final_terminal = next(
+                        (
+                            run
+                            for agent in final.get("agents", [])
+                            if isinstance(agent, dict)
+                            for run in [agent.get("last_terminal_run")]
+                            if isinstance(run, dict)
+                            and run.get("coreai_run_id") == run_id
+                            and run.get("raw_status") in TERMINAL
+                        ),
+                        None,
+                    )
+                if (
+                    final_terminal is None
+                    or final_terminal["raw_status"] != terminal["raw_status"]
+                ):
+                    raise GateFailure(RESULT_MISMATCH)
+                _require_terminal_match(
+                    conn,
+                    local_id,
+                    run_id,
+                    terminal["raw_status"],
+                    attempt.bundle,
+                )
+            finally:
+                conn.close()
             return {
                 "final_raw_status": terminal["raw_status"],
                 "observe_run_id": run_id,

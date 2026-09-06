@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import importlib
 import json
 import os
+import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -509,10 +512,12 @@ def test_immediate_terminal_trigger_requires_list_confirmation(
     )
     check = sqlite3.connect(path)
     check.row_factory = sqlite3.Row
-    assert check.execute(
-        "SELECT terminal_observed_at,receipt_expires_at,last_synced_at "
-        "FROM seo_ops_agent_runs WHERE coreai_run_id=?", (run_id,)
-    ).fetchone() == (NOW.isoformat(), None, None)
+    assert tuple(
+        check.execute(
+            "SELECT terminal_observed_at,receipt_expires_at,last_synced_at "
+            "FROM seo_ops_agent_runs WHERE coreai_run_id=?", (run_id,)
+        ).fetchone()
+    ) == (NOW.isoformat(), None, None)
     assert _sync_state(check)["current_state_complete"] == 0
     check.close()
 
@@ -979,6 +984,197 @@ def test_live_app_helper_is_red_before_task7_integration():
         assert module.build_live_app().title == "SEO Ops API"
 
 
+@pytest.mark.xfail(
+    not TASK7_AVAILABLE, reason=TASK7_REASON, strict=True
+)
+def test_fresh_app_instance_reads_durable_projection(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    path, conn = _open_database(tmp_path, monkeypatch, "fresh-instance.db")
+    _seed_agent(conn, monkeypatch)
+    conn.close()
+    terminal = _run(
+        "durable-terminal",
+        "COMPLETED",
+        completed_at=NOW,
+        tokens=(7, 11),
+    )
+    fake = ListOnlyCoreAiFake(_four_pages(all_rows=(terminal,)))
+    assert agent_workbench.sync_registered_agent_runs_once(
+        LOCAL_ID, now=NOW, client_factory=lambda: fake
+    )
+    assert fake.get_run_calls == 0
+    before = sqlite3.connect(path)
+    before.row_factory = sqlite3.Row
+    stable_before = {
+        table: [dict(row) for row in before.execute(f"SELECT * FROM {table}")]
+        for table in (
+            "seo_ops_agents",
+            "seo_ops_agent_runs",
+            "seo_ops_agent_sync_state",
+        )
+    }
+    history_before = agent_workbench.list_projected_agent_runs(
+        before, LOCAL_ID, "30d", 20, None, NOW, "Asia/Shanghai"
+    )
+    before.close()
+
+    for key in ("COREAI_BASE_URL", "COREAI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SEO_OPS_AUTH_USERNAME", "acceptance-operator")
+    monkeypatch.setenv("SEO_OPS_AUTH_PASSWORD", "acceptance-password")
+    monkeypatch.setenv(
+        "SEO_OPS_AUTH_SECRET", "acceptance-secret-with-at-least-32-characters"
+    )
+    module = importlib.import_module("agent_workbench_live_app")
+    application = module.build_live_app(
+        startup_callable=lambda: None,
+        scheduler_coro=module.parked_scheduler_loop,
+        fbr_scheduler_coro=module.parked_fbr_scheduler_loop,
+        workbench_coro=module.parked_restart_workbench_loop,
+    )
+    with TestClient(application) as client:
+        assert client.get("/api/agent-workbench").status_code == 401
+        login = client.post(
+            "/api/auth/login",
+            json={
+                "username": "acceptance-operator",
+                "password": "acceptance-password",
+            },
+        )
+        assert login.status_code == 200
+        aggregate_response = client.get(
+            "/api/agent-workbench", params={"range": "30d"}
+        )
+        assert aggregate_response.status_code == 200
+        aggregate = aggregate_response.json()
+        history_response = client.get(
+            f"/api/agent-workbench/agents/{LOCAL_ID}/runs",
+            params={"range": "30d", "limit": 20},
+        )
+        assert history_response.status_code == 200
+        history_after = history_response.json()
+
+    after = sqlite3.connect(path)
+    after.row_factory = sqlite3.Row
+    stable_after = {
+        table: [dict(row) for row in after.execute(f"SELECT * FROM {table}")]
+        for table in stable_before
+    }
+    snapshot_at = datetime.fromisoformat(aggregate["snapshot_at"])
+    rebuilt = agent_workbench.build_workbench_snapshot(
+        after, "30d", snapshot_at, "Asia/Shanghai", 200
+    )
+    after.close()
+    assert stable_after == stable_before
+    durable_history_fields = (
+        "coreai_run_id",
+        "raw_status",
+        "trigger_type",
+        "started_at",
+        "effective_started_at",
+        "completed_at",
+        "terminal_observed_at",
+        "receipt_expires_at",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "token_state",
+        "last_synced_at",
+        "association",
+        "error_summary",
+    )
+    durable_history = lambda body: [
+        {key: row[key] for key in durable_history_fields}
+        for row in body["items"]
+    ]
+    assert durable_history(history_after) == durable_history(history_before)
+    assert aggregate == rebuilt
+    assert aggregate["agents"][0]["last_terminal_run"]["coreai_run_id"] == (
+        "durable-terminal"
+    )
+    assert aggregate["agents"][0]["last_terminal_run"]["total_tokens"] == 18
+
+
+@pytest.mark.xfail(
+    not TASK7_AVAILABLE, reason=TASK7_REASON, strict=True
+)
+def test_live_gate_lifespan_parks_both_ordinary_schedulers_and_awaits_workbench(
+    tmp_path, monkeypatch
+):
+    from fastapi.testclient import TestClient
+    from app import main
+
+    _require_task7()
+    _, conn = _open_database(tmp_path, monkeypatch, "live-lifespan.db")
+    conn.close()
+    monkeypatch.setenv("SEO_OPS_AUTH_USERNAME", "acceptance-operator")
+    monkeypatch.setenv("SEO_OPS_AUTH_PASSWORD", "acceptance-password")
+    monkeypatch.setenv(
+        "SEO_OPS_AUTH_SECRET", "acceptance-secret-with-at-least-32-characters"
+    )
+    module = importlib.import_module("agent_workbench_live_app")
+    starts = {name: threading.Event() for name in ("scheduler", "fbr", "workbench")}
+    finalized = []
+    startup_calls = []
+    production_scheduler_calls = []
+    trigger_calls = []
+
+    async def forbidden_scheduler():
+        production_scheduler_calls.append("called")
+        raise AssertionError("production scheduler must be parked")
+
+    monkeypatch.setattr(main, "scheduler_loop", forbidden_scheduler)
+    monkeypatch.setattr(main, "fbr_scheduler_loop", forbidden_scheduler)
+
+    def parked(name, *, raises=False):
+        async def run():
+            starts[name].set()
+            try:
+                await __import__("asyncio").Event().wait()
+            finally:
+                finalized.append(name)
+                if raises:
+                    raise RuntimeError("fixed parked finalizer failure")
+
+        return run
+
+    application = module.build_live_app(
+        startup_callable=lambda: startup_calls.append("startup"),
+        scheduler_coro=parked("scheduler"),
+        fbr_scheduler_coro=parked("fbr", raises=True),
+        workbench_coro=parked("workbench"),
+    )
+
+    def route_shape(value):
+        return {
+            (
+                route.path,
+                tuple(sorted(route.methods or ())),
+                len(route.dependant.dependencies),
+            )
+            for route in value.routes
+            if hasattr(route, "dependant")
+        }
+
+    assert route_shape(application) == route_shape(main.app)
+    with TestClient(application) as client:
+        assert all(event.wait(timeout=2) for event in starts.values())
+        assert startup_calls == ["startup"]
+        assert production_scheduler_calls == []
+        assert trigger_calls == []
+        assert client.get("/api/agent-workbench").status_code == 401
+        assert client.post(
+            "/api/auth/login",
+            json={
+                "username": "acceptance-operator",
+                "password": "acceptance-password",
+            },
+        ).status_code == 200
+        assert client.get("/api/agent-workbench").status_code == 200
+    assert set(finalized) == {"scheduler", "fbr", "workbench"}
+
+
 def test_restart_read_connection_enforces_query_only_when_uri_mode_is_bypassed(
     tmp_path,
 ):
@@ -1021,6 +1217,286 @@ def test_restart_read_connection_installs_write_denial_authorizer(tmp_path):
                 guarded.execute(sql)
     finally:
         guarded.close()
+
+
+def _reserve_loopback_port():
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+    finally:
+        listener.close()
+
+
+def _start_restart_server(api_dir, port, environment):
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "agent_workbench_live_app:restart_probe_app",
+            "--app-dir",
+            "tests",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
+        cwd=api_dir,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _wait_for_restart_server(process, base_url, *, timeout=12.0):
+    expires = time.monotonic() + timeout
+    while time.monotonic() < expires:
+        if process.poll() is not None:
+            raise AssertionError(
+                f"restart server exited before readiness: {process.returncode}"
+            )
+        try:
+            with httpx.Client(
+                base_url=base_url, follow_redirects=False, timeout=0.5
+            ) as client:
+                response = client.post(
+                    "/api/auth/login",
+                    json={
+                        "username": "restart-operator",
+                        "password": "restart-password",
+                    },
+                )
+                if response.status_code == 200:
+                    return
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.05)
+    raise AssertionError("restart server readiness timed out")
+
+
+def _read_restart_api(base_url):
+    with httpx.Client(
+        base_url=base_url, follow_redirects=False, timeout=3.0
+    ) as client:
+        login = client.post(
+            "/api/auth/login",
+            json={
+                "username": "restart-operator",
+                "password": "restart-password",
+            },
+        )
+        assert login.status_code == 200
+        aggregate_response = client.get(
+            "/api/agent-workbench", params={"range": "all"}
+        )
+        assert aggregate_response.status_code == 200
+        aggregate = aggregate_response.json()
+        module = importlib.import_module("agent_workbench_live_app")
+        history_response = client.get(
+            f"/api/agent-workbench/agents/{module.RESTART_LOCAL_AGENT_ID}/runs",
+            params={"range": "all", "limit": 20},
+        )
+        assert history_response.status_code == 200
+        history = history_response.json()
+    agent = next(
+        row
+        for row in aggregate["agents"]
+        if row["id"] == module.RESTART_LOCAL_AGENT_ID
+    )
+    assert len(history["items"]) == 1
+    terminal = history["items"][0]
+    assert terminal["coreai_run_id"] == module.RESTART_RUN_ID
+    assert agent["last_terminal_run"]["coreai_run_id"] == module.RESTART_RUN_ID
+    datetime.fromisoformat(aggregate["snapshot_at"])
+    datetime.fromisoformat(history["range_end"])
+    assert terminal["elapsed_seconds"] >= 0
+    durable_fields = (
+        "coreai_run_id",
+        "raw_status",
+        "trigger_type",
+        "started_at",
+        "effective_started_at",
+        "completed_at",
+        "terminal_observed_at",
+        "receipt_expires_at",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "token_state",
+        "last_synced_at",
+        "association",
+        "error_summary",
+    )
+    return {
+        "agent": {
+            "id": agent["id"],
+            "agent_key": agent["agent_key"],
+            "coreai_agent_id": agent["coreai_agent_id"],
+            "display_name": agent["display_name"],
+            "lifecycle_status": agent["lifecycle_status"],
+            "role": agent["role"],
+            "sort_order": agent["sort_order"],
+        },
+        "history": {key: terminal[key] for key in durable_fields},
+    }
+
+
+def _restart_sqlite_stable_hash(database):
+    connection = sqlite3.connect(
+        f"file:{database}?mode=ro", uri=True
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        payload = {
+            table: [
+                dict(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {table} ORDER BY rowid"
+                )
+            ]
+            for table in (
+                "seo_ops_agents",
+                "seo_ops_agent_runs",
+                "seo_ops_agent_sync_state",
+            )
+        }
+    finally:
+        connection.close()
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _restart_file_manifest(database):
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(database.parent.glob(f"{database.name}*"))
+        if path.is_file()
+    }
+
+
+def _stop_restart_server(process):
+    if process.poll() is None:
+        process.send_signal(signal.SIGINT)
+    exit_code = process.wait(timeout=12)
+    assert exit_code == 0
+    assert process.poll() == 0
+    return exit_code
+
+
+@pytest.mark.xfail(
+    not TASK7_AVAILABLE, reason=TASK7_REASON, strict=True
+)
+def test_terminal_tokens_survive_real_server_restart(tmp_path, monkeypatch):
+    _require_task7()
+    module = importlib.import_module("agent_workbench_live_app")
+    guarded = tmp_path / "restart-owned"
+    guarded.mkdir()
+    database = guarded / "restart.db"
+    marker = guarded / module.RESTART_MARKER_NAME
+    marker.write_text(database.name, encoding="utf-8")
+    evidence_root = Path(
+        os.environ.get("AW_RESTART_EVIDENCE_DIR", str(tmp_path / "evidence"))
+    ).absolute()
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    evidence_path = evidence_root / "server-restart.json"
+    environment = dict(os.environ)
+    for key in tuple(environment):
+        if key.startswith("COREAI_"):
+            environment.pop(key)
+    environment.update(
+        {
+            "SEO_OPS_DB": str(database),
+            "SEO_OPS_AUTH_USERNAME": "restart-operator",
+            "SEO_OPS_AUTH_PASSWORD": "restart-password",
+            "SEO_OPS_AUTH_SECRET": (
+                "restart-secret-with-at-least-32-characters"
+            ),
+            "SEO_OPS_COOKIE_SECURE": "false",
+            "SEO_OPS_OPERATOR_TIMEZONE": "UTC",
+            "SEO_OPS_AGENT_HISTORY_LIMIT": "200",
+            module.RESTART_MARKER_ENV: str(marker),
+        }
+    )
+    api_dir = Path(__file__).resolve().parents[1]
+    port = _reserve_loopback_port()
+    base_url = f"http://127.0.0.1:{port}"
+    process_a = None
+    process_b = None
+    try:
+        environment[module.RESTART_PHASE_ENV] = "write"
+        process_a = _start_restart_server(api_dir, port, environment)
+        pid_a = process_a.pid
+        _wait_for_restart_server(process_a, base_url)
+        api_a = _read_restart_api(base_url)
+        sqlite_a = _restart_sqlite_stable_hash(database)
+        exit_a = _stop_restart_server(process_a)
+        manifest_before_b = _restart_file_manifest(database)
+
+        environment[module.RESTART_PHASE_ENV] = "read"
+        process_b = _start_restart_server(api_dir, port, environment)
+        pid_b = process_b.pid
+        assert pid_b != pid_a
+        _wait_for_restart_server(process_b, base_url)
+        api_b = _read_restart_api(base_url)
+        sqlite_b = _restart_sqlite_stable_hash(database)
+        exit_b = _stop_restart_server(process_b)
+        manifest_after_b = _restart_file_manifest(database)
+    finally:
+        for process in (process_a, process_b):
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+    assert api_b == api_a
+    assert sqlite_b == sqlite_a
+    assert manifest_after_b == manifest_before_b
+    terminal = api_b["history"]
+    assert terminal["raw_status"] == "COMPLETED"
+    assert terminal["input_tokens"] == 7
+    assert terminal["output_tokens"] == 11
+    assert terminal["total_tokens"] == 18
+    assert terminal["terminal_observed_at"] == module.RESTART_OBSERVED_AT
+    assert (
+        terminal["receipt_expires_at"]
+        == module.RESTART_RECEIPT_EXPIRES_AT
+    )
+    api_hash = hashlib.sha256(
+        json.dumps(api_a, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    evidence = {
+        "api_durable_subset_sha256": api_hash,
+        "input_tokens": 7,
+        "output_tokens": 11,
+        "process_a_exit_code": exit_a,
+        "process_a_pid": pid_a,
+        "process_b_exit_code": exit_b,
+        "process_b_pid": pid_b,
+        "raw_status": "COMPLETED",
+        "receipt_expires_at": module.RESTART_RECEIPT_EXPIRES_AT,
+        "schema_version": "agent_workbench_server_restart.v1",
+        "sqlite_stable_rows_sha256": sqlite_a,
+        "terminal_observed_at": module.RESTART_OBSERVED_AT,
+        "total_tokens": 18,
+    }
+    evidence_bytes = json.dumps(
+        evidence, sort_keys=True, separators=(",", ":")
+    ) + "\n"
+    evidence_path.write_text(evidence_bytes, encoding="utf-8")
+    assert evidence_path.read_text(encoding="utf-8") == evidence_bytes
+    for secret in (
+        environment["SEO_OPS_AUTH_SECRET"],
+        environment["SEO_OPS_AUTH_PASSWORD"],
+    ):
+        assert secret not in evidence_bytes
 
 
 @pytest.mark.parametrize(
@@ -1386,6 +1862,317 @@ def test_live_readback_reports_active_transition_candidates():
     ):
         row = {**eligible, field: value}
         assert live_readback._motion_candidates({"signals": [row]}) == []
+
+
+def _segment_attempt(code, fingerprint, local_id, *, label):
+    segment = (
+        {
+            "coreai_agent_id": label,
+            "local_agent_id": local_id,
+            "returned_ids": [],
+        }
+        if code == live_readback.RESULT_OK
+        else None
+    )
+    return live_readback.SegmentAttempt(
+        result_code=code,
+        fingerprint=fingerprint,
+        marker_before=f"marker-{local_id}",
+        marker_after=f"marker-{local_id}",
+        observed_from="2026-09-03T04:00:00Z",
+        observed_through="2026-09-03T04:00:01Z",
+        segment=segment,
+        bundle={"coreai_agent_id": label, "pages": {}},
+    )
+
+
+def test_live_readback_retries_only_changed_segment(tmp_path, monkeypatch):
+    path, conn = _open_database(tmp_path, monkeypatch, "targeted-retry.db")
+    peer_local_id = "22222222-2222-4222-8222-222222222222"
+    peer_core_id = "agent-peer"
+    ids = iter((UUID(LOCAL_ID), UUID(peer_local_id)))
+    monkeypatch.setattr(agent_workbench.uuid, "uuid4", lambda: next(ids))
+    peer_slot = BootstrapAgentSlot(
+        env_name="COREAI_PEER_AGENT_ID",
+        agent_key="peer",
+        display_name="Peer Agent",
+        role="Stable peer",
+        sort_order=20,
+        coreai_agent_id=peer_core_id,
+    )
+    agent_workbench.seed_configured_agents(conn, (_slot(), peer_slot), NOW)
+    conn.commit()
+    conn.close()
+
+    readback = sqlite3.connect(path)
+    readback.row_factory = sqlite3.Row
+    registry = [
+        dict(row)
+        for row in readback.execute(
+            "SELECT id,coreai_agent_id,status FROM seo_ops_agents ORDER BY id"
+        )
+    ]
+    readback.close()
+    aggregate = {
+        "agents": [
+            {
+                "coreai_agent_id": row["coreai_agent_id"],
+                "id": row["id"],
+                "lifecycle_status": row["status"],
+            }
+            for row in registry
+        ],
+        "signals": [],
+    }
+    monkeypatch.setattr(
+        live_readback,
+        "_local_bracket",
+        lambda *_args, **_kwargs: (aggregate, "local-hash"),
+    )
+    monkeypatch.setattr(
+        live_readback,
+        "_agent_marker",
+        lambda _conn, local_id: f"marker-{local_id}",
+    )
+    calls = []
+
+    def collect(_conn, core_ids, by_core, *_args):
+        selected = tuple(sorted(core_ids))
+        calls.append(selected)
+        if len(calls) == 1:
+            return {
+                CORE_ID: _segment_attempt(
+                    live_readback.RESULT_OK,
+                    "stable",
+                    by_core[CORE_ID]["id"],
+                    label=CORE_ID,
+                ),
+                peer_core_id: _segment_attempt(
+                    live_readback.RESULT_MISMATCH,
+                    "bad-first",
+                    by_core[peer_core_id]["id"],
+                    label=peer_core_id,
+                ),
+            }
+        assert selected == (peer_core_id,)
+        return {
+            peer_core_id: _segment_attempt(
+                live_readback.RESULT_OK,
+                "clean-second",
+                by_core[peer_core_id]["id"],
+                label=peer_core_id,
+            )
+        }
+
+    monkeypatch.setattr(live_readback, "_collect_segment_attempts", collect)
+    sleeps = []
+    report = live_readback.reconcile(
+        {
+            "SEO_OPS_DB": str(path),
+            "COREAI_AGENT_ID": CORE_ID,
+        },
+        "http://127.0.0.1:8000",
+        "30d",
+        sleep=sleeps.append,
+    )
+    assert calls == [(CORE_ID, peer_core_id), (peer_core_id,)]
+    assert sleeps == [live_readback.NORMAL_PROOF_INTERVAL_SECONDS]
+    assert [row["coreai_agent_id"] for row in report["agent_segments"]] == [
+        CORE_ID,
+        peer_core_id,
+    ]
+
+
+def test_live_readback_retry_outcomes():
+    mismatch = _segment_attempt(
+        live_readback.RESULT_MISMATCH, "same", LOCAL_ID, label=CORE_ID
+    )
+    same = _segment_attempt(
+        live_readback.RESULT_MISMATCH, "same", LOCAL_ID, label=CORE_ID
+    )
+    changed = _segment_attempt(
+        live_readback.RESULT_MISMATCH, "new-watermark", LOCAL_ID, label=CORE_ID
+    )
+    clean = _segment_attempt(
+        live_readback.RESULT_OK, "clean", LOCAL_ID, label=CORE_ID
+    )
+    assert live_readback._retry_failure(mismatch, clean) == live_readback.RESULT_OK
+    assert (
+        live_readback._retry_failure(mismatch, same)
+        == live_readback.RESULT_MISMATCH
+    )
+    assert (
+        live_readback._retry_failure(mismatch, changed)
+        == live_readback.RESULT_UNSTABLE
+    )
+
+
+def _eligible_aggregate(run_id, status="RUNNING"):
+    signal = {
+        "coreai_run_id": run_id,
+        "local_agent_id": LOCAL_ID,
+        "raw_status": status,
+    }
+    if status == "RUNNING":
+        signal.update(
+            {
+                "lifecycle_status": "active",
+                "agent_current_state_complete": True,
+                "fresh": True,
+                "suspect": False,
+                "signal_state": "active",
+            }
+        )
+    return {"agents": [], "refresh_after_ms": 1000, "signals": [signal]}
+
+
+@pytest.mark.parametrize(
+    "terminal_status", ["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"]
+)
+def test_live_readback_observe_mode_proves_same_run_transition(
+    tmp_path, monkeypatch, terminal_status
+):
+    path, conn = _open_database(
+        tmp_path, monkeypatch, f"observe-{terminal_status}.db"
+    )
+    _seed_agent(conn, monkeypatch)
+    run_id = f"observe-{terminal_status.lower()}"
+    parsed = agent_workbench.parse_agent_run_page(
+        CORE_ID,
+        _page(
+            (
+                _run(
+                    run_id,
+                    terminal_status,
+                    completed_at=NOW,
+                    tokens=(7, 11),
+                ),
+            )
+        ),
+        NOW,
+    ).runs[0]
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, parsed, NOW)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET remote_total_runs=1,"
+        "last_discovery_returned_count=1,history_event_epoch=1,"
+        "unfiltered_proven_event_epoch=1,pending_observed_count=0,"
+        "pending_upstream_total=0,pending_set_quality='exact',"
+        "running_observed_count=0,running_upstream_total=0,"
+        "running_set_quality='exact',paused_observed_count=0,"
+        "paused_upstream_total=0,paused_set_quality='exact' "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    )
+    conn.commit()
+    conn.close()
+    initial = _eligible_aggregate(run_id)
+    terminal = _eligible_aggregate(run_id, terminal_status)
+    aggregates = iter((initial, terminal))
+    monkeypatch.setattr(
+        live_readback,
+        "_request_aggregate",
+        lambda *_args, **_kwargs: next(aggregates),
+    )
+    monkeypatch.setattr(
+        live_readback,
+        "_local_bracket",
+        lambda *_args, **_kwargs: (terminal, "terminal-hash"),
+    )
+    fake = ListOnlyCoreAiFake(
+        _four_pages(
+            all_rows=(
+                _run(
+                    run_id,
+                    terminal_status,
+                    completed_at=NOW,
+                    tokens=(7, 11),
+                ),
+            )
+        )
+    )
+    report = live_readback.observe_transition(
+        {
+            "SEO_OPS_DB": str(path),
+            "COREAI_BASE_URL": "https://core.example",
+            "COREAI_API_KEY": "acceptance-secret",
+        },
+        "http://127.0.0.1:8000",
+        "30d",
+        run_id,
+        5,
+        timeout_seconds=10,
+        sleep=lambda _seconds: None,
+        core_client_factory=lambda *_args, **_kwargs: fake,
+    )
+    assert report["observe_run_id"] == run_id
+    assert report["final_raw_status"] == terminal_status
+    assert report["terminal_token_match"] is True
+    assert report["transition_observed"] is True
+    assert fake.get_run_calls == 0
+    assert len(fake.calls) == 4
+
+
+def test_live_readback_observe_mode_times_out_honestly_on_token_mismatch(
+    tmp_path, monkeypatch
+):
+    path, conn = _open_database(tmp_path, monkeypatch, "observe-mismatch.db")
+    _seed_agent(conn, monkeypatch)
+    run_id = "observe-token-mismatch"
+    parsed = agent_workbench.parse_agent_run_page(
+        CORE_ID,
+        _page((_run(run_id, "COMPLETED", completed_at=NOW, tokens=(7, 11)),)),
+        NOW,
+    ).runs[0]
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, parsed, NOW)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET remote_total_runs=1,"
+        "last_discovery_returned_count=1,history_event_epoch=1,"
+        "unfiltered_proven_event_epoch=1,pending_observed_count=0,"
+        "pending_upstream_total=0,pending_set_quality='exact',"
+        "running_observed_count=0,running_upstream_total=0,"
+        "running_set_quality='exact',paused_observed_count=0,"
+        "paused_upstream_total=0,paused_set_quality='exact' "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    )
+    conn.commit()
+    conn.close()
+    initial = _eligible_aggregate(run_id)
+    terminal = _eligible_aggregate(run_id, "COMPLETED")
+    aggregates = iter((initial, terminal))
+    monkeypatch.setattr(
+        live_readback,
+        "_request_aggregate",
+        lambda *_args, **_kwargs: next(aggregates),
+    )
+    monkeypatch.setattr(
+        live_readback,
+        "_local_bracket",
+        lambda *_args, **_kwargs: (terminal, "terminal-hash"),
+    )
+    fake = ListOnlyCoreAiFake(
+        _four_pages(
+            all_rows=(
+                _run(run_id, "COMPLETED", completed_at=NOW, tokens=(7, 12)),
+            )
+        )
+    )
+    with pytest.raises(live_readback.GateFailure) as caught:
+        live_readback.observe_transition(
+            {
+                "SEO_OPS_DB": str(path),
+                "COREAI_BASE_URL": "https://core.example",
+                "COREAI_API_KEY": "acceptance-secret",
+            },
+            "http://127.0.0.1:8000",
+            "30d",
+            run_id,
+            5,
+            timeout_seconds=10,
+            sleep=lambda _seconds: None,
+            core_client_factory=lambda *_args, **_kwargs: fake,
+        )
+    assert caught.value.code == live_readback.RESULT_MISMATCH
 
 
 def test_visual_fixture_rejects_unsafe_paths(tmp_path, monkeypatch):
