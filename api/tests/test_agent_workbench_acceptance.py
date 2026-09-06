@@ -158,6 +158,18 @@ def _sqlite_argument_basename(value: object) -> str:
     return Path(raw).name
 
 
+def _sqlite_rw_path_argument(value: object) -> Path | None:
+    raw = str(value)
+    if raw == ":memory:":
+        return None
+    if raw.startswith("file:"):
+        path, _, query = raw[5:].partition("?")
+        if "mode=ro" in query.split("&"):
+            return None
+        return Path(path)
+    return Path(raw)
+
+
 def _seed_agent(conn, monkeypatch, now=NOW):
     monkeypatch.setattr(agent_workbench.uuid, "uuid4", lambda: UUID(LOCAL_ID))
     agent_workbench.seed_configured_agents(conn, (_slot(),), now)
@@ -1418,6 +1430,66 @@ def test_restart_write_startup_never_opens_temporary_target_symlink_for_write(
         database.name,
         marker.name,
     }
+
+
+def test_restart_write_startup_never_opens_swappable_stage_path_for_write(
+    tmp_path, monkeypatch
+):
+    module = importlib.import_module("agent_workbench_live_app")
+    guarded = tmp_path / "restart-stage-swap"
+    guarded.mkdir()
+    database = guarded / "restart.db"
+    marker = guarded / module.RESTART_MARKER_NAME
+    marker.write_text(database.name, encoding="utf-8")
+    outside = tmp_path / "outside-restart-stage.db"
+    outside_connection = sqlite3.connect(outside)
+    outside_connection.execute("CREATE TABLE external_guard(value TEXT)")
+    outside_connection.execute("INSERT INTO external_guard VALUES ('preserve')")
+    outside_connection.commit()
+    outside_connection.close()
+    outside_before = _external_sqlite_guard_state(outside)
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    monkeypatch.setenv(module.RESTART_MARKER_ENV, str(marker))
+    real_connect = module.sqlite3.connect
+    opened_databases = []
+    attacked = False
+
+    def connect_after_swapping_stage(path, *args, **kwargs):
+        nonlocal attacked
+        opened_databases.append(path)
+        write_path = _sqlite_rw_path_argument(path)
+        if write_path is None or attacked:
+            return real_connect(path, *args, **kwargs)
+        attacked = True
+        saved = write_path.with_name(write_path.name + ".saved")
+        os.link(write_path, saved)
+        write_path.unlink()
+        write_path.symlink_to(outside)
+        try:
+            return real_connect(path, *args, **kwargs)
+        finally:
+            write_path.unlink()
+            os.link(saved, write_path)
+            saved.unlink()
+
+    monkeypatch.setattr(module.sqlite3, "connect", connect_after_swapping_stage)
+    error = None
+    try:
+        module.restart_write_startup()
+    except BaseException as caught:
+        error = caught
+    finally:
+        monkeypatch.setattr(module.sqlite3, "connect", real_connect)
+
+    assert error is None
+    assert attacked is False
+    assert all(_sqlite_rw_path_argument(path) is None for path in opened_databases)
+    assert _external_sqlite_guard_state(outside) == outside_before
+    assert stat.S_ISREG(os.lstat(database).st_mode)
+    assert not any(
+        Path(f"{outside}{suffix}").exists()
+        for suffix in ("-journal", "-wal", "-shm")
+    )
 
 
 def _reserve_loopback_port():
@@ -2795,7 +2867,7 @@ def test_visual_fixture_rejects_symlink_directory_and_cleans_partial_sidecars(
     assert list(output.iterdir()) == []
 
 
-def test_visual_fixture_rejects_database_replaced_by_symlink_before_sqlite_open(
+def test_visual_fixture_hides_stage_path_from_production_initializer(
     tmp_path, monkeypatch
 ):
     output = tmp_path / "atomic-fixture"
@@ -2808,20 +2880,23 @@ def test_visual_fixture_rejects_database_replaced_by_symlink_before_sqlite_open(
         tmp_path / "configured" / "seo.db",
     )
 
-    def replace_with_symlink():
-        database = Path(os.environ["SEO_OPS_DB"])
-        assert database.is_file()
-        database.unlink()
-        database.symlink_to(outside)
+    observed_databases = []
 
-    monkeypatch.setattr(visual_fixture.app_db, "init_db", replace_with_symlink)
-    with pytest.raises(ValueError):
+    def stop_after_observing_database():
+        observed_databases.append(os.environ["SEO_OPS_DB"])
+        raise RuntimeError("fixed initializer stop")
+
+    monkeypatch.setattr(
+        visual_fixture.app_db, "init_db", stop_after_observing_database
+    )
+    with pytest.raises(RuntimeError, match="fixed initializer stop"):
         visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    assert observed_databases == [":memory:"]
     assert outside.read_bytes() == b"unchanged"
     assert list(output.iterdir()) == []
 
 
-def test_visual_fixture_generation_never_writes_temporary_symlink_target(
+def test_visual_fixture_generation_initializes_only_an_in_memory_database(
     tmp_path, monkeypatch
 ):
     output = tmp_path / "generation-temporary-link"
@@ -2840,21 +2915,14 @@ def test_visual_fixture_generation_never_writes_temporary_symlink_target(
     )
     real_init_db = visual_fixture.app_db.init_db
 
-    def initialize_through_temporary_symlink():
-        database = Path(os.environ["SEO_OPS_DB"])
-        saved = database.with_name(database.name + ".saved")
-        os.link(database, saved)
-        database.unlink()
-        database.symlink_to(outside)
-        try:
-            real_init_db()
-        finally:
-            database.unlink()
-            os.link(saved, database)
-            saved.unlink()
+    initialized_databases = []
+
+    def initialize_memory_database():
+        initialized_databases.append(os.environ["SEO_OPS_DB"])
+        real_init_db()
 
     monkeypatch.setattr(
-        visual_fixture.app_db, "init_db", initialize_through_temporary_symlink
+        visual_fixture.app_db, "init_db", initialize_memory_database
     )
     real_connect = visual_fixture.sqlite3.connect
     opened_databases = []
@@ -2864,15 +2932,105 @@ def test_visual_fixture_generation_never_writes_temporary_symlink_target(
         return real_connect(path, *args, **kwargs)
 
     monkeypatch.setattr(visual_fixture.sqlite3, "connect", recording_connect)
-    with pytest.raises(sqlite3.Error):
-        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
     monkeypatch.setattr(visual_fixture.sqlite3, "connect", real_connect)
 
-    assert not set(f"{scenario}.db" for scenario in visual_fixture.SCENARIOS) & {
-        _sqlite_argument_basename(path) for path in opened_databases
-    }
+    assert initialized_databases == [":memory:"] * len(visual_fixture.SCENARIOS)
+    assert all(_sqlite_rw_path_argument(path) is None for path in opened_databases)
+    assert set(record["database_paths"]) == set(visual_fixture.SCENARIOS)
     assert _external_sqlite_guard_state(outside) == outside_before
-    assert list(output.iterdir()) == []
+    assert {path.name for path in output.iterdir()} == {
+        f"{scenario}.db" for scenario in visual_fixture.SCENARIOS
+    }
+
+
+def test_visual_fixture_generation_never_opens_swappable_stage_path_for_write(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-stage-swap"
+    output.mkdir()
+    outside = tmp_path / "outside-generation-stage.db"
+    outside_connection = sqlite3.connect(outside)
+    outside_connection.execute("CREATE TABLE external_guard(value TEXT)")
+    outside_connection.execute("INSERT INTO external_guard VALUES ('preserve')")
+    outside_connection.commit()
+    outside_connection.close()
+    outside_before = _external_sqlite_guard_state(outside)
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    real_connect = visual_fixture.sqlite3.connect
+    opened_databases = []
+    attacked = False
+
+    def connect_after_swapping_stage(path, *args, **kwargs):
+        nonlocal attacked
+        opened_databases.append(path)
+        write_path = _sqlite_rw_path_argument(path)
+        if write_path is None or attacked:
+            return real_connect(path, *args, **kwargs)
+        attacked = True
+        saved = write_path.with_name(write_path.name + ".saved")
+        os.link(write_path, saved)
+        write_path.unlink()
+        write_path.symlink_to(outside)
+        try:
+            return real_connect(path, *args, **kwargs)
+        finally:
+            write_path.unlink()
+            os.link(saved, write_path)
+            saved.unlink()
+
+    monkeypatch.setattr(
+        visual_fixture.sqlite3, "connect", connect_after_swapping_stage
+    )
+    error = None
+    try:
+        record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    except BaseException as caught:
+        error = caught
+        record = None
+    finally:
+        monkeypatch.setattr(visual_fixture.sqlite3, "connect", real_connect)
+
+    assert error is None
+    assert attacked is False
+    assert record is not None
+    assert all(_sqlite_rw_path_argument(path) is None for path in opened_databases)
+    assert _external_sqlite_guard_state(outside) == outside_before
+    assert not any(
+        Path(f"{outside}{suffix}").exists()
+        for suffix in ("-journal", "-wal", "-shm")
+    )
+
+
+def test_visual_fixture_generation_preserves_concurrent_unowned_target(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-no-clobber-race"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    real_install = visual_fixture._install_no_clobber
+    concurrent = output / "active.db"
+
+    def install_after_concurrent_create(*args, **kwargs):
+        concurrent.write_bytes(b"concurrent-unowned")
+        return real_install(*args, **kwargs)
+
+    monkeypatch.setattr(
+        visual_fixture, "_install_no_clobber", install_after_concurrent_create
+    )
+    with pytest.raises(FileExistsError):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+
+    assert concurrent.read_bytes() == b"concurrent-unowned"
+    assert {path.name for path in output.iterdir()} == {concurrent.name}
 
 
 def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation(
@@ -2892,10 +3050,12 @@ def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation
     outside_before = outside.read_bytes()
     real_connect = visual_fixture.sqlite3.connect
     calls = 0
+    opened_databases = []
 
     def swap_before_write_connect(database, *args, **kwargs):
         nonlocal calls
         calls += 1
+        opened_databases.append(database)
         if calls == 1:
             active.unlink()
             active.symlink_to(outside)
@@ -2908,7 +3068,8 @@ def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation
             now_factory=lambda: NOW + timedelta(minutes=1),
             receipt_id_factory=lambda: "must-not-be-written",
         )
-    assert calls == 1
+    assert calls >= 1
+    assert all(_sqlite_rw_path_argument(path) is None for path in opened_databases)
     assert active.is_symlink()
     assert outside.read_bytes() == outside_before
     assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
@@ -2969,6 +3130,76 @@ def test_visual_fixture_refresh_never_writes_temporary_symlink_target(
         for suffix in ("-journal", "-wal", "-shm")
     )
     assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
+
+
+def test_visual_fixture_refresh_never_opens_swappable_stage_path_for_write(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "refresh-stage-swap"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    outside = tmp_path / "outside-refresh-stage.db"
+    shutil.copy2(active, outside)
+    outside_connection = sqlite3.connect(outside)
+    outside_connection.execute("CREATE TABLE external_guard(value TEXT)")
+    outside_connection.execute("INSERT INTO external_guard VALUES ('preserve')")
+    outside_connection.commit()
+    outside_connection.close()
+    outside_before = _external_sqlite_guard_state(outside)
+    real_connect = visual_fixture.sqlite3.connect
+    opened_databases = []
+    attacked = False
+
+    def connect_after_swapping_stage(path, *args, **kwargs):
+        nonlocal attacked
+        opened_databases.append(path)
+        write_path = _sqlite_rw_path_argument(path)
+        if write_path is None or attacked:
+            return real_connect(path, *args, **kwargs)
+        attacked = True
+        saved = write_path.with_name(write_path.name + ".saved")
+        os.link(write_path, saved)
+        write_path.unlink()
+        write_path.symlink_to(outside)
+        try:
+            return real_connect(path, *args, **kwargs)
+        finally:
+            write_path.unlink()
+            os.link(saved, write_path)
+            saved.unlink()
+
+    monkeypatch.setattr(
+        visual_fixture.sqlite3, "connect", connect_after_swapping_stage
+    )
+    error = None
+    try:
+        refreshed = visual_fixture.refresh_fixture(
+            active,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+            receipt_id_factory=lambda: "memory-refresh-receipt",
+        )
+    except BaseException as caught:
+        error = caught
+        refreshed = None
+    finally:
+        monkeypatch.setattr(visual_fixture.sqlite3, "connect", real_connect)
+
+    assert error is None
+    assert attacked is False
+    assert refreshed is not None
+    assert refreshed["new_receipt_id"] == "memory-refresh-receipt"
+    assert all(_sqlite_rw_path_argument(path) is None for path in opened_databases)
+    assert _external_sqlite_guard_state(outside) == outside_before
+    assert not any(
+        Path(f"{outside}{suffix}").exists()
+        for suffix in ("-journal", "-wal", "-shm")
+    )
 
 
 @pytest.mark.parametrize("suffix", ("-journal", "-wal", "-shm"))
