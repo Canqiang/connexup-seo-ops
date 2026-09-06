@@ -156,13 +156,16 @@ def test_workbench_sanitizer_redacts_credentials():
         ("API-key=labelled-key-sentinel denied", "API-key=[REDACTED] denied"),
         ("token: labelled-token-sentinel denied", "token: [REDACTED] denied"),
         ("secret = labelled-secret-sentinel", "secret = [REDACTED]"),
-        ('{"api_key": "external-key"}', '{"api_key": "[REDACTED]"}'),
         (
-            '{"Authorization": "Basic basic-secret"}',
+            '{"api_key": "external key with spaces"}',
+            '{"api_key": "[REDACTED]"}',
+        ),
+        (
+            '{"Authorization": "Basic abc def"}',
             '{"Authorization": "[REDACTED]"}',
         ),
-        ('{"token": "quoted-token"}', '{"token": "[REDACTED]"}'),
-        ('{"secret": "quoted-secret"}', '{"secret": "[REDACTED]"}'),
+        ("{'token': 'alpha beta'}", "{'token': '[REDACTED]'}"),
+        ('{"secret": "alpha,beta"}', '{"secret": "[REDACTED]"}'),
         ('{"API-key": "quoted-api-key"}', '{"API-key": "[REDACTED]"}'),
         (
             "GET https://core.example/runs?api_key=query-secret&limit=2 failed",
@@ -711,10 +714,10 @@ def test_metadata_name_and_model_are_sanitized_before_storage_and_response(
     auth_password = "overlap-secret"
     auth_secret = "overlap-secret-longer"
     labeled_values = (
-        "external-key",
-        "basic-secret",
-        "quoted-token",
-        "quoted-secret",
+        "external key with spaces",
+        "abc def",
+        "alpha beta",
+        "alpha,beta",
         "quoted-api-key",
     )
     monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
@@ -727,13 +730,13 @@ def test_metadata_name_and_model_are_sanitized_before_storage_and_response(
             "type": "AGENT",
             "status": "PUBLISHED",
             "name": (
-                f'{{"api_key": "external-key"}} {api_key} '
+                f'{{"api_key": "external key with spaces"}} '
+                f'{{"Authorization": "Basic abc def"}} {api_key} '
                 f"{auth_secret} {auth_password}"
             ),
             "model": (
-                '{"Authorization": "Basic basic-secret", '
-                '"token": "quoted-token", "secret": "quoted-secret", '
-                '"API-key": "quoted-api-key"}'
+                "{'token': 'alpha beta', "
+                '"secret": "alpha,beta", "API-key": "quoted-api-key"}'
             ),
             "timeout_seconds": 900,
         }

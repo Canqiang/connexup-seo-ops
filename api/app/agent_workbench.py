@@ -327,20 +327,33 @@ def sanitize_operator_text(
         ),
         text,
     )
+    credential_label = (
+        r"(?:authorization|api[-_ ]?key|access[-_ ]?token|token|secret)"
+    )
+    quoted_or_plain_label = (
+        rf'(?:"{credential_label}"|\'{credential_label}\'|{credential_label})'
+    )
+    text = re.sub(
+        rf'(?i)(?P<prefix>{quoted_or_plain_label}\s*[:=]\s*")'
+        r'(?:(?:Basic|Bearer)\s+)?(?:\\.|[^"\\])*"',
+        lambda match: f"{match.group('prefix')}[REDACTED]\"",
+        text,
+    )
+    text = re.sub(
+        rf"(?i)(?P<prefix>{quoted_or_plain_label}\s*[:=]\s*')"
+        r"(?:(?:Basic|Bearer)\s+)?(?:\\.|[^'\\])*'",
+        lambda match: f"{match.group('prefix')}[REDACTED]'",
+        text,
+    )
     text = re.sub(
         r"(?i)\bBearer\s+[^\s,;}&]+",
         "Bearer [REDACTED]",
         text,
     )
     text = re.sub(
-        r"(?i)(?P<prefix>[\"']?(?:authorization|api[-_ ]?key|"
-        r"access[-_ ]?token|token|secret)[\"']?\s*[:=]\s*)"
-        r"(?P<quote>[\"']?)(?:(?:Basic|Bearer)\s+)?"
-        r"[^\"'\s,;}&\#]+(?P=quote)",
-        lambda match: (
-            f"{match.group('prefix')}{match.group('quote')}"
-            f"[REDACTED]{match.group('quote')}"
-        ),
+        rf"(?i)(?P<prefix>{credential_label}\s*[:=]\s*)"
+        r"(?:(?:Basic|Bearer)\s+)?[^\s,;}&\#]+",
+        r"\g<prefix>[REDACTED]",
         text,
     )
     text = "".join(
