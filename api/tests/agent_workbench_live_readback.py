@@ -14,14 +14,13 @@ import concurrent.futures
 import hashlib
 import json
 import multiprocessing
-import os
 import re
 import sqlite3
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 from urllib.parse import quote, urlsplit
@@ -723,7 +722,7 @@ def _fetch_bundles_in_supervisor(
     return bundles
 
 
-def _supervised_bundle_process(
+def _send_supervised_bundles(
     sender,
     selected: tuple[str, ...],
     values: dict[str, str],
@@ -753,6 +752,33 @@ def _supervised_bundle_process(
         sender.close()
 
 
+def _spawn_coreai_bundle_process(
+    sender,
+    selected: tuple[str, ...],
+    coreai_values: dict[str, str],
+    timeout_seconds: float,
+) -> None:
+    """Fresh-interpreter entry point for the production CoreAiClient path."""
+
+    _send_supervised_bundles(
+        sender, selected, coreai_values, timeout_seconds, CoreAiClient
+    )
+
+
+def _fork_injected_bundle_process(
+    sender,
+    selected: tuple[str, ...],
+    values: dict[str, str],
+    timeout_seconds: float,
+    core_client_factory: Callable[..., object],
+) -> None:
+    """Fork-only seam for local, intentionally non-pickleable test doubles."""
+
+    _send_supervised_bundles(
+        sender, selected, values, timeout_seconds, core_client_factory
+    )
+
+
 def _terminate_supervisor(process: multiprocessing.Process) -> None:
     if process.is_alive():
         process.terminate()
@@ -770,19 +796,35 @@ def _supervised_direct_bundles(
     deadline: Deadline,
     core_client_factory: Callable[..., object],
 ) -> dict[str, dict]:
-    if "fork" not in multiprocessing.get_all_start_methods():
+    default_client = core_client_factory is CoreAiClient
+    start_method = "spawn" if default_client else "fork"
+    if start_method not in multiprocessing.get_all_start_methods():
         raise GateFailure(RESULT_UNAVAILABLE)
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context(start_method)
     receiver, sender = context.Pipe(duplex=False)
-    process = context.Process(
-        target=_supervised_bundle_process,
-        args=(
+    if default_client:
+        process_target = _spawn_coreai_bundle_process
+        process_args = (
+            sender,
+            selected,
+            {
+                "COREAI_BASE_URL": _required(values, "COREAI_BASE_URL"),
+                "COREAI_API_KEY": _required(values, "COREAI_API_KEY"),
+            },
+            deadline.remaining(),
+        )
+    else:
+        process_target = _fork_injected_bundle_process
+        process_args = (
             sender,
             selected,
             dict(values),
             deadline.remaining(),
             core_client_factory,
-        ),
+        )
+    process = context.Process(
+        target=process_target,
+        args=process_args,
         name="agent-workbench-live-readback",
         daemon=True,
     )

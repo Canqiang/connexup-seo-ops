@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import UUID
 
@@ -117,6 +118,44 @@ def _open_database(tmp_path, monkeypatch, name="acceptance.db"):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     return path, conn
+
+
+def _external_sqlite_guard_state(path: Path) -> dict:
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        tables = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            )
+        ]
+        row_counts = {
+            table: int(
+                connection.execute(
+                    f'SELECT COUNT(*) FROM "{table.replace(chr(34), chr(34) * 2)}"'
+                ).fetchone()[0]
+            )
+            for table in tables
+        }
+    finally:
+        connection.close()
+    metadata = path.stat()
+    return {
+        "bytes_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "mtime_ns": metadata.st_mtime_ns,
+        "row_counts": row_counts,
+        "sidecars": {
+            suffix: Path(f"{path}{suffix}").exists()
+            for suffix in ("-journal", "-wal", "-shm")
+        },
+    }
+
+
+def _sqlite_argument_basename(value: object) -> str:
+    raw = str(value)
+    if raw.startswith("file:"):
+        raw = raw[5:].split("?", 1)[0]
+    return Path(raw).name
 
 
 def _seed_agent(conn, monkeypatch, now=NOW):
@@ -1087,10 +1126,11 @@ def test_fresh_app_instance_reads_durable_projection(tmp_path, monkeypatch):
         "association",
         "error_summary",
     )
-    durable_history = lambda body: [
-        {key: row[key] for key in durable_history_fields}
-        for row in body["items"]
-    ]
+    def durable_history(body):
+        return [
+            {key: row[key] for key in durable_history_fields}
+            for row in body["items"]
+        ]
     assert durable_history(history_after) == durable_history(history_before)
     assert aggregate == rebuilt
     assert aggregate["agents"][0]["last_terminal_run"]["coreai_run_id"] == (
@@ -1311,11 +1351,73 @@ def test_restart_write_startup_revalidates_created_database(tmp_path, monkeypatc
 
     seeded = []
     monkeypatch.setattr(module, "_task7_main", lambda: Main)
-    monkeypatch.setattr(module, "_seed_restart_fixture", lambda: seeded.append(True))
+    monkeypatch.setattr(
+        module, "_seed_restart_fixture", lambda *_args: seeded.append(True)
+    )
     with pytest.raises(RuntimeError):
         module.restart_write_startup()
     assert seeded == []
     assert outside.read_bytes() == b"unchanged"
+
+
+def test_restart_write_startup_never_opens_temporary_target_symlink_for_write(
+    tmp_path, monkeypatch
+):
+    module = importlib.import_module("agent_workbench_live_app")
+    from app import main
+
+    guarded = tmp_path / "restart-temporary-link"
+    guarded.mkdir()
+    database = guarded / "restart.db"
+    marker = guarded / module.RESTART_MARKER_NAME
+    marker.write_text(database.name, encoding="utf-8")
+    outside = tmp_path / "outside-restart.db"
+    outside_connection = sqlite3.connect(outside)
+    outside_connection.execute("CREATE TABLE external_guard(value TEXT)")
+    outside_connection.execute("INSERT INTO external_guard VALUES ('preserve')")
+    outside_connection.commit()
+    outside_connection.close()
+    outside_before = _external_sqlite_guard_state(outside)
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    monkeypatch.setenv(module.RESTART_MARKER_ENV, str(marker))
+    original_initialize = main.initialize_writable_application
+
+    def initialize_while_target_is_a_symlink():
+        database.symlink_to(outside)
+        try:
+            original_initialize()
+        finally:
+            database.unlink()
+
+    monkeypatch.setattr(
+        main, "initialize_writable_application", initialize_while_target_is_a_symlink
+    )
+    monkeypatch.setattr(module, "_seed_restart_fixture", lambda *_args: None)
+    real_connect = module.sqlite3.connect
+    opened_databases = []
+
+    def recording_connect(path, *args, **kwargs):
+        opened_databases.append(path)
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.sqlite3, "connect", recording_connect)
+    module.restart_write_startup()
+    monkeypatch.setattr(module.sqlite3, "connect", real_connect)
+
+    assert stat.S_ISREG(os.lstat(database).st_mode)
+    assert os.lstat(database).st_nlink == 1
+    assert database.name not in {
+        _sqlite_argument_basename(path) for path in opened_databases
+    }
+    assert _external_sqlite_guard_state(outside) == outside_before
+    assert not any(
+        Path(f"{database}{suffix}").exists()
+        for suffix in ("-journal", "-wal", "-shm")
+    )
+    assert {path.name for path in guarded.iterdir()} == {
+        database.name,
+        marker.name,
+    }
 
 
 def _reserve_loopback_port():
@@ -2283,6 +2385,69 @@ def test_live_readback_global_deadline_terminates_noncooperative_workers(monkeyp
     } == original_children
 
 
+def test_live_readback_default_core_client_spawns_after_parent_http(monkeypatch):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            if self.path.startswith("/api/agent-workbench?"):
+                body = {"snapshot_at": NOW.isoformat()}
+            elif self.path == f"/api/agents/{CORE_ID}":
+                body = {"id": CORE_ID}
+            elif self.path.startswith(f"/api/runs/agent/{CORE_ID}/list?"):
+                body = {"runs": [], "total": 0}
+            else:
+                self.send_error(404)
+                return
+            encoded = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    values = {
+        "COREAI_API_KEY": "test-key",
+        "COREAI_BASE_URL": base_url,
+        "SEO_OPS_AUTH_SECRET": "s" * 32,
+        "SEO_OPS_AUTH_USERNAME": "operator",
+    }
+    real_get_context = multiprocessing.get_context
+    requested_methods = []
+
+    def recording_context(method):
+        requested_methods.append(method)
+        return real_get_context(method)
+
+    monkeypatch.setattr(live_readback.multiprocessing, "get_context", recording_context)
+    try:
+        deadline = live_readback.Deadline.start(10)
+        # Reproduce the production order: parent process completes local HTTP
+        # before the isolated default CoreAiClient performs network/TLS work.
+        assert live_readback._request_aggregate(
+            base_url, "30d", values, deadline
+        )["snapshot_at"] == NOW.isoformat()
+        bundles = live_readback._supervised_direct_bundles(
+            (CORE_ID,), values, deadline, live_readback.CoreAiClient
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+
+    assert requested_methods == ["spawn"]
+    assert set(bundles) == {CORE_ID}
+    assert bundles[CORE_ID]["coreai_agent_id"] == CORE_ID
+    assert all(page.total == 0 for page in bundles[CORE_ID]["pages"].values())
+
+
 def _eligible_aggregate(run_id, status="RUNNING"):
     signal = {
         "coreai_run_id": run_id,
@@ -2656,6 +2821,60 @@ def test_visual_fixture_rejects_database_replaced_by_symlink_before_sqlite_open(
     assert list(output.iterdir()) == []
 
 
+def test_visual_fixture_generation_never_writes_temporary_symlink_target(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-temporary-link"
+    output.mkdir()
+    outside = tmp_path / "outside-generation.db"
+    outside_connection = sqlite3.connect(outside)
+    outside_connection.execute("CREATE TABLE external_guard(value TEXT)")
+    outside_connection.execute("INSERT INTO external_guard VALUES ('preserve')")
+    outside_connection.commit()
+    outside_connection.close()
+    outside_before = _external_sqlite_guard_state(outside)
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    real_init_db = visual_fixture.app_db.init_db
+
+    def initialize_through_temporary_symlink():
+        database = Path(os.environ["SEO_OPS_DB"])
+        saved = database.with_name(database.name + ".saved")
+        os.link(database, saved)
+        database.unlink()
+        database.symlink_to(outside)
+        try:
+            real_init_db()
+        finally:
+            database.unlink()
+            os.link(saved, database)
+            saved.unlink()
+
+    monkeypatch.setattr(
+        visual_fixture.app_db, "init_db", initialize_through_temporary_symlink
+    )
+    real_connect = visual_fixture.sqlite3.connect
+    opened_databases = []
+
+    def recording_connect(path, *args, **kwargs):
+        opened_databases.append(path)
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(visual_fixture.sqlite3, "connect", recording_connect)
+    with pytest.raises(sqlite3.Error):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    monkeypatch.setattr(visual_fixture.sqlite3, "connect", real_connect)
+
+    assert not set(f"{scenario}.db" for scenario in visual_fixture.SCENARIOS) & {
+        _sqlite_argument_basename(path) for path in opened_databases
+    }
+    assert _external_sqlite_guard_state(outside) == outside_before
+    assert list(output.iterdir()) == []
+
+
 def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation(
     tmp_path, monkeypatch
 ):
@@ -2677,7 +2896,7 @@ def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation
     def swap_before_write_connect(database, *args, **kwargs):
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 1:
             active.unlink()
             active.symlink_to(outside)
         return real_connect(database, *args, **kwargs)
@@ -2689,16 +2908,221 @@ def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation
             now_factory=lambda: NOW + timedelta(minutes=1),
             receipt_id_factory=lambda: "must-not-be-written",
         )
-    assert calls == 2
+    assert calls == 1
     assert active.is_symlink()
     assert outside.read_bytes() == outside_before
+    assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
+
+
+def test_visual_fixture_refresh_never_writes_temporary_symlink_target(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "refresh-temporary-link"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    outside = tmp_path / "outside-refresh.db"
+    shutil.copy2(active, outside)
+    outside_before = _external_sqlite_guard_state(outside)
+    real_connect = visual_fixture.sqlite3.connect
+    calls = 0
+    opened_databases = []
+
+    def connect_while_target_is_a_symlink(database, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        opened_databases.append(database)
+        saved = active.with_name(active.name + ".saved")
+        os.link(active, saved)
+        active.unlink()
+        active.symlink_to(outside)
+        try:
+            return real_connect(database, *args, **kwargs)
+        finally:
+            active.unlink()
+            os.link(saved, active)
+            saved.unlink()
+
+    monkeypatch.setattr(
+        visual_fixture.sqlite3, "connect", connect_while_target_is_a_symlink
+    )
+    refreshed = visual_fixture.refresh_fixture(
+        active,
+        now_factory=lambda: NOW + timedelta(minutes=1),
+        receipt_id_factory=lambda: "safe-staged-receipt",
+    )
+    monkeypatch.setattr(visual_fixture.sqlite3, "connect", real_connect)
+
+    assert calls >= 1
+    assert refreshed["new_receipt_id"] == "safe-staged-receipt"
+    assert active.name not in {
+        _sqlite_argument_basename(path) for path in opened_databases
+    }
+    assert _external_sqlite_guard_state(outside) == outside_before
+    assert not any(
+        Path(f"{active}{suffix}").exists()
+        for suffix in ("-journal", "-wal", "-shm")
+    )
+    assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
+
+
+@pytest.mark.parametrize("suffix", ("-journal", "-wal", "-shm"))
+def test_visual_fixture_refresh_rejects_source_sqlite_sidecars(
+    tmp_path, monkeypatch, suffix
+):
+    output = tmp_path / f"refresh-source-{suffix[1:]}"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    active_before = active.read_bytes()
+    sidecar = Path(f"{active}{suffix}")
+    sidecar.write_bytes(b"must-not-be-ignored")
+
+    with pytest.raises(ValueError, match="source database has an active SQLite sidecar"):
+        visual_fixture.refresh_fixture(
+            active,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+            receipt_id_factory=lambda: "must-not-be-published",
+        )
+
+    assert active.read_bytes() == active_before
+    assert sidecar.read_bytes() == b"must-not-be-ignored"
+    assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
+
+
+def test_visual_fixture_generation_checks_integrity_before_publish(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-integrity-check"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    real_new_database = visual_fixture._new_database
+
+    class IntegrityFailureConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def execute(self, statement, *args, **kwargs):
+            if statement.strip().upper() == "PRAGMA INTEGRITY_CHECK":
+                return iter((("acceptance-injected corruption",),))
+            return self._connection.execute(statement, *args, **kwargs)
+
+    def new_database_with_failed_integrity(path, scenario):
+        return IntegrityFailureConnection(real_new_database(path, scenario))
+
+    monkeypatch.setattr(
+        visual_fixture, "_new_database", new_database_with_failed_integrity
+    )
+    with pytest.raises(ValueError, match="integrity check failed"):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    assert list(output.iterdir()) == []
+
+
+def test_visual_fixture_generation_checks_foreign_keys_before_publish(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-foreign-key-check"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    real_new_database = visual_fixture._new_database
+    real_active_seeder = visual_fixture.SEEDERS["active"]
+
+    def new_database_without_enforcement(path, scenario):
+        connection = real_new_database(path, scenario)
+        connection.execute("PRAGMA foreign_keys=OFF")
+        return connection
+
+    def seed_with_foreign_key_violation(connection, generated_at):
+        real_active_seeder(connection, generated_at)
+        connection.execute("CREATE TABLE acceptance_parent(id INTEGER PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE acceptance_child("
+            "parent_id INTEGER REFERENCES acceptance_parent(id))"
+        )
+        connection.execute("INSERT INTO acceptance_child VALUES (404)")
+
+    monkeypatch.setattr(
+        visual_fixture, "_new_database", new_database_without_enforcement
+    )
+    monkeypatch.setitem(
+        visual_fixture.SEEDERS, "active", seed_with_foreign_key_violation
+    )
+    with pytest.raises(ValueError, match="foreign key check failed"):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    assert list(output.iterdir()) == []
+
+
+def test_visual_fixture_refresh_checks_foreign_keys_before_publish(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "refresh-foreign-key-check"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    connection = sqlite3.connect(active)
+    connection.execute("PRAGMA foreign_keys=OFF")
+    connection.execute("CREATE TABLE acceptance_parent(id INTEGER PRIMARY KEY)")
+    connection.execute(
+        "CREATE TABLE acceptance_child("
+        "parent_id INTEGER REFERENCES acceptance_parent(id))"
+    )
+    connection.execute("INSERT INTO acceptance_child VALUES (404)")
+    connection.commit()
+    connection.close()
+    active_before = active.read_bytes()
+
+    with pytest.raises(ValueError, match="foreign key check failed"):
+        visual_fixture.refresh_fixture(
+            active,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+            receipt_id_factory=lambda: "must-not-be-published",
+        )
+
+    assert active.read_bytes() == active_before
+    assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
 
 
 def test_visual_fixture_generation_output_is_canonical(tmp_path, monkeypatch):
     output = tmp_path / "fixtures"
     output.mkdir()
     frozen = datetime(2026, 9, 3, 16, 0, 30, tzinfo=timezone.utc)
+    real_connect = visual_fixture.sqlite3.connect
+    opened_databases = []
+
+    def recording_connect(path, *args, **kwargs):
+        opened_databases.append(path)
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(visual_fixture.sqlite3, "connect", recording_connect)
     record = visual_fixture.generate_fixtures(output, now_factory=lambda: frozen)
+    monkeypatch.setattr(visual_fixture.sqlite3, "connect", real_connect)
+    final_names = {f"{scenario}.db" for scenario in visual_fixture.SCENARIOS}
     assert record == {
         "database_paths": {
             scenario: str((output / f"{scenario}.db").absolute())
@@ -2711,6 +3135,10 @@ def test_visual_fixture_generation_output_is_canonical(tmp_path, monkeypatch):
     assert visual_fixture._canonical(record) == json.dumps(
         record, sort_keys=True, separators=(",", ":")
     ) + "\n"
+    assert not final_names & {
+        _sqlite_argument_basename(path) for path in opened_databases
+    }
+    assert {path.name for path in output.iterdir()} == final_names
 
 
 def _fixture_snapshot(database, now):

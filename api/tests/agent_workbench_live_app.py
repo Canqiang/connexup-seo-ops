@@ -17,8 +17,10 @@ import asyncio
 import os
 import sqlite3
 import stat
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterator
 from urllib.parse import quote
 
 
@@ -180,6 +182,171 @@ def validate_restart_database(*, must_exist: bool) -> Path:
     return database
 
 
+def _open_directory_fd(directory: Path) -> int:
+    before = os.lstat(directory)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(directory, flags)
+    except OSError:
+        raise RuntimeError("restart database directory is unsafe") from None
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+    ):
+        os.close(descriptor)
+        raise RuntimeError("restart database directory changed")
+    return descriptor
+
+
+def _create_exclusive_file(directory_fd: int, name: str) -> os.stat_result:
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, 0o600, dir_fd=directory_fd)
+    except OSError:
+        raise RuntimeError("restart staging database could not be created") from None
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            raise RuntimeError("restart staging database is unsafe")
+        return opened
+    finally:
+        os.close(descriptor)
+
+
+def _unlink_sqlite_family(directory_fd: int, name: str) -> None:
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        try:
+            os.unlink(name + suffix, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+
+
+def _require_no_sqlite_sidecars(directory_fd: int, name: str) -> None:
+    for suffix in ("-journal", "-wal", "-shm"):
+        try:
+            os.stat(name + suffix, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise RuntimeError("restart staging database has an active sidecar")
+
+
+@contextmanager
+def _private_restart_stage(
+    parent: Path, parent_fd: int
+) -> Iterator[tuple[Path, int, str, os.stat_result]]:
+    directory_name = f".agent-workbench-restart-{uuid.uuid4().hex}"
+    database_name = "staged.db"
+    stage_fd = -1
+    created_directory = False
+    try:
+        os.mkdir(directory_name, 0o700, dir_fd=parent_fd)
+        created_directory = True
+        stage_fd = os.open(
+            directory_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(stage_fd)
+        if not stat.S_ISDIR(opened.st_mode) or stat.S_IMODE(opened.st_mode) != 0o700:
+            raise RuntimeError("restart staging directory is unsafe")
+        expected = _create_exclusive_file(stage_fd, database_name)
+        yield parent / directory_name / database_name, stage_fd, database_name, expected
+    except OSError:
+        raise RuntimeError("restart staging directory could not be created") from None
+    finally:
+        if stage_fd >= 0:
+            _unlink_sqlite_family(stage_fd, database_name)
+            os.close(stage_fd)
+        if created_directory:
+            try:
+                os.rmdir(directory_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+
+
+@contextmanager
+def _database_environment(path: Path) -> Iterator[None]:
+    previous = os.environ.get("SEO_OPS_DB")
+    os.environ["SEO_OPS_DB"] = str(path)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("SEO_OPS_DB", None)
+        else:
+            os.environ["SEO_OPS_DB"] = previous
+
+
+class _PinnedConnection:
+    """Delegate a production startup connection while suppressing close()."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def close(self) -> None:
+        return None
+
+
+def _install_restart_database(
+    parent_fd: int,
+    stage_fd: int,
+    stage_name: str,
+    target_name: str,
+    expected: os.stat_result,
+) -> None:
+    linked = False
+    try:
+        os.link(
+            stage_name,
+            target_name,
+            src_dir_fd=stage_fd,
+            dst_dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        linked = True
+        installed = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(installed.st_mode)
+            or (installed.st_dev, installed.st_ino)
+            != (expected.st_dev, expected.st_ino)
+        ):
+            raise RuntimeError("restart database installation changed")
+        os.unlink(stage_name, dir_fd=stage_fd)
+        installed = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(installed.st_mode) or installed.st_nlink != 1:
+            raise RuntimeError("restart database installation is unsafe")
+    except BaseException as error:
+        if linked:
+            try:
+                current = os.stat(
+                    target_name, dir_fd=parent_fd, follow_symlinks=False
+                )
+                if (current.st_dev, current.st_ino) == (
+                    expected.st_dev,
+                    expected.st_ino,
+                ):
+                    os.unlink(target_name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        if isinstance(error, OSError):
+            raise RuntimeError("restart database could not be installed") from None
+        raise
+
+
+def _require_restart_target_absent(parent_fd: int, target_name: str) -> None:
+    try:
+        os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise RuntimeError("restart database already exists")
+
+
 def _write_action_codes() -> frozenset[int]:
     names = (
         "SQLITE_INSERT",
@@ -273,18 +440,17 @@ def restart_read_db_dependency():
         connection.close()
 
 
-def _seed_restart_fixture() -> None:
+def _seed_restart_fixture(
+    database: Path, conn: sqlite3.Connection
+) -> None:
     from app import agent_workbench
     from app.config import BootstrapAgentSlot
-    from app.db import connect
 
-    database = validate_restart_database(must_exist=True)
     if database.stat().st_size <= 0:
         raise RuntimeError("restart database was not initialized")
     observed_at = agent_workbench._parse_time(RESTART_OBSERVED_AT)
     if observed_at is None:
         raise RuntimeError("invalid fixed restart timestamp")
-    conn = connect()
     try:
         slot = BootstrapAgentSlot(
             env_name="AGENT_WORKBENCH_RESTART_AGENT_ID",
@@ -353,16 +519,57 @@ def _seed_restart_fixture() -> None:
             ),
         )
         conn.commit()
-    finally:
-        conn.close()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def restart_write_startup() -> None:
+    from app import db as app_db
+
     main = _task7_main()
-    validate_restart_database(must_exist=False)
-    main.initialize_writable_application()
-    validate_restart_database(must_exist=True)
-    _seed_restart_fixture()
+    database = validate_restart_database(must_exist=False)
+    parent_fd = _open_directory_fd(database.parent)
+    try:
+        with _private_restart_stage(database.parent, parent_fd) as (
+            stage_path,
+            stage_fd,
+            stage_name,
+            expected,
+        ):
+            with _database_environment(stage_path):
+                pinned = app_db.connect()
+                original_db_connect = app_db.connect
+                original_main_connect = getattr(main, "connect", None)
+                app_db.connect = lambda: _PinnedConnection(pinned)
+                if original_main_connect is not None:
+                    main.connect = lambda: _PinnedConnection(pinned)
+                try:
+                    main.initialize_writable_application()
+                    current = os.stat(
+                        stage_name, dir_fd=stage_fd, follow_symlinks=False
+                    )
+                    if (current.st_dev, current.st_ino) != (
+                        expected.st_dev,
+                        expected.st_ino,
+                    ):
+                        raise RuntimeError("restart staging database changed")
+                    _require_restart_target_absent(parent_fd, database.name)
+                    _seed_restart_fixture(stage_path, pinned)
+                finally:
+                    app_db.connect = original_db_connect
+                    if original_main_connect is not None:
+                        main.connect = original_main_connect
+                    pinned.close()
+            _require_no_sqlite_sidecars(stage_fd, stage_name)
+            # Revalidate authorization and the no-clobber target immediately
+            # before publishing the completed, closed staging database.
+            validate_restart_database(must_exist=False)
+            _install_restart_database(
+                parent_fd, stage_fd, stage_name, database.name, expected
+            )
+    finally:
+        os.close(parent_fd)
 
 
 def restart_read_startup() -> None:
