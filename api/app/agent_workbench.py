@@ -365,7 +365,9 @@ def _workbench_snapshot_from_rows(
     due_retries = []
     for agent in active_agents:
         discovery_retry = _parse_time(agent["next_discovery_at"])
-        if agent["last_discovery_error"] and discovery_retry:
+        if (
+            agent["last_discovery_error"] or agent["current_state_error"]
+        ) and discovery_retry:
             due_retries.append(discovery_retry)
         fast_retry = _parse_time(agent["next_fast_poll_at"])
         owns_failed_run = any(

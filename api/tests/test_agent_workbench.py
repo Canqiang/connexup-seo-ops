@@ -998,6 +998,100 @@ def test_aggregate_coverage_sum_max_min_and_nulls():
         assert aggregate["mirrored_run_count"] == 6
 
 
+def test_real_three_agent_aggregate_coverage_sum_max_min_and_nulls(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "real-coverage-matrix.db")
+    identities = [
+        (
+            LOCAL_ID, "active", 1, "2026-08-01T00:00:00+00:00",
+            "2026-09-03T03:59:00+00:00",
+        ),
+        (
+            "22222222-2222-4222-8222-222222222222", "disabled", 2,
+            "2026-08-02T00:00:00+00:00", "2026-09-03T03:58:00+00:00",
+        ),
+        (
+            "33333333-3333-4333-8333-333333333333", "retired", 3,
+            "2026-08-03T00:00:00+00:00", "2026-09-03T03:57:00+00:00",
+        ),
+    ]
+    for index, (agent_id, lifecycle, total, boundary, success_at) in enumerate(
+        identities, start=1
+    ):
+        conn.execute(
+            "INSERT INTO seo_ops_agents (id,agent_key,coreai_agent_id,display_name,"
+            "role,sort_order,status,suspect_after_seconds,retired_at,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,1800,?,?,?)",
+            (
+                agent_id, f"coverage-{index}", f"core-coverage-{index}",
+                f"Coverage {index}", "Coverage role", index * 10, lifecycle,
+                SNAPSHOT_NOW.isoformat() if lifecycle == "retired" else None,
+                SNAPSHOT_NOW.isoformat(), SNAPSHOT_NOW.isoformat(),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO seo_ops_agent_sync_state (seo_ops_agent_id,sync_pending,"
+            "last_discovery_success_at,current_state_checked_at,current_state_complete,"
+            "pending_observed_count,pending_last_observed_at,pending_set_quality,"
+            "running_observed_count,running_last_observed_at,running_set_quality,"
+            "paused_observed_count,paused_last_observed_at,paused_set_quality,"
+            "remote_total_runs,last_discovery_returned_count,coverage_start_at,"
+            "history_event_epoch,unfiltered_proven_event_epoch) "
+            "VALUES (?,0,?,?,1,0,?,'exact',0,?,'exact',0,?,'exact',?,?,?,0,0)",
+            (
+                agent_id, success_at, success_at, success_at, success_at, success_at,
+                total, total, boundary,
+            ),
+        )
+        for run_index in range(total):
+            _insert_snapshot_run(
+                conn, f"coverage-{index}-run-{run_index}", "COMPLETED",
+                agent_id=agent_id, completed_at="2026-09-03T03:30:00+00:00",
+            )
+    conn.commit()
+
+    def coverage():
+        return agent_workbench.build_workbench_snapshot(
+            conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+        )["coverage"]
+
+    assert coverage() == {
+        "mirrored_run_count": 6,
+        "remote_total_runs": 6,
+        "history_complete": True,
+        "range_complete": True,
+        "coverage_start_at": "2026-08-03T00:00:00+00:00",
+        "coverage_as_of": "2026-09-03T03:57:00+00:00",
+    }
+    nullable_id = identities[1][0]
+    for field, expected_field in (
+        ("remote_total_runs", "remote_total_runs"),
+        ("coverage_start_at", "coverage_start_at"),
+        ("last_discovery_success_at", "coverage_as_of"),
+    ):
+        original = conn.execute(
+            f"SELECT {field} FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+            (nullable_id,),
+        ).fetchone()[0]
+        conn.execute(
+            f"UPDATE seo_ops_agent_sync_state SET {field}=NULL WHERE seo_ops_agent_id=?",
+            (nullable_id,),
+        )
+        conn.commit()
+        observed = coverage()
+        assert observed[expected_field] is None
+        assert observed["mirrored_run_count"] == 6
+        conn.execute(
+            f"UPDATE seo_ops_agent_sync_state SET {field}=? WHERE seo_ops_agent_id=?",
+            (original, nullable_id),
+        )
+        conn.commit()
+    conn.close()
+
+
 def _insert_null_marker(conn, run_id, *, first_seen="2026-09-03T03:00:00+00:00"):
     merchant_id, source_id = _insert_local_run(conn, run_id)
     conn.execute(
@@ -1357,9 +1451,13 @@ def test_failing_agent_does_not_override_healthy_five_second_cadence(
     )
     conn.execute(
         "INSERT INTO seo_ops_agent_sync_state (seo_ops_agent_id,sync_pending,"
-        "last_discovery_attempt_at,last_discovery_error,next_discovery_at) "
-        "VALUES (?,0,?,'safe failure',?)",
-        (second_id, SNAPSHOT_NOW.isoformat(), (SNAPSHOT_NOW + timedelta(seconds=1)).isoformat()),
+        "last_discovery_success_at,current_state_checked_at,current_state_error,"
+        "next_discovery_at,next_fast_poll_at) VALUES (?,0,?,?,'safe failure',?,NULL)",
+        (
+            second_id, (SNAPSHOT_NOW - timedelta(seconds=5)).isoformat(),
+            SNAPSHOT_NOW.isoformat(),
+            (SNAPSHOT_NOW + timedelta(seconds=1)).isoformat(),
+        ),
     )
     conn.commit()
     snapshot = agent_workbench.build_workbench_snapshot(
@@ -1410,9 +1508,30 @@ def test_fast_poll_and_current_state_retry_deadlines_drive_refresh(
     else:
         conn.execute(
             "UPDATE seo_ops_agent_sync_state SET current_state_error='safe',"
-            "next_fast_poll_at=? WHERE seo_ops_agent_id=?",
+            "next_discovery_at=NULL,next_fast_poll_at=? WHERE seo_ops_agent_id=?",
             (retry_at, LOCAL_ID),
         )
+    conn.commit()
+
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+
+    assert snapshot["sync_health"] == "stale"
+    assert snapshot["refresh_after_ms"] == 3000
+    conn.close()
+
+
+def test_current_state_error_uses_available_run_lane_deadline(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "current-state-discovery-deadline.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET current_state_error='safe',"
+        "next_discovery_at=?,next_fast_poll_at=NULL WHERE seo_ops_agent_id=?",
+        ((SNAPSHOT_NOW + timedelta(seconds=3)).isoformat(), LOCAL_ID),
+    )
     conn.commit()
 
     snapshot = agent_workbench.build_workbench_snapshot(
@@ -1429,32 +1548,128 @@ def test_archiving_and_terminal_receipts(tmp_path, monkeypatch):
     monkeypatch.setenv("COREAI_API_KEY", "test-key")
     conn = _workbench_conn(tmp_path, monkeypatch, "archiving.db")
     _prepare_snapshot_agent(conn, monkeypatch)
-    merchant_id, source_id = _insert_local_run(conn, "archive-terminal")
+    merchant_id, running_run_id = _insert_local_run(conn, "archive-run-running")
+    _, finished_run_id = _insert_local_run(conn, "archive-run-finished")
+    conn.execute("UPDATE runs SET status='succeeded' WHERE id=?", (finished_run_id,))
+    _, running_execution_id = _insert_local_task_execution(
+        conn, merchant_id, "archive-task-running", "-running"
+    )
+    _, finished_execution_id = _insert_local_task_execution(
+        conn, merchant_id, "archive-task-finished", "-finished"
+    )
+    conn.execute(
+        "UPDATE task_executions SET status='SUCCEEDED' WHERE id=?",
+        (finished_execution_id,),
+    )
+    running_artifact_id = _insert_local_artifact(
+        conn, merchant_id, "archive-artifact-running"
+    )
+    finished_artifact_id = _insert_local_artifact(
+        conn, merchant_id, "archive-artifact-finished"
+    )
+    conn.execute(
+        "UPDATE merchant_seo_artifacts SET status='ready' WHERE id=?",
+        (finished_artifact_id,),
+    )
+
+    source_rows = [
+        ("archive-run-running", "run", running_run_id, True),
+        ("archive-run-finished", "run", finished_run_id, False),
+        ("archive-task-running", "task_execution", running_execution_id, True),
+        ("archive-task-finished", "task_execution", finished_execution_id, False),
+        (
+            "archive-artifact-running", "merchant_seo_artifact",
+            running_artifact_id, True,
+        ),
+        (
+            "archive-artifact-finished", "merchant_seo_artifact",
+            finished_artifact_id, False,
+        ),
+    ]
+    for run_id, source_kind, source_id, _ in source_rows:
+        conn.execute(
+            "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,raw_status,"
+            "trigger_type,started_at,completed_at,terminal_observed_at,source_kind,"
+            "source_local_id,merchant_id,first_seen_at,last_synced_at) "
+            "VALUES (?,?,'COMPLETED','WORKFLOW',?,?,?,?,?,?,?,?)",
+            (
+                run_id, LOCAL_ID, "2026-09-03T03:50:00+00:00",
+                SNAPSHOT_NOW.isoformat(), SNAPSHOT_NOW.isoformat(), source_kind,
+                source_id, merchant_id, "2026-09-03T03:50:00+00:00",
+                (SNAPSHOT_NOW - timedelta(seconds=1)).isoformat(),
+            ),
+        )
+    _, immediate_source_id = _insert_local_run(conn, "archive-immediate")
+    conn.execute(
+        "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,raw_status,"
+        "started_at,completed_at,terminal_observed_at,source_kind,source_local_id,"
+        "merchant_id,first_seen_at,last_synced_at) "
+        "VALUES ('archive-immediate',?,'COMPLETED',?,?,?,?,?,?,?,NULL)",
+        (
+            LOCAL_ID, "2026-09-03T03:50:00+00:00", SNAPSHOT_NOW.isoformat(),
+            SNAPSHOT_NOW.isoformat(), "run", immediate_source_id, merchant_id,
+            "2026-09-03T03:50:00+00:00",
+        ),
+    )
     conn.execute(
         "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,raw_status,"
         "trigger_type,started_at,completed_at,terminal_observed_at,receipt_expires_at,"
-        "source_kind,source_local_id,merchant_id,first_seen_at,last_synced_at) "
-        "VALUES ('archive-terminal',?,'COMPLETED','WORKFLOW',?,?,?,?,"
-        "'run',?,?,?,?)",
+        "first_seen_at,last_synced_at) VALUES ('terminal-receipt',?,'FAILED',"
+        "'WORKFLOW',?,?,?,?,?,?)",
         (
-            LOCAL_ID, "2026-09-03T03:50:00+00:00", "2026-09-03T03:59:59+00:00",
-            "2026-09-03T03:59:59+00:00", "2026-09-03T04:00:09+00:00",
-            source_id, merchant_id, "2026-09-03T03:50:00+00:00",
-            "2026-09-03T03:59:59+00:00",
+            LOCAL_ID, "2026-09-03T03:50:00+00:00", SNAPSHOT_NOW.isoformat(),
+            SNAPSHOT_NOW.isoformat(),
+            (SNAPSHOT_NOW + timedelta(seconds=10)).isoformat(),
+            "2026-09-03T03:50:00+00:00", SNAPSHOT_NOW.isoformat(),
         ),
     )
     conn.commit()
     current = agent_workbench.build_workbench_snapshot(
         conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
     )
-    assert current["signals"][0]["signal_state"] == "archiving"
+    current_signals = {
+        signal["coreai_run_id"]: signal for signal in current["signals"]
+    }
+    assert set(current_signals) == {
+        "archive-run-running", "archive-task-running",
+        "archive-artifact-running", "archive-immediate", "terminal-receipt",
+    }
+    for run_id, _, _, local_running in source_rows:
+        assert (run_id in current_signals) is local_running
+        if local_running:
+            assert current_signals[run_id]["signal_state"] == "archiving"
+            assert current_signals[run_id]["fresh"] is True
+            assert current_signals[run_id]["fresh_until"] == (
+                SNAPSHOT_NOW + timedelta(seconds=15)
+            ).isoformat()
+    assert current_signals["archive-immediate"]["signal_state"] == "archiving"
+    assert current_signals["archive-immediate"]["fresh"] is False
+    assert current_signals["archive-immediate"]["fresh_until"] is None
+    assert current_signals["terminal-receipt"]["signal_state"] == "completed"
+    assert current_signals["terminal-receipt"]["fresh"] is False
+    assert current_signals["terminal-receipt"]["fresh_until"] is None
     assert current["refresh_after_ms"] == 5000
+
+    at_receipt_expiry = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW + timedelta(seconds=10), "Asia/Shanghai", 20
+    )
+    assert "terminal-receipt" not in {
+        signal["coreai_run_id"] for signal in at_receipt_expiry["signals"]
+    }
+
     delayed_now = SNAPSHOT_NOW + timedelta(minutes=5)
     delayed = agent_workbench.build_workbench_snapshot(
         conn, "30d", delayed_now, "Asia/Shanghai", 20
     )
     assert delayed["signals"] == []
-    assert "ARCHIVE_DELAY" in delayed["agents"][0]["last_terminal_run"]["warning_codes"]
+    delayed_by_id = {
+        warning["coreai_run_id"] for warning in delayed["sync_warnings"]
+        if warning["code"] == "ARCHIVE_DELAY"
+    }
+    assert delayed_by_id == {
+        "archive-run-running", "archive-task-running",
+        "archive-artifact-running", "archive-immediate",
+    }
     conn.close()
 
 
@@ -1467,15 +1682,29 @@ def test_history_cursor_round_trip_and_bounds(tmp_path, monkeypatch):
             started_at=f"2026-09-03T03:0{index}:00+00:00",
             completed_at=f"2026-09-03T03:1{index}:00+00:00",
         )
+    for run_id in ("tie-a", "tie-z"):
+        _insert_snapshot_run(
+            conn, run_id, "COMPLETED",
+            started_at="2026-09-03T03:03:00+00:00",
+            completed_at="2026-09-03T03:30:00+00:00",
+        )
     first = agent_workbench.list_projected_agent_runs(
         conn, LOCAL_ID, "30d", 2, None, SNAPSHOT_NOW, "Asia/Shanghai"
     )
-    assert [item["coreai_run_id"] for item in first["items"]] == ["history-2", "history-1"]
+    assert [item["coreai_run_id"] for item in first["items"]] == ["tie-z", "tie-a"]
     assert first["next_before"]
     second = agent_workbench.list_projected_agent_runs(
         conn, LOCAL_ID, "30d", 2, first["next_before"], SNAPSHOT_NOW, "Asia/Shanghai"
     )
-    assert [item["coreai_run_id"] for item in second["items"]] == ["history-0"]
+    assert [item["coreai_run_id"] for item in second["items"]] == [
+        "history-2", "history-1"
+    ]
+    assert second["next_before"]
+    third = agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 2, second["next_before"], SNAPSHOT_NOW, "Asia/Shanghai"
+    )
+    assert [item["coreai_run_id"] for item in third["items"]] == ["history-0"]
+    assert third["next_before"] is None
     malformed = [
         "not-a-cursor",
         agent_workbench._encode_history_cursor("2026-09-03T03:00:00+00:00", "id")[:-1],
@@ -1503,7 +1732,7 @@ def test_history_cursor_round_trip_and_bounds(tmp_path, monkeypatch):
     )["items"]) == 1
     assert len(agent_workbench.list_projected_agent_runs(
         conn, LOCAL_ID, "30d", 101, None, SNAPSHOT_NOW, "Asia/Shanghai"
-    )["items"]) == 3
+    )["items"]) == 5
     with pytest.raises(agent_workbench.WorkbenchError) as raised:
         agent_workbench.list_projected_agent_runs(
             conn, "missing", "30d", 20, None, SNAPSHOT_NOW, "Asia/Shanghai"
@@ -1676,9 +1905,17 @@ def test_aggregate_route_invalid_range_is_422(tmp_path, monkeypatch):
 
 def test_history_route_range_defaults_to_30d(tmp_path, monkeypatch):
     conn, client = _route_client(tmp_path, monkeypatch, "history-default.db")
+    for index in range(21):
+        _insert_snapshot_run(
+            conn, f"default-limit-{index:02d}", "COMPLETED",
+            started_at=f"2026-09-03T03:{index:02d}:00+00:00",
+            completed_at="2026-09-03T03:30:00+00:00",
+        )
     with client:
         response = client.get(f"/api/agent-workbench/agents/{LOCAL_ID}/runs")
         assert response.json()["range"] == "30d"
+        assert len(response.json()["items"]) == 20
+        assert response.json()["next_before"] is not None
     conn.close()
 
 
