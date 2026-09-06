@@ -251,7 +251,7 @@ function currentCount(
 }
 
 function absoluteSignalTimingCopy(signal: WorkbenchSignal, elapsedSeconds: number): string {
-  const parts = [`数据截至 ${signal.last_synced_at}`]
+  const parts = [signal.last_synced_at === null ? '同步时间待确认' : `数据截至 ${signal.last_synced_at}`]
   if (signal.completed_at !== null) parts.push(`完成于 ${signal.completed_at}`)
   if (signal.terminal_observed_at !== null) parts.push(`终态观测于 ${signal.terminal_observed_at}`)
   if (parts.length === 1) parts.push(`已持续 ${elapsedSeconds} 秒`)
@@ -401,11 +401,13 @@ export function replacePresentationSnapshot(
   reason: SnapshotReplacementReason,
   requestStartedAtMonotonicMs?: number,
 ): PresentationState {
-  const protectsAgainstOlderRequests = state.freshnessBarrier !== null && state.freshnessBarrier !== 'pause'
+  const pausedManualReadback = state.pausedAtMonotonicMs !== null && reason === 'manual'
+  if (state.pausedAtMonotonicMs !== null && !pausedManualReadback) return state
+  const protectsAgainstOlderRequests = state.freshnessBarrier !== null && !pausedManualReadback
   if (
     protectsAgainstOlderRequests &&
     state.freshnessBarrierAtMonotonicMs !== null &&
-    (requestStartedAtMonotonicMs === undefined || requestStartedAtMonotonicMs < state.freshnessBarrierAtMonotonicMs)
+    (requestStartedAtMonotonicMs === undefined || requestStartedAtMonotonicMs <= state.freshnessBarrierAtMonotonicMs)
   ) {
     return state
   }
@@ -450,12 +452,21 @@ export function advancePresentation(
   reason: PresentationAdvanceReason,
 ): PresentationState {
   if (!state.snapshot || !state.clock) return state
+  const preservePauseBarrier =
+    state.pausedAtMonotonicMs !== null && reason !== 'pause' && reason !== 'resume'
   const establishesFreshnessBarrier =
-    reason === 'hidden' || reason === 'focus' || reason === 'pause' || reason === 'mutation' || reason === 'resume'
-  const freshnessBarrier = establishesFreshnessBarrier ? reason : state.freshnessBarrier
-  const freshnessBarrierAtMonotonicMs = establishesFreshnessBarrier
-    ? nowMonotonicMs
-    : state.freshnessBarrierAtMonotonicMs
+    !preservePauseBarrier &&
+    (reason === 'hidden' || reason === 'focus' || reason === 'pause' || reason === 'mutation' || reason === 'resume')
+  const freshnessBarrier = preservePauseBarrier
+    ? 'pause'
+    : establishesFreshnessBarrier
+      ? reason
+      : state.freshnessBarrier
+  const freshnessBarrierAtMonotonicMs = preservePauseBarrier
+    ? state.freshnessBarrierAtMonotonicMs
+    : establishesFreshnessBarrier
+      ? nowMonotonicMs
+      : state.freshnessBarrierAtMonotonicMs
   const forceStale = freshnessBarrier !== null
   const pausedAtMonotonicMs =
     reason === 'resume'

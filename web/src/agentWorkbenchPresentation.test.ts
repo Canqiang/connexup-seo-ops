@@ -365,6 +365,46 @@ describe('agent workbench presentation', () => {
     expect(rejected.presentation?.signals[0].may_animate).toBe(false)
   })
 
+  it('pause barrier survives hidden and focus and rejects automatic responses', () => {
+    const initialSnapshot = deepFreeze(
+      makeSnapshot({
+        fresh_until: '2026-09-03T00:00:10.000Z',
+        signals: [makeSignal({ fresh_until: '2026-09-03T00:00:10.000Z' })],
+      }),
+    )
+    const responseSnapshot = deepFreeze(makeSnapshot({ range: '7d' }))
+    const initial = replacePresentationSnapshot(createPresentationState(), initialSnapshot, 12_000, 'initial')
+    const paused = advancePresentation(initial, 12_100, 'pause')
+    const hidden = advancePresentation(paused, 12_200, 'hidden')
+    const focused = advancePresentation(hidden, 12_300, 'focus')
+
+    expect(hidden.freshnessBarrier).toBe('pause')
+    expect(focused.freshnessBarrier).toBe('pause')
+    expect(focused.freshnessBarrierAtMonotonicMs).toBe(12_100)
+
+    const prePauseResponse = replacePresentationSnapshot(focused, responseSnapshot, 12_400, 'automatic', 12_050)
+    expect(prePauseResponse.snapshot).toBe(initialSnapshot)
+    expect(prePauseResponse.freshnessBarrier).toBe('pause')
+
+    const postFocusResponse = replacePresentationSnapshot(focused, responseSnapshot, 12_500, 'automatic', 12_350)
+    expect(postFocusResponse.snapshot).toBe(initialSnapshot)
+    expect(postFocusResponse.freshnessBarrier).toBe('pause')
+    expect(postFocusResponse.presentation?.signals[0].may_animate).toBe(false)
+  })
+
+  it('response starting exactly at a freshness barrier is rejected', () => {
+    const initialSnapshot = deepFreeze(makeSnapshot({ range: '7d' }))
+    const responseSnapshot = deepFreeze(makeSnapshot({ range: '30d' }))
+    const initial = replacePresentationSnapshot(createPresentationState(), initialSnapshot, 12_600, 'initial')
+    const focused = advancePresentation(initial, 12_700, 'focus')
+
+    const rejected = replacePresentationSnapshot(focused, responseSnapshot, 12_800, 'automatic', 12_700)
+
+    expect(rejected.snapshot).toBe(initialSnapshot)
+    expect(rejected.freshnessBarrier).toBe('focus')
+    expect(rejected.presentation?.current_counts.running.quality).toBe('unknown')
+  })
+
   it('suspect deadline changes only presentation truth', () => {
     const running = makeSignal({
       suspect_at: '2026-09-03T00:00:01.250Z',
@@ -613,6 +653,18 @@ describe('agent workbench presentation', () => {
             terminal_observed_at: '2026-09-03T00:00:00.000Z',
             receipt_expires_at: '2026-09-03T00:00:10.000Z',
           }),
+          makeSignal({
+            coreai_run_id: 'statusless-unconfirmed',
+            raw_status: null,
+            presentation_group: 'unknown',
+            signal_state: 'uncertain',
+            trigger_type: null,
+            fresh: false,
+            suspect_at: null,
+            last_synced_at: null,
+            fresh_until: null,
+            token_state: 'unconfirmed',
+          }),
         ],
       }),
     )
@@ -631,6 +683,7 @@ describe('agent workbench presentation', () => {
     expect(paused.presentation?.signals.map(signal => signal.timing_copy)).toEqual([
       '数据截至 2026-09-03T00:00:00.000Z · 完成于 2026-09-02T23:59:59.000Z · 终态观测于 2026-09-03T00:00:00.000Z',
       '数据截至 2026-09-03T00:00:00.000Z · 终态观测于 2026-09-03T00:00:00.000Z',
+      '同步时间待确认 · 已持续 60 秒',
     ])
   })
 
