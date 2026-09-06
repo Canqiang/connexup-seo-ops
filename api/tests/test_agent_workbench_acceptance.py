@@ -1492,6 +1492,82 @@ def test_restart_write_startup_never_opens_swappable_stage_path_for_write(
     )
 
 
+def test_restart_install_detects_target_replaced_after_stage_unlink(
+    tmp_path, monkeypatch
+):
+    module = importlib.import_module("agent_workbench_live_app")
+    guarded = tmp_path / "restart-install-race"
+    guarded.mkdir()
+    database = guarded / "restart.db"
+    marker = guarded / module.RESTART_MARKER_NAME
+    marker.write_text(database.name, encoding="utf-8")
+    concurrent_bytes = b"concurrent-unowned-restart"
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    monkeypatch.setenv(module.RESTART_MARKER_ENV, str(marker))
+    real_unlink = module.os.unlink
+    replaced = False
+
+    def unlink_stage_then_replace_target(path, *args, **kwargs):
+        nonlocal replaced
+        result = real_unlink(path, *args, **kwargs)
+        if not replaced and path == "staged.db" and database.exists():
+            replaced = True
+            real_unlink(database)
+            database.write_bytes(concurrent_bytes)
+        return result
+
+    monkeypatch.setattr(module.os, "unlink", unlink_stage_then_replace_target)
+    with pytest.raises(RuntimeError, match="installation changed"):
+        module.restart_write_startup()
+
+    assert replaced is True
+    assert database.read_bytes() == concurrent_bytes
+    assert {path.name for path in guarded.iterdir()} == {
+        database.name,
+        marker.name,
+    }
+
+
+def test_restart_post_link_failure_never_unlinks_public_target(tmp_path, monkeypatch):
+    module = importlib.import_module("agent_workbench_live_app")
+    guarded = tmp_path / "restart-post-link-failure"
+    guarded.mkdir()
+    database = guarded / "restart.db"
+    marker = guarded / module.RESTART_MARKER_NAME
+    marker.write_text(database.name, encoding="utf-8")
+    monkeypatch.setenv("SEO_OPS_DB", str(database))
+    monkeypatch.setenv(module.RESTART_MARKER_ENV, str(marker))
+    real_stat = module.os.stat
+    real_unlink = module.os.unlink
+    target_stats = 0
+    public_unlinks = []
+
+    def fail_final_target_check(path, *args, **kwargs):
+        nonlocal target_stats
+        result = real_stat(path, *args, **kwargs)
+        if path == database.name:
+            target_stats += 1
+            if target_stats == 2:
+                fields = list(result)
+                fields[3] = 2
+                return os.stat_result(fields)
+        return result
+
+    def record_public_unlink(path, *args, **kwargs):
+        if path == database.name:
+            public_unlinks.append(path)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "stat", fail_final_target_check)
+    monkeypatch.setattr(module.os, "unlink", record_public_unlink)
+    with pytest.raises(RuntimeError, match="installation changed"):
+        module.restart_write_startup()
+
+    assert target_stats == 2
+    assert public_unlinks == []
+    assert database.is_file()
+
+
 def _reserve_loopback_port():
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -3033,6 +3109,107 @@ def test_visual_fixture_generation_preserves_concurrent_unowned_target(
     assert {path.name for path in output.iterdir()} == {concurrent.name}
 
 
+def test_visual_fixture_install_detects_target_replaced_after_stage_unlink(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-post-link-race"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    active = output / "active.db"
+    concurrent_bytes = b"concurrent-unowned-generation"
+    real_unlink = visual_fixture.os.unlink
+    replaced = False
+
+    def unlink_stage_then_replace_target(path, *args, **kwargs):
+        nonlocal replaced
+        result = real_unlink(path, *args, **kwargs)
+        if not replaced and path == "fixture.db" and active.exists():
+            replaced = True
+            real_unlink(active)
+            active.write_bytes(concurrent_bytes)
+        return result
+
+    monkeypatch.setattr(
+        visual_fixture.os, "unlink", unlink_stage_then_replace_target
+    )
+    with pytest.raises(ValueError, match="installed fixture database changed"):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+
+    assert replaced is True
+    assert active.read_bytes() == concurrent_bytes
+    assert {path.name for path in output.iterdir()} == {active.name}
+
+
+def test_visual_fixture_post_link_failure_never_unlinks_public_target(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-post-link-failure"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    active = output / "active.db"
+    real_stat = visual_fixture.os.stat
+    real_unlink = visual_fixture.os.unlink
+    target_stats = 0
+    public_unlinks = []
+
+    def fail_final_target_check(path, *args, **kwargs):
+        nonlocal target_stats
+        result = real_stat(path, *args, **kwargs)
+        if path == active.name:
+            target_stats += 1
+            if target_stats == 2:
+                fields = list(result)
+                fields[3] = 2
+                return os.stat_result(fields)
+        return result
+
+    def record_public_unlink(path, *args, **kwargs):
+        if path == active.name:
+            public_unlinks.append(path)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(visual_fixture.os, "stat", fail_final_target_check)
+    monkeypatch.setattr(visual_fixture.os, "unlink", record_public_unlink)
+    with pytest.raises(ValueError, match="installed fixture database changed"):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+
+    assert target_stats == 2
+    assert public_unlinks == []
+    assert active.is_file()
+
+
+def test_visual_fixture_later_failure_keeps_already_committed_public_target(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "generation-later-failure"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+
+    def fail_idle_seed(_connection, _generated_at):
+        raise RuntimeError("acceptance injected later scenario failure")
+
+    monkeypatch.setitem(visual_fixture.SEEDERS, "idle", fail_idle_seed)
+    with pytest.raises(RuntimeError, match="later scenario failure"):
+        visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+
+    active = output / "active.db"
+    assert active.is_file()
+    assert visual_fixture.validate_refresh_database(active) == (active, "active")
+    assert {path.name for path in output.iterdir()} == {active.name}
+
+
 def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation(
     tmp_path, monkeypatch
 ):
@@ -3200,6 +3377,130 @@ def test_visual_fixture_refresh_never_opens_swappable_stage_path_for_write(
         Path(f"{outside}{suffix}").exists()
         for suffix in ("-journal", "-wal", "-shm")
     )
+
+
+def test_visual_fixture_refresh_does_not_overwrite_target_created_after_last_check(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "refresh-final-check-race"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    concurrent_bytes = b"concurrent-unowned-refresh"
+    real_require_identity = visual_fixture._require_refresh_identity
+    real_unlink = os.unlink
+    checks = 0
+
+    def replace_target_after_identity_check(*args, **kwargs):
+        nonlocal checks
+        result = real_require_identity(*args, **kwargs)
+        checks += 1
+        if checks == 2:
+            real_unlink(active)
+            active.write_bytes(concurrent_bytes)
+        return result
+
+    monkeypatch.setattr(
+        visual_fixture,
+        "_require_refresh_identity",
+        replace_target_after_identity_check,
+    )
+    with pytest.raises(ValueError, match="fixture database changed"):
+        visual_fixture.refresh_fixture(
+            active,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+            receipt_id_factory=lambda: "must-not-overwrite-concurrent",
+        )
+
+    assert checks == 2
+    assert active.read_bytes() == concurrent_bytes
+    assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
+
+
+def test_visual_fixture_refresh_rolls_back_after_partial_write_failure(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "refresh-partial-write"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    before = _external_sqlite_guard_state(active)
+    real_write = visual_fixture.os.write
+    injected = False
+
+    def partially_write_then_fail(descriptor, payload):
+        nonlocal injected
+        if not injected:
+            injected = True
+            data = bytes(payload)
+            real_write(descriptor, data[: max(1, len(data) // 4)])
+            raise OSError("acceptance injected partial write")
+        return real_write(descriptor, payload)
+
+    monkeypatch.setattr(visual_fixture.os, "write", partially_write_then_fail)
+    with pytest.raises(OSError, match="acceptance injected partial write"):
+        visual_fixture.refresh_fixture(
+            active,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+            receipt_id_factory=lambda: "must-be-rolled-back",
+        )
+    monkeypatch.setattr(visual_fixture.os, "write", real_write)
+
+    assert injected is True
+    assert _external_sqlite_guard_state(active) == before
+    assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
+
+
+def test_visual_fixture_refresh_rolls_back_detached_inode_without_touching_new_target(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "refresh-mid-write-replacement"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    original_bytes = active.read_bytes()
+    detached = output / "detached-owned.db"
+    concurrent_bytes = b"concurrent-unowned-refresh-during-write"
+    real_ftruncate = visual_fixture.os.ftruncate
+    replaced = False
+
+    def replace_target_before_first_mutation(descriptor, length):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            active.rename(detached)
+            active.write_bytes(concurrent_bytes)
+        return real_ftruncate(descriptor, length)
+
+    monkeypatch.setattr(
+        visual_fixture.os, "ftruncate", replace_target_before_first_mutation
+    )
+    with pytest.raises(ValueError, match="fixture database changed during refresh"):
+        visual_fixture.refresh_fixture(
+            active,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+            receipt_id_factory=lambda: "must-not-touch-new-target",
+        )
+
+    assert replaced is True
+    assert active.read_bytes() == concurrent_bytes
+    assert detached.read_bytes() == original_bytes
+    assert not any(path.name.startswith(".agent-workbench-") for path in output.iterdir())
 
 
 @pytest.mark.parametrize("suffix", ("-journal", "-wal", "-shm"))

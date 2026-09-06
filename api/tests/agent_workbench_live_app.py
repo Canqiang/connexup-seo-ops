@@ -390,7 +390,6 @@ def _install_restart_database(
     target_name: str,
     expected: os.stat_result,
 ) -> None:
-    linked = False
     try:
         opened = os.fstat(database_fd)
         staged = os.stat(stage_name, dir_fd=stage_fd, follow_symlinks=False)
@@ -408,7 +407,10 @@ def _install_restart_database(
             dst_dir_fd=parent_fd,
             follow_symlinks=False,
         )
-        linked = True
+        # link(2) is the no-clobber publication linearization point.  Once it
+        # succeeds there is no stdlib inode-conditional unlink, so an error
+        # after publication must never try to roll the public name back: a
+        # concurrent process could already have replaced it with its own file.
         installed = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
         if (
             not stat.S_ISREG(installed.st_mode)
@@ -418,21 +420,14 @@ def _install_restart_database(
             raise RuntimeError("restart database installation changed")
         os.unlink(stage_name, dir_fd=stage_fd)
         installed = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
-        if not stat.S_ISREG(installed.st_mode) or installed.st_nlink != 1:
-            raise RuntimeError("restart database installation is unsafe")
+        if (
+            not stat.S_ISREG(installed.st_mode)
+            or installed.st_nlink != 1
+            or (installed.st_dev, installed.st_ino)
+            != (expected.st_dev, expected.st_ino)
+        ):
+            raise RuntimeError("restart database installation changed")
     except BaseException as error:
-        if linked:
-            try:
-                current = os.stat(
-                    target_name, dir_fd=parent_fd, follow_symlinks=False
-                )
-                if (current.st_dev, current.st_ino) == (
-                    expected.st_dev,
-                    expected.st_ino,
-                ):
-                    os.unlink(target_name, dir_fd=parent_fd)
-            except OSError:
-                pass
         if isinstance(error, OSError):
             raise RuntimeError("restart database could not be installed") from None
         raise

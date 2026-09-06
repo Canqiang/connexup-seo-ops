@@ -14,6 +14,7 @@ Failures print no database content, environment value, or upstream payload.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -679,18 +680,6 @@ def _unlink_fixture_files(directory_fd: int, database_names: list[str]) -> None:
                 pass
 
 
-def _unlink_owned_fixture_files(
-    directory_fd: int, owned: dict[str, tuple[int, int]]
-) -> None:
-    for name, identity in owned.items():
-        try:
-            current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            continue
-        if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == identity:
-            os.unlink(name, dir_fd=directory_fd)
-
-
 def _require_no_sqlite_sidecars(
     directory_fd: int, database_name: str, *, database_role: str = "staging"
 ) -> None:
@@ -740,6 +729,29 @@ def _serialize_validated_database(conn: sqlite3.Connection) -> bytes:
     return payload
 
 
+def _write_database_image(database_fd: int, payload: bytes) -> None:
+    if not payload or len(payload) > MAX_FIXTURE_DATABASE_BYTES:
+        raise ValueError("fixture database serialization size is unsafe")
+    os.ftruncate(database_fd, 0)
+    os.lseek(database_fd, 0, os.SEEK_SET)
+    view = memoryview(payload)
+    while view:
+        written = os.write(database_fd, view)
+        if written <= 0:
+            raise ValueError("fixture database write failed")
+        view = view[written:]
+    os.fsync(database_fd)
+    os.lseek(database_fd, 0, os.SEEK_SET)
+    readback = bytearray()
+    while len(readback) < len(payload):
+        chunk = os.read(database_fd, min(1024 * 1024, len(payload) - len(readback)))
+        if not chunk:
+            break
+        readback.extend(chunk)
+    if bytes(readback) != payload or os.read(database_fd, 1):
+        raise ValueError("fixture database readback failed")
+
+
 def _write_serialized_database(
     stage_fd: int,
     stage_name: str,
@@ -756,15 +768,7 @@ def _write_serialized_database(
         or (entry.st_dev, entry.st_ino) != (expected.st_dev, expected.st_ino)
     ):
         raise ValueError("fixture staging database changed")
-    os.ftruncate(database_fd, 0)
-    os.lseek(database_fd, 0, os.SEEK_SET)
-    view = memoryview(payload)
-    while view:
-        written = os.write(database_fd, view)
-        if written <= 0:
-            raise ValueError("fixture staging database write failed")
-        view = view[written:]
-    os.fsync(database_fd)
+    _write_database_image(database_fd, payload)
     opened = os.fstat(database_fd)
     entry = os.stat(stage_name, dir_fd=stage_fd, follow_symlinks=False)
     if (
@@ -774,15 +778,6 @@ def _write_serialized_database(
         or (entry.st_dev, entry.st_ino) != (expected.st_dev, expected.st_ino)
     ):
         raise ValueError("fixture staging database changed")
-    os.lseek(database_fd, 0, os.SEEK_SET)
-    readback = bytearray()
-    while len(readback) < len(payload):
-        chunk = os.read(database_fd, min(1024 * 1024, len(payload) - len(readback)))
-        if not chunk:
-            break
-        readback.extend(chunk)
-    if bytes(readback) != payload or os.read(database_fd, 1):
-        raise ValueError("fixture staging database readback failed")
 
 
 def _read_source_database(source_fd: int) -> bytes:
@@ -859,7 +854,6 @@ def _install_no_clobber(
     target_name: str,
     expected: os.stat_result,
 ) -> tuple[int, int]:
-    installed = False
     try:
         opened = os.fstat(database_fd)
         staged = os.stat(stage_name, dir_fd=stage_fd, follow_symlinks=False)
@@ -877,7 +871,9 @@ def _install_no_clobber(
             dst_dir_fd=directory_fd,
             follow_symlinks=False,
         )
-        installed = True
+        # link(2) is the no-clobber publication linearization point.  There is
+        # no portable inode-CAS unlink, so a post-publication failure must not
+        # remove the public name: it may already belong to another process.
         target = os.stat(target_name, dir_fd=directory_fd, follow_symlinks=False)
         if (
             not stat.S_ISREG(target.st_mode)
@@ -886,22 +882,14 @@ def _install_no_clobber(
             raise ValueError("installed fixture database changed")
         os.unlink(stage_name, dir_fd=stage_fd)
         target = os.stat(target_name, dir_fd=directory_fd, follow_symlinks=False)
-        if not stat.S_ISREG(target.st_mode) or target.st_nlink != 1:
-            raise ValueError("installed fixture database is unsafe")
+        if (
+            not stat.S_ISREG(target.st_mode)
+            or target.st_nlink != 1
+            or (target.st_dev, target.st_ino) != (expected.st_dev, expected.st_ino)
+        ):
+            raise ValueError("installed fixture database changed")
         return expected.st_dev, expected.st_ino
     except BaseException:
-        if installed:
-            try:
-                target = os.stat(
-                    target_name, dir_fd=directory_fd, follow_symlinks=False
-                )
-                if (target.st_dev, target.st_ino) == (
-                    expected.st_dev,
-                    expected.st_ino,
-                ):
-                    os.unlink(target_name, dir_fd=directory_fd)
-            except OSError:
-                pass
         raise
 
 
@@ -914,7 +902,10 @@ def generate_fixtures(
     generated_at = _aware_utc(now_factory())
     directory_fd = _open_generation_directory(directory)
     paths: dict[str, str] = {}
-    owned_entries: dict[str, tuple[int, int]] = {}
+    # Successfully linked public entries are committed.  A stat-then-unlink
+    # cleanup cannot be made inode-conditional with the Python stdlib and
+    # could delete a concurrent replacement.  Private staging entries are
+    # still cleaned by their context managers; published entries remain.
     try:
         for scenario in SCENARIOS:
             name = f"{scenario}.db"
@@ -938,7 +929,7 @@ def generate_fixtures(
                     stage_fd, stage_name, database_fd, expected, payload
                 )
                 _require_no_sqlite_sidecars(stage_fd, stage_name)
-                owned_entries[name] = _install_no_clobber(
+                _install_no_clobber(
                     directory_fd,
                     stage_fd,
                     stage_name,
@@ -947,9 +938,6 @@ def generate_fixtures(
                     expected,
                 )
             paths[scenario] = str(path)
-    except BaseException:
-        _unlink_owned_fixture_files(directory_fd, owned_entries)
-        raise
     finally:
         os.close(directory_fd)
     return {
@@ -977,6 +965,8 @@ def _read_marker(conn: sqlite3.Connection) -> tuple[str, str]:
 @contextmanager
 def _opened_refresh_source(
     raw_path: str | os.PathLike[str],
+    *,
+    writable: bool = False,
 ) -> Iterator[tuple[Path, int, int, os.stat_result]]:
     requested = Path(raw_path).expanduser().absolute()
     try:
@@ -992,39 +982,74 @@ def _opened_refresh_source(
     except OSError:
         raise ValueError("fixture directory cannot be opened safely") from None
     source_fd = -1
+    locked = False
     try:
-        parent_opened = os.fstat(parent_fd)
-        if (parent_opened.st_dev, parent_opened.st_ino) != (
-            parent_before.st_dev,
-            parent_before.st_ino,
-        ):
-            raise ValueError("fixture directory changed")
-        expected = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-        if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
-            raise ValueError("fixture database must be a single-link regular file")
-        _require_no_sqlite_sidecars(
-            parent_fd, path.name, database_role="source"
-        )
-        source_fd = os.open(
-            path.name,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=parent_fd,
-        )
-        opened = os.fstat(source_fd)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino)
-        ):
-            raise ValueError("fixture database changed before safe open")
-        _require_no_sqlite_sidecars(
-            parent_fd, path.name, database_role="source"
-        )
+        try:
+            parent_opened = os.fstat(parent_fd)
+            if (parent_opened.st_dev, parent_opened.st_ino) != (
+                parent_before.st_dev,
+                parent_before.st_ino,
+            ):
+                raise ValueError("fixture directory changed")
+            expected = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISREG(expected.st_mode) or expected.st_nlink != 1:
+                raise ValueError("fixture database must be a single-link regular file")
+            _require_no_sqlite_sidecars(
+                parent_fd, path.name, database_role="source"
+            )
+            source_fd = os.open(
+                path.name,
+                (os.O_RDWR if writable else os.O_RDONLY)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+            opened = os.fstat(source_fd)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino)
+                != (expected.st_dev, expected.st_ino)
+            ):
+                raise ValueError("fixture database changed before safe open")
+            _require_no_sqlite_sidecars(
+                parent_fd, path.name, database_role="source"
+            )
+            if writable:
+                fcntl.lockf(
+                    source_fd,
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    0,
+                    0,
+                    os.SEEK_SET,
+                )
+                locked = True
+                current = os.stat(
+                    path.name, dir_fd=parent_fd, follow_symlinks=False
+                )
+                opened = os.fstat(source_fd)
+                if (
+                    not stat.S_ISREG(current.st_mode)
+                    or current.st_nlink != 1
+                    or (current.st_dev, current.st_ino)
+                    != (expected.st_dev, expected.st_ino)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_nlink != 1
+                    or (opened.st_dev, opened.st_ino)
+                    != (expected.st_dev, expected.st_ino)
+                ):
+                    raise ValueError("fixture database changed while locking")
+                _require_no_sqlite_sidecars(
+                    parent_fd, path.name, database_role="source"
+                )
+        except BlockingIOError:
+            raise ValueError("fixture database is locked for refresh") from None
+        except OSError:
+            raise ValueError("fixture database cannot be opened safely") from None
         yield path, parent_fd, source_fd, expected
-    except OSError:
-        raise ValueError("fixture database cannot be opened safely") from None
     finally:
         if source_fd >= 0:
+            if locked:
+                fcntl.lockf(source_fd, fcntl.LOCK_UN, 0, 0, os.SEEK_SET)
             os.close(source_fd)
         os.close(parent_fd)
 
@@ -1070,39 +1095,63 @@ def _require_refresh_identity(
         raise ValueError("fixture database changed after safe open")
 
 
-def _replace_from_stage(
+def _require_refresh_binding(
     parent_fd: int,
     target_name: str,
-    stage_fd: int,
-    stage_name: str,
-    database_fd: int,
-    expected_stage: os.stat_result,
+    source_fd: int,
+    expected: os.stat_result,
 ) -> None:
-    opened = os.fstat(database_fd)
-    staged = os.stat(stage_name, dir_fd=stage_fd, follow_symlinks=False)
+    try:
+        current = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError:
+        raise ValueError("fixture database changed during refresh") from None
+    opened = os.fstat(source_fd)
     if (
         not stat.S_ISREG(opened.st_mode)
         or opened.st_nlink != 1
         or (opened.st_dev, opened.st_ino)
-        != (expected_stage.st_dev, expected_stage.st_ino)
-        or (staged.st_dev, staged.st_ino)
-        != (expected_stage.st_dev, expected_stage.st_ino)
+        != (expected.st_dev, expected.st_ino)
+        or not stat.S_ISREG(current.st_mode)
+        or current.st_nlink != 1
+        or (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino)
     ):
-        raise ValueError("refresh staging database changed")
-    os.replace(
-        stage_name,
-        target_name,
-        src_dir_fd=stage_fd,
-        dst_dir_fd=parent_fd,
+        raise ValueError("fixture database changed during refresh")
+    _require_no_sqlite_sidecars(
+        parent_fd, target_name, database_role="source"
     )
-    installed = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
-    if (
-        not stat.S_ISREG(installed.st_mode)
-        or installed.st_nlink != 1
-        or (installed.st_dev, installed.st_ino)
-        != (expected_stage.st_dev, expected_stage.st_ino)
-    ):
-        raise ValueError("refreshed fixture installation is unsafe")
+
+
+def _write_pinned_refresh_database(
+    parent_fd: int,
+    target_name: str,
+    source_fd: int,
+    expected: os.stat_result,
+    original_payload: bytes,
+    refreshed_payload: bytes,
+) -> None:
+    """Write the proven inode; synchronously roll it back on any failure.
+
+    A process crash during the raw write cannot have rename-grade atomicity
+    without a platform-specific inode-CAS rename.  The non-overwrite contract
+    is stronger here: a concurrently replaced pathname is never opened or
+    written, and every observable Python error attempts an exact FD rollback.
+    """
+
+    _require_refresh_binding(parent_fd, target_name, source_fd, expected)
+    try:
+        _write_database_image(source_fd, refreshed_payload)
+        _require_refresh_binding(parent_fd, target_name, source_fd, expected)
+    except BaseException as error:
+        try:
+            _write_database_image(source_fd, original_payload)
+            os.utime(
+                source_fd,
+                ns=(expected.st_atime_ns, expected.st_mtime_ns),
+            )
+            os.fsync(source_fd)
+        except BaseException:
+            raise ValueError("fixture database rollback failed") from error
+        raise
 
 
 def validate_refresh_database(raw_path: str | os.PathLike[str]) -> tuple[Path, str]:
@@ -1244,83 +1293,60 @@ def refresh_fixture(
 ) -> dict:
     refreshed_at = _aware_utc(now_factory())
     new_receipt_id = None
-    with _opened_refresh_source(database_path) as (
+    with _opened_refresh_source(database_path, writable=True) as (
         path,
         parent_fd,
         source_fd,
         source_expected,
     ):
-        with _private_database_stage(path.parent, parent_fd, "refresh") as (
-            _stage_path,
-            stage_fd,
-            stage_name,
-            database_fd,
-            stage_expected,
-        ):
-            source_payload = _read_source_database(source_fd)
-            source_sha256 = hashlib.sha256(source_payload).digest()
-            _require_refresh_identity(
-                parent_fd,
-                path.name,
-                source_fd,
-                source_expected,
-                source_sha256,
-            )
-            conn, scenario = _read_serialized_marker(source_payload)
-            if path.name != f"{scenario}.db":
-                conn.close()
-                raise ValueError("fixture marker does not match filename")
-            try:
-                conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("BEGIN IMMEDIATE")
-                if scenario == "active":
-                    new_receipt_id = _refresh_active(
-                        conn, refreshed_at, receipt_id_factory
-                    )
-                elif scenario == "idle":
-                    _refresh_idle(conn, refreshed_at)
-                elif scenario == "partial":
-                    _refresh_partial(conn, refreshed_at)
-                else:  # defensive; marker validation rejects this.
-                    raise ValueError("fixture scenario cannot be refreshed")
-                conn.commit()
-                refreshed_payload = _serialize_validated_database(conn)
-            except BaseException:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
-            _write_serialized_database(
-                stage_fd,
-                stage_name,
-                database_fd,
-                stage_expected,
-                refreshed_payload,
-            )
-            _require_no_sqlite_sidecars(stage_fd, stage_name)
-            _require_refresh_identity(
-                parent_fd,
-                path.name,
-                source_fd,
-                source_expected,
-                source_sha256,
-            )
-            current_stage = os.stat(
-                stage_name, dir_fd=stage_fd, follow_symlinks=False
-            )
-            if (current_stage.st_dev, current_stage.st_ino) != (
-                stage_expected.st_dev,
-                stage_expected.st_ino,
-            ):
-                raise ValueError("refresh staging database changed")
-            _replace_from_stage(
-                parent_fd,
-                path.name,
-                stage_fd,
-                stage_name,
-                database_fd,
-                stage_expected,
-            )
+        source_payload = _read_source_database(source_fd)
+        source_sha256 = hashlib.sha256(source_payload).digest()
+        _require_refresh_identity(
+            parent_fd,
+            path.name,
+            source_fd,
+            source_expected,
+            source_sha256,
+        )
+        conn, scenario = _read_serialized_marker(source_payload)
+        if path.name != f"{scenario}.db":
+            conn.close()
+            raise ValueError("fixture marker does not match filename")
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            if scenario == "active":
+                new_receipt_id = _refresh_active(
+                    conn, refreshed_at, receipt_id_factory
+                )
+            elif scenario == "idle":
+                _refresh_idle(conn, refreshed_at)
+            elif scenario == "partial":
+                _refresh_partial(conn, refreshed_at)
+            else:  # defensive; marker validation rejects this.
+                raise ValueError("fixture scenario cannot be refreshed")
+            conn.commit()
+            refreshed_payload = _serialize_validated_database(conn)
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        _require_refresh_identity(
+            parent_fd,
+            path.name,
+            source_fd,
+            source_expected,
+            source_sha256,
+        )
+        _write_pinned_refresh_database(
+            parent_fd,
+            path.name,
+            source_fd,
+            source_expected,
+            source_payload,
+            refreshed_payload,
+        )
     return {
         "new_receipt_id": new_receipt_id,
         "refreshed_at": _wire_time(refreshed_at),
