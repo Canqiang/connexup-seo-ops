@@ -10,12 +10,14 @@ import TasksOverview from './pages/TasksOverview'
 import MerchantProfile from './pages/MerchantProfile'
 import PerformanceDashboard from './pages/PerformanceDashboard'
 import PlanReview from './pages/PlanReview'
+import AgentWorkbench from './pages/AgentWorkbench'
 
-function NavGlyph({ name }: { name: 'merchants' | 'tasks' | 'dashboard' }) {
+function NavGlyph({ name }: { name: 'merchants' | 'tasks' | 'dashboard' | 'agents' }) {
   const paths = {
     merchants: <><path d="M5 20v-8h14v8M8 12V7h8v5M8 16h2M14 16h2" /></>,
     tasks: <><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" /></>,
     dashboard: <><path d="M4 19V5M4 19h16M7 15l4-4 3 2 5-7M19 6v4h-4" /></>,
+    agents: <><circle cx="12" cy="6" r="2" /><circle cx="6" cy="17" r="2" /><circle cx="18" cy="17" r="2" /><path d="M12 8v4M12 12l-6 3M12 12l6 3" /></>,
   }
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
 }
@@ -28,6 +30,7 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
     || pathname.startsWith('/task-plans/')
   const tasksActive = pathname.startsWith('/tasks')
   const dashboardActive = pathname === '/dashboard'
+  const agentsActive = pathname === '/agents'
 
   return (
     <div className="app-shell">
@@ -47,6 +50,10 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
           <Link to="/tasks" className={tasksActive ? 'active' : ''} aria-current={tasksActive ? 'page' : undefined}>
             <NavGlyph name="tasks" />
             <span>任务</span>
+          </Link>
+          <Link to="/agents" className={agentsActive ? 'active' : ''} aria-current={agentsActive ? 'page' : undefined}>
+            <NavGlyph name="agents" />
+            <span>Agent</span>
           </Link>
         </nav>
       </aside>
@@ -70,6 +77,7 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
           <Route path="/tasks/:id" element={<TaskDetail />} />
           <Route path="/runs/:id" element={<RunDetail />} />
           <Route path="/dashboard" element={<PerformanceDashboard />} />
+          <Route path="/agents" element={<AgentWorkbench />} />
           <Route path="/task-plans/:id" element={<PlanReview />} />
         </Routes>
       </section>

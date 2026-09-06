@@ -3,6 +3,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { WorkbenchRange, WorkbenchSignal } from '../api'
 import { reconcileSignalSelection } from '../agentWorkbenchPresentation'
 import LiveRunStage from '../components/agent-workbench/LiveRunStage'
+import AgentSummaryMetrics from '../components/agent-workbench/AgentSummaryMetrics'
+import AgentRegistryTable, { type AgentManagerMode } from '../components/agent-workbench/AgentRegistryTable'
+import AgentManagerDrawer from '../components/agent-workbench/AgentManagerDrawer'
 import { useAgentWorkbenchPolling } from '../useAgentWorkbenchPolling'
 
 const rangeLabels: Record<WorkbenchRange, string> = {
@@ -27,6 +30,8 @@ function syncHeadline(
 export default function AgentWorkbench() {
   const [range, setRange] = useState<WorkbenchRange>('30d')
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null)
+  const [managerMode, setManagerMode] = useState<AgentManagerMode | null>(null)
+  const [managerOpener, setManagerOpener] = useState<HTMLElement | null>(null)
   const result = useAgentWorkbenchPolling(range)
   const { snapshot, presentation, loading, refreshing, error, autoUpdate, requestRefresh, setAutoUpdate } = result
   const displayedRange = snapshot?.range ?? '30d'
@@ -39,6 +44,11 @@ export default function AgentWorkbench() {
   useLayoutEffect(() => () => {
     selectedWasFocusedRef.current = selectedSignalId !== null && focusedSignalIdRef.current === selectedSignalId
   }, [presentation, selectedSignalId])
+
+  const openManager = (mode: AgentManagerMode, opener?: HTMLElement) => {
+    setManagerOpener(opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null))
+    setManagerMode(mode)
+  }
 
   useEffect(() => {
     if (!presentation) return
@@ -68,8 +78,6 @@ export default function AgentWorkbench() {
   const lastCompleted = lastCompletedAgent?.last_terminal_run?.completed_at
     ? { agentName: lastCompletedAgent.display_name, completedAt: lastCompletedAgent.last_terminal_run.completed_at }
     : null
-
-  const focusRegistry = () => document.getElementById('agent-workbench-registry')?.focus()
 
   return (
     <main className="agent-workbench">
@@ -135,8 +143,10 @@ export default function AgentWorkbench() {
         />
       )}
 
+      {snapshot && presentation && <AgentSummaryMetrics snapshot={snapshot} presentation={presentation} />}
+
       {snapshot && snapshot.agents.length === 0 && (
-        <section className="agent-workbench__notice"><strong>尚未注册 SEO Ops Agent</strong><button type="button" onClick={focusRegistry}>管理 Agent</button></section>
+        <section className="agent-workbench__notice"><strong>尚未注册 SEO Ops Agent</strong><button type="button" onClick={event => openManager({ kind: 'register' }, event.currentTarget)}>管理 Agent</button></section>
       )}
       {snapshot && activeAgents.length === 0 && disabledAgents.length > 0 && (
         <section className="agent-workbench__notice"><strong>当前没有启用的 Agent</strong></section>
@@ -145,14 +155,11 @@ export default function AgentWorkbench() {
         <section className="agent-workbench__notice"><strong>当前没有在册 Agent</strong><a href="#agent-workbench-registry">查看已归档</a></section>
       )}
 
-      {snapshot && (
-        <section id="agent-workbench-registry" className="agent-workbench__registry" aria-label="Agent registry" tabIndex={-1}>
-          <h2>Agent 台账</h2>
-          {snapshot.agents.length === 0
-            ? <p>尚无 Agent 记录</p>
-            : <ul>{snapshot.agents.map(agent => <li key={agent.id}><strong>{agent.display_name}</strong><span>{agent.role}</span><small>{agent.lifecycle_status}</small></li>)}</ul>}
-        </section>
-      )}
+      {snapshot && <AgentRegistryTable agents={snapshot.agents} range={displayedRange} autoUpdate={autoUpdate} onManage={openManager} onAnnouncement={result.publishAnnouncement} />}
+
+      {snapshot && snapshot.sync_warnings.length > 0 && <section className="agent-workbench__warnings" aria-labelledby="agent-workbench-warnings-heading"><h2 id="agent-workbench-warnings-heading">运行告警</h2><ul>{snapshot.sync_warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.message}</strong>{warning.local_agent_id && <span>Agent {warning.local_agent_id}</span>}{warning.coreai_run_id && <span>Run {warning.coreai_run_id}</span>}</li>)}</ul></section>}
+
+      {managerMode && <AgentManagerDrawer mode={managerMode} autoUpdate={autoUpdate} requestRefresh={result.requestRefresh} opener={managerOpener} onClose={() => setManagerMode(null)} />}
 
       <div className="agent-workbench__announcer" aria-live="polite" aria-atomic="true">
         {result.eventAnnouncement && (

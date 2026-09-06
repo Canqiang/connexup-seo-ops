@@ -851,7 +851,7 @@ describe('desktop operator shell', () => {
       if (timeout === 30_000 && typeof handler === 'function') {
         profileRefresh = handler as () => void
       }
-      return 1
+      return 1 as unknown as ReturnType<typeof window.setInterval>
     })
     const calls: Array<{ input: string; method: string }> = []
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
@@ -917,7 +917,7 @@ describe('desktop operator shell', () => {
       if (timeout === 30_000 && typeof handler === 'function') {
         profileRefresh = handler as () => void
       }
-      return 1
+      return 1 as unknown as ReturnType<typeof window.setInterval>
     })
     const profileAt = (lastSyncedAt: string) => ({
       merchant_id: 1,
@@ -4933,7 +4933,7 @@ describe('Performance 数据看板', () => {
     render(<App />)
 
     const primaryNav = await screen.findByRole('navigation', { name: '主要功能' })
-    expect(within(primaryNav).getAllByRole('link').map(link => link.textContent)).toEqual(['看板', '商户', '任务'])
+    expect(within(primaryNav).getAllByRole('link').map(link => link.textContent)).toEqual(['看板', '商户', '任务', 'Agent'])
     const dashboardLink = within(primaryNav).getByRole('link', { name: '看板' })
     expect(dashboardLink.getAttribute('aria-current')).toBe('page')
     const workspaceBar = document.querySelector('.workspace-bar')
@@ -5093,5 +5093,43 @@ describe('Performance 数据看板', () => {
     fireEvent.popState(window)
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2))
     Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+  })
+})
+
+describe('Agent Workbench route', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+  it('agents navigation and direct route', async () => {
+    window.history.pushState({}, '', '/agents')
+    const fetcher = vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input === '/api/auth/me'
+        ? { username: 'test', role: 'operator' }
+        : input === '/api/agent-workbench?range=30d'
+          ? {
+              snapshot_at: '2026-09-06T01:00:00.000Z', last_complete_discovery_at: null, sync_health: 'not_configured', stale: true,
+              current_state_complete: null, current_state_checked_at: null, current_state_incomplete_statuses: [], fresh_until: null,
+              has_active_runs: null, has_queued_runs: null, has_waiting_runs: null,
+              current_counts: {
+                running: { value: null, quality: 'unknown', last_observed_value: null, last_observed_at: null },
+                queued: { value: null, quality: 'unknown', last_observed_value: null, last_observed_at: null },
+                waiting: { value: null, quality: 'unknown', last_observed_value: null, last_observed_at: null },
+                legacy_nonterminal: { value: null, quality: 'unknown', last_observed_value: null, last_observed_at: null },
+              },
+              refresh_after_ms: 30000, range: '30d', timezone: 'Asia/Shanghai', range_start: null, range_end: '2026-09-06T01:00:00.000Z', metrics_complete_for_range: true,
+              coverage: { mirrored_run_count: 0, remote_total_runs: 0, history_complete: true, range_complete: true, coverage_start_at: null, coverage_as_of: null },
+              summary: { run_count: 0, terminal_runs: 0, successful_runs: 0, success_rate: null, known_input_tokens: 0, known_output_tokens: 0, known_total_tokens: 0, token_known_runs: 0, token_eligible_runs: 0 },
+              signals: [], agents: [], sync_warnings: [],
+            }
+          : [],
+    }))
+    vi.stubGlobal('fetch', fetcher)
+    render(<App />)
+
+    const link = await screen.findByRole('link', { name: 'Agent' })
+    expect(link.getAttribute('aria-current')).toBe('page')
+    await screen.findByRole('heading', { name: 'Agent 工作台' })
+    expect(fetcher.mock.calls.map(call => call[0])).toEqual(['/api/auth/me', '/api/agent-workbench?range=30d'])
   })
 })
