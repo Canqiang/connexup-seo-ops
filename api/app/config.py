@@ -32,7 +32,7 @@ def agent_workbench_settings() -> AgentWorkbenchSettings:
     history_limit_value = os.environ.get("SEO_OPS_AGENT_HISTORY_LIMIT", "").strip()
     try:
         timezone = ZoneInfo(timezone_name or "Asia/Shanghai")
-    except ZoneInfoNotFoundError as exc:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError("invalid SEO_OPS_OPERATOR_TIMEZONE") from exc
     try:
         history_limit = int(history_limit_value) if history_limit_value else 200

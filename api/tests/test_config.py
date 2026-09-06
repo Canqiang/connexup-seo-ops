@@ -71,6 +71,14 @@ def test_agent_workbench_settings_defaults_and_bounds(monkeypatch):
         agent_workbench_settings()
 
 
+def test_agent_workbench_settings_normalizes_path_like_timezone_error(monkeypatch):
+    from app.config import agent_workbench_settings
+
+    monkeypatch.setenv("SEO_OPS_OPERATOR_TIMEZONE", "/etc/passwd")
+    with pytest.raises(ValueError, match="^invalid SEO_OPS_OPERATOR_TIMEZONE$"):
+        agent_workbench_settings()
+
+
 def test_configured_agent_slots_exact_order(monkeypatch):
     from app.config import configured_agent_slots
 
