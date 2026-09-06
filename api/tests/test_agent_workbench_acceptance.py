@@ -607,7 +607,10 @@ def test_list_confirmation_enables_running_signal(tmp_path, monkeypatch):
     ]
 
 
-def test_terminal_projection_persists_tokens_and_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tokens", [(7, 11), (0, 0)])
+def test_terminal_projection_persists_tokens_and_receipt(
+    tmp_path, monkeypatch, tokens
+):
     path, conn = _open_database(tmp_path, monkeypatch)
     _seed_agent(conn, monkeypatch)
     conn.close()
@@ -625,7 +628,7 @@ def test_terminal_projection_persists_tokens_and_receipt(tmp_path, monkeypatch):
         "run-terminal",
         "COMPLETED",
         completed_at=terminal_at,
-        tokens=(7, 11),
+        tokens=tokens,
     )
     fake = ListOnlyCoreAiFake(_four_pages(all_rows=(completed,)))
 
@@ -642,8 +645,8 @@ def test_terminal_projection_persists_tokens_and_receipt(tmp_path, monkeypatch):
     ).fetchone()
     assert tuple(row) == (
         "COMPLETED",
-        7,
-        11,
+        tokens[0],
+        tokens[1],
         terminal_at.isoformat(),
         (terminal_at + timedelta(seconds=10)).isoformat(),
         terminal_at.isoformat(),
@@ -652,8 +655,78 @@ def test_terminal_projection_persists_tokens_and_receipt(tmp_path, monkeypatch):
     snapshot = _snapshot(path, terminal_at + timedelta(seconds=1))
     receipt = next(row for row in snapshot["signals"] if row["coreai_run_id"] == "run-terminal")
     assert receipt["signal_state"] == "completed"
-    assert receipt["total_tokens"] == 18
+    assert receipt["total_tokens"] == sum(tokens)
     assert fake.get_run_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("source_status", "expected_state", "expected_archiving"),
+    [
+        ("running", "archiving", True),
+        ("succeeded", "completed", False),
+    ],
+)
+def test_local_archiving_settles_to_static_receipt(
+    tmp_path,
+    monkeypatch,
+    source_status,
+    expected_state,
+    expected_archiving,
+):
+    _, conn = _open_database(
+        tmp_path, monkeypatch, f"local-{source_status}.db"
+    )
+    _seed_agent(conn, monkeypatch)
+    merchant_id = conn.execute(
+        "INSERT INTO merchants (name,created_at) VALUES (?,?)",
+        ("Local Source Merchant", NOW.isoformat()),
+    ).lastrowid
+    source_id = _insert_source_run(
+        conn,
+        merchant_id,
+        f"local-{source_status}",
+        status=source_status,
+    )
+    parsed = agent_workbench.parse_agent_run_page(
+        CORE_ID,
+        _page(
+            (
+                _run(
+                    f"local-{source_status}",
+                    "COMPLETED",
+                    completed_at=NOW,
+                    tokens=(7, 11),
+                ),
+            )
+        ),
+        NOW,
+    ).runs[0]
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        parsed,
+        NOW,
+        agent_workbench.LocalRunBinding("run", source_id),
+    )
+
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", NOW + timedelta(seconds=1), "UTC", 20
+    )
+    signal = next(
+        item
+        for item in snapshot["signals"]
+        if item["coreai_run_id"] == f"local-{source_status}"
+    )
+    assert signal["signal_state"] == expected_state
+    assert signal["association"]["kind"] == "run"
+    assert signal["association"]["source_local_id"] == source_id
+    assert signal["total_tokens"] == 18
+    assert signal["receipt_expires_at"] == (
+        NOW + timedelta(seconds=10)
+    ).isoformat()
+    terminal = snapshot["agents"][0]["last_terminal_run"]
+    assert terminal["archiving"] is expected_archiving
+    conn.close()
 
 
 def test_repeat_discovery_never_moves_receipt_expiry(tmp_path, monkeypatch):
@@ -724,6 +797,177 @@ def test_old_terminal_backfill_has_no_receipt(tmp_path, monkeypatch):
     assert tuple(row) == (NOW.isoformat(), None, 3, 5)
     check.close()
     assert all(row["coreai_run_id"] != "old-terminal" for row in _snapshot(path, NOW)["signals"])
+
+
+def test_mixed_proof_remains_honest(tmp_path, monkeypatch):
+    path, conn = _open_database(tmp_path, monkeypatch, "mixed-proof.db")
+    _seed_agent(conn, monkeypatch)
+    merchant_id = conn.execute(
+        "INSERT INTO merchants (name,created_at) VALUES (?,?)",
+        ("Mixed Proof Merchant", NOW.isoformat()),
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,"
+        "raw_status,trigger_type,started_at,first_seen_at,last_synced_at,"
+        "data_warning_codes_json) VALUES (?,?,?,'WORKFLOW',?,?,?,?)",
+        (
+            "outside-unknown",
+            LOCAL_ID,
+            "AWAITING_REVIEW",
+            (NOW - timedelta(days=31)).isoformat(),
+            (NOW - timedelta(days=31)).isoformat(),
+            (NOW - timedelta(minutes=1)).isoformat(),
+            '["UNKNOWN_STATUS"]',
+        ),
+    )
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET local_event_epoch=1,"
+        "history_event_epoch=1,unresolved_unknown_status_count=1,"
+        "next_discovery_at=? WHERE seo_ops_agent_id=?",
+        (NOW.isoformat(), LOCAL_ID),
+    )
+    conn.commit()
+    conn.close()
+
+    recent = [
+        _run(
+            f"recent-{index:03d}",
+            "COMPLETED",
+            started_at=NOW - timedelta(minutes=index + 1),
+            completed_at=NOW - timedelta(minutes=index),
+            tokens=(index % 3, index % 5),
+        )
+        for index in range(199)
+    ]
+    recent.append(
+        _run(
+            "inside-unknown",
+            "AWAITING_REVIEW",
+            started_at=NOW - timedelta(minutes=2),
+        )
+    )
+    old_running = _run(
+        "old-running",
+        "RUNNING",
+        started_at=NOW - timedelta(days=15),
+    )
+    responses = {
+        (CORE_ID, None): [_page(recent, total=201)],
+        (CORE_ID, "PENDING"): [CoreAiError(0, "never serialize this secret")],
+        (CORE_ID, "RUNNING"): [_page((old_running,), total=2)],
+        (CORE_ID, "PAUSED"): [_page(())],
+    }
+    fake = ListOnlyCoreAiFake(responses)
+    assert agent_workbench.sync_registered_agent_runs_once(
+        LOCAL_ID, now=NOW, client_factory=lambda: fake
+    )
+
+    check = sqlite3.connect(path)
+    check.row_factory = sqlite3.Row
+    state = _sync_state(check)
+    assert state["running_observed_count"] == 1
+    assert state["running_upstream_total"] == 2
+    assert state["running_set_quality"] == "lower_bound"
+    assert state["pending_last_observed_at"] is None
+    assert state["pending_set_quality"] == "unknown"
+    assert state["paused_observed_count"] == 0
+    assert state["paused_set_quality"] == "exact"
+    assert state["current_state_complete"] == 0
+    snapshot = agent_workbench.build_workbench_snapshot(
+        check, "30d", NOW, "UTC", 20
+    )
+    assert snapshot["has_active_runs"] is None
+    assert snapshot["coverage"]["history_complete"] is False
+    assert snapshot["metrics_complete_for_range"] is False
+    # The durable status segment retains the lower bound; the aggregate
+    # deliberately degrades every active count while sync_pending is true.
+    assert snapshot["current_counts"]["running"]["quality"] == "unknown"
+    assert snapshot["agents"][0]["current_counts"]["running"][
+        "last_observed_value"
+    ] == 1
+    assert snapshot["current_counts"]["queued"]["quality"] == "unknown"
+    static_ids = {
+        row["coreai_run_id"]
+        for row in snapshot["signals"]
+        if row["signal_state"] == "uncertain" and row["fresh"] is False
+    }
+    assert {"inside-unknown", "outside-unknown"} <= static_ids
+    assert fake.get_run_calls == 0
+
+    # A source-associated NULL status blocks all known buckets without being
+    # animated, even though the earlier range proof remains factual.
+    source_id = _insert_source_run(check, merchant_id, "local-null")
+    check.execute(
+        "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,"
+        "raw_status,source_kind,source_local_id,merchant_id,first_seen_at,"
+        "data_warning_codes_json) VALUES (?, ?, NULL, 'run', ?, ?, ?, ?)",
+        (
+            "local-null",
+            LOCAL_ID,
+            source_id,
+            merchant_id,
+            (NOW - timedelta(minutes=1)).isoformat(),
+            '["LOCAL_TRIGGER_STATUS_MISSING"]',
+        ),
+    )
+    check.execute(
+        "UPDATE seo_ops_agent_sync_state SET local_event_epoch=local_event_epoch+1,"
+        "history_event_epoch=history_event_epoch+1,"
+        "unresolved_unknown_status_count=unresolved_unknown_status_count+1,"
+        "pending_set_quality='unknown',running_set_quality='unknown',"
+        "paused_set_quality='unknown',current_state_complete=0 "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    )
+    check.commit()
+    with_null = agent_workbench.build_workbench_snapshot(
+        check, "30d", NOW, "UTC", 20
+    )
+    assert with_null["has_active_runs"] is None
+    assert tuple(
+        with_null["current_counts"][key]["quality"]
+        for key in ("queued", "running", "waiting")
+    ) == ("unknown", "unknown", "unknown")
+    null_signal = next(
+        row for row in with_null["signals"] if row["coreai_run_id"] == "local-null"
+    )
+    assert null_signal["raw_status"] is None
+    assert null_signal["signal_state"] == "uncertain"
+    assert null_signal["fresh"] is False
+    check.close()
+
+    # A same-cycle disagreement is never reconciled by selecting one status.
+    conflict_path, conflict = _open_database(
+        tmp_path, monkeypatch, "mixed-conflict.db"
+    )
+    _seed_agent(conflict, monkeypatch)
+    conflict.close()
+    unfiltered = _run("same-cycle-conflict", "PENDING")
+    running = _run("same-cycle-conflict", "RUNNING")
+    assert agent_workbench.sync_registered_agent_runs_once(
+        LOCAL_ID,
+        now=NOW,
+        client_factory=lambda: ListOnlyCoreAiFake(
+            _four_pages(
+                all_rows=(unfiltered,), pending=(unfiltered,), running=(running,)
+            )
+        ),
+    )
+    conflict = sqlite3.connect(conflict_path)
+    conflict.row_factory = sqlite3.Row
+    conflict_state = _sync_state(conflict)
+    assert conflict_state["current_state_complete"] == 0
+    assert conflict_state["current_state_error"].startswith(
+        "SAME_CYCLE_STATUS_CONFLICT"
+    )
+    assert tuple(
+        conflict_state[f"{prefix}_set_quality"]
+        for prefix in ("pending", "running", "paused")
+    ) == ("unknown", "unknown", "unknown")
+    assert agent_workbench.build_workbench_snapshot(
+        conflict, "30d", NOW, "UTC", 20
+    )["has_active_runs"] is None
+    conflict.close()
 
 
 def test_live_app_helper_is_red_before_task7_integration():
