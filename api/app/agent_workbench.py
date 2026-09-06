@@ -320,31 +320,7 @@ def _workbench_snapshot_from_rows(
         for prefix in ("pending", "running", "paused")
     ]
     legacy_count = _aggregate_counts(legacy_parts)
-    if not agent_rows:
-        aggregate_coverage = _empty_coverage()
-    else:
-        aggregate_coverage = {
-            "mirrored_run_count": sum(
-                coverage["mirrored_run_count"] for coverage in per_agent_coverages
-            ),
-            "remote_total_runs": (
-                sum(coverage["remote_total_runs"] for coverage in per_agent_coverages)
-                if all(coverage["remote_total_runs"] is not None for coverage in per_agent_coverages)
-                else None
-            ),
-            "history_complete": all(
-                coverage["history_complete"] for coverage in per_agent_coverages
-            ),
-            "range_complete": all(
-                coverage["range_complete"] for coverage in per_agent_coverages
-            ),
-            "coverage_start_at": _aggregate_boundary(
-                [coverage["coverage_start_at"] for coverage in per_agent_coverages], max
-            ),
-            "coverage_as_of": _aggregate_boundary(
-                [coverage["coverage_as_of"] for coverage in per_agent_coverages], min
-            ),
-        }
+    aggregate_coverage = _aggregate_coverages(per_agent_coverages)
     summary = _range_metrics(
         [row for row in run_rows if _in_workbench_range(row, range_start_dt, range_end_dt)]
     )
@@ -386,11 +362,25 @@ def _workbench_snapshot_from_rows(
         signal["fresh"] and signal["presentation_group"] in {"queued", "active"}
         for signal in signals
     )
-    due_retries = [
-        _parse_time(agent["next_discovery_at"])
-        for agent in active_agents
-        if agent["last_discovery_error"] and _parse_time(agent["next_discovery_at"])
-    ]
+    due_retries = []
+    for agent in active_agents:
+        discovery_retry = _parse_time(agent["next_discovery_at"])
+        if agent["last_discovery_error"] and discovery_retry:
+            due_retries.append(discovery_retry)
+        fast_retry = _parse_time(agent["next_fast_poll_at"])
+        owns_failed_run = any(
+            _latest_failure(
+                row["last_poll_attempt_at"], row["last_synced_at"],
+                row["last_poll_error"],
+            )
+            for row in runs_by_agent[agent["id"]]
+        )
+        if fast_retry and (
+            agent["last_fast_poll_error"]
+            or agent["current_state_error"]
+            or owns_failed_run
+        ):
+            due_retries.append(fast_retry)
     base_refresh = 5000 if fresh_signal or any_archiving else 30000
     if due_retries and not fresh_signal:
         retry_ms = max(1000, min(60000, math.floor(
@@ -539,8 +529,10 @@ def _aggregate_counts(parts):
 
 
 def _count_presence(count):
-    if count["value"] is not None:
-        return count["value"] > 0
+    if count["value"] is not None and count["value"] > 0:
+        return True
+    if count["quality"] == "exact" and count["value"] == 0:
+        return False
     return None
 
 
@@ -584,6 +576,13 @@ def _agent_health(agent, runs, now, configured, complete):
             agent["last_fast_poll_error"],
         )
         or bool(agent["current_state_error"])
+        or any(
+            _latest_failure(
+                row["last_poll_attempt_at"], row["last_synced_at"],
+                row["last_poll_error"],
+            )
+            for row in runs
+        )
     )
     if agent["status"] == "active" and (agent["sync_pending"] or not complete):
         return "stale", boundary
@@ -645,6 +644,33 @@ def _empty_coverage():
         "mirrored_run_count": 0, "remote_total_runs": 0,
         "history_complete": True, "range_complete": True,
         "coverage_start_at": None, "coverage_as_of": None,
+    }
+
+
+def _aggregate_coverages(coverages):
+    if not coverages:
+        return _empty_coverage()
+    return {
+        "mirrored_run_count": sum(
+            coverage["mirrored_run_count"] for coverage in coverages
+        ),
+        "remote_total_runs": (
+            sum(coverage["remote_total_runs"] for coverage in coverages)
+            if all(coverage["remote_total_runs"] is not None for coverage in coverages)
+            else None
+        ),
+        "history_complete": all(
+            coverage["history_complete"] for coverage in coverages
+        ),
+        "range_complete": all(
+            coverage["range_complete"] for coverage in coverages
+        ),
+        "coverage_start_at": _aggregate_boundary(
+            [coverage["coverage_start_at"] for coverage in coverages], max
+        ),
+        "coverage_as_of": _aggregate_boundary(
+            [coverage["coverage_as_of"] for coverage in coverages], min
+        ),
     }
 
 
@@ -873,6 +899,7 @@ def _workbench_signal(
     poll_failed = _latest_failure(
         row["last_poll_attempt_at"], row["last_synced_at"], row["last_poll_error"]
     )
+    unconfirmed = row["last_synced_at"] is None
     proof_failed = (
         poll_failed or _latest_discovery_failed(agent)
         or _latest_failure(
@@ -891,7 +918,7 @@ def _workbench_signal(
         signal_state = "archiving"
     elif has_receipt:
         signal_state = "completed"
-    elif uncertain_status or suspect or proof_failed:
+    elif uncertain_status or unconfirmed or suspect or proof_failed:
         signal_state = "uncertain"
     else:
         signal_state = classification["presentation_group"]
@@ -910,7 +937,7 @@ def _workbench_signal(
     reason = None
     if row["raw_status"] is None:
         reason = "状态待确认（上游未返回状态）"
-    elif uncertain_status or suspect or proof_failed:
+    elif uncertain_status or unconfirmed or suspect or proof_failed:
         reason = "状态待确认"
     values = {
         "coreai_run_id": row["coreai_run_id"], "local_agent_id": agent["id"],
