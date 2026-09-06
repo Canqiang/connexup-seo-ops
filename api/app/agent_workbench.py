@@ -2292,6 +2292,7 @@ class RunPageOutcome:
 class RunCycleResult:
     observed_at: datetime
     outcomes: Sequence[RunPageOutcome]
+    complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -2329,6 +2330,7 @@ def execute_run_request_plan(
         else list(dict.fromkeys(lease.fast_statuses))
     )
     outcomes: list[RunPageOutcome] = []
+    complete = True
 
     def request(status: str | None) -> bool:
         if stop_event is not None and stop_event.is_set():
@@ -2356,9 +2358,15 @@ def execute_run_request_plan(
 
     for status in statuses:
         if not request(status):
+            complete = False
             break
 
-    if not lease.discovery_due and None not in statuses and cached_ids_by_status:
+    if (
+        complete
+        and not lease.discovery_due
+        and None not in statuses
+        and cached_ids_by_status
+    ):
         observed_ids = {
             run.coreai_run_id
             for outcome in outcomes
@@ -2369,9 +2377,9 @@ def execute_run_request_plan(
             *(cached_ids_by_status.get(status, set()) for status in lease.fast_statuses)
         )
         if expected_ids - observed_ids:
-            request(None)
+            complete = request(None)
     observed_at = clock() if clock is not None else now
-    return RunCycleResult(observed_at, tuple(outcomes))
+    return RunCycleResult(observed_at, tuple(outcomes), complete)
 
 
 def _sync_sensitive_values() -> tuple[str, ...]:
@@ -3175,7 +3183,7 @@ def sync_registered_agent_runs_once(
             stop_event=stop_event,
             cached_ids_by_status=cached,
         )
-        if not result.outcomes:
+        if not result.complete or not result.outcomes:
             release_run_lease(conn, lease)
             return False
         return commit_discovery_cycle(conn, lease, result, clock())
@@ -3336,7 +3344,13 @@ def verify_registered_agent_metadata_once(
             if client_factory is not None
             else CoreAiClient(settings.base_url, settings.api_key)
         )
+        if stop_event is not None and stop_event.is_set():
+            release_metadata_lease(conn, lease)
+            return False
         if not renew_metadata_lease(conn, lease, clock()):
+            return False
+        if stop_event is not None and stop_event.is_set():
+            release_metadata_lease(conn, lease)
             return False
         try:
             raw_metadata = client.get_agent(lease.coreai_agent_id)

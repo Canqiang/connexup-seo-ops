@@ -358,6 +358,75 @@ def test_full_discovery_proof(tmp_path, monkeypatch):
     assert second.closed is False
 
 
+def test_discovery_shutdown_after_partial_response_discards_cycle(
+    tmp_path, monkeypatch
+):
+    database_name = "shutdown-partial-discovery.db"
+    conn = _connection(tmp_path, monkeypatch, database_name)
+    _seed_agent(conn, monkeypatch)
+    conn.close()
+    assert agent_workbench.sync_registered_agent_runs_once(
+        LOCAL_ID,
+        now=NOW,
+        client_factory=lambda: ListOnlyCoreAiFake(_full_responses()),
+    ) is True
+
+    due_at = NOW + timedelta(seconds=30)
+    before_conn = sqlite3.connect(str(tmp_path / database_name))
+    before_conn.row_factory = sqlite3.Row
+    before_state = dict(_state(before_conn))
+    for lease_field in ("lease_owner", "lease_epoch", "lease_until"):
+        before_state.pop(lease_field)
+    before_runs = [
+        tuple(row)
+        for row in before_conn.execute(
+            "SELECT * FROM seo_ops_agent_runs ORDER BY coreai_run_id"
+        ).fetchall()
+    ]
+    before_conn.close()
+
+    stop_event = threading.Event()
+
+    def partial_page_then_stop():
+        stop_event.set()
+        return _page(run_ids=("must-not-commit",), total=2)
+
+    fake = ListOnlyCoreAiFake(
+        {("agent-primary", None): [partial_page_then_stop]}
+    )
+    assert agent_workbench.sync_registered_agent_runs_once(
+        LOCAL_ID,
+        now=due_at,
+        owner="interrupted-owner",
+        client_factory=lambda: fake,
+        stop_event=stop_event,
+    ) is False
+    assert fake.calls == [("agent-primary", None, 200)]
+    assert fake.closed is True
+
+    check = sqlite3.connect(str(tmp_path / database_name))
+    check.row_factory = sqlite3.Row
+    after_state = dict(_state(check))
+    assert after_state["lease_owner"] is None
+    assert after_state["lease_until"] is None
+    for lease_field in ("lease_owner", "lease_epoch", "lease_until"):
+        after_state.pop(lease_field)
+    assert after_state == before_state
+    assert [
+        tuple(row)
+        for row in check.execute(
+            "SELECT * FROM seo_ops_agent_runs ORDER BY coreai_run_id"
+        ).fetchall()
+    ] == before_runs
+
+    recovered = agent_workbench.claim_due_run_sync(
+        check, LOCAL_ID, "recovered-owner", due_at
+    )
+    assert recovered is not None
+    assert agent_workbench.release_run_lease(check, recovered) is True
+    check.close()
+
+
 def test_cycle_commits_atomically_and_schedules(tmp_path, monkeypatch):
     conn = _connection(tmp_path, monkeypatch, "atomic-cycle.db")
     _seed_agent(conn, monkeypatch)
@@ -792,6 +861,66 @@ def test_metadata_only_due_success_and_failure(tmp_path, monkeypatch, fails):
         assert agent["verification_failure_count"] == 0
         assert agent["next_verification_at"] == "2026-09-04T04:00:00+00:00"
     assert agent["metadata_lease_owner"] is None
+    check.close()
+
+
+def test_metadata_shutdown_after_client_creation_skips_request(
+    tmp_path, monkeypatch
+):
+    database_name = "shutdown-before-metadata-request.db"
+    conn = _connection(tmp_path, monkeypatch, database_name)
+    _seed_agent(conn, monkeypatch)
+    before_agent = dict(
+        conn.execute("SELECT * FROM seo_ops_agents WHERE id=?", (LOCAL_ID,)).fetchone()
+    )
+    for lease_field in (
+        "metadata_lease_owner",
+        "metadata_lease_epoch",
+        "metadata_lease_until",
+    ):
+        before_agent.pop(lease_field)
+    before_sync = tuple(_state(conn))
+    conn.close()
+
+    stop_event = threading.Event()
+    fake = ListOnlyCoreAiFake()
+
+    def client_factory():
+        stop_event.set()
+        return fake
+
+    assert agent_workbench.verify_registered_agent_metadata_once(
+        LOCAL_ID,
+        now=NOW,
+        owner="interrupted-metadata-owner",
+        client_factory=client_factory,
+        stop_event=stop_event,
+    ) is False
+    assert fake.metadata_calls == []
+    assert fake.calls == []
+    assert fake.closed is True
+
+    check = sqlite3.connect(str(tmp_path / database_name))
+    check.row_factory = sqlite3.Row
+    after_agent = dict(
+        check.execute("SELECT * FROM seo_ops_agents WHERE id=?", (LOCAL_ID,)).fetchone()
+    )
+    assert after_agent["metadata_lease_owner"] is None
+    assert after_agent["metadata_lease_until"] is None
+    for lease_field in (
+        "metadata_lease_owner",
+        "metadata_lease_epoch",
+        "metadata_lease_until",
+    ):
+        after_agent.pop(lease_field)
+    assert after_agent == before_agent
+    assert tuple(_state(check)) == before_sync
+
+    recovered = agent_workbench.claim_due_metadata_sync(
+        check, LOCAL_ID, "recovered-metadata-owner", NOW
+    )
+    assert recovered is not None
+    assert agent_workbench.release_metadata_lease(check, recovered) is True
     check.close()
 
 
