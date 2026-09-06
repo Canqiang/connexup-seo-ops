@@ -1,7 +1,8 @@
 import asyncio
 import sqlite3
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime, timedelta, timezone
+from typing import get_args
 from uuid import UUID
 
 import pytest
@@ -112,6 +113,1403 @@ class FakeWorkbenchCoreAi:
     def list_agent_runs(self, agent_id, status, limit):
         self.list_agent_run_calls.append((agent_id, status, limit))
         return {"runs": [], "total": 0}
+
+
+def test_parser_discard_allowlist_is_exact():
+    assert agent_workbench.TOKEN_USAGE_INPUT_FIELD == "input"
+    assert agent_workbench.TOKEN_USAGE_OUTPUT_FIELD == "output"
+    assert agent_workbench.DISCARDED_UPSTREAM_FIELDS == frozenset(
+        {"input", "output", "transcript", "artifacts", "error_stack"}
+    )
+    assert {field.name for field in fields(agent_workbench.ParsedAgentRun)} == {
+        "coreai_run_id",
+        "coreai_agent_id",
+        "raw_status",
+        "trigger_type",
+        "started_at",
+        "completed_at",
+        "completed_at_state",
+        "input_tokens",
+        "output_tokens",
+        "trace_id",
+        "error_summary",
+        "warnings",
+    }
+    assert {
+        field.name for field in fields(agent_workbench.ParsedAgentRunPage)
+    } == {"runs", "total", "returned_count", "observed_at"}
+    sentinel_by_field = {
+        name: f"private-{name}-sentinel"
+        for name in agent_workbench.DISCARDED_UPSTREAM_FIELDS
+    }
+    page = {
+        "runs": [
+            {
+                "id": "run-private",
+                "agent_id": "agent-primary",
+                "status": "RUNNING",
+                "triggered_by": "WORKFLOW",
+                **sentinel_by_field,
+            }
+        ],
+        "total": 1,
+    }
+    parsed = agent_workbench.parse_agent_run_page("agent-primary", page, NOW)
+    rendered = repr(parsed)
+    for sentinel in sentinel_by_field.values():
+        assert sentinel not in rendered
+
+
+def test_parser_discards_large_private_fields():
+    raw_run = {
+        "id": "run-large-private",
+        "agent_id": "agent-primary",
+        "status": "RUNNING",
+        "triggered_by": "WORKFLOW",
+        "input": "raw-top-level-input",
+        "output": "raw-top-level-output",
+        "transcript": "private-transcript",
+        "artifacts": ["private-artifact"],
+        "error_stack": "private-stack",
+    }
+
+    parsed = agent_workbench.parse_agent_run_page(
+        "agent-primary", {"runs": [raw_run], "total": 1}, NOW
+    )
+
+    assert len(parsed.runs) == 1
+    assert parsed.runs[0].coreai_run_id == "run-large-private"
+    rendered = repr(parsed)
+    for value in raw_run.values():
+        if value in ("run-large-private", "agent-primary", "RUNNING", "WORKFLOW"):
+            continue
+        assert repr(value) not in rendered
+
+
+@pytest.mark.parametrize(
+    ("status", "triggered_by"),
+    [
+        ("PENDING", "MANUAL"),
+        ("RUNNING", "WORKFLOW"),
+        ("PAUSED", "SCHEDULED"),
+        ("COMPLETED", "API"),
+        ("FAILED", "RETRY"),
+        ("TIMEOUT", "SYSTEM"),
+        ("CANCELLED", "OPERATOR"),
+        ("SKIPPED", "future-trigger-kind"),
+    ],
+)
+def test_parse_known_status_and_narrow_fields(status, triggered_by):
+    parsed = agent_workbench.parse_agent_run_page(
+        "agent-primary",
+        {
+            "runs": [
+                {
+                    "id": f"run-{status.lower()}",
+                    "agent_id": "agent-primary",
+                    "status": status,
+                    "triggered_by": triggered_by,
+                    "unexpected": "must-not-project",
+                }
+            ],
+            "total": 1,
+        },
+        NOW,
+    )
+
+    run = parsed.runs[0]
+    assert run.raw_status == status
+    assert run.trigger_type == triggered_by
+    assert run.coreai_agent_id == "agent-primary"
+    assert "must-not-project" not in repr(run)
+    if status == "PENDING":
+        for field_name in ("id", "status", "triggered_by"):
+            for invalid in (None, "", "   "):
+                row = {
+                    "id": "run-valid",
+                    "agent_id": "agent-primary",
+                    "status": "PENDING",
+                    "triggered_by": "MANUAL",
+                }
+                row[field_name] = invalid
+                with pytest.raises(ValueError, match=field_name):
+                    agent_workbench.parse_agent_run_page(
+                        "agent-primary", {"runs": [row], "total": 1}, NOW
+                    )
+            missing = {
+                "id": "run-valid",
+                "agent_id": "agent-primary",
+                "status": "PENDING",
+                "triggered_by": "MANUAL",
+            }
+            missing.pop(field_name)
+            with pytest.raises(ValueError, match=field_name):
+                agent_workbench.parse_agent_run_page(
+                    "agent-primary", {"runs": [missing], "total": 1}, NOW
+                )
+        mismatch = {
+            "id": "run-wrong-owner",
+            "agent_id": "agent-other",
+            "status": "PENDING",
+            "triggered_by": "MANUAL",
+        }
+        with pytest.raises(ValueError, match="agent_id"):
+            agent_workbench.parse_agent_run_page(
+                "agent-primary", {"runs": [mismatch], "total": 1}, NOW
+            )
+        filtered_mismatch = dict(mismatch, agent_id="agent-primary")
+        with pytest.raises(ValueError, match="expected_status"):
+            agent_workbench.parse_agent_run_page(
+                "agent-primary",
+                {"runs": [filtered_mismatch], "total": 1},
+                NOW,
+                expected_status="RUNNING",
+            )
+
+
+def _parse_one(**overrides):
+    row = {
+        "id": "run-one",
+        "agent_id": "agent-primary",
+        "status": "RUNNING",
+        "triggered_by": "WORKFLOW",
+    }
+    row.update(overrides)
+    return agent_workbench.parse_agent_run_page(
+        "agent-primary", {"runs": [row], "total": 1}, NOW
+    ).runs[0]
+
+
+def test_parse_timestamp_valid_and_missing():
+    run = _parse_one(
+        started_at="2026-09-03T09:02:03+08:00",
+        completed_at="2026-09-03T09:03:03+08:00",
+    )
+
+    assert run.started_at == "2026-09-03T01:02:03+00:00"
+    assert run.completed_at == "2026-09-03T01:03:03+00:00"
+    assert run.completed_at_state == "valid"
+    assert run.warnings == ()
+
+    missing = _parse_one()
+    assert missing.started_at is None
+    assert missing.completed_at is None
+    assert missing.completed_at_state == "missing"
+    assert missing.warnings == ()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "warning"),
+    [
+        ("started_at", "INVALID_STARTED_AT"),
+        ("completed_at", "INVALID_COMPLETED_AT"),
+    ],
+)
+def test_parse_timestamp_rejects_naive(field_name, warning):
+    run = _parse_one(**{field_name: "2026-09-03T01:02:03"})
+
+    assert getattr(run, field_name) is None
+    assert run.completed_at_state == (
+        "invalid" if field_name == "completed_at" else "missing"
+    )
+    assert run.warnings == (warning,)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "warning"),
+    [
+        ("started_at", "INVALID_STARTED_AT"),
+        ("completed_at", "INVALID_COMPLETED_AT"),
+    ],
+)
+def test_parse_timestamp_rejects_malformed(field_name, warning):
+    run = _parse_one(**{field_name: "not-a-time"})
+
+    assert getattr(run, field_name) is None
+    assert run.completed_at_state == (
+        "invalid" if field_name == "completed_at" else "missing"
+    )
+    assert run.warnings == (warning,)
+
+
+def test_parse_token_pair_accepts_zero():
+    run = _parse_one(token_usage={"input": 0, "output": 0})
+
+    assert (run.input_tokens, run.output_tokens) == (0, 0)
+    assert run.warnings == ()
+
+
+@pytest.mark.parametrize(
+    "token_usage",
+    [{"input": 3}, {"output": 5}],
+)
+def test_parse_token_pair_rejects_partial(token_usage):
+    run = _parse_one(token_usage=token_usage)
+
+    assert (run.input_tokens, run.output_tokens) == (None, None)
+    assert run.warnings == ("TOKEN_USAGE_INVALID",)
+
+
+@pytest.mark.parametrize(
+    ("input_value", "output_value"),
+    [
+        (True, 1),
+        (1, False),
+        (True, False),
+        (-1, 2),
+        (2, -1),
+        (1.5, 2),
+        (1, 2.5),
+        ("1", 2),
+        (1, "2"),
+    ],
+)
+def test_parse_token_pair_rejects_invalid_scalars(input_value, output_value):
+    run = _parse_one(
+        token_usage={"input": input_value, "output": output_value}
+    )
+
+    assert (run.input_tokens, run.output_tokens) == (None, None)
+    assert run.warnings == ("TOKEN_USAGE_INVALID",)
+
+
+def test_parser_duplicate_rows_are_deterministic():
+    row = {
+        "id": "run-duplicate",
+        "agent_id": "agent-primary",
+        "status": "RUNNING",
+        "triggered_by": "WORKFLOW",
+        "token_usage": {"input": 1, "output": 2},
+    }
+
+    parsed = agent_workbench.parse_agent_run_page(
+        "agent-primary", {"runs": [row, dict(row)], "total": 1}, NOW
+    )
+
+    assert len(parsed.runs) == 1
+    assert parsed.returned_count == 1
+    assert parsed.runs[0].coreai_run_id == "run-duplicate"
+
+    conflicting = dict(row, status="PAUSED")
+    with pytest.raises(ValueError, match="duplicate"):
+        agent_workbench.parse_agent_run_page(
+            "agent-primary", {"runs": [row, conflicting], "total": 1}, NOW
+        )
+
+
+class DangerousErrorBody:
+    def __str__(self):
+        raise AssertionError("unsupported upstream error was stringified")
+
+    def __repr__(self):
+        raise AssertionError("unsupported upstream error was represented")
+
+
+@pytest.mark.parametrize(
+    ("raw_error", "expected"),
+    [
+        (
+            "request-credential-sentinel could not authenticate",
+            "[REDACTED] could not authenticate",
+        ),
+        (
+            {"message": "request-credential-sentinel was refused"},
+            "[REDACTED] was refused",
+        ),
+        (
+            "Bearer request-credential-sentinel denied",
+            "Bearer [REDACTED] denied",
+        ),
+        (
+            "Authorization: request-credential-sentinel denied",
+            "Authorization: [REDACTED] denied",
+        ),
+        (
+            "API-key=request-credential-sentinel denied",
+            "API-key=[REDACTED] denied",
+        ),
+        (
+            "https://core.example/runs?api_key=request-credential-sentinel&limit=1",
+            "https://core.example/runs?api_key=[REDACTED]&limit=1",
+        ),
+        (DangerousErrorBody(), "上游消息不可用"),
+        ({"body": DangerousErrorBody()}, "上游消息不可用"),
+    ],
+)
+def test_parser_redacts_upstream_error_secrets(raw_error, expected, caplog):
+    sentinel = "request-credential-sentinel"
+    row = {
+        "id": "run-private-error",
+        "agent_id": "agent-primary",
+        "status": "FAILED",
+        "triggered_by": "WORKFLOW",
+        "error": raw_error,
+    }
+
+    parsed = agent_workbench.parse_agent_run_page(
+        "agent-primary",
+        {"runs": [row], "total": 1},
+        NOW,
+        sensitive_values=(sentinel,),
+    )
+
+    assert parsed.runs[0].error_summary == expected
+    assert sentinel not in repr(parsed)
+    assert sentinel not in caplog.text
+    if isinstance(raw_error, str) or (
+        isinstance(raw_error, dict)
+        and isinstance(raw_error.get("message"), str)
+    ):
+        assert str(raw_error) not in repr(parsed)
+
+
+def test_parser_rejects_returned_rows_greater_than_total():
+    rows = [
+        {
+            "id": f"run-{index}",
+            "agent_id": "agent-primary",
+            "status": "RUNNING",
+            "triggered_by": "WORKFLOW",
+        }
+        for index in range(2)
+    ]
+
+    with pytest.raises(ValueError, match="total"):
+        agent_workbench.parse_agent_run_page(
+            "agent-primary", {"runs": rows, "total": 1}, NOW
+        )
+
+
+def _seed_agent_for_projection(conn, monkeypatch):
+    monkeypatch.setattr(agent_workbench.uuid, "uuid4", lambda: UUID(LOCAL_ID))
+    agent_workbench.seed_configured_agents(conn, (_slot(),), NOW)
+
+
+def _insert_local_run(conn, coreai_run_id="run-project"):
+    merchant_id = conn.execute(
+        "INSERT INTO merchants (name,created_at) VALUES ('Projection Merchant',?)",
+        (NOW.isoformat(),),
+    ).lastrowid
+    source_local_id = conn.execute(
+        "INSERT INTO runs (merchant_id,coreai_run_id,status,trigger_kind,created_at) "
+        "VALUES (?,?,'running','manual',?)",
+        (merchant_id, coreai_run_id, NOW.isoformat()),
+    ).lastrowid
+    conn.commit()
+    return merchant_id, source_local_id
+
+
+def _insert_local_artifact(conn, merchant_id, coreai_run_id):
+    source_local_id = conn.execute(
+        "INSERT INTO merchant_seo_artifacts "
+        "(merchant_id,cycle_id,artifact_type,schema_version,status,"
+        "source_agent_id,coreai_run_id,request_json,created_at) "
+        "VALUES (?,'cycle-projection','AUDIT_REPORT','test.v1','running',"
+        "'agent-primary',?,'{}',?)",
+        (merchant_id, coreai_run_id, NOW.isoformat()),
+    ).lastrowid
+    conn.commit()
+    return source_local_id
+
+
+def _insert_local_task_execution(conn, merchant_id, coreai_run_id, suffix=""):
+    plan_id = conn.execute(
+        "INSERT INTO task_plans "
+        "(merchant_id,source_kind,state,latest_revision,created_at) "
+        "VALUES (?,'OPERATOR','OPEN',1,?)",
+        (merchant_id, NOW.isoformat()),
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO task_plan_revisions "
+        "(plan_id,revision,decision_state,schema_version,payload_json,checksum,"
+        "source,created_by,created_at) "
+        "VALUES (?,1,'APPROVED','seo_ops.task_plan.v1','{}',?,'OPERATOR',"
+        "'test-operator',?)",
+        (plan_id, "a" * 64, NOW.isoformat()),
+    )
+    task_id = conn.execute(
+        "INSERT INTO tasks "
+        "(merchant_id,plan_id,plan_revision,task_key,task_type,workflow_version,"
+        "parameters_json,definition_checksum,title,status,created_at) "
+        "VALUES (?,?,1,?,'PREPARE_ONLY',1,'{}',?,'Projection Task','PENDING',?)",
+        (
+            merchant_id,
+            plan_id,
+            f"task-{coreai_run_id}{suffix}",
+            "b" * 64,
+            NOW.isoformat(),
+        ),
+    ).lastrowid
+    execution_id = conn.execute(
+        "INSERT INTO task_executions "
+        "(task_id,stage,status,attempt,request_json,request_checksum,"
+        "idempotency_key,coreai_run_id,created_at) "
+        "VALUES (?,'PREPARATION','RUNNING',1,'{}',?,?,?,?)",
+        (
+            task_id,
+            "c" * 64,
+            f"idem-{coreai_run_id}{suffix}",
+            coreai_run_id,
+            NOW.isoformat(),
+        ),
+    ).lastrowid
+    conn.commit()
+    return task_id, execution_id
+
+
+def _parsed_projection_run(**overrides):
+    row = {
+        "id": "run-project",
+        "agent_id": "agent-primary",
+        "status": "RUNNING",
+        "triggered_by": "WORKFLOW",
+        "started_at": "2026-09-03T01:01:03+00:00",
+        "token_usage": {"input": 10, "output": 20},
+        "trace_id": "trace-project",
+    }
+    row.update(overrides)
+    return agent_workbench.parse_agent_run_page(
+        "agent-primary", {"runs": [row], "total": 1}, NOW
+    ).runs[0]
+
+
+def test_projection_new_row_exact_readback(tmp_path, monkeypatch):
+    assert get_args(agent_workbench.LocalSourceKind) == (
+        "run",
+        "task_execution",
+        "merchant_seo_artifact",
+    )
+    binding = agent_workbench.LocalRunBinding("run", 1)
+    assert get_args(agent_workbench.ProjectionDisposition) == (
+        "inserted",
+        "updated",
+        "unchanged",
+        "older_ignored",
+        "conflict_ignored",
+    )
+    expected_result = agent_workbench.ProjectionResult(
+        coreai_run_id="run-project",
+        disposition="inserted",
+        warning_codes=(),
+    )
+    conn = _workbench_conn(tmp_path, monkeypatch, "projection-new.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    merchant_id, source_local_id = _insert_local_run(conn)
+    binding = agent_workbench.LocalRunBinding("run", source_local_id)
+
+    result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, _parsed_projection_run(), NOW, binding
+    )
+
+    assert result == expected_result
+    assert dict(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone()) == {
+        "coreai_run_id": "run-project",
+        "seo_ops_agent_id": LOCAL_ID,
+        "raw_status": "RUNNING",
+        "trigger_type": "WORKFLOW",
+        "started_at": "2026-09-03T01:01:03+00:00",
+        "completed_at": None,
+        "terminal_observed_at": None,
+        "receipt_expires_at": None,
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "trace_id": "trace-project",
+        "error_summary": None,
+        "source_kind": "run",
+        "source_local_id": source_local_id,
+        "merchant_id": merchant_id,
+        "first_seen_at": NOW.isoformat(),
+        "last_poll_attempt_at": NOW.isoformat(),
+        "last_synced_at": NOW.isoformat(),
+        "last_poll_error": None,
+        "data_warning_codes_json": "[]",
+    }
+    assert conn.execute(
+        "SELECT projection_revision FROM seo_ops_agent_sync_state "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_projection_same_observation_is_idempotent(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "projection-idempotent.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    _, source_local_id = _insert_local_run(conn)
+    binding = agent_workbench.LocalRunBinding("run", source_local_id)
+    run = _parsed_projection_run()
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, run, NOW, binding)
+    before_row = tuple(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    before_revision = conn.execute(
+        "SELECT projection_revision FROM seo_ops_agent_sync_state "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0]
+
+    result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, run, NOW, binding
+    )
+
+    assert result == agent_workbench.ProjectionResult(
+        "run-project", "unchanged", ()
+    )
+    assert tuple(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone()) == before_row
+    assert conn.execute(
+        "SELECT projection_revision FROM seo_ops_agent_sync_state "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0] == before_revision
+    conn.close()
+
+
+def test_projection_sanitized_error_sqlite_readback(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "projection-private-error.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    _, source_local_id = _insert_local_run(conn)
+    sentinel = "projection-credential-sentinel"
+    parsed = agent_workbench.parse_agent_run_page(
+        "agent-primary",
+        {
+            "runs": [
+                {
+                    "id": "run-project",
+                    "agent_id": "agent-primary",
+                    "status": "FAILED",
+                    "triggered_by": "WORKFLOW",
+                    "error": f"provider rejected {sentinel}",
+                }
+            ],
+            "total": 1,
+        },
+        NOW,
+        sensitive_values=(sentinel,),
+    ).runs[0]
+
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        parsed,
+        NOW,
+        agent_workbench.LocalRunBinding("run", source_local_id),
+    )
+
+    row = dict(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    assert row["error_summary"] == "provider rejected [REDACTED]"
+    assert sentinel not in repr(row)
+    conn.close()
+
+
+def test_projection_data_warning_readback(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "projection-warnings.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    invalid = _parsed_projection_run(
+        completed_at="malformed-completion",
+        token_usage={"input": 7},
+    )
+
+    result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, invalid, NOW
+    )
+
+    assert result.warning_codes == (
+        "INVALID_COMPLETED_AT",
+        "TOKEN_USAGE_INVALID",
+    )
+    row = dict(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    assert row["data_warning_codes_json"] == (
+        '["INVALID_COMPLETED_AT","TOKEN_USAGE_INVALID"]'
+    )
+    assert row["last_poll_error"] is None
+
+    observed_later = NOW + timedelta(seconds=1)
+    recovered = _parsed_projection_run(
+        completed_at="2026-09-03T01:02:03+00:00",
+        token_usage={"input": 8, "output": 9},
+    )
+    recovered_result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, recovered, observed_later
+    )
+    recovered_row = dict(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    assert recovered_result.warning_codes == ()
+    assert recovered_row["data_warning_codes_json"] == "[]"
+    assert recovered_row["completed_at"] == "2026-09-03T01:02:03+00:00"
+    assert (recovered_row["input_tokens"], recovered_row["output_tokens"]) == (8, 9)
+    assert recovered_row["last_poll_error"] is None
+
+    conn.execute(
+        "UPDATE seo_ops_agent_runs SET data_warning_codes_json="
+        "'[\"TERMINAL_STATUS_CONFLICT\"]' WHERE coreai_run_id='run-project'"
+    )
+    conn.commit()
+    invalid_again = _parsed_projection_run(token_usage={"output": 11})
+    conflict_result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, invalid_again, NOW + timedelta(seconds=2)
+    )
+    assert conflict_result.warning_codes == (
+        "TERMINAL_STATUS_CONFLICT",
+        "TOKEN_USAGE_INVALID",
+    )
+    assert conn.execute(
+        "SELECT data_warning_codes_json FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone()[0] == (
+        '["TERMINAL_STATUS_CONFLICT","TOKEN_USAGE_INVALID"]'
+    )
+
+    valid_again = _parsed_projection_run(token_usage={"input": 12, "output": 13})
+    persistent_result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, valid_again, NOW + timedelta(seconds=3)
+    )
+    assert persistent_result.warning_codes == ("TERMINAL_STATUS_CONFLICT",)
+    assert conn.execute(
+        "SELECT data_warning_codes_json FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone()[0] == '["TERMINAL_STATUS_CONFLICT"]'
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_status",
+        "incoming_status",
+        "expected_status",
+        "expected_disposition",
+    ),
+    [
+        ("PENDING", "RUNNING", "RUNNING", "updated"),
+        ("PENDING", "PAUSED", "PAUSED", "updated"),
+        ("RUNNING", "PAUSED", "PAUSED", "updated"),
+        ("PAUSED", "PENDING", "PENDING", "updated"),
+        ("PAUSED", "RUNNING", "RUNNING", "updated"),
+        ("RUNNING", "COMPLETED", "COMPLETED", "updated"),
+        ("COMPLETED", "RUNNING", "COMPLETED", "conflict_ignored"),
+        ("COMPLETED", "FAILED", "COMPLETED", "conflict_ignored"),
+        ("FUTURE_STATE", "RUNNING", "RUNNING", "updated"),
+        ("FUTURE_STATE", "FUTURE_STATE_2", "FUTURE_STATE_2", "updated"),
+        ("RUNNING", "FUTURE_STATE", "FUTURE_STATE", "updated"),
+        ("COMPLETED", "FUTURE_STATE", "COMPLETED", "conflict_ignored"),
+    ],
+)
+def test_projection_transition_truth_table(
+    tmp_path,
+    monkeypatch,
+    initial_status,
+    incoming_status,
+    expected_status,
+    expected_disposition,
+):
+    conn = _workbench_conn(
+        tmp_path,
+        monkeypatch,
+        f"transition-{initial_status}-{incoming_status}.db",
+    )
+    _seed_agent_for_projection(conn, monkeypatch)
+    initial = _parsed_projection_run(status=initial_status)
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, initial, NOW)
+    if initial_status not in {
+        "PENDING", "RUNNING", "PAUSED", "COMPLETED", "FAILED",
+        "TIMEOUT", "CANCELLED", "SKIPPED",
+    }:
+        assert conn.execute(
+            "SELECT unresolved_unknown_status_count "
+            "FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+            (LOCAL_ID,),
+        ).fetchone()[0] == 1
+    authoritative_columns = (
+        "raw_status",
+        "trigger_type",
+        "started_at",
+        "completed_at",
+        "input_tokens",
+        "output_tokens",
+        "trace_id",
+        "error_summary",
+        "terminal_observed_at",
+        "receipt_expires_at",
+    )
+    authoritative_before = tuple(conn.execute(
+        f"SELECT {','.join(authoritative_columns)} FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    incoming_overrides = {"status": incoming_status}
+    if initial_status in {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}:
+        incoming_overrides.update(
+            triggered_by="LATER_TRIGGER",
+            started_at="2026-09-03T01:02:00+00:00",
+            completed_at="2026-09-03T01:02:01+00:00",
+            token_usage={"input": 101, "output": 202},
+            trace_id="later-trace",
+            error="later-error",
+        )
+
+    result = agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(**incoming_overrides),
+        NOW + timedelta(seconds=1),
+    )
+
+    row = dict(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    assert row["raw_status"] == expected_status
+    assert result.disposition == expected_disposition
+    assert row["last_synced_at"] == (NOW + timedelta(seconds=1)).isoformat()
+    expected_unknown_count = int(
+        expected_status not in {
+            "PENDING", "RUNNING", "PAUSED", "COMPLETED", "FAILED",
+            "TIMEOUT", "CANCELLED", "SKIPPED",
+        }
+    )
+    assert conn.execute(
+        "SELECT unresolved_unknown_status_count "
+        "FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0] == expected_unknown_count
+    if initial_status in {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}:
+        authoritative_after = tuple(conn.execute(
+            f"SELECT {','.join(authoritative_columns)} FROM seo_ops_agent_runs "
+            "WHERE coreai_run_id='run-project'"
+        ).fetchone())
+        assert authoritative_after == authoritative_before
+    if (
+        initial_status in {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}
+        and incoming_status not in {"PENDING", "RUNNING", "PAUSED"}
+        and incoming_status != initial_status
+    ):
+        assert result.warning_codes == ("TERMINAL_STATUS_CONFLICT",)
+        assert row["data_warning_codes_json"] == '["TERMINAL_STATUS_CONFLICT"]'
+    conn.close()
+
+
+def test_projection_older_observation_cannot_overwrite_or_rewind(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "projection-older.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    latest_observation = NOW + timedelta(seconds=10)
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(),
+        latest_observation,
+    )
+    before = tuple(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    revision = conn.execute(
+        "SELECT projection_revision FROM seo_ops_agent_sync_state "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0]
+    older = _parsed_projection_run(
+        status="PAUSED",
+        triggered_by="OLDER_TRIGGER",
+        started_at="2026-09-02T00:00:00+00:00",
+        completed_at="2026-09-02T00:01:00+00:00",
+        token_usage={"input": 999, "output": 888},
+        trace_id="older-trace",
+        error="older-error",
+    )
+
+    result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, older, NOW
+    )
+
+    assert result.disposition == "older_ignored"
+    assert tuple(conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id='run-project'"
+    ).fetchone()) == before
+    assert conn.execute(
+        "SELECT projection_revision FROM seo_ops_agent_sync_state "
+        "WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0] == revision
+    conn.close()
+
+
+def test_projection_same_terminal_different_payload_keeps_first_authoritative_tuple(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "projection-terminal-repeat.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    initial = _parsed_projection_run(
+        status="COMPLETED",
+        triggered_by="FIRST_TRIGGER",
+        started_at="2026-09-03T01:00:00+00:00",
+        completed_at=NOW.isoformat(),
+        token_usage={"input": 10, "output": 20},
+        trace_id="first-trace",
+        error="first-error",
+    )
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, initial, NOW)
+    authoritative_columns = (
+        "raw_status",
+        "trigger_type",
+        "started_at",
+        "completed_at",
+        "input_tokens",
+        "output_tokens",
+        "trace_id",
+        "error_summary",
+        "terminal_observed_at",
+        "receipt_expires_at",
+    )
+    before = tuple(conn.execute(
+        f"SELECT {','.join(authoritative_columns)} FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    incoming = _parsed_projection_run(
+        status="COMPLETED",
+        triggered_by="SECOND_TRIGGER",
+        started_at="2026-09-03T01:00:30+00:00",
+        completed_at="2026-09-03T01:02:04+00:00",
+        token_usage={"input": 30, "output": 40},
+        trace_id="second-trace",
+        error="second-error",
+    )
+
+    result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, incoming, NOW + timedelta(seconds=1)
+    )
+
+    after = tuple(conn.execute(
+        f"SELECT {','.join(authoritative_columns)} FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone())
+    assert after == before
+    assert result == agent_workbench.ProjectionResult(
+        "run-project", "updated", ()
+    )
+    row = conn.execute(
+        "SELECT last_poll_attempt_at,last_synced_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone()
+    assert tuple(row) == (
+        (NOW + timedelta(seconds=1)).isoformat(),
+        (NOW + timedelta(seconds=1)).isoformat(),
+    )
+    conn.close()
+
+
+def test_receipt_for_recent_valid_completion(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "receipt-recent.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    completed = _parsed_projection_run(
+        status="COMPLETED", completed_at=NOW.isoformat()
+    )
+
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, completed, NOW)
+
+    row = conn.execute(
+        "SELECT terminal_observed_at,receipt_expires_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone()
+    assert tuple(row) == (
+        NOW.isoformat(),
+        (NOW + timedelta(seconds=10)).isoformat(),
+    )
+
+    boundary = _parsed_projection_run(
+        id="run-boundary",
+        status="COMPLETED",
+        completed_at=(NOW - timedelta(seconds=10)).isoformat(),
+    )
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, boundary, NOW)
+    boundary_row = conn.execute(
+        "SELECT terminal_observed_at,receipt_expires_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-boundary'"
+    ).fetchone()
+    assert tuple(boundary_row) == (
+        NOW.isoformat(),
+        (NOW + timedelta(seconds=10)).isoformat(),
+    )
+    conn.close()
+
+
+def test_receipt_rejects_future_or_old_completion(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "receipt-reject.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, _parsed_projection_run(), NOW - timedelta(seconds=1)
+    )
+    future = _parsed_projection_run(
+        status="COMPLETED",
+        completed_at=(NOW + timedelta(seconds=1)).isoformat(),
+    )
+
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, future, NOW)
+
+    row = conn.execute(
+        "SELECT terminal_observed_at,receipt_expires_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone()
+    assert tuple(row) == (NOW.isoformat(), None)
+
+    old = _parsed_projection_run(
+        id="run-old-completion",
+        status="COMPLETED",
+        completed_at=(NOW - timedelta(seconds=11)).isoformat(),
+    )
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, old, NOW)
+    old_row = conn.execute(
+        "SELECT terminal_observed_at,receipt_expires_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-old-completion'"
+    ).fetchone()
+    assert tuple(old_row) == (NOW.isoformat(), None)
+    conn.close()
+
+
+def test_receipt_missing_completion_requires_recent_known_nonterminal(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "receipt-missing.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    previous_observation = NOW - timedelta(seconds=15)
+    agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, _parsed_projection_run(), previous_observation
+    )
+
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(status="COMPLETED"),
+        NOW,
+    )
+
+    row = conn.execute(
+        "SELECT terminal_observed_at,receipt_expires_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone()
+    assert tuple(row) == (
+        NOW.isoformat(),
+        (NOW + timedelta(seconds=10)).isoformat(),
+    )
+
+    unknown = _parsed_projection_run(id="run-unknown", status="QUEUED_REMOTE")
+    agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, unknown, NOW - timedelta(seconds=1)
+    )
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-unknown", status="COMPLETED"),
+        NOW,
+    )
+    unknown_row = conn.execute(
+        "SELECT receipt_expires_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-unknown'"
+    ).fetchone()
+    assert unknown_row[0] is None
+
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-backfill", status="COMPLETED"),
+        NOW,
+    )
+    backfill_row = conn.execute(
+        "SELECT receipt_expires_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-backfill'"
+    ).fetchone()
+    assert backfill_row[0] is None
+    conn.close()
+
+
+def test_receipt_invalid_time_and_old_backfill_never_enter(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "receipt-invalid.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    for run_id, invalid_completed_at in (
+        ("run-naive", "2026-09-03T01:02:03"),
+        ("run-malformed", "not-a-time"),
+    ):
+        agent_workbench.upsert_projected_run(
+            conn,
+            LOCAL_ID,
+            _parsed_projection_run(id=run_id),
+            NOW - timedelta(seconds=1),
+        )
+        agent_workbench.upsert_projected_run(
+            conn,
+            LOCAL_ID,
+            _parsed_projection_run(
+                id=run_id,
+                status="COMPLETED",
+                completed_at=invalid_completed_at,
+            ),
+            NOW,
+        )
+        row = conn.execute(
+            "SELECT terminal_observed_at,receipt_expires_at "
+            "FROM seo_ops_agent_runs WHERE coreai_run_id=?",
+            (run_id,),
+        ).fetchone()
+        assert tuple(row) == (NOW.isoformat(), None)
+
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(
+            id="run-old-backfill",
+            status="COMPLETED",
+            completed_at=(NOW - timedelta(hours=1)).isoformat(),
+        ),
+        NOW,
+    )
+    backfill_row = conn.execute(
+        "SELECT terminal_observed_at,receipt_expires_at "
+        "FROM seo_ops_agent_runs WHERE coreai_run_id='run-old-backfill'"
+    ).fetchone()
+    assert tuple(backfill_row) == (NOW.isoformat(), None)
+    conn.close()
+
+
+def test_receipt_and_terminal_observation_are_immutable_on_repeat(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "receipt-repeat.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, _parsed_projection_run(), NOW - timedelta(seconds=1)
+    )
+    first_terminal = _parsed_projection_run(
+        status="COMPLETED",
+        completed_at=NOW.isoformat(),
+        triggered_by="WORKFLOW",
+        token_usage={"input": 10, "output": 20},
+        trace_id="trace-first-terminal",
+        error="first terminal",
+    )
+    agent_workbench.upsert_projected_run(conn, LOCAL_ID, first_terminal, NOW)
+    authoritative = tuple(
+        conn.execute(
+            "SELECT raw_status,trigger_type,started_at,completed_at,input_tokens,"
+            "output_tokens,trace_id,error_summary,terminal_observed_at,"
+            "receipt_expires_at FROM seo_ops_agent_runs "
+            "WHERE coreai_run_id='run-project'"
+        ).fetchone()
+    )
+
+    repeated = _parsed_projection_run(
+        status="COMPLETED",
+        started_at=(NOW - timedelta(hours=2)).isoformat(),
+        completed_at=(NOW + timedelta(seconds=5)).isoformat(),
+        triggered_by="MANUAL",
+        token_usage={"input": 999, "output": 888},
+        trace_id="trace-repeat",
+        error="later terminal",
+    )
+    result = agent_workbench.upsert_projected_run(
+        conn, LOCAL_ID, repeated, NOW + timedelta(seconds=5)
+    )
+
+    repeated_row = conn.execute(
+        "SELECT raw_status,trigger_type,started_at,completed_at,input_tokens,"
+        "output_tokens,trace_id,error_summary,terminal_observed_at,"
+        "receipt_expires_at,last_synced_at FROM seo_ops_agent_runs "
+        "WHERE coreai_run_id='run-project'"
+    ).fetchone()
+    assert tuple(repeated_row[:10]) == authoritative
+    assert repeated_row[10] == (NOW + timedelta(seconds=5)).isoformat()
+    assert result.disposition == "updated"
+    conn.close()
+
+
+def test_resolve_local_association_zero_one_many(tmp_path, monkeypatch):
+    expected = agent_workbench.LocalAssociationResolution(
+        binding=None,
+        merchant_id=None,
+        local_href=None,
+        local_label=None,
+        warning_codes=(),
+    )
+    conn = _workbench_conn(tmp_path, monkeypatch, "association-resolution.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-unassociated"),
+        NOW,
+    )
+
+    result = agent_workbench.resolve_local_association(conn, "run-unassociated")
+
+    assert result == expected
+
+    merchant_id, source_local_id = _insert_local_run(conn, "run-unique")
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-unique"),
+        NOW,
+    )
+    unique = agent_workbench.resolve_local_association(conn, "run-unique")
+    assert unique == agent_workbench.LocalAssociationResolution(
+        binding=agent_workbench.LocalRunBinding("run", source_local_id),
+        merchant_id=merchant_id,
+        local_href=f"/runs/{source_local_id}",
+        local_label=f"Run #{source_local_id}",
+        warning_codes=(),
+    )
+    bound_row = conn.execute(
+        "SELECT source_kind,source_local_id,merchant_id "
+        "FROM seo_ops_agent_runs WHERE coreai_run_id='run-unique'"
+    ).fetchone()
+    assert tuple(bound_row) == ("run", source_local_id, merchant_id)
+
+    conflict_merchant_id, _ = _insert_local_run(conn, "run-conflict")
+    _insert_local_artifact(conn, conflict_merchant_id, "run-conflict")
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-conflict"),
+        NOW,
+    )
+    conflict = agent_workbench.resolve_local_association(conn, "run-conflict")
+    assert conflict == agent_workbench.LocalAssociationResolution(
+        binding=None,
+        merchant_id=None,
+        local_href=None,
+        local_label=None,
+        warning_codes=("LOCAL_ASSOCIATION_CONFLICT",),
+    )
+    conflict_row = conn.execute(
+        "SELECT source_kind,source_local_id,merchant_id "
+        "FROM seo_ops_agent_runs WHERE coreai_run_id='run-conflict'"
+    ).fetchone()
+    assert tuple(conflict_row) == (None, None, None)
+
+    _insert_local_artifact(conn, merchant_id, "run-unique")
+    bound_conflict = agent_workbench.resolve_local_association(conn, "run-unique")
+    assert bound_conflict == agent_workbench.LocalAssociationResolution(
+        binding=agent_workbench.LocalRunBinding("run", source_local_id),
+        merchant_id=merchant_id,
+        local_href=f"/runs/{source_local_id}",
+        local_label=f"Run #{source_local_id}",
+        warning_codes=("LOCAL_ASSOCIATION_CONFLICT",),
+    )
+    preserved = conn.execute(
+        "SELECT source_kind,source_local_id,merchant_id "
+        "FROM seo_ops_agent_runs WHERE coreai_run_id='run-unique'"
+    ).fetchone()
+    assert tuple(preserved) == ("run", source_local_id, merchant_id)
+
+    conn.execute("DROP INDEX idx_runs_coreai_run_id")
+    conn.execute("DROP TRIGGER trg_runs_coreai_run_id_unique_insert")
+    conn.execute("DROP TRIGGER trg_runs_coreai_run_id_unique_update")
+    _insert_local_run(conn, "run-conflict-within-runs")
+    _insert_local_run(conn, "run-conflict-within-runs")
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-conflict-within-runs"),
+        NOW,
+    )
+    within_runs = agent_workbench.resolve_local_association(
+        conn, "run-conflict-within-runs"
+    )
+    assert within_runs.warning_codes == ("LOCAL_ASSOCIATION_CONFLICT",)
+    assert within_runs.binding is None
+
+    conn.execute("DROP TRIGGER trg_task_executions_coreai_run_id_unique_insert")
+    conn.execute("DROP TRIGGER trg_task_executions_coreai_run_id_unique_update")
+    task_conflict_merchant_id = conn.execute(
+        "INSERT INTO merchants (name,created_at) VALUES ('Task Conflict',?)",
+        (NOW.isoformat(),),
+    ).lastrowid
+    _insert_local_task_execution(
+        conn, task_conflict_merchant_id, "run-conflict-within-tasks", "-a"
+    )
+    _insert_local_task_execution(
+        conn, task_conflict_merchant_id, "run-conflict-within-tasks", "-b"
+    )
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-conflict-within-tasks"),
+        NOW,
+    )
+    within_tasks = agent_workbench.resolve_local_association(
+        conn, "run-conflict-within-tasks"
+    )
+    assert within_tasks.warning_codes == ("LOCAL_ASSOCIATION_CONFLICT",)
+    assert within_tasks.binding is None
+
+    stale_merchant_id, stale_run_id = _insert_local_run(
+        conn, "run-stale-binding"
+    )
+    agent_workbench.upsert_projected_run(
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(id="run-stale-binding"),
+        NOW,
+    )
+    agent_workbench.resolve_local_association(conn, "run-stale-binding")
+    conn.execute(
+        "UPDATE runs SET coreai_run_id=NULL WHERE id=?", (stale_run_id,)
+    )
+    _insert_local_artifact(conn, stale_merchant_id, "run-stale-binding")
+    stale_conflict = agent_workbench.resolve_local_association(
+        conn, "run-stale-binding"
+    )
+    assert stale_conflict == agent_workbench.LocalAssociationResolution(
+        agent_workbench.LocalRunBinding("run", stale_run_id),
+        stale_merchant_id,
+        None,
+        None,
+        ("LOCAL_ASSOCIATION_CONFLICT",),
+    )
+    conn.close()
+
+
+def test_association_links_and_merchant_delete(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "association-links.db")
+    _seed_agent_for_projection(conn, monkeypatch)
+    run_merchant_id, run_local_id = _insert_local_run(conn, "link-run")
+    task_merchant_id = conn.execute(
+        "INSERT INTO merchants (name,created_at) VALUES ('Task Merchant',?)",
+        (NOW.isoformat(),),
+    ).lastrowid
+    task_id, execution_id = _insert_local_task_execution(
+        conn, task_merchant_id, "link-task"
+    )
+    artifact_merchant_id = conn.execute(
+        "INSERT INTO merchants (name,created_at) VALUES ('Artifact Merchant',?)",
+        (NOW.isoformat(),),
+    ).lastrowid
+    artifact_id = _insert_local_artifact(
+        conn, artifact_merchant_id, "link-artifact"
+    )
+    for coreai_run_id in ("link-run", "link-task", "link-artifact"):
+        agent_workbench.upsert_projected_run(
+            conn,
+            LOCAL_ID,
+            _parsed_projection_run(id=coreai_run_id),
+            NOW,
+        )
+
+    assert agent_workbench.resolve_local_association(conn, "link-run") == (
+        agent_workbench.LocalAssociationResolution(
+            agent_workbench.LocalRunBinding("run", run_local_id),
+            run_merchant_id,
+            f"/runs/{run_local_id}",
+            f"Run #{run_local_id}",
+            (),
+        )
+    )
+    assert agent_workbench.resolve_local_association(conn, "link-task") == (
+        agent_workbench.LocalAssociationResolution(
+            agent_workbench.LocalRunBinding("task_execution", execution_id),
+            task_merchant_id,
+            f"/tasks/{task_id}",
+            "Projection Task",
+            (),
+        )
+    )
+    assert agent_workbench.resolve_local_association(conn, "link-artifact") == (
+        agent_workbench.LocalAssociationResolution(
+            agent_workbench.LocalRunBinding("merchant_seo_artifact", artifact_id),
+            artifact_merchant_id,
+            f"/merchants/{artifact_merchant_id}/profile",
+            f"AUDIT_REPORT #{artifact_id}",
+            (),
+        )
+    )
+
+    for trigger_name in (
+        "guard_merchants_delete_with_task_plan_history",
+        "guard_merchants_delete_with_operator_command_history",
+        "guard_merchants_delete_with_durable_history",
+    ):
+        conn.execute(f"DROP TRIGGER {trigger_name}")
+    conn.execute("DELETE FROM merchants WHERE id=?", (artifact_merchant_id,))
+    conn.commit()
+    projected = conn.execute(
+        "SELECT source_kind,source_local_id,merchant_id "
+        "FROM seo_ops_agent_runs WHERE coreai_run_id='link-artifact'"
+    ).fetchone()
+    assert tuple(projected) == (
+        "merchant_seo_artifact",
+        artifact_id,
+        None,
+    )
+    assert agent_workbench.resolve_local_association(conn, "link-artifact") == (
+        agent_workbench.LocalAssociationResolution(
+            agent_workbench.LocalRunBinding(
+                "merchant_seo_artifact", artifact_id
+            ),
+            None,
+            None,
+            None,
+            (),
+        )
+    )
+    conn.close()
+
+
+def test_association_preflight_warnings(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "association-preflight.db")
+    conn.execute("DROP INDEX idx_runs_coreai_run_id")
+    conn.execute("DROP TRIGGER trg_runs_coreai_run_id_unique_insert")
+    conn.execute("DROP TRIGGER trg_runs_coreai_run_id_unique_update")
+    conn.execute("DROP TRIGGER trg_task_executions_coreai_run_id_unique_insert")
+    conn.execute("DROP TRIGGER trg_task_executions_coreai_run_id_unique_update")
+
+    across_merchant_id, _ = _insert_local_run(conn, "duplicate-across")
+    _insert_local_artifact(conn, across_merchant_id, "duplicate-across")
+    _insert_local_run(conn, "duplicate-runs")
+    _insert_local_run(conn, "duplicate-runs")
+    task_merchant_id = conn.execute(
+        "INSERT INTO merchants (name,created_at) VALUES ('Duplicate Task',?)",
+        (NOW.isoformat(),),
+    ).lastrowid
+    _insert_local_task_execution(
+        conn, task_merchant_id, "duplicate-tasks", "-a"
+    )
+    _insert_local_task_execution(
+        conn, task_merchant_id, "duplicate-tasks", "-b"
+    )
+    _insert_local_run(conn, "single-run")
+
+    assert agent_workbench.association_preflight_warnings(conn) == [
+        {
+            "code": "LOCAL_ASSOCIATION_CONFLICT",
+            "message": "Core AI Run ID 对应多个本地记录",
+            "fields": {
+                "coreai_run_id": "duplicate-across",
+                "source_kinds": "merchant_seo_artifact,run",
+            },
+        },
+        {
+            "code": "LOCAL_ASSOCIATION_CONFLICT",
+            "message": "Core AI Run ID 对应多个本地记录",
+            "fields": {
+                "coreai_run_id": "duplicate-runs",
+                "source_kinds": "run",
+            },
+        },
+        {
+            "code": "LOCAL_ASSOCIATION_CONFLICT",
+            "message": "Core AI Run ID 对应多个本地记录",
+            "fields": {
+                "coreai_run_id": "duplicate-tasks",
+                "source_kinds": "task_execution",
+            },
+        },
+    ]
+    conn.close()
 
 
 def test_workbench_error_detail_shape():
