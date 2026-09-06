@@ -125,6 +125,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
   const cleanupTokenRef = useRef<object | null>(null)
   const requestRef = useRef<(reason: WorkbenchRefreshReason) => void>(() => undefined)
   const announcementSequenceRef = useRef(0)
+  const resumePendingRef = useRef(false)
 
   const publishAnnouncement = useCallback((message: string) => {
     if (message.length === 0) return
@@ -262,6 +263,11 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
           nextState = advancePresentation(nextState, performance.now(), 'focus')
         }
         commitState(nextState, { kind: 'snapshot', reason: active.reason })
+        if (resumePendingRef.current) {
+          resumePendingRef.current = false
+          window.sessionStorage.setItem('seo-ops.agent-workbench.auto-update', 'running')
+          setAutoUpdateState(true)
+        }
         setSnapshotAgeSeconds(0)
         queueMicrotask(() => armPresentationTimersRef.current())
         setError(null)
@@ -276,7 +282,6 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
         if (!mountedRef.current || active.generation !== generationRef.current) return
         setLoading(false)
         setRefreshing(false)
-        if (active.reason === 'resume') setAutoUpdateState(true)
         const queued = immediateIntentRef.current
         immediateIntentRef.current = null
         if (queued) {
@@ -315,8 +320,9 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
   }, [commitState])
 
   const setAutoUpdate = useCallback((enabled: boolean) => {
-    window.sessionStorage.setItem('seo-ops.agent-workbench.auto-update', enabled ? 'running' : 'paused')
     if (!enabled) {
+      window.sessionStorage.setItem('seo-ops.agent-workbench.auto-update', 'paused')
+      resumePendingRef.current = false
       autoUpdateRef.current = false
       setAutoUpdateState(false)
       clearRefreshTimer()
@@ -331,6 +337,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
       setLoading(false)
       return
     }
+    resumePendingRef.current = true
     autoUpdateRef.current = true
     if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'resume'), { kind: 'timer-tick' })
     requestRef.current('resume')

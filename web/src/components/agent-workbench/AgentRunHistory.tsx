@@ -61,6 +61,7 @@ export default function AgentRunHistory({ agent, range, autoUpdate, onAnnounceme
   const [history, setHistory] = useState<AgentRunHistoryResponse | null>(null)
   const [items, setItems] = useState<ProjectedRunSummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const generationRef = useRef(0)
   const requestRef = useRef<AbortController | null>(null)
 
@@ -71,12 +72,16 @@ export default function AgentRunHistory({ agent, range, autoUpdate, onAnnounceme
     requestRef.current = controller
     const generation = ++generationRef.current
     setLoading(true)
+    setError(null)
     void api.getAgentRunHistory(agent.id, range, 20, before, controller.signal).then(response => {
       if (controller.signal.aborted || generation !== generationRef.current || response.range !== range) return
       setHistory(response)
       setItems(current => append ? [...current, ...response.items] : response.items)
+      setError(null)
     }).catch(error => {
-      if (!isAbortError(error)) setHistory(current => current)
+      if (!isAbortError(error) && generation === generationRef.current) {
+        setError(error instanceof Error ? error.message : '读取历史失败')
+      }
     }).finally(() => {
       if (generation === generationRef.current) setLoading(false)
     })
@@ -99,7 +104,8 @@ export default function AgentRunHistory({ agent, range, autoUpdate, onAnnounceme
     <section className="agent-workbench__history" aria-label={`${agent.display_name} 运行历史`} aria-live="off">
       {!autoUpdate && history && history.range !== range && <p>历史仍为 {history.range} · 当前页面为 {range}</p>}
       {loading && items.length === 0 && <p>正在载入历史</p>}
-      {items.length === 0 && !loading && <p>此范围暂无已镜像 Run</p>}
+      {error && <p className="agent-workbench__history-error">{error}</p>}
+      {history !== null && items.length === 0 && !loading && !error && <p>此范围暂无已镜像 Run</p>}
       <ol>{items.map(item => <RunItem key={item.coreai_run_id} item={item} onAnnouncement={onAnnouncement} />)}</ol>
       {history?.next_before && <button type="button" disabled={!autoUpdate || loading} onClick={() => load(history.next_before, true)}>载入更多</button>}
     </section>

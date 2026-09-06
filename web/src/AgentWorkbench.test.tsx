@@ -4,7 +4,7 @@ import { StrictMode, useState } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { api, ApiError, type AgentRunHistory, type AgentWorkbenchSnapshot, type CurrentCount, type ProjectedRunSummary, type WorkbenchAgent, type WorkbenchSignal } from './api'
+import { api, ApiError, type AgentMutationResponse, type AgentRunHistory, type AgentWorkbenchSnapshot, type CurrentCount, type ProjectedRunSummary, type WorkbenchAgent, type WorkbenchSignal } from './api'
 import AgentWorkbench from './pages/AgentWorkbench'
 import { useAgentWorkbenchPolling } from './useAgentWorkbenchPolling'
 import LiveRunStage from './components/agent-workbench/LiveRunStage'
@@ -208,6 +208,103 @@ function present(snapshot: AgentWorkbenchSnapshot): PresentedWorkbench {
   const state = replacePresentationSnapshot(createPresentationState(), snapshot, performance.now(), 'initial')
   if (!state.presentation) throw new Error('expected presentation')
   return state.presentation
+}
+
+type MutationKind = 'register' | 'edit' | 'disable' | 're-enable' | 'retire' | 'replace'
+
+const mutationKinds: MutationKind[] = ['register', 'edit', 'disable', 're-enable', 'retire', 'replace']
+
+function mutationAgent(kind: MutationKind): WorkbenchAgent {
+  return kind === 're-enable' ? makeAgent('disabled') : makeAgent()
+}
+
+function mutationResponse(kind: MutationKind): AgentMutationResponse {
+  const original = mutationAgent(kind)
+  const lifecycle = kind === 'disable' ? 'disabled' : kind === 'retire' ? 'retired' : 'active'
+  const syncPending = kind === 'register' || kind === 're-enable' || kind === 'replace'
+  return {
+    agent: {
+      ...original,
+      id: kind === 'register' ? 'agent-new' : original.id,
+      lifecycle_status: lifecycle,
+      coreai_agent_id: kind === 'register' ? 'core-matrix' : kind === 'replace' ? 'core-replacement' : original.coreai_agent_id,
+      agent_key: kind === 'register' ? 'matrix' : original.agent_key,
+      display_name: kind === 'register' ? 'Matrix Agent' : kind === 'edit' ? '更新名称' : original.display_name,
+      sync_pending: syncPending,
+    },
+    sync_pending: syncPending,
+  }
+}
+
+function stubMutation(kind: MutationKind, promise: Promise<AgentMutationResponse>) {
+  if (kind === 'register') return vi.spyOn(api, 'registerAgent').mockReturnValue(promise)
+  if (kind === 'retire') return vi.spyOn(api, 'retireAgent').mockReturnValue(promise)
+  if (kind === 'replace') return vi.spyOn(api, 'replaceAgent').mockReturnValue(promise)
+  return vi.spyOn(api, 'updateAgent').mockReturnValue(promise)
+}
+
+function submitMutation(kind: MutationKind) {
+  if (kind === 'register') {
+    fireEvent.click(screen.getByRole('button', { name: '管理 Agent' }))
+    fireEvent.change(screen.getByLabelText('Core AI Agent ID'), { target: { value: 'core-matrix' } })
+    fireEvent.change(screen.getByLabelText('Agent key'), { target: { value: 'matrix' } })
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Matrix Agent' } })
+    fireEvent.change(screen.getByLabelText('职责'), { target: { value: 'Matrix Role' } })
+    fireEvent.click(screen.getByRole('button', { name: '验证并注册' }))
+    return
+  }
+  if (kind === 'retire') {
+    fireEvent.click(screen.getByRole('button', { name: '归档' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认归档' }))
+    return
+  }
+  if (kind === 'replace') {
+    fireEvent.click(screen.getByRole('button', { name: '替换' }))
+    fireEvent.change(screen.getByLabelText('Core AI Agent ID'), { target: { value: 'core-replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: '验证并替换' }))
+    return
+  }
+  fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+  if (kind === 'edit') {
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '更新名称' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+  } else {
+    fireEvent.click(screen.getByRole('button', { name: kind === 'disable' ? '停用 Agent' : '重新验证并启用' }))
+  }
+}
+
+function expectExactMutationCall(kind: MutationKind, mutation: ReturnType<typeof vi.fn> | ReturnType<typeof vi.spyOn>) {
+  if (kind === 'register') {
+    expect(mutation).toHaveBeenCalledWith({
+      coreai_agent_id: 'core-matrix',
+      agent_key: 'matrix',
+      display_name: 'Matrix Agent',
+      role: 'Matrix Role',
+      sort_order: 0,
+      suspect_after_seconds: 120,
+    })
+  } else if (kind === 'edit') {
+    expect(mutation).toHaveBeenCalledWith('agent-active', {
+      display_name: '更新名称',
+      role: 'SEO 研究',
+      sort_order: 1,
+      suspect_after_seconds: 120,
+    })
+  } else if (kind === 'disable') {
+    expect(mutation).toHaveBeenCalledWith('agent-active', { lifecycle_status: 'disabled' })
+  } else if (kind === 're-enable') {
+    expect(mutation).toHaveBeenCalledWith('agent-disabled', { lifecycle_status: 'active' })
+  } else if (kind === 'retire') {
+    expect(mutation).toHaveBeenCalledWith('agent-active')
+  } else {
+    expect(mutation).toHaveBeenCalledWith('agent-active', {
+      coreai_agent_id: 'core-replacement',
+      display_name: 'active Agent',
+      role: 'SEO 研究',
+      sort_order: 1,
+      suspect_after_seconds: 120,
+    })
+  }
 }
 
 afterEach(() => {
@@ -908,6 +1005,21 @@ describe('Agent Workbench', () => {
     expect(screen.getByText('业务关联待确认')).not.toBeNull()
   })
 
+  it('retired rows retain history but suppress all mutation controls', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot({ agents: [makeAgent('retired')] }))
+    vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory())
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看已归档' }))
+    const row = screen.getByRole('rowheader', { name: /retired Agent/ }).closest('tr')!
+
+    expect(within(row).getByRole('button', { name: '查看历史' })).not.toBeNull()
+    expect(within(row).queryByRole('button', { name: '编辑' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: '替换' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: '归档' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: '重新验证并启用' })).toBeNull()
+  })
+
   it('register mutation rereads persisted snapshot', async () => {
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
     const persisted = { ...makeAgent(), id: 'agent-new', display_name: '内容 Agent', agent_key: 'content', coreai_agent_id: 'core-content', sync_pending: true }
@@ -922,9 +1034,14 @@ describe('Agent Workbench', () => {
     fireEvent.change(screen.getByLabelText('职责'), { target: { value: '内容运营' } })
     fireEvent.click(screen.getByRole('button', { name: '验证并注册' }))
 
-    await waitFor(() => expect(register).toHaveBeenCalledWith(expect.objectContaining({
-      coreai_agent_id: 'core-content', agent_key: 'content', display_name: '内容 Agent', role: '内容运营',
-    })))
+    await waitFor(() => expect(register).toHaveBeenCalledWith({
+      coreai_agent_id: 'core-content',
+      agent_key: 'content',
+      display_name: '内容 Agent',
+      role: '内容运营',
+      sort_order: 0,
+      suspect_after_seconds: 120,
+    }))
     expect(await screen.findByText(/设置已保存.*active.*同步待处理/)).not.toBeNull()
   })
 
@@ -937,7 +1054,9 @@ describe('Agent Workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '编辑' }))
     fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '更新名称' } })
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
-    await waitFor(() => expect(update).toHaveBeenCalledWith('agent-active', expect.objectContaining({ display_name: '更新名称', role: 'SEO 研究', sort_order: 1, suspect_after_seconds: 120 })))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('agent-active', { display_name: '更新名称', role: 'SEO 研究', sort_order: 1, suspect_after_seconds: 120 }))
+    expect(await screen.findByText(/设置已保存.*无同步待处理/)).not.toBeNull()
+    expect(screen.queryByText(/同步已确认/)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '停用 Agent' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith('agent-active', { lifecycle_status: 'disabled' }))
     fireEvent.click(screen.getByRole('button', { name: '关闭 Agent 管理' }))
@@ -967,41 +1086,50 @@ describe('Agent Workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '替换' }))
     fireEvent.change(screen.getByLabelText('Core AI Agent ID'), { target: { value: 'core-replacement' } })
     fireEvent.click(screen.getByRole('button', { name: '验证并替换' }))
-    await waitFor(() => expect(replace).toHaveBeenCalledWith('agent-active', expect.objectContaining({ coreai_agent_id: 'core-replacement' })))
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('agent-active', {
+      coreai_agent_id: 'core-replacement',
+      display_name: 'active Agent',
+      role: 'SEO 研究',
+      sort_order: 1,
+      suspect_after_seconds: 120,
+    }))
   })
 
-  it('paused mutation does not bypass read pause', async () => {
-    const getWorkbench = vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
-    vi.spyOn(api, 'registerAgent').mockResolvedValue({ agent: makeAgent(), sync_pending: true })
+  it.each(mutationKinds)('paused mutation does not bypass read pause (%s)', async kind => {
+    const agent = mutationAgent(kind)
+    const getWorkbench = vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot({ agents: [agent] }))
+    const history = vi.spyOn(api, 'getAgentRunHistory')
+    const response = mutationResponse(kind)
+    const mutation = stubMutation(kind, Promise.resolve(response))
     render(<AgentWorkbench />)
     await act(async () => { await Promise.resolve() })
     fireEvent.click(screen.getByRole('button', { name: '暂停自动更新' }))
     getWorkbench.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: '管理 Agent' }))
-    fireEvent.change(screen.getByLabelText('Core AI Agent ID'), { target: { value: 'core-paused' } })
-    fireEvent.change(screen.getByLabelText('Agent key'), { target: { value: 'paused' } })
-    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '暂停 Agent' } })
-    fireEvent.change(screen.getByLabelText('职责'), { target: { value: '测试' } })
-    fireEvent.click(screen.getByRole('button', { name: '验证并注册' }))
+    submitMutation(kind)
     expect(await screen.findByText(/页面仍为暂停快照/)).not.toBeNull()
+    expect(screen.getByText(new RegExp(`设置已保存.*${response.agent.lifecycle_status}.*${response.sync_pending ? '同步待处理' : '无同步待处理'}`))).not.toBeNull()
+    expectExactMutationCall(kind, mutation)
     expect(getWorkbench).not.toHaveBeenCalled()
+    expect(history).not.toHaveBeenCalled()
   })
 
-  it('structured mutation errors bind fields', async () => {
+  it.each([
+    { label: 'duplicate', message: 'Agent 已存在', code: 'DUPLICATE', field: 'agent_key', fieldLabel: 'Agent key', fieldMessage: 'Agent key 已被使用' },
+    { label: 'inaccessible', message: 'Core AI Agent 不可访问', code: 'INACCESSIBLE', field: 'coreai_agent_id', fieldLabel: 'Core AI Agent ID', fieldMessage: '当前操作员无权访问' },
+    { label: 'unpublished', message: 'Core AI Agent 尚未发布', code: 'UNPUBLISHED', field: 'coreai_agent_id', fieldLabel: 'Core AI Agent ID', fieldMessage: '请先发布 Agent' },
+    { label: 'form', message: '设置未保存', code: 'INVALID', field: null, fieldLabel: null, fieldMessage: null },
+  ])('structured mutation errors bind fields ($label)', async ({ message, code, field, fieldLabel, fieldMessage }) => {
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
-    vi.spyOn(api, 'registerAgent').mockRejectedValue(new ApiError('Agent 已存在', 409, 'DUPLICATE', { agent_key: 'Agent key 已被使用' }))
+    vi.spyOn(api, 'registerAgent').mockRejectedValue(new ApiError(message, 409, code, field && fieldMessage ? { [field]: fieldMessage } : {}))
     render(<AgentWorkbench />)
     await act(async () => { await Promise.resolve() })
-    fireEvent.click(screen.getByRole('button', { name: '管理 Agent' }))
-    fireEvent.change(screen.getByLabelText('Core AI Agent ID'), { target: { value: 'core-a' } })
-    fireEvent.change(screen.getByLabelText('Agent key'), { target: { value: 'a' } })
-    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'A' } })
-    fireEvent.change(screen.getByLabelText('职责'), { target: { value: 'A' } })
-    fireEvent.click(screen.getByRole('button', { name: '验证并注册' }))
+    submitMutation('register')
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toBe('Agent 已存在')
-    expect(screen.getByLabelText('Agent key').getAttribute('aria-describedby')).toBe('agent-manager-agent_key-error')
-    expect(screen.getByText('Agent key 已被使用')).not.toBeNull()
+    expect(alert.textContent).toBe(message)
+    if (field && fieldLabel && fieldMessage) {
+      expect(screen.getByLabelText(fieldLabel).getAttribute('aria-describedby')).toBe(`agent-manager-${field}-error`)
+      expect(screen.getByText(fieldMessage)).not.toBeNull()
+    }
   })
 
   it('drawer portal stays outside inert application root', async () => {
@@ -1014,13 +1142,22 @@ describe('Agent Workbench', () => {
     expect(view.container.contains(dialog)).toBe(false)
   })
 
-  it('drawer mode chooses deterministic initial focus', async () => {
+  it.each([
+    { mode: 'register', opener: '管理 Agent', target: 'Core AI Agent ID' },
+    { mode: 'edit', opener: '编辑', target: '显示名称' },
+    { mode: 'replace', opener: '替换', target: 'Core AI Agent ID' },
+    { mode: 'retire', opener: '归档', target: '归档 active Agent' },
+  ])('drawer mode chooses deterministic initial focus ($mode)', async ({ opener, target }) => {
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
     render(<AgentWorkbench />)
     await act(async () => { await Promise.resolve() })
-    fireEvent.click(screen.getByRole('button', { name: '管理 Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: opener }))
     await act(async () => { await Promise.resolve() })
-    expect(document.activeElement).toBe(screen.getByLabelText('Core AI Agent ID'))
+    expect(document.activeElement).toBe(
+      target === '归档 active Agent'
+        ? screen.getByRole('heading', { name: target })
+        : screen.getByLabelText(target),
+    )
   })
 
   it('drawer explicit focus handler wraps forward', async () => {
@@ -1046,17 +1183,21 @@ describe('Agent Workbench', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '验证并注册' }))
   })
 
-  it('drawer restores preexisting inert state', async () => {
+  it.each(['none', 'attribute', 'property'] as const)('drawer restores preexisting inert state (%s)', async priorState => {
     const root = document.createElement('div')
     root.id = 'root'
+    if (priorState === 'attribute') root.setAttribute('inert', '')
+    if (priorState === 'property') Object.defineProperty(root, 'inert', { configurable: true, writable: true, value: true })
     document.body.appendChild(root)
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
     render(<AgentWorkbench />, { container: root })
     await act(async () => { await Promise.resolve() })
     fireEvent.click(screen.getByRole('button', { name: '管理 Agent' }))
     expect(root.hasAttribute('inert')).toBe(true)
+    if (priorState === 'property') expect((root as HTMLElement & { inert: boolean }).inert).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: '关闭 Agent 管理' }))
-    expect(root.hasAttribute('inert')).toBe(false)
+    expect(root.hasAttribute('inert')).toBe(priorState === 'attribute')
+    if (priorState === 'property') expect((root as HTMLElement & { inert: boolean }).inert).toBe(true)
     root.remove()
   })
 
@@ -1097,6 +1238,36 @@ describe('Agent Workbench', () => {
 
     await waitFor(() => expect(history).toHaveBeenCalledWith('agent-active', '30d', 20, null, expect.any(AbortSignal)))
     expect(await screen.findByText('history-run-1')).not.toBeNull()
+  })
+
+  it('initial history read failure is distinct from an exact zero result', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    vi.spyOn(api, 'getAgentRunHistory').mockRejectedValue(new Error('已清理的历史读取错误'))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+
+    expect(await screen.findByText('已清理的历史读取错误')).not.toBeNull()
+    expect(screen.queryByText('此范围暂无已镜像 Run')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('load-more history failure preserves cached items and exposes the read error', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    vi.spyOn(api, 'getAgentRunHistory')
+      .mockResolvedValueOnce(makeHistory('30d', { next_before: 'cursor-2' }))
+      .mockRejectedValueOnce(new Error('载入更多暂不可用'))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+    await screen.findByText('history-run-1')
+
+    fireEvent.click(screen.getByRole('button', { name: '载入更多' }))
+
+    expect(await screen.findByText('载入更多暂不可用')).not.toBeNull()
+    expect(screen.getByText('history-run-1')).not.toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('history cursor appends only matching response', async () => {
@@ -1174,6 +1345,39 @@ describe('Agent Workbench', () => {
     expect(await screen.findByText('resumed-run')).not.toBeNull()
   })
 
+  it('failed resume keeps history paused until a later aggregate is accepted', async () => {
+    const failedResume = deferred<AgentWorkbenchSnapshot>()
+    const acceptedResume = deferred<AgentWorkbenchSnapshot>()
+    vi.spyOn(api, 'getAgentWorkbench')
+      .mockResolvedValueOnce(makeSnapshot())
+      .mockReturnValueOnce(failedResume.promise)
+      .mockReturnValueOnce(acceptedResume.promise)
+    const history = vi.spyOn(api, 'getAgentRunHistory')
+      .mockResolvedValueOnce(makeHistory())
+      .mockResolvedValueOnce(makeHistory('30d', { items: [makeHistoryItem({ coreai_run_id: 'accepted-resume-run' })] }))
+
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+    await screen.findByText('history-run-1')
+    fireEvent.click(screen.getByRole('button', { name: '暂停自动更新' }))
+    fireEvent.click(screen.getByRole('button', { name: '恢复自动更新' }))
+
+    failedResume.reject(new Error('恢复读取失败'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(screen.getByRole('button', { name: '恢复自动更新' })).not.toBeNull()
+    expect(screen.getByText(/自动更新已暂停 · 数据截至/)).not.toBeNull()
+    expect(history).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复自动更新' }))
+    expect(history).toHaveBeenCalledTimes(1)
+    acceptedResume.resolve(makeSnapshot())
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('accepted-resume-run')).not.toBeNull()
+    expect(screen.getByRole('button', { name: '暂停自动更新' })).not.toBeNull()
+  })
+
   it('history item exposes factual fields and warning badges', async () => {
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
     vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d', { items: [makeHistoryItem({
@@ -1203,39 +1407,112 @@ describe('Agent Workbench', () => {
     expect(screen.getByRole('button', { name: '复制完整 Run ID history-facts-id' })).not.toBeNull()
   })
 
-  it('running mutations linearize aggregate readback after write', async () => {
+  it.each(mutationKinds)('running mutations linearize aggregate readback after write (%s)', async kind => {
     vi.useFakeTimers()
     const oldRead = deferred<AgentWorkbenchSnapshot>()
     const readback = deferred<AgentWorkbenchSnapshot>()
+    const mutationResult = deferred<AgentMutationResponse>()
     const signals: AbortSignal[] = []
+    const events: string[] = []
+    let openAggregateReads = 0
+    let maxAggregateConcurrency = 0
     const aggregate = vi.spyOn(api, 'getAgentWorkbench').mockImplementation((_range, signal) => {
       signals.push(signal)
-      if (signals.length === 1) return Promise.resolve(makeSnapshot({ refresh_after_ms: 1_000 }))
-      if (signals.length === 2) return oldRead.promise
+      if (signals.length === 1) return Promise.resolve(makeSnapshot({ agents: [mutationAgent(kind)], refresh_after_ms: 1_000 }))
+      openAggregateReads += 1
+      maxAggregateConcurrency = Math.max(maxAggregateConcurrency, openAggregateReads)
+      if (signals.length === 2) {
+        events.push('old-read-started')
+        return oldRead.promise.finally(() => { openAggregateReads -= 1; events.push('old-read-settled') })
+      }
+      events.push('successor-started')
       return readback.promise
     })
-    vi.spyOn(api, 'registerAgent').mockResolvedValue({ agent: { ...makeAgent(), sync_pending: true }, sync_pending: true })
+    const mutation = stubMutation(kind, mutationResult.promise)
     render(<AgentWorkbench />)
     await act(async () => { await Promise.resolve() })
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
     expect(aggregate).toHaveBeenCalledTimes(2)
-    fireEvent.click(screen.getByRole('button', { name: '管理 Agent' }))
-    fireEvent.change(screen.getByLabelText('Core AI Agent ID'), { target: { value: 'core-linear' } })
-    fireEvent.change(screen.getByLabelText('Agent key'), { target: { value: 'linear' } })
-    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Linear' } })
-    fireEvent.change(screen.getByLabelText('职责'), { target: { value: 'Linear' } })
-    fireEvent.click(screen.getByRole('button', { name: '验证并注册' }))
+    submitMutation(kind)
+    expectExactMutationCall(kind, mutation)
+    const response = mutationResponse(kind)
+    events.push('mutation-resolved')
+    mutationResult.resolve(response)
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
-    expect(screen.getByText(/设置已保存/)).not.toBeNull()
+    expect(screen.getByText(new RegExp(`设置已保存.*${response.agent.lifecycle_status}.*${response.sync_pending ? '同步待处理' : '无同步待处理'}`))).not.toBeNull()
     expect(signals[1].aborted).toBe(true)
     expect(aggregate).toHaveBeenCalledTimes(2)
     oldRead.resolve(makeSnapshot({ summary: { ...makeSnapshot().summary, run_count: 99 } }))
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
     expect(aggregate).toHaveBeenCalledTimes(3)
     expect(screen.queryByLabelText('Run 数 99')).toBeNull()
-    readback.resolve(makeSnapshot({ summary: { ...makeSnapshot().summary, run_count: 1 } }))
+    expect(events.indexOf('successor-started')).toBeGreaterThan(events.indexOf('old-read-settled'))
+    expect(events.indexOf('successor-started')).toBeGreaterThan(events.indexOf('mutation-resolved'))
+    expect(maxAggregateConcurrency).toBe(1)
+    readback.resolve(makeSnapshot({ agents: [{ ...mutationAgent(kind), ...response.agent }], summary: { ...makeSnapshot().summary, run_count: 1 } }))
     await act(async () => { await Promise.resolve() })
     expect(screen.getByLabelText('Run 数 1')).not.toBeNull()
+  })
+
+  it('running mutations linearize aggregate readback after write (mutation error)', async () => {
+    vi.useFakeTimers()
+    const oldRead = deferred<AgentWorkbenchSnapshot>()
+    const mutationResult = deferred<AgentMutationResponse>()
+    const signals: AbortSignal[] = []
+    const aggregate = vi.spyOn(api, 'getAgentWorkbench').mockImplementation((_range, signal) => {
+      signals.push(signal)
+      return signals.length === 1 ? Promise.resolve(makeSnapshot({ refresh_after_ms: 1_000 })) : oldRead.promise
+    })
+    stubMutation('register', mutationResult.promise)
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    submitMutation('register')
+
+    mutationResult.reject(new Error('变更未保存'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByRole('alert').textContent).toBe('变更未保存')
+    expect(signals[1].aborted).toBe(false)
+    expect(aggregate).toHaveBeenCalledTimes(2)
+
+    oldRead.resolve(makeSnapshot())
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(aggregate).toHaveBeenCalledTimes(2)
+  })
+
+  it('running mutations linearize aggregate readback after write (successful successor failure)', async () => {
+    vi.useFakeTimers()
+    const oldRead = deferred<AgentWorkbenchSnapshot>()
+    const failedReadback = deferred<AgentWorkbenchSnapshot>()
+    const retry = deferred<AgentWorkbenchSnapshot>()
+    const signals: AbortSignal[] = []
+    const aggregate = vi.spyOn(api, 'getAgentWorkbench').mockImplementation((_range, signal) => {
+      signals.push(signal)
+      if (signals.length === 1) return Promise.resolve(makeSnapshot({ refresh_after_ms: 1_000 }))
+      if (signals.length === 2) return oldRead.promise
+      if (signals.length === 3) return failedReadback.promise
+      return retry.promise
+    })
+    stubMutation('register', Promise.resolve(mutationResponse('register')))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    submitMutation('register')
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/设置已保存.*同步待处理/)).not.toBeNull()
+    oldRead.resolve(makeSnapshot())
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(aggregate).toHaveBeenCalledTimes(3)
+
+    failedReadback.reject(new Error('变更后的读取失败'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/设置已保存.*同步待处理/)).not.toBeNull()
+    expect(screen.getByText('变更后的读取失败')).not.toBeNull()
+    expect(screen.getByText('当前状态待确认')).not.toBeNull()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(aggregate).toHaveBeenCalledTimes(4)
+    retry.resolve(makeSnapshot())
   })
 
   it('initial read failure leaves loading state and keeps the error non-assertive', async () => {

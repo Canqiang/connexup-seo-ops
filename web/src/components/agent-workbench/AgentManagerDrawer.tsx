@@ -165,7 +165,7 @@ export default function AgentManagerDrawer({ mode, autoUpdate, requestRefresh, o
             {agent?.coreai_metadata.timeout_hint_seconds !== null && agent?.coreai_metadata.timeout_hint_seconds !== undefined && <p>Core AI 配置参考值：{agent.coreai_metadata.timeout_hint_seconds} 秒</p>}
           </div>}
           {error && <p role="alert" className="agent-workbench__form-error">{error}</p>}
-          {confirmation && <p className="agent-workbench__receipt">设置已保存 · {confirmation.agent.lifecycle_status} · {confirmation.sync_pending ? '同步待处理' : '同步已确认'}{!autoUpdate && ' · 页面仍为暂停快照；点击刷新显示或恢复自动更新'}</p>}
+          {confirmation && <p className="agent-workbench__receipt">设置已保存 · {confirmation.agent.lifecycle_status} · {confirmation.sync_pending ? '同步待处理' : '无同步待处理'}{!autoUpdate && ' · 页面仍为暂停快照；点击刷新显示或恢复自动更新'}</p>}
           {mode.kind === 'edit' && <div className="agent-workbench__lifecycle-actions">
             {mode.agent.lifecycle_status === 'active'
               ? <button type="button" disabled={busy} onClick={() => void mutate(() => api.updateAgent(mode.agent.id, { lifecycle_status: 'disabled' }))}>停用 Agent</button>

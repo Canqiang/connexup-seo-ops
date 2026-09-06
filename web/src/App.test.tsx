@@ -5132,4 +5132,58 @@ describe('Agent Workbench route', () => {
     await screen.findByRole('heading', { name: 'Agent 工作台' })
     expect(fetcher.mock.calls.map(call => call[0])).toEqual(['/api/auth/me', '/api/agent-workbench?range=30d'])
   })
+
+  it('keeps shell navigation and logout inside the single inert application root', async () => {
+    window.history.pushState({}, '', '/agents')
+    const agent = {
+      id: 'agent-active', agent_key: 'active', coreai_agent_id: 'core-active', display_name: 'Active Agent', role: 'SEO', sort_order: 1,
+      lifecycle_status: 'active', coreai_metadata: { name: null, model: null, timeout_hint_seconds: null, last_verified_at: null, verification_error: null },
+      suspect_after_seconds: 120, sync_pending: false,
+      sync: { health: 'fresh', last_discovery_attempt_at: null, last_discovery_success_at: null, discovery_error: null, current_state_checked_at: null, current_state_error: null, next_discovery_at: null, last_fast_poll_attempt_at: null, last_fast_poll_success_at: null, fast_poll_error: null },
+      current_state_complete: true,
+      current_counts: {
+        running: { value: 0, quality: 'exact', last_observed_value: 0, last_observed_at: null },
+        queued: { value: 0, quality: 'exact', last_observed_value: 0, last_observed_at: null },
+        waiting: { value: 0, quality: 'exact', last_observed_value: 0, last_observed_at: null },
+      },
+      range_metrics: { run_count: 0, terminal_runs: 0, successful_runs: 0, success_rate: null, known_input_tokens: 0, known_output_tokens: 0, known_total_tokens: 0, token_known_runs: 0, token_eligible_runs: 0 },
+      coverage: { mirrored_run_count: 0, remote_total_runs: 0, history_complete: true, range_complete: true, coverage_start_at: null, coverage_as_of: null },
+      last_terminal_run: null, warnings: [],
+    }
+    const snapshot = {
+      snapshot_at: '2026-09-06T01:00:00.000Z', last_complete_discovery_at: null, sync_health: 'fresh', stale: false,
+      current_state_complete: true, current_state_checked_at: null, current_state_incomplete_statuses: [], fresh_until: '2026-09-06T01:01:30.000Z',
+      has_active_runs: false, has_queued_runs: false, has_waiting_runs: false,
+      current_counts: {
+        running: { value: 0, quality: 'exact', last_observed_value: 0, last_observed_at: null },
+        queued: { value: 0, quality: 'exact', last_observed_value: 0, last_observed_at: null },
+        waiting: { value: 0, quality: 'exact', last_observed_value: 0, last_observed_at: null },
+        legacy_nonterminal: { value: 0, quality: 'exact', last_observed_value: 0, last_observed_at: null },
+      },
+      refresh_after_ms: 30000, range: '30d', timezone: 'Asia/Shanghai', range_start: null, range_end: '2026-09-06T01:00:00.000Z', metrics_complete_for_range: true,
+      coverage: { mirrored_run_count: 0, remote_total_runs: 0, history_complete: true, range_complete: true, coverage_start_at: null, coverage_as_of: null },
+      summary: { run_count: 0, terminal_runs: 0, successful_runs: 0, success_rate: null, known_input_tokens: 0, known_output_tokens: 0, known_total_tokens: 0, token_known_runs: 0, token_eligible_runs: 0 },
+      signals: [], agents: [agent], sync_warnings: [],
+    }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => input === '/api/auth/me' ? { username: 'test', role: 'operator' } : snapshot,
+    })))
+    const root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+    render(<App />, { container: root })
+
+    const agentLink = await screen.findByRole('link', { name: 'Agent' })
+    const logout = screen.getByRole('button', { name: '退出' })
+    fireEvent.click(await screen.findByRole('button', { name: '管理 Agent' }))
+
+    expect(root.hasAttribute('inert')).toBe(true)
+    expect(root.contains(agentLink)).toBe(true)
+    expect(root.contains(logout)).toBe(true)
+    expect(root.contains(screen.getByRole('heading', { name: 'Agent 工作台' }))).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '关闭 Agent 管理' }))
+    root.remove()
+  })
 })

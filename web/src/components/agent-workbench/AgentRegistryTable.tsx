@@ -82,9 +82,11 @@ function AgentRow({ agent, expanded, onToggle, range, autoUpdate, onManage, onAn
         <td>{agent.sync.last_discovery_success_at ?? '尚无成功同步'}<small>{agent.coverage.history_complete ? '历史完整' : qualifier}</small></td>
         <td>
           <button type="button" aria-expanded={expanded} aria-controls={historyId} onClick={onToggle}>{expanded ? '收起历史' : '查看历史'}</button>
-          <button type="button" onClick={event => onManage({ kind: 'edit', agent }, event.currentTarget)}>编辑</button>
-          <button type="button" onClick={event => onManage({ kind: 'replace', agent }, event.currentTarget)}>替换</button>
-          {agent.lifecycle_status !== 'retired' && <button type="button" onClick={event => onManage({ kind: 'retire', agent }, event.currentTarget)}>归档</button>}
+          {agent.lifecycle_status !== 'retired' && <>
+            <button type="button" onClick={event => onManage({ kind: 'edit', agent }, event.currentTarget)}>编辑</button>
+            <button type="button" onClick={event => onManage({ kind: 'replace', agent }, event.currentTarget)}>替换</button>
+            <button type="button" onClick={event => onManage({ kind: 'retire', agent }, event.currentTarget)}>归档</button>
+          </>}
         </td>
       </tr>
       {(agent.warnings.length > 0 || agent.coreai_metadata.verification_error || agent.sync.current_state_error) && (
