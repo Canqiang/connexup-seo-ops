@@ -928,7 +928,10 @@ def upsert_projected_run(
                 "WHERE seo_ops_agent_id=?",
                 (
                     int(_is_unknown_status(run.raw_status))
-                    - int(_is_unknown_status(existing["raw_status"])),
+                    - int(
+                        existing["raw_status"] is None
+                        or _is_unknown_status(existing["raw_status"])
+                    ),
                     local_agent_id,
                 ),
             )

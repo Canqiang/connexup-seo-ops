@@ -634,8 +634,18 @@ def test_projection_new_row_exact_readback(tmp_path, monkeypatch):
     conn.close()
 
 
-def test_projection_first_list_proof_updates_accepted_marker(tmp_path, monkeypatch):
-    conn = _workbench_conn(tmp_path, monkeypatch, "projection-accepted-marker.db")
+@pytest.mark.parametrize(
+    ("incoming_status", "expected_unresolved_count"),
+    [("RUNNING", 0), ("FUTURE_STATE", 1)],
+)
+def test_projection_first_list_proof_updates_accepted_marker(
+    tmp_path, monkeypatch, incoming_status, expected_unresolved_count
+):
+    conn = _workbench_conn(
+        tmp_path,
+        monkeypatch,
+        f"projection-accepted-marker-{incoming_status}.db",
+    )
     _seed_agent_for_projection(conn, monkeypatch)
     merchant_id, source_local_id = _insert_local_run(conn)
     first_seen_at = (NOW - timedelta(seconds=2)).isoformat()
@@ -654,10 +664,18 @@ def test_projection_first_list_proof_updates_accepted_marker(tmp_path, monkeypat
             '["LOCAL_TRIGGER_STATUS_MISSING"]',
         ),
     )
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state "
+        "SET unresolved_unknown_status_count=1 WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    )
     conn.commit()
 
     result = agent_workbench.upsert_projected_run(
-        conn, LOCAL_ID, _parsed_projection_run(), NOW
+        conn,
+        LOCAL_ID,
+        _parsed_projection_run(status=incoming_status),
+        NOW,
     )
 
     assert result == agent_workbench.ProjectionResult(
@@ -673,7 +691,7 @@ def test_projection_first_list_proof_updates_accepted_marker(tmp_path, monkeypat
     ).fetchone()
     assert tuple(row) == (
         LOCAL_ID,
-        "RUNNING",
+        incoming_status,
         "WORKFLOW",
         "2026-09-03T01:01:03+00:00",
         None,
@@ -697,6 +715,11 @@ def test_projection_first_list_proof_updates_accepted_marker(tmp_path, monkeypat
         "WHERE seo_ops_agent_id=?",
         (LOCAL_ID,),
     ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT unresolved_unknown_status_count "
+        "FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0] == expected_unresolved_count
     conn.close()
 
 
