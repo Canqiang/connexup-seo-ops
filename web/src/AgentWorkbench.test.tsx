@@ -565,6 +565,46 @@ describe('Agent Workbench', () => {
     expect(screen.getByRole('tab').classList.contains('agent-workbench__signal--motion')).toBe(false)
   })
 
+  it.each(['pause', 'hidden', 'focus'])('%s downgrade qualifies raw RUNNING copy and removes rail currentness', async mode => {
+    const successor = deferred<AgentWorkbenchSnapshot>()
+    vi.spyOn(api, 'getAgentWorkbench')
+      .mockResolvedValueOnce(liveSnapshot())
+      .mockReturnValueOnce(successor.promise)
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+
+    if (mode === 'pause') {
+      fireEvent.click(screen.getByRole('button', { name: '暂停自动更新' }))
+    } else if (mode === 'hidden') {
+      setVisibility('hidden')
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    } else {
+      act(() => { window.dispatchEvent(new Event('focus')) })
+    }
+
+    expect(screen.getByRole('tab').textContent).toContain('截至 2026-09-06T01:00:00.000Z 状态为 RUNNING')
+    expect(screen.getByRole('tabpanel').querySelector('[aria-current="step"]')).toBeNull()
+    if (mode === 'focus') successor.reject(new DOMException('aborted', 'AbortError'))
+  })
+
+  it.each(['freshness', 'suspect'])('%s deadline qualifies raw RUNNING copy and removes rail currentness', async mode => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(liveSnapshot({
+      fresh_until: '2026-09-06T01:00:10.000Z',
+      signals: [makeSignal({
+        fresh_until: mode === 'freshness' ? '2026-09-06T01:00:01.250Z' : '2026-09-06T01:00:10.000Z',
+        suspect_at: mode === 'suspect' ? '2026-09-06T01:00:01.250Z' : '2026-09-06T01:00:10.000Z',
+      })],
+      refresh_after_ms: 30_000,
+    }))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_250) })
+
+    expect(screen.getByRole('tab').textContent).toContain('截至 2026-09-06T01:00:00.000Z 状态为 RUNNING')
+    expect(screen.getByRole('tabpanel').querySelector('[aria-current="step"]')).toBeNull()
+  })
+
   it('removed focused receipt transfers focus', async () => {
     const receipt = makeSignal({
       coreai_run_id: 'receipt-focus',
@@ -660,6 +700,89 @@ describe('Agent Workbench', () => {
     expect((screen.getByRole('radio', { name: '近 30 天' }) as HTMLInputElement).checked).toBe(true)
     expect(screen.getByText('自动更新 · 空闲最多 30 秒')).not.toBeNull()
     expect(screen.getByRole('button', { name: '刷新显示' }).getAttribute('aria-describedby')).toBeTruthy()
+  })
+
+  it('initial read failure leaves loading state and keeps the error non-assertive', async () => {
+    vi.useFakeTimers()
+    const firstRead = deferred<AgentWorkbenchSnapshot>()
+    const retry = deferred<AgentWorkbenchSnapshot>()
+    const getWorkbench = vi.spyOn(api, 'getAgentWorkbench')
+      .mockReturnValueOnce(firstRead.promise)
+      .mockReturnValueOnce(retry.promise)
+    const { container } = render(<AgentWorkbench />)
+    expect(screen.getByText('正在载入 Agent 状态')).not.toBeNull()
+
+    firstRead.reject(new Error('本地快照暂不可读'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(screen.queryByText('正在载入 Agent 状态')).toBeNull()
+    expect(screen.getByText('Agent 状态暂不可用 · 等待自动重试')).not.toBeNull()
+    expect(screen.getByText('本地快照暂不可读')).not.toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_999) })
+    expect(screen.queryByText('正在载入 Agent 状态')).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(getWorkbench).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('正在载入 Agent 状态')).not.toBeNull()
+    retry.reject(new DOMException('aborted', 'AbortError'))
+  })
+
+  it('one polite region announces new Runs, terminal transitions, and copy completion', async () => {
+    const runningA = makeSignal({ coreai_run_id: 'run-a' })
+    const runningB = makeSignal({ coreai_run_id: 'run-b', local_agent_id: 'agent-2', agent_name: '执行 Agent' })
+    const completedA = makeSignal({
+      coreai_run_id: 'run-a',
+      raw_status: 'COMPLETED',
+      presentation_group: 'success',
+      signal_state: 'completed',
+      fresh: false,
+      completed_at: '2026-09-06T01:00:02.000Z',
+      terminal_observed_at: '2026-09-06T01:00:02.000Z',
+      receipt_expires_at: '2026-09-06T01:00:12.000Z',
+    })
+    vi.spyOn(api, 'getAgentWorkbench')
+      .mockResolvedValueOnce(liveSnapshot({ signals: [runningA] }))
+      .mockResolvedValueOnce(liveSnapshot({ signals: [runningA, runningB], current_counts: { running: exactCount(2), queued: exactCount(0), waiting: exactCount(0), legacy_nonterminal: exactCount(0) } }))
+      .mockResolvedValueOnce(liveSnapshot({ signals: [completedA, runningB], current_counts: { running: exactCount(1), queued: exactCount(0), waiting: exactCount(0), legacy_nonterminal: exactCount(0) } }))
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
+
+    const { container } = render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/发现新的 Run：run-b/).textContent).toContain('手动刷新完成')
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/Run run-a 已变为终态：COMPLETED/).textContent).toContain('手动刷新完成')
+
+    fireEvent.click(screen.getByRole('button', { name: '复制完整 Run ID run-a' }))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText('已复制 Run ID：run-a')).not.toBeNull()
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1)
+  })
+
+  it('the polite event region announces freshness loss and restoration', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(api, 'getAgentWorkbench')
+      .mockResolvedValueOnce(makeSnapshot({ fresh_until: '2026-09-06T01:00:01.250Z' }))
+      .mockResolvedValueOnce(makeSnapshot({ snapshot_at: '2026-09-06T01:00:02.000Z', fresh_until: '2026-09-06T01:01:32.000Z' }))
+
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_250) })
+    expect(screen.getByText('当前状态新鲜度已失效')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/当前状态新鲜度已恢复/).textContent).toContain('手动刷新完成')
   })
 
   it('sync health unavailable keeps persisted data static', async () => {
@@ -779,6 +902,40 @@ describe('Agent Workbench', () => {
     expect(screen.getByText('已看到 2 个 Agent 的运行记录 · 当前数量未知')).not.toBeNull()
   })
 
+  it('owner headlines exclude ineligible raw RUNNING rows from current claims', () => {
+    const signals = [
+      makeSignal({ coreai_run_id: 'eligible', local_agent_id: 'owner-current' }),
+      makeSignal({ coreai_run_id: 'stale', local_agent_id: 'owner-stale', fresh: false }),
+      makeSignal({ coreai_run_id: 'uncertain', local_agent_id: 'owner-uncertain', signal_state: 'uncertain' }),
+      makeSignal({ coreai_run_id: 'disabled', local_agent_id: 'owner-disabled', lifecycle_status: 'disabled' }),
+      makeSignal({ coreai_run_id: 'retired', local_agent_id: 'owner-retired', lifecycle_status: 'retired' }),
+    ]
+    const presentation = present(liveSnapshot({
+      signals,
+      current_counts: { running: exactCount(1), queued: exactCount(0), waiting: exactCount(0), legacy_nonterminal: exactCount(0) },
+    }))
+    const { rerender } = render(<LiveRunStage presentation={presentation} />)
+    expect(screen.getByText('1 个 Agent · 1 个 Run 进行中')).not.toBeNull()
+
+    rerender(<LiveRunStage presentation={{
+      ...presentation,
+      current_counts: {
+        ...presentation.current_counts,
+        running: { ...presentation.current_counts.running, quality: 'lower_bound', value: 1, copy: '至少 1', exact_owner_claim_allowed: false },
+      },
+    }} />)
+    expect(screen.getByText('已看到 1 个 Agent · 至少 1 个 Run 进行中')).not.toBeNull()
+
+    rerender(<LiveRunStage presentation={{
+      ...presentation,
+      current_counts: {
+        ...presentation.current_counts,
+        running: { ...presentation.current_counts.running, quality: 'unknown', value: null, copy: '当前数量未知', claim_is_current: false, exact_owner_claim_allowed: false },
+      },
+    }} />)
+    expect(screen.getByText('已看到 3 个 Agent 的运行记录 · 当前数量未知')).not.toBeNull()
+  })
+
   it('unknown and legacy signals remain static', () => {
     const presentation = present(makeSnapshot({
       signals: [
@@ -793,18 +950,65 @@ describe('Agent Workbench', () => {
   })
 
   it.each([
-    ['qualified', {}, true],
-    ['pending', { raw_status: 'PENDING', presentation_group: 'queued', signal_state: 'queued' }, false],
-    ['stale', { fresh: false }, false],
-    ['incomplete', { agent_current_state_complete: false }, false],
-    ['suspect', { suspect: true }, false],
-    ['disabled', { lifecycle_status: 'disabled' }, false],
-    ['retired', { lifecycle_status: 'retired' }, false],
-  ])('only qualified running signal has motion (%s)', (_name, overrides, expected) => {
+    ['qualified', {}, true, '运行中'],
+    ['pending', { raw_status: 'PENDING', presentation_group: 'queued', signal_state: 'queued' }, false, '排队中'],
+    ['paused', { raw_status: 'PAUSED', presentation_group: 'waiting', signal_state: 'waiting' }, false, '等待输入'],
+    ['completed', { raw_status: 'COMPLETED', presentation_group: 'success', signal_state: 'completed', fresh: false }, false, '已完成'],
+    ['failed', { raw_status: 'FAILED', presentation_group: 'failure', signal_state: 'completed', fresh: false }, false, '失败'],
+    ['timeout', { raw_status: 'TIMEOUT', presentation_group: 'failure', signal_state: 'completed', fresh: false }, false, '超时'],
+    ['cancelled', { raw_status: 'CANCELLED', presentation_group: 'cancelled', signal_state: 'completed', fresh: false }, false, '已取消'],
+    ['skipped', { raw_status: 'SKIPPED', presentation_group: 'skipped', signal_state: 'completed', fresh: false }, false, '已跳过'],
+    ['archiving', { raw_status: 'COMPLETED', presentation_group: 'success', signal_state: 'archiving', fresh: false }, false, '已完成'],
+    ['uncertain', { signal_state: 'uncertain' }, false, '状态待确认'],
+    ['stale', { fresh: false }, false, '状态为 RUNNING'],
+    ['incomplete', { agent_current_state_complete: false }, false, '运行中'],
+    ['suspect', { suspect: true }, false, '运行中'],
+    ['disabled', { lifecycle_status: 'disabled' }, false, '运行中'],
+    ['retired', { lifecycle_status: 'retired' }, false, '运行中'],
+  ])('only qualified running signal has motion (%s)', (_name, overrides, expected, statusCopy) => {
     const signal = makeSignal(overrides as Partial<WorkbenchSignal>)
     render(<LiveRunStage presentation={present(liveSnapshot({ signals: [signal] }))} />)
     expect(screen.getByRole('tab').classList.contains('agent-workbench__signal--motion')).toBe(expected)
-    expect(screen.getByRole('tab').textContent).toContain(signal.raw_status === 'PENDING' ? '排队中' : '运行中')
+    expect(screen.getByRole('tab').textContent).toContain(statusCopy)
+  })
+
+  it.each([
+    ['metadata warning only', (() => {
+      const agent = makeAgent()
+      return liveSnapshot({ agents: [{ ...agent, coreai_metadata: { ...agent.coreai_metadata, verification_error: 'metadata endpoint unavailable' } }] })
+    })()],
+    ['another Agent stale', (() => {
+      const healthy = makeAgent()
+      const stale = makeAgent()
+      return liveSnapshot({
+        sync_health: 'partial',
+        stale: true,
+        agents: [healthy, { ...stale, id: 'agent-other', lifecycle_status: 'active', current_state_complete: false, sync: { ...stale.sync, health: 'stale' } }],
+      })
+    })()],
+  ])('independently healthy RUNNING motion survives %s', (_name, snapshot) => {
+    render(<LiveRunStage presentation={present(snapshot as AgentWorkbenchSnapshot)} />)
+    expect(screen.getByRole('tab').classList.contains('agent-workbench__signal--motion')).toBe(true)
+  })
+
+  it.each([
+    ['PENDING', { raw_status: 'PENDING', presentation_group: 'queued', signal_state: 'queued' }, '排队中', '已派发 / 等待执行'],
+    ['RUNNING', {}, '运行中', 'Core AI Run 进行中'],
+    ['PAUSED', { raw_status: 'PAUSED', presentation_group: 'waiting', signal_state: 'waiting' }, '等待输入', '等待输入'],
+    ['uncertain', { signal_state: 'uncertain' }, '状态待确认', null],
+    ['archiving', { raw_status: 'COMPLETED', presentation_group: 'success', signal_state: 'archiving', fresh: false }, '已完成', 'SEO Ops 归档中'],
+    ['COMPLETED', { raw_status: 'COMPLETED', presentation_group: 'success', signal_state: 'completed', fresh: false }, '已完成', '已完成'],
+    ['FAILED', { raw_status: 'FAILED', presentation_group: 'failure', signal_state: 'completed', fresh: false }, '失败', '失败'],
+    ['TIMEOUT', { raw_status: 'TIMEOUT', presentation_group: 'failure', signal_state: 'completed', fresh: false }, '超时', '超时'],
+    ['CANCELLED', { raw_status: 'CANCELLED', presentation_group: 'cancelled', signal_state: 'completed', fresh: false }, '已取消', '已取消'],
+    ['SKIPPED', { raw_status: 'SKIPPED', presentation_group: 'skipped', signal_state: 'completed', fresh: false }, '已跳过', '已跳过'],
+    ['stale PAUSED', { raw_status: 'PAUSED', presentation_group: 'waiting', signal_state: 'waiting', fresh: false }, '等待输入', null],
+  ])('status and verified lifecycle matrix: %s', (_name, overrides, statusCopy, currentLabel) => {
+    const signal = makeSignal(overrides as Partial<WorkbenchSignal>)
+    render(<LiveRunStage presentation={present(liveSnapshot({ signals: [signal] }))} />)
+    expect(screen.getByRole('tab').textContent).toContain(statusCopy)
+    const current = screen.getByRole('tabpanel').querySelector('[aria-current="step"]')
+    expect(current?.textContent ?? null).toBe(currentLabel)
   })
 
   it('idle requires fresh complete exact active proof', () => {

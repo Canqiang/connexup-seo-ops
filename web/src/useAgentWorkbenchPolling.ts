@@ -5,9 +5,11 @@ import {
   advancePresentation,
   alignedEpochMs,
   createPresentationState,
+  diffWorkbenchEvents,
   replacePresentationSnapshot,
   type PresentationState,
   type PresentedWorkbench,
+  type WorkbenchEventDiffContext,
 } from './agentWorkbenchPresentation'
 
 export type WorkbenchRefreshReason =
@@ -92,6 +94,7 @@ export type AgentWorkbenchPolling = {
   requestRefresh: (reason: WorkbenchRefreshReason) => void
   setAutoUpdate: (enabled: boolean) => void
   snapshotAgeSeconds: number | null
+  eventAnnouncement: { sequence: number; message: string } | null
 }
 
 export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchPolling {
@@ -103,6 +106,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [snapshotAgeSeconds, setSnapshotAgeSeconds] = useState<number | null>(null)
+  const [eventAnnouncement, setEventAnnouncement] = useState<{ sequence: number; message: string } | null>(null)
   const [autoUpdate, setAutoUpdateState] = useState(initiallyAutoUpdating)
   const autoUpdateRef = useRef(autoUpdate)
   const stateRef = useRef(presentationState)
@@ -119,10 +123,24 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
   const armPresentationTimersRef = useRef<() => void>(() => undefined)
   const cleanupTokenRef = useRef<object | null>(null)
   const requestRef = useRef<(reason: WorkbenchRefreshReason) => void>(() => undefined)
+  const announcementSequenceRef = useRef(0)
 
-  const commitState = useCallback((next: PresentationState) => {
+  const commitState = useCallback((next: PresentationState, context?: WorkbenchEventDiffContext) => {
+    const previous = stateRef.current
     stateRef.current = next
     setPresentationState(next)
+    if (context) {
+      const previousPresentation = previous.presentation ?? (
+        context.kind === 'snapshot' && context.reason === 'manual' ? next.presentation : null
+      )
+      const messages = diffWorkbenchEvents(previousPresentation, next.presentation, context)
+      if (messages.length > 0) {
+        setEventAnnouncement({
+          sequence: ++announcementSequenceRef.current,
+          message: messages.join('；'),
+        })
+      }
+    }
   }, [])
 
   const clearRefreshTimer = useCallback(() => {
@@ -149,7 +167,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
     ) return
     tickTimerRef.current = window.setTimeout(() => {
       const now = performance.now()
-      commitState(advancePresentation(stateRef.current, now, 'clock'))
+      commitState(advancePresentation(stateRef.current, now, 'clock'), { kind: 'timer-tick' })
       if (stateRef.current.clock) {
         setSnapshotAgeSeconds(Math.floor(Math.max(0, now - stateRef.current.clock.receivedAtMonotonicMs) / 1_000))
       }
@@ -169,7 +187,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
     if (nextDeadline !== undefined) {
       deadlineTimerRef.current = window.setTimeout(() => {
         const now = performance.now()
-        commitState(advancePresentation(stateRef.current, now, 'clock'))
+        commitState(advancePresentation(stateRef.current, now, 'clock'), { kind: 'timer-tick' })
         if (stateRef.current.clock) {
           setSnapshotAgeSeconds(Math.floor(Math.max(0, now - stateRef.current.clock.receivedAtMonotonicMs) / 1_000))
         }
@@ -207,6 +225,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
     activeRequestRef.current = active
     clearRefreshTimer()
     if (stateRef.current.snapshot) setRefreshing(true)
+    else setLoading(true)
     let settledDelay = stateRef.current.snapshot?.refresh_after_ms
 
     void active.shared.promise
@@ -232,7 +251,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
         if (snapshot.sync_health === 'unavailable' || snapshot.sync_health === 'stale' || snapshot.sync_health === 'not_configured') {
           nextState = advancePresentation(nextState, performance.now(), 'focus')
         }
-        commitState(nextState)
+        commitState(nextState, { kind: 'snapshot', reason: active.reason })
         setSnapshotAgeSeconds(0)
         queueMicrotask(() => armPresentationTimersRef.current())
         setError(null)
@@ -280,7 +299,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
 
   const requestRefresh = useCallback((reason: WorkbenchRefreshReason) => {
     if (reason === 'mutation' && autoUpdateRef.current && stateRef.current.snapshot) {
-      commitState(advancePresentation(stateRef.current, performance.now(), 'mutation'))
+      commitState(advancePresentation(stateRef.current, performance.now(), 'mutation'), { kind: 'timer-tick' })
     }
     requestRef.current(reason)
   }, [commitState])
@@ -292,7 +311,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
       setAutoUpdateState(false)
       clearRefreshTimer()
       clearPresentationTimers()
-      if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'pause'))
+      if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'pause'), { kind: 'timer-tick' })
       const active = activeRequestRef.current
       if (active) {
         active.obsolete = true
@@ -303,7 +322,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
       return
     }
     autoUpdateRef.current = true
-    if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'resume'))
+    if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'resume'), { kind: 'timer-tick' })
     requestRef.current('resume')
   }, [clearPresentationTimers, clearRefreshTimer, commitState])
 
@@ -327,7 +346,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
         clearRefreshTimer()
         clearPresentationTimers()
         immediateIntentRef.current = null
-        if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'hidden'))
+        if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'hidden'), { kind: 'timer-tick' })
         const current = activeRequestRef.current
         if (current) {
           current.obsolete = true
@@ -337,7 +356,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
       }
       if (autoUpdateRef.current) {
         if (stateRef.current.snapshot) {
-          commitState(advancePresentation(stateRef.current, performance.now(), 'clock'))
+          commitState(advancePresentation(stateRef.current, performance.now(), 'clock'), { kind: 'timer-tick' })
           armPresentationTimersRef.current()
         }
         queueRequest('visibility')
@@ -345,7 +364,7 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
     }
     const handleFocus = () => {
       if (!autoUpdateRef.current || document.visibilityState !== 'visible') return
-      if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'focus'))
+      if (stateRef.current.snapshot) commitState(advancePresentation(stateRef.current, performance.now(), 'focus'), { kind: 'timer-tick' })
       queueRequest('focus')
     }
     document.addEventListener('visibilitychange', handleVisibility)
@@ -387,5 +406,6 @@ export function useAgentWorkbenchPolling(range: WorkbenchRange): AgentWorkbenchP
     requestRefresh,
     setAutoUpdate,
     snapshotAgeSeconds,
+    eventAnnouncement,
   }
 }

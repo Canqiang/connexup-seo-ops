@@ -27,15 +27,19 @@ function syncHeadline(
 export default function AgentWorkbench() {
   const [range, setRange] = useState<WorkbenchRange>('30d')
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null)
-  const [announcement, setAnnouncement] = useState('')
+  const [copyAnnouncement, setCopyAnnouncement] = useState<{ hookSequence: number; message: string } | null>(null)
   const result = useAgentWorkbenchPolling(range)
-  const { snapshot, presentation, refreshing, error, autoUpdate, requestRefresh, setAutoUpdate } = result
+  const { snapshot, presentation, loading, refreshing, error, autoUpdate, requestRefresh, setAutoUpdate } = result
   const displayedRange = snapshot?.range ?? '30d'
   const headingRef = useRef<HTMLHeadingElement>(null)
   const tabRefs = useRef(new Map<string, HTMLButtonElement>())
   const previousSignalsRef = useRef<readonly WorkbenchSignal[]>([])
   const selectedWasFocusedRef = useRef(false)
   const focusedSignalIdRef = useRef<string | null>(null)
+  const hookAnnouncementSequence = result.eventAnnouncement?.sequence ?? 0
+  const announcement = copyAnnouncement?.hookSequence === hookAnnouncementSequence
+    ? copyAnnouncement.message
+    : result.eventAnnouncement?.message ?? ''
 
   useLayoutEffect(() => () => {
     selectedWasFocusedRef.current = selectedSignalId !== null && focusedSignalIdRef.current === selectedSignalId
@@ -84,10 +88,14 @@ export default function AgentWorkbench() {
             ? <strong>{syncHeadline(snapshot.sync_health, result.snapshotAgeSeconds ?? 0, snapshot.last_complete_discovery_at)}</strong>
             : !autoUpdate
               ? <strong>自动更新已暂停 · 尚未读取</strong>
-              : <strong>正在载入 Agent 状态</strong>}
+              : loading
+                ? <strong>正在载入 Agent 状态</strong>
+                : error
+                  ? <strong>Agent 状态暂不可用 · 等待自动重试</strong>
+                  : <strong>尚未读取 Agent 状态</strong>}
           {snapshot && snapshot.current_state_complete === false && <span>当前状态覆盖不完整</span>}
           {refreshing && <span>正在刷新</span>}
-          {error && <span role="alert">{error}</span>}
+          {error && <span className="agent-workbench__read-error">{error}</span>}
         </div>
       </header>
 
@@ -126,7 +134,7 @@ export default function AgentWorkbench() {
           onSelectSignal={setSelectedSignalId}
           headingRef={headingRef}
           tabRefs={tabRefs}
-          onAnnouncement={setAnnouncement}
+          onAnnouncement={message => setCopyAnnouncement({ hookSequence: hookAnnouncementSequence, message })}
           onFocusedSignalChange={id => { focusedSignalIdRef.current = id }}
           lastCompleted={lastCompleted}
         />

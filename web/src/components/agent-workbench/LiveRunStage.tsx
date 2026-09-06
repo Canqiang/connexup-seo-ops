@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent, MutableRefObject, RefObject } from 'react'
 
 import type { PresentedCurrentCount, PresentedSignal, PresentedWorkbench } from '../../agentWorkbenchPresentation'
-import { formatCompactNumber, formatWorkbenchStatus } from '../../agentWorkbenchPresentation'
+import { diffWorkbenchEvents, formatCompactNumber, formatWorkbenchStatus } from '../../agentWorkbenchPresentation'
 
 type LiveRunStageProps = {
   presentation: PresentedWorkbench
@@ -35,7 +35,12 @@ function currentBucketCopy(
     if (kind === 'queued') return signal.signal_state === 'queued'
     return signal.signal_state === 'waiting'
   })
-  const owners = new Set(matching.map(signal => signal.local_agent_id)).size
+  const currentOwners = new Set(verifiedMatching.map(signal => signal.local_agent_id)).size
+  const cachedActiveOwners = new Set(
+    matching
+      .filter(signal => signal.lifecycle_status === 'active')
+      .map(signal => signal.local_agent_id),
+  ).size
   const suffix = kind === 'running' ? '个 Run 进行中' : kind === 'queued' ? '个排队' : '个等待输入'
   if (count.claim_is_current && count.quality === 'exact') {
     if (count.value === 0) return null
@@ -43,16 +48,16 @@ function currentBucketCopy(
       kind === 'running' &&
       count.exact_owner_claim_allowed &&
       verifiedMatching.length === count.value &&
-      owners > 0
-    ) return `${owners} 个 Agent · ${count.value} ${suffix}`
+      currentOwners > 0
+    ) return `${currentOwners} 个 Agent · ${count.value} ${suffix}`
     return `${count.value} ${suffix}`
   }
   if (count.claim_is_current && count.quality === 'lower_bound' && count.value !== null) {
-    return kind === 'running' && owners > 0
-      ? `已看到 ${owners} 个 Agent · 至少 ${count.value} ${suffix}`
+    return kind === 'running' && currentOwners > 0
+      ? `已看到 ${currentOwners} 个 Agent · 至少 ${count.value} ${suffix}`
       : `至少 ${count.value} ${suffix}`
   }
-  if (kind === 'running' && owners > 0) return `已看到 ${owners} 个 Agent 的运行记录 · 当前数量未知`
+  if (kind === 'running' && cachedActiveOwners > 0) return `已看到 ${cachedActiveOwners} 个 Agent 的运行记录 · 当前数量未知`
   if (matching.length > 0 || count.last_observed_value !== null) {
     return kind === 'queued' ? '排队数量未知' : kind === 'waiting' ? '等待输入数量未知' : '运行中数量未知'
   }
@@ -60,6 +65,10 @@ function currentBucketCopy(
 }
 
 function signalStatus(signal: PresentedSignal): string {
+  if (!signal.locally_fresh && signal.raw_status === 'RUNNING') {
+    const snapshotCopy = `截至 ${signal.last_synced_at ?? '未知'} 状态为 RUNNING`
+    return signal.signal_state === 'uncertain' ? `状态待确认（${snapshotCopy}）` : snapshotCopy
+  }
   if (signal.signal_state === 'uncertain' && signal.raw_status && ['RUNNING', 'PENDING'].includes(signal.raw_status)) {
     return `状态待确认（原状态 ${signal.raw_status}）`
   }
@@ -74,23 +83,23 @@ function lifecycleNodes(signal: PresentedSignal): LifecycleNode[] {
   }
   if (signal.signal_state === 'archiving') return [
     { label: '终态已确认', state: 'complete' },
-    { label: '等待本地归档', state: 'current' },
+    { label: 'SEO Ops 归档中', state: 'current' },
   ]
   if (signal.raw_status === 'PENDING') return [
-    { label: '进入队列', state: 'current' },
-    { label: '运行中', state: 'future' },
-    { label: '终态', state: 'future' },
+    { label: '已派发 / 等待执行', state: signal.locally_fresh ? 'current' : 'unknown' },
+    { label: 'Core AI Run 进行中', state: 'future' },
+    { label: '等待结果归档', state: 'future' },
   ]
   if (signal.raw_status === 'RUNNING') return [
-    { label: '进入队列', state: 'complete' },
-    { label: '运行中', state: 'current' },
-    { label: '终态', state: 'future' },
+    { label: '已派发', state: 'complete' },
+    { label: 'Core AI Run 进行中', state: signal.locally_fresh ? 'current' : 'unknown' },
+    { label: '等待结果归档', state: 'future' },
   ]
   if (signal.raw_status === 'PAUSED') return [
-    { label: '进入队列', state: 'complete' },
-    { label: '运行中', state: 'complete' },
-    { label: '等待输入', state: 'current' },
-    { label: '终态', state: 'future' },
+    { label: '已派发', state: 'complete' },
+    { label: '已进入 Core AI', state: 'complete' },
+    { label: '等待输入', state: signal.locally_fresh ? 'current' : 'unknown' },
+    { label: '等待结果归档', state: 'future' },
   ]
   if (signal.raw_status === 'SKIPPED') return [
     { label: '触发已记录', state: 'complete' },
@@ -166,7 +175,8 @@ export default function LiveRunStage({
   const copyRunId = async (runId: string) => {
     try {
       await navigator.clipboard.writeText(runId)
-      onAnnouncement?.(`已复制 Run ID：${runId}`)
+      const messages = diffWorkbenchEvents(presentation, presentation, { kind: 'run-id-copy', runId, succeeded: true })
+      if (messages.length > 0) onAnnouncement?.(messages.join('；'))
     } catch {
       // Clipboard denial is intentionally not announced as success.
     }
