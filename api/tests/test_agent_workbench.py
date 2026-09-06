@@ -1469,6 +1469,8 @@ def test_failing_agent_does_not_override_healthy_five_second_cadence(
 
 
 def test_refresh_after_clamps_due_retry_to_one_second(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
     conn = _workbench_conn(tmp_path, monkeypatch, "retry-clamp.db")
     _prepare_snapshot_agent(conn, monkeypatch)
     conn.execute(
@@ -1481,6 +1483,32 @@ def test_refresh_after_clamps_due_retry_to_one_second(tmp_path, monkeypatch):
     assert agent_workbench.build_workbench_snapshot(
         conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
     )["refresh_after_ms"] == 1000
+    conn.close()
+
+
+def test_unavailable_sync_keeps_thirty_second_base_cadence(tmp_path, monkeypatch):
+    monkeypatch.delenv("COREAI_BASE_URL", raising=False)
+    monkeypatch.delenv("COREAI_API_KEY", raising=False)
+    conn = _workbench_conn(tmp_path, monkeypatch, "unavailable-cadence.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET last_discovery_attempt_at=?,"
+        "last_discovery_error='safe failure',next_discovery_at=? "
+        "WHERE seo_ops_agent_id=?",
+        (
+            SNAPSHOT_NOW.isoformat(),
+            (SNAPSHOT_NOW - timedelta(seconds=1)).isoformat(),
+            LOCAL_ID,
+        ),
+    )
+    conn.commit()
+
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+
+    assert snapshot["sync_health"] == "unavailable"
+    assert snapshot["refresh_after_ms"] == 30000
     conn.close()
 
 

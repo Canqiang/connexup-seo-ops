@@ -384,7 +384,11 @@ def _workbench_snapshot_from_rows(
         ):
             due_retries.append(fast_retry)
     base_refresh = 5000 if fresh_signal or any_archiving else 30000
-    if due_retries and not fresh_signal:
+    if (
+        aggregate_health in {"partial", "stale"}
+        and due_retries
+        and not fresh_signal
+    ):
         retry_ms = max(1000, min(60000, math.floor(
             (min(due_retries) - now).total_seconds() * 1000
         )))
