@@ -1,13 +1,24 @@
 import json
 import re
 import unicodedata
-from urllib.parse import unquote_plus, urlsplit
+from urllib.parse import quote, unquote_plus, urlsplit
 
 import httpx
 
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}
 NONTERMINAL_STATUSES = {"PENDING", "RUNNING"}
 RUN_STATUSES = TERMINAL_STATUSES | NONTERMINAL_STATUSES
+RUN_LIST_FIELDS = (
+    "id",
+    "agent_id",
+    "triggered_by",
+    "status",
+    "token_usage",
+    "trace_id",
+    "started_at",
+    "completed_at",
+    "error",
+)
 LLM_CALL_TIMEOUT_SECONDS = 660.0
 MAX_COREAI_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_COREAI_JSON_FIELD_BYTES = 1024 * 1024
@@ -155,6 +166,12 @@ class CoreAiError(Exception):
         self.status_code = status_code
 
 
+class CoreAiContractError(CoreAiError):
+    def __init__(self, code: str, message: str):
+        super().__init__(0, message)
+        self.code = code
+
+
 def _validate_json_limits(value: object) -> None:
     pending: list[tuple[object, str]] = [(value, "$")]
     while pending:
@@ -247,11 +264,12 @@ class CoreAiClient:
         method: str,
         path: str,
         json_body: dict | None = None,
+        params: dict | None = None,
         *,
         timeout: float | None = None,
     ) -> dict:
         try:
-            stream_kwargs = {"json": json_body}
+            stream_kwargs = {"json": json_body, "params": params}
             if timeout is not None:
                 stream_kwargs["timeout"] = timeout
             with self._client.stream(method, path, **stream_kwargs) as res:
@@ -301,11 +319,54 @@ class CoreAiClient:
 
     def trigger(self, agent_id: str, input_text: str) -> dict:
         body = self._request(
-            "POST", f"/api/runs/agent/{agent_id}/trigger", {"input": input_text}
+            "POST",
+            f"/api/runs/agent/{quote(agent_id, safe='')}/trigger",
+            {"input": input_text},
         )
-        if not _valid_identifier(body.get("run_id")):
+        run_id = body.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise CoreAiContractError(
+                "TRIGGER_RUN_ID_INVALID",
+                "core-ai trigger response has invalid run_id",
+            )
+        normalized_run_id = run_id.strip()
+        if not _valid_identifier(normalized_run_id):
             raise CoreAiError(0, "core-ai trigger response missing run_id")
-        return body
+        raw_status = body.get("status")
+        status = (
+            raw_status.strip()
+            if isinstance(raw_status, str) and raw_status.strip()
+            else None
+        )
+        return {**body, "run_id": normalized_run_id, "status": status}
+
+    def list_agent_runs(
+        self, agent_id: str, status: str | None, limit: int
+    ) -> dict:
+        params: dict[str, str | int] = {"limit": limit}
+        if status is not None:
+            params["status"] = status
+        body = self._request(
+            "GET",
+            f"/api/runs/agent/{quote(agent_id, safe='')}/list",
+            params=params,
+        )
+        runs = body.get("runs")
+        if not isinstance(runs, list):
+            raise CoreAiError(0, "core-ai Agent run list is malformed")
+        if not all(isinstance(row, dict) for row in runs):
+            raise CoreAiError(0, "core-ai Agent run list is malformed")
+        total = body.get("total")
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise CoreAiError(0, "core-ai Agent run total is malformed")
+        if len(runs) > total:
+            raise CoreAiError(0, "core-ai Agent run total is malformed")
+        return {
+            "runs": [
+                {key: row.get(key) for key in RUN_LIST_FIELDS} for row in runs
+            ],
+            "total": total,
+        }
 
     def llm_call(self, llm_call_id: str, input_text: str) -> str:
         body = self._request(
@@ -320,9 +381,12 @@ class CoreAiClient:
         return output
 
     def get_agent(self, agent_id: str) -> dict:
-        body = self._request("GET", f"/api/agents/{agent_id}")
+        body = self._request("GET", f"/api/agents/{quote(agent_id, safe='')}")
         if body.get("id") != agent_id:
-            raise CoreAiError(0, "core-ai agent detail id mismatch")
+            raise CoreAiContractError(
+                "AGENT_ID_MISMATCH",
+                "core-ai agent detail id mismatch",
+            )
         return body
 
     def get_run(self, run_id: str) -> dict:

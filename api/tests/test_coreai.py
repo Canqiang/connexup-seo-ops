@@ -10,6 +10,139 @@ def make_client(handler):
     )
 
 
+def test_request_passes_query_params():
+    seen = {}
+
+    def handler(request):
+        seen["query"] = dict(request.url.params)
+        return httpx.Response(200, json={})
+
+    make_client(handler)._request("GET", "/probe", params={"status": "PAUSED"})
+
+    assert seen["query"] == {"status": "PAUSED"}
+
+
+def test_list_agent_runs_uses_real_path_query_and_discards_large_fields():
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.raw_path.decode().partition("?")[0]
+        seen["query"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={
+                "runs": [
+                    {
+                        "id": "run-1",
+                        "agent_id": "agent/1",
+                        "triggered_by": "WORKFLOW",
+                        "status": "PAUSED",
+                        "input": "must disappear",
+                        "output": "must disappear",
+                        "error": None,
+                        "error_stack": "must disappear",
+                        "token_usage": {"input": 3, "output": 5},
+                        "trace_id": "trace-1",
+                        "started_at": "2026-09-03T01:00:00Z",
+                        "completed_at": None,
+                    }
+                ],
+                "total": 1,
+            },
+        )
+
+    page = make_client(handler).list_agent_runs("agent/1", "PAUSED", 200)
+
+    assert seen == {
+        "path": "/api/runs/agent/agent%2F1/list",
+        "query": {"status": "PAUSED", "limit": "200"},
+    }
+    assert page == {
+        "runs": [
+            {
+                "id": "run-1",
+                "agent_id": "agent/1",
+                "triggered_by": "WORKFLOW",
+                "status": "PAUSED",
+                "token_usage": {"input": 3, "output": 5},
+                "trace_id": "trace-1",
+                "started_at": "2026-09-03T01:00:00Z",
+                "completed_at": None,
+                "error": None,
+            }
+        ],
+        "total": 1,
+    }
+    assert "input" not in page["runs"][0]
+    assert "output" not in page["runs"][0]
+    assert "error_stack" not in page["runs"][0]
+
+    make_client(handler).list_agent_runs("agent/1", None, 7)
+
+    assert seen == {
+        "path": "/api/runs/agent/agent%2F1/list",
+        "query": {"limit": "7"},
+    }
+
+
+def test_list_agent_runs_preserves_zero_token_pair():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "runs": [
+                    {
+                        "id": "run-zero",
+                        "token_usage": {"input": 0, "output": 0},
+                    }
+                ],
+                "total": 1,
+            },
+        )
+
+    page = make_client(handler).list_agent_runs("agent-1", None, 1)
+
+    assert page["runs"][0]["token_usage"] == {"input": 0, "output": 0}
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"total": 0}, "core-ai Agent run list is malformed"),
+        ({"runs": {}, "total": 0}, "core-ai Agent run list is malformed"),
+        (
+            {"runs": ["secret-row"], "total": 1},
+            "core-ai Agent run list is malformed",
+        ),
+        ({"runs": []}, "core-ai Agent run total is malformed"),
+        ({"runs": [], "total": True}, "core-ai Agent run total is malformed"),
+        ({"runs": [], "total": -1}, "core-ai Agent run total is malformed"),
+        ({"runs": [], "total": 1.5}, "core-ai Agent run total is malformed"),
+        ({"runs": [{}], "total": 0}, "core-ai Agent run total is malformed"),
+    ],
+)
+def test_list_agent_runs_rejects_malformed_envelopes(response, expected):
+    from app.coreai import CoreAiError
+
+    def handler(_request):
+        return httpx.Response(200, json=response)
+
+    with pytest.raises(CoreAiError, match=expected) as caught:
+        make_client(handler).list_agent_runs("agent-1", None, 10)
+
+    assert caught.value.status_code == 0
+
+
+def test_list_agent_runs_accepts_empty_page_with_zero_total():
+    def handler(_request):
+        return httpx.Response(200, json={"runs": [], "total": 0})
+
+    assert make_client(handler).list_agent_runs("agent-1", None, 10) == {
+        "runs": [],
+        "total": 0,
+    }
+
+
 def test_trigger_posts_input_and_returns_run_id():
     seen = {}
 
@@ -21,9 +154,9 @@ def test_trigger_posts_input_and_returns_run_id():
         seen["body"] = json.loads(request.content)
         return httpx.Response(202, json={"run_id": "r-1", "status": "RUNNING"})
 
-    res = make_client(handler).trigger("agent-9", "hello")
+    res = make_client(handler).trigger("agent/9", "hello")
     assert res["run_id"] == "r-1"
-    assert seen["url"] == "https://core.test/api/runs/agent/agent-9/trigger"
+    assert seen["url"] == "https://core.test/api/runs/agent/agent%2F9/trigger"
     assert seen["auth"] == "Bearer coreai_k"
     assert seen["body"] == {"input": "hello"}
 
@@ -38,6 +171,39 @@ def test_trigger_missing_run_id_raises():
         make_client(handler).trigger("a", "x")
 
 
+@pytest.mark.parametrize(
+    ("response", "expected_run_id"),
+    [
+        ({}, None),
+        ({"run_id": None}, None),
+        ({"run_id": True}, None),
+        ({"run_id": 12345}, None),
+        ({"run_id": ["secret-run-id"]}, None),
+        ({"run_id": ""}, None),
+        ({"run_id": " \t "}, None),
+        ({"run_id": "  padded-run-id  ", "status": "RUNNING"}, "padded-run-id"),
+    ],
+)
+def test_trigger_rejects_invalid_run_identity(response, expected_run_id):
+    from app.coreai import CoreAiContractError
+
+    def handler(_request):
+        return httpx.Response(202, json=response)
+
+    if expected_run_id is not None:
+        assert (
+            make_client(handler).trigger("agent-1", "run")["run_id"]
+            == expected_run_id
+        )
+        return
+
+    with pytest.raises(CoreAiContractError) as caught:
+        make_client(handler).trigger("agent-1", "run")
+    assert caught.value.status_code == 0
+    assert caught.value.code == "TRIGGER_RUN_ID_INVALID"
+    assert str(caught.value) == "core-ai trigger response has invalid run_id"
+
+
 def test_trigger_rejects_an_oversized_run_id():
     from app.coreai import CoreAiError
 
@@ -46,6 +212,38 @@ def test_trigger_rejects_an_oversized_run_id():
 
     with pytest.raises(CoreAiError, match="run_id"):
         make_client(handler).trigger("a", "x")
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_status"),
+    [
+        ({"run_id": "run-1", "marker": "kept"}, None),
+        ({"run_id": "run-1", "status": None, "marker": "kept"}, None),
+        ({"run_id": "run-1", "status": "", "marker": "kept"}, None),
+        ({"run_id": "run-1", "status": " \t ", "marker": "kept"}, None),
+        ({"run_id": "run-1", "status": True, "marker": "kept"}, None),
+        ({"run_id": "run-1", "status": 7, "marker": "kept"}, None),
+        ({"run_id": "run-1", "status": ["RUNNING"], "marker": "kept"}, None),
+        (
+            {"run_id": "run-1", "status": {"value": "RUNNING"}, "marker": "kept"},
+            None,
+        ),
+        ({"run_id": "run-1", "status": "  RUNNING  ", "marker": "kept"}, "RUNNING"),
+        (
+            {"run_id": "run-1", "status": "  WAITING_FOR_TOOL  ", "marker": "kept"},
+            "WAITING_FOR_TOOL",
+        ),
+    ],
+)
+def test_trigger_normalizes_optional_status(response, expected_status):
+    def handler(_request):
+        return httpx.Response(202, json=response)
+
+    result = make_client(handler).trigger("agent-1", "run")
+
+    assert result["run_id"] == "run-1"
+    assert result["status"] == expected_status
+    assert result["marker"] == "kept"
 
 
 def test_llm_call_posts_only_input_with_bounded_long_timeout_and_returns_output():
@@ -107,14 +305,31 @@ def test_llm_call_rejects_an_oversized_output_field():
 def test_get_agent_reads_back_the_exact_published_capabilities():
     def handler(request):
         assert request.method == "GET"
-        assert request.url.path == "/api/agents/agent-9"
+        assert request.url.raw_path == b"/api/agents/agent%2F9"
         return httpx.Response(
-            200, json={"id": "agent-9", "status": "PUBLISHED", "tools": []}
+            200, json={"id": "agent/9", "status": "PUBLISHED", "tools": []}
         )
 
-    agent = make_client(handler).get_agent("agent-9")
+    agent = make_client(handler).get_agent("agent/9")
 
-    assert agent == {"id": "agent-9", "status": "PUBLISHED", "tools": []}
+    assert agent == {"id": "agent/9", "status": "PUBLISHED", "tools": []}
+
+
+def test_get_agent_id_mismatch_is_typed_contract_error():
+    from app.coreai import CoreAiContractError, CoreAiError
+
+    def handler(_request):
+        return httpx.Response(
+            200, json={"id": "other-agent", "status": "PUBLISHED", "tools": []}
+        )
+
+    with pytest.raises(CoreAiContractError) as caught:
+        make_client(handler).get_agent("agent-9")
+
+    assert isinstance(caught.value, CoreAiError)
+    assert caught.value.status_code == 0
+    assert caught.value.code == "AGENT_ID_MISMATCH"
+    assert str(caught.value) == "core-ai agent detail id mismatch"
 
 
 def test_coreai_json_lists_have_a_bounded_item_count():
