@@ -211,6 +211,10 @@ def get_agent_workbench_coreai():
         client.close()
 
 
+def get_agent_workbench_coreai_factory():
+    return get_agent_workbench_coreai
+
+
 @router.post("/agents", status_code=201)
 async def register_agent(
     request: Request,
@@ -233,24 +237,43 @@ async def update_agent(
     local_agent_id: str,
     request: Request,
     conn=Depends(get_db),
-    client=Depends(get_agent_workbench_coreai),
+    client_factory=Depends(get_agent_workbench_coreai_factory),
 ):
     raw = await read_workbench_json(request)
     body = parse_workbench_mutation(UpdateAgentRequest, raw)
     metadata = None
     if body.lifecycle_status == "active":
         row = conn.execute(
-            "SELECT coreai_agent_id FROM seo_ops_agents WHERE id=?",
+            "SELECT coreai_agent_id,status FROM seo_ops_agents WHERE id=?",
             (local_agent_id,),
         ).fetchone()
         if row is None:
             raise WorkbenchError(404, "AGENT_NOT_FOUND", "Agent 不存在")
-        metadata = verify_agent_metadata(
-            client,
-            row["coreai_agent_id"],
-            utc_now(),
-            sensitive_values=_request_sensitive_values(),
-        )
+        if row["status"] == "disabled":
+            client_dependency = client_factory()
+            attempt_at = utc_now()
+            sensitive_values = _request_sensitive_values()
+            try:
+                try:
+                    client = next(client_dependency)
+                    metadata = verify_agent_metadata(
+                        client,
+                        row["coreai_agent_id"],
+                        attempt_at,
+                        sensitive_values=sensitive_values,
+                    )
+                except WorkbenchError as exc:
+                    _record_reenable_verification_failure(
+                        conn,
+                        local_agent_id,
+                        row["coreai_agent_id"],
+                        attempt_at,
+                        exc,
+                        sensitive_values,
+                    )
+                    raise
+            finally:
+                client_dependency.close()
     return _update_agent(conn, local_agent_id, body, utc_now(), metadata)
 
 
@@ -288,9 +311,12 @@ def sanitize_operator_text(
         text = value["message"]
     else:
         return "上游消息不可用"
-    for sensitive in sensitive_values:
-        if sensitive:
-            text = text.replace(sensitive, "[REDACTED]")
+    for sensitive in sorted(
+        {sensitive for sensitive in sensitive_values if sensitive},
+        key=len,
+        reverse=True,
+    ):
+        text = text.replace(sensitive, "[REDACTED]")
     text = re.sub(
         r"(?i)(?P<prefix>[?&;])"
         r"(?P<key>api[_-]?key|apikey|access[_-]?token|token|key|secret|authorization)"
@@ -307,14 +333,14 @@ def sanitize_operator_text(
         text,
     )
     text = re.sub(
-        r"(?i)(\bAuthorization\s*[:=]\s*)(?:(?:Basic|Bearer)\s+)?[^\s,;}&]+",
-        r"\1[REDACTED]",
-        text,
-    )
-    text = re.sub(
-        r"(?i)(\b(?:api[-_ ]?key|access[-_ ]?token|token|secret)\s*[:=]\s*)"
-        r"[^\s,;}&\#]+",
-        r"\1[REDACTED]",
+        r"(?i)(?P<prefix>[\"']?(?:authorization|api[-_ ]?key|"
+        r"access[-_ ]?token|token|secret)[\"']?\s*[:=]\s*)"
+        r"(?P<quote>[\"']?)(?:(?:Basic|Bearer)\s+)?"
+        r"[^\"'\s,;}&\#]+(?P=quote)",
+        lambda match: (
+            f"{match.group('prefix')}{match.group('quote')}"
+            f"[REDACTED]{match.group('quote')}"
+        ),
         text,
     )
     text = "".join(
@@ -572,6 +598,55 @@ def _update_agent(
         conn.rollback()
         raise
     return _mutation_response(conn, local_id)
+
+
+def _record_reenable_verification_failure(
+    conn,
+    local_id: str,
+    coreai_agent_id: str,
+    now: datetime,
+    error: WorkbenchError,
+    sensitive_values: tuple[str, ...],
+) -> None:
+    detail = error.detail if isinstance(error.detail, dict) else {}
+    code = detail.get("code")
+    message = detail.get("message")
+    if not isinstance(code, str) or not isinstance(message, str):
+        code = "COREAI_VERIFICATION_FAILED"
+        message = "Core AI 暂时不可用，稍后重试"
+    error_summary = sanitize_operator_text(
+        f"{code}: {message}",
+        sensitive_values=sensitive_values,
+    )
+    stamp = _utc_iso(now)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT verification_failure_count FROM seo_ops_agents "
+            "WHERE id=? AND coreai_agent_id=? AND status='disabled'",
+            (local_id, coreai_agent_id),
+        ).fetchone()
+        if row is not None:
+            failure_count = row["verification_failure_count"] + 1
+            retry_seconds = min(60 * (2 ** min(failure_count - 1, 6)), 3600)
+            conn.execute(
+                "UPDATE seo_ops_agents SET last_verification_attempt_at=?,"
+                "last_verification_error=?,verification_failure_count=?,"
+                "next_verification_at=? "
+                "WHERE id=? AND coreai_agent_id=? AND status='disabled'",
+                (
+                    stamp,
+                    error_summary,
+                    failure_count,
+                    _utc_iso(now + timedelta(seconds=retry_seconds)),
+                    local_id,
+                    coreai_agent_id,
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _retire_agent(conn, local_id: str, now: datetime):

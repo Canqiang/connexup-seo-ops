@@ -1,7 +1,7 @@
 import asyncio
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -79,6 +79,13 @@ def _build_app(conn=None, coreai=None):
         app.dependency_overrides[
             agent_workbench.get_agent_workbench_coreai
         ] = lambda: coreai
+        if hasattr(agent_workbench, "get_agent_workbench_coreai_factory"):
+            def fake_client_dependency():
+                yield coreai
+
+            app.dependency_overrides[
+                agent_workbench.get_agent_workbench_coreai_factory
+            ] = lambda: fake_client_dependency
     return app
 
 
@@ -149,6 +156,14 @@ def test_workbench_sanitizer_redacts_credentials():
         ("API-key=labelled-key-sentinel denied", "API-key=[REDACTED] denied"),
         ("token: labelled-token-sentinel denied", "token: [REDACTED] denied"),
         ("secret = labelled-secret-sentinel", "secret = [REDACTED]"),
+        ('{"api_key": "external-key"}', '{"api_key": "[REDACTED]"}'),
+        (
+            '{"Authorization": "Basic basic-secret"}',
+            '{"Authorization": "[REDACTED]"}',
+        ),
+        ('{"token": "quoted-token"}', '{"token": "[REDACTED]"}'),
+        ('{"secret": "quoted-secret"}', '{"secret": "[REDACTED]"}'),
+        ('{"API-key": "quoted-api-key"}', '{"API-key": "[REDACTED]"}'),
         (
             "GET https://core.example/runs?api_key=query-secret&limit=2 failed",
             "GET https://core.example/runs?api_key=[REDACTED]&limit=2 failed",
@@ -180,6 +195,13 @@ def test_workbench_sanitizer_redacts_credentials():
     assert agent_workbench.sanitize_operator_text(DangerousBody()) == (
         "上游消息不可用"
     )
+    for ordering in (("abc", "abcdef", "abc"), ("abcdef", "abc")):
+        sanitized = agent_workbench.sanitize_operator_text(
+            "credential=abcdef",
+            sensitive_values=ordering,
+        )
+        assert sanitized == "credential=[REDACTED]"
+        assert "def" not in sanitized
 
 
 def test_seed_new_configured_agent(tmp_path, monkeypatch):
@@ -686,8 +708,15 @@ def test_metadata_name_and_model_are_sanitized_before_storage_and_response(
 ):
     conn = _workbench_conn(tmp_path, monkeypatch, "metadata-sanitize.db")
     api_key = "active-api-key-sentinel"
-    auth_password = "local-auth-password-sentinel"
-    auth_secret = "local-auth-secret-sentinel-000000000"
+    auth_password = "overlap-secret"
+    auth_secret = "overlap-secret-longer"
+    labeled_values = (
+        "external-key",
+        "basic-secret",
+        "quoted-token",
+        "quoted-secret",
+        "quoted-api-key",
+    )
     monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
     monkeypatch.setenv("COREAI_API_KEY", api_key)
     monkeypatch.setenv("SEO_OPS_AUTH_PASSWORD", auth_password)
@@ -697,8 +726,15 @@ def test_metadata_name_and_model_are_sanitized_before_storage_and_response(
             "id": "agent-extra",
             "type": "AGENT",
             "status": "PUBLISHED",
-            "name": f"Citation {api_key} Monitor {auth_password}",
-            "model": f"model-{auth_secret}-{api_key}",
+            "name": (
+                f'{{"api_key": "external-key"}} {api_key} '
+                f"{auth_secret} {auth_password}"
+            ),
+            "model": (
+                '{"Authorization": "Basic basic-secret", '
+                '"token": "quoted-token", "secret": "quoted-secret", '
+                '"API-key": "quoted-api-key"}'
+            ),
             "timeout_seconds": 900,
         }
     )
@@ -720,7 +756,7 @@ def test_metadata_name_and_model_are_sanitized_before_storage_and_response(
         conn.execute("SELECT coreai_name,coreai_model FROM seo_ops_agents").fetchone()
     )
     boundaries = (repr(direct), repr(persisted), response.text, caplog.text)
-    for sentinel in (api_key, auth_password, auth_secret):
+    for sentinel in (api_key, auth_password, auth_secret, *labeled_values):
         assert all(sentinel not in boundary for boundary in boundaries)
     assert "[REDACTED]" in direct.name
     assert "[REDACTED]" in direct.model
@@ -1189,6 +1225,86 @@ def test_update_presentation_and_disable(tmp_path, monkeypatch):
     conn.close()
 
 
+def test_presentation_edit_and_disable_do_not_acquire_coreai_client(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "local-update-without-coreai.db")
+    monkeypatch.setattr(agent_workbench, "utc_now", lambda: NOW)
+    monkeypatch.setattr(agent_workbench.uuid, "uuid4", lambda: UUID(LOCAL_ID))
+    agent_workbench.seed_configured_agents(conn, [_slot()], NOW)
+    monkeypatch.delenv("COREAI_BASE_URL", raising=False)
+    monkeypatch.delenv("COREAI_API_KEY", raising=False)
+    created_clients = []
+
+    class UnexpectedClient:
+        def __init__(self, *args, **kwargs):
+            created_clients.append((args, kwargs))
+            raise AssertionError("local-only PATCH created a Core AI client")
+
+    monkeypatch.setattr(agent_workbench, "CoreAiClient", UnexpectedClient)
+    app = _build_app(conn)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        edited = client.patch(
+            f"/api/agent-workbench/agents/{LOCAL_ID}",
+            json={"display_name": "Local presentation"},
+        )
+        disabled = client.patch(
+            f"/api/agent-workbench/agents/{LOCAL_ID}",
+            json={"lifecycle_status": "disabled"},
+        )
+
+    assert edited.status_code == 200
+    assert edited.json()["agent"]["display_name"] == "Local presentation"
+    assert disabled.status_code == 200
+    assert disabled.json()["agent"]["lifecycle_status"] == "disabled"
+    assert created_clients == []
+    conn.close()
+
+
+def test_reenable_without_credentials_records_fixed_verification_failure(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "reenable-without-coreai.db")
+    monkeypatch.setattr(agent_workbench, "utc_now", lambda: NOW)
+    monkeypatch.setattr(agent_workbench.uuid, "uuid4", lambda: UUID(LOCAL_ID))
+    agent_workbench.seed_configured_agents(conn, [_slot()], NOW)
+    conn.execute(
+        "UPDATE seo_ops_agents SET status='disabled' WHERE id=?",
+        (LOCAL_ID,),
+    )
+    conn.commit()
+    monkeypatch.delenv("COREAI_BASE_URL", raising=False)
+    monkeypatch.delenv("COREAI_API_KEY", raising=False)
+    app = _build_app(conn)
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/agent-workbench/agents/{LOCAL_ID}",
+            json={"lifecycle_status": "active"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "COREAI_NOT_CONFIGURED",
+        "message": "Core AI 连接未配置",
+        "fields": {},
+    }
+    verification = conn.execute(
+        "SELECT status,last_verification_attempt_at,last_verification_error,"
+        "verification_failure_count,next_verification_at "
+        "FROM seo_ops_agents WHERE id=?",
+        (LOCAL_ID,),
+    ).fetchone()
+    assert tuple(verification) == (
+        "disabled",
+        NOW.isoformat(),
+        "COREAI_NOT_CONFIGURED: Core AI 连接未配置",
+        1,
+        "2026-09-03T01:03:03+00:00",
+    )
+    conn.close()
+
+
 @pytest.mark.parametrize(
     ("raw", "expected_fields"),
     [
@@ -1253,7 +1369,7 @@ def test_edit_http_transport_envelopes(
     conn.close()
 
 
-def test_reenable_verifies_before_write(tmp_path, monkeypatch):
+def test_reenable_verifies_before_write(tmp_path, monkeypatch, caplog):
     conn = _workbench_conn(tmp_path, monkeypatch, "reenable.db")
     fake = FakeWorkbenchCoreAi()
     monkeypatch.setattr(agent_workbench, "utc_now", lambda: NOW)
@@ -1267,17 +1383,95 @@ def test_reenable_verifies_before_write(tmp_path, monkeypatch):
         )
         assert disabled.status_code == 200
 
-        fake.error = CoreAiError(0, "private-reenable-failure")
+        conn.execute(
+            "UPDATE seo_ops_agents SET coreai_name='Cached Name',"
+            "coreai_model='cached-model',coreai_timeout_hint_seconds=321,"
+            "last_verified_at='2026-09-02T01:02:03+00:00',"
+            "verification_failure_count=2,"
+            "metadata_lease_owner='metadata-owner',metadata_lease_epoch=7,"
+            "metadata_lease_until='2026-09-03T01:10:00+00:00' WHERE id=?",
+            (local_id,),
+        )
+        conn.execute(
+            "UPDATE seo_ops_agent_sync_state SET lease_owner='run-owner',"
+            "lease_epoch=4,lease_until='2026-09-03T01:10:00+00:00',"
+            "last_discovery_error='preserve-discovery-error' "
+            "WHERE seo_ops_agent_id=?",
+            (local_id,),
+        )
+        conn.execute(
+            "INSERT INTO seo_ops_agent_runs "
+            "(coreai_run_id,seo_ops_agent_id,raw_status,first_seen_at) "
+            "VALUES ('preserved-reenable-run',?,'RUNNING',?)",
+            (local_id, NOW.isoformat()),
+        )
+        conn.commit()
+        sync_before = tuple(
+            conn.execute(
+                "SELECT * FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+                (local_id,),
+            ).fetchone()
+        )
+        run_before = tuple(
+            conn.execute(
+                "SELECT * FROM seo_ops_agent_runs "
+                "WHERE coreai_run_id='preserved-reenable-run'"
+            ).fetchone()
+        )
+
+        failure_now = NOW + timedelta(minutes=10)
+        monkeypatch.setattr(agent_workbench, "utc_now", lambda: failure_now)
+        sentinel = 'private-reenable-{"api_key": "secret"}'
+        fake.error = CoreAiError(0, sentinel)
         failed = client.patch(
             f"/api/agent-workbench/agents/{local_id}",
             json={"lifecycle_status": "active"},
         )
         assert failed.status_code == 503
-        assert conn.execute(
-            "SELECT status FROM seo_ops_agents WHERE id=?", (local_id,)
-        ).fetchone()[0] == "disabled"
+        assert failed.json()["detail"] == {
+            "code": "COREAI_VERIFICATION_FAILED",
+            "message": "Core AI 暂时不可用，稍后重试",
+            "fields": {},
+        }
+        after_failure = dict(
+            conn.execute(
+                "SELECT * FROM seo_ops_agents WHERE id=?", (local_id,)
+            ).fetchone()
+        )
+        assert after_failure | {
+            "status": "disabled",
+            "coreai_name": "Cached Name",
+            "coreai_model": "cached-model",
+            "coreai_timeout_hint_seconds": 321,
+            "last_verified_at": "2026-09-02T01:02:03+00:00",
+            "last_verification_attempt_at": failure_now.isoformat(),
+            "last_verification_error": (
+                "COREAI_VERIFICATION_FAILED: Core AI 暂时不可用，稍后重试"
+            ),
+            "verification_failure_count": 3,
+            "next_verification_at": "2026-09-03T01:16:03+00:00",
+            "metadata_lease_owner": "metadata-owner",
+            "metadata_lease_epoch": 7,
+            "metadata_lease_until": "2026-09-03T01:10:00+00:00",
+        } == after_failure
+        assert tuple(
+            conn.execute(
+                "SELECT * FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+                (local_id,),
+            ).fetchone()
+        ) == sync_before
+        assert tuple(
+            conn.execute(
+                "SELECT * FROM seo_ops_agent_runs "
+                "WHERE coreai_run_id='preserved-reenable-run'"
+            ).fetchone()
+        ) == run_before
+        assert sentinel not in repr(after_failure)
+        assert sentinel not in failed.text
+        assert sentinel not in caplog.text
 
         fake.error = None
+        monkeypatch.setattr(agent_workbench, "utc_now", lambda: NOW)
         reenabled = client.patch(
             f"/api/agent-workbench/agents/{local_id}",
             json={"lifecycle_status": "active"},
