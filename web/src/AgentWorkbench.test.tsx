@@ -992,6 +992,16 @@ describe('Agent Workbench', () => {
     expect(screen.getByText('Agent 11')).not.toBeNull()
   })
 
+  it('registry exposes a labelled focusable table scroller', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+
+    const scroller = screen.getByRole('region', { name: 'Agent 台账表格' })
+    expect(scroller.tabIndex).toBe(0)
+    expect(scroller.classList.contains('agent-workbench__table-scroll')).toBe(true)
+  })
+
   it('registry row renders factual metrics and warnings', async () => {
     const agent = makeAgent()
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot({ agents: [{
