@@ -210,8 +210,32 @@ describe('agent workbench presentation', () => {
       exact_owner_claim_allowed: false,
     })
     expect(expired.presentation?.idle_eligible).toBe(false)
-    expect(expired.presentation?.signals[0].may_animate).toBe(false)
+    expect(expired.presentation?.signals[0].may_animate).toBe(true)
     expect(JSON.stringify(snapshot)).toBe(rawBefore)
+  })
+
+  it('aggregate deadline does not suppress independently fresh running motion', () => {
+    const snapshot = deepFreeze(
+      makeSnapshot({
+        fresh_until: '2026-09-03T00:00:00.010Z',
+        has_active_runs: true,
+        current_counts: {
+          running: exactCount(1),
+          queued: exactCount(0),
+          waiting: exactCount(0),
+          legacy_nonterminal: exactCount(0),
+        },
+        signals: [makeSignal({ fresh_until: '2026-09-03T00:00:01.000Z' })],
+      }),
+    )
+    const initial = replacePresentationSnapshot(createPresentationState(), snapshot, 2_500, 'initial')
+
+    const expired = advancePresentation(initial, 2_510, 'clock')
+
+    expect(expired.presentation?.aggregate_fresh).toBe(false)
+    expect(expired.presentation?.current_counts.running.quality).toBe('unknown')
+    expect(expired.presentation?.idle_eligible).toBe(false)
+    expect(expired.presentation?.signals[0]).toMatchObject({ locally_fresh: true, may_animate: true })
   })
 
   it('aggregate deadline downgrades lower-bound current claims', () => {
@@ -293,6 +317,52 @@ describe('agent workbench presentation', () => {
       )
       expect(JSON.stringify(snapshot), testCase.name).toBe(rawBefore)
     }
+  })
+
+  it('pre-focus automatic response cannot clear the freshness barrier', () => {
+    const initialSnapshot = deepFreeze(makeSnapshot({ range: '7d' }))
+    const staleResponse = deepFreeze(makeSnapshot({ range: '30d' }))
+    const initial = replacePresentationSnapshot(createPresentationState(), initialSnapshot, 10_000, 'initial')
+    const focused = advancePresentation(initial, 10_100, 'focus')
+
+    const rejected = replacePresentationSnapshot(focused, staleResponse, 10_200, 'automatic', 10_050)
+
+    expect(rejected.snapshot).toBe(initialSnapshot)
+    expect(rejected.freshnessBarrier).toBe('focus')
+    expect(rejected.presentation?.current_counts.running.quality).toBe('unknown')
+    expect(rejected.presentation?.idle_eligible).toBe(false)
+
+    const accepted = replacePresentationSnapshot(rejected, staleResponse, 10_300, 'automatic', 10_150)
+    expect(accepted.snapshot).toBe(staleResponse)
+    expect(accepted.freshnessBarrier).toBeNull()
+    expect(accepted.presentation?.current_counts.running.quality).toBe('exact')
+    expect(accepted.presentation?.idle_eligible).toBe(true)
+  })
+
+  it('pre-mutation automatic response cannot restore running motion', () => {
+    const initialSnapshot = deepFreeze(
+      makeSnapshot({
+        fresh_until: '2026-09-03T00:00:10.000Z',
+        has_active_runs: true,
+        current_counts: {
+          running: exactCount(1),
+          queued: exactCount(0),
+          waiting: exactCount(0),
+          legacy_nonterminal: exactCount(0),
+        },
+        signals: [makeSignal({ fresh_until: '2026-09-03T00:00:10.000Z' })],
+      }),
+    )
+    const staleResponse = deepFreeze(makeSnapshot({ range: '7d' }))
+    const initial = replacePresentationSnapshot(createPresentationState(), initialSnapshot, 11_000, 'initial')
+    const mutating = advancePresentation(initial, 11_100, 'mutation')
+
+    const rejected = replacePresentationSnapshot(mutating, staleResponse, 11_200, 'automatic', 11_050)
+
+    expect(rejected.snapshot).toBe(initialSnapshot)
+    expect(rejected.freshnessBarrier).toBe('mutation')
+    expect(rejected.presentation?.current_counts.running.quality).toBe('unknown')
+    expect(rejected.presentation?.signals[0].may_animate).toBe(false)
   })
 
   it('suspect deadline changes only presentation truth', () => {
@@ -482,7 +552,7 @@ describe('agent workbench presentation', () => {
     expect(paused.pausedAtMonotonicMs).toBe(16_500)
     expect(lateTick.presentation?.signals.map(signal => signal.coreai_run_id)).toEqual(['receipt-1'])
     expect(lateTick.presentation?.signals[0].timing_copy).toBe(
-      '截至 2026-09-03T00:00:00.500Z · 已持续 60 秒',
+      '数据截至 2026-09-03T00:00:00.000Z · 完成于 2026-09-03T00:00:00.000Z · 终态观测于 2026-09-03T00:00:00.000Z',
     )
 
     const manuallyExpired = advancePresentation(paused, 18_000, 'manual')
@@ -500,6 +570,68 @@ describe('agent workbench presentation', () => {
     const resumed = advancePresentation(lateTick, 18_000, 'resume')
     expect(resumed.pausedAtMonotonicMs).toBeNull()
     expect(resumed.presentation?.signals).toEqual([])
+  })
+
+  it('pause copy uses persisted absolute evidence without fabricating legacy observation time', () => {
+    const legacyCount: CurrentCount = {
+      value: 4,
+      quality: 'lower_bound',
+      last_observed_value: 4,
+      last_observed_at: null,
+    }
+    const snapshot = deepFreeze(
+      makeSnapshot({
+        fresh_until: '2026-09-03T00:00:10.000Z',
+        current_counts: {
+          running: { ...exactCount(2), last_observed_at: null },
+          queued: exactCount(0),
+          waiting: exactCount(0),
+          legacy_nonterminal: legacyCount,
+        },
+        signals: [
+          makeSignal({
+            coreai_run_id: 'terminal-completed',
+            raw_status: 'COMPLETED',
+            presentation_group: 'success',
+            signal_state: 'completed',
+            fresh: false,
+            fresh_until: null,
+            suspect_at: null,
+            completed_at: '2026-09-02T23:59:59.000Z',
+            terminal_observed_at: '2026-09-03T00:00:00.000Z',
+            receipt_expires_at: '2026-09-03T00:00:10.000Z',
+          }),
+          makeSignal({
+            coreai_run_id: 'terminal-observed',
+            raw_status: 'CANCELLED',
+            presentation_group: 'cancelled',
+            signal_state: 'completed',
+            fresh: false,
+            fresh_until: null,
+            suspect_at: null,
+            completed_at: null,
+            terminal_observed_at: '2026-09-03T00:00:00.000Z',
+            receipt_expires_at: '2026-09-03T00:00:10.000Z',
+          }),
+        ],
+      }),
+    )
+    const initial = replacePresentationSnapshot(createPresentationState(), snapshot, 13_000, 'initial')
+
+    const paused = advancePresentation(initial, 13_500, 'pause')
+
+    expect(paused.presentation?.current_counts.running).toMatchObject({
+      last_observed_at: '2026-09-03T00:00:00.000Z',
+      copy: '数据截至 2026-09-03T00:00:00.000Z · 已确认 2',
+    })
+    expect(paused.presentation?.current_counts.legacy_nonterminal).toMatchObject({
+      last_observed_at: null,
+      copy: '数据截至未知 · 上次确认 4',
+    })
+    expect(paused.presentation?.signals.map(signal => signal.timing_copy)).toEqual([
+      '数据截至 2026-09-03T00:00:00.000Z · 完成于 2026-09-02T23:59:59.000Z · 终态观测于 2026-09-03T00:00:00.000Z',
+      '数据截至 2026-09-03T00:00:00.000Z · 终态观测于 2026-09-03T00:00:00.000Z',
+    ])
   })
 
   it('snapshot replacement never replays receipt entrance', () => {
@@ -552,6 +684,39 @@ describe('agent workbench presentation', () => {
     const expired = replacePresentationSnapshot(createPresentationState(), expiredReceiptSnapshot, 20_300, 'initial')
     expect(expired.presentation?.entering_receipt_ids).toEqual([])
     expect([...expired.seenReceiptIds]).toEqual([])
+  })
+
+  it('manual replacement while paused records receipts without entrance replay', () => {
+    const receiptSnapshot = deepFreeze(
+      makeSnapshot({
+        fresh_until: '2026-09-03T00:00:10.000Z',
+        signals: [
+          makeSignal({
+            coreai_run_id: 'receipt-during-pause',
+            raw_status: 'COMPLETED',
+            presentation_group: 'success',
+            signal_state: 'completed',
+            fresh: false,
+            fresh_until: null,
+            suspect_at: null,
+            completed_at: '2026-09-03T00:00:00.000Z',
+            terminal_observed_at: '2026-09-03T00:00:00.000Z',
+            receipt_expires_at: '2026-09-03T00:00:10.000Z',
+          }),
+        ],
+      }),
+    )
+    const initial = replacePresentationSnapshot(createPresentationState(), deepFreeze(makeSnapshot()), 21_000, 'initial')
+    const paused = advancePresentation(initial, 21_100, 'pause')
+
+    const manual = replacePresentationSnapshot(paused, receiptSnapshot, 21_200, 'manual', 21_150)
+
+    expect(manual.presentation?.entering_receipt_ids).toEqual([])
+    expect([...manual.seenReceiptIds]).toEqual(['receipt-during-pause'])
+
+    const resumed = advancePresentation(manual, 21_300, 'resume')
+    const readback = replacePresentationSnapshot(resumed, receiptSnapshot, 21_400, 'resume', 21_350)
+    expect(readback.presentation?.entering_receipt_ids).toEqual([])
   })
 
   it('selection reconciliation reports removal', () => {
@@ -614,6 +779,31 @@ describe('agent workbench presentation', () => {
       selectedWasRemoved: false,
       focusStageHeading: false,
     })
+  })
+
+  it('initial selection compares parsed fractional epochs before run id tie-break', () => {
+    const fractionalLatest = reconcileSignalSelection(
+      [],
+      [
+        makeSignal({ coreai_run_id: 'run-z', effective_started_at: '2026-09-03T00:00:00.10Z' }),
+        makeSignal({ coreai_run_id: 'run-a', effective_started_at: '2026-09-03T00:00:00.1Z' }),
+        makeSignal({ coreai_run_id: 'run-m', effective_started_at: '2026-09-03T00:00:00.101Z' }),
+      ],
+      null,
+      'initial',
+    )
+    expect(fractionalLatest.selectedSignalId).toBe('run-m')
+
+    const equalEpoch = reconcileSignalSelection(
+      [],
+      [
+        makeSignal({ coreai_run_id: 'run-a', effective_started_at: '2026-09-03T00:00:00.1Z' }),
+        makeSignal({ coreai_run_id: 'run-z', effective_started_at: '2026-09-03T00:00:00.10Z' }),
+      ],
+      null,
+      'initial',
+    )
+    expect(equalEpoch.selectedSignalId).toBe('run-z')
   })
 
   it('workbench event diff is semantic only', () => {
@@ -684,6 +874,19 @@ describe('agent workbench presentation', () => {
     expect(diffWorkbenchEvents(previous, previous, { kind: 'run-id-copy', runId: 'run-a', succeeded: false })).toEqual(
       [],
     )
+  })
+
+  it('timer tick announces aggregate freshness loss only on transition', () => {
+    const snapshot = deepFreeze(makeSnapshot({ fresh_until: '2026-09-03T00:00:00.010Z' }))
+    const initial = replacePresentationSnapshot(createPresentationState(), snapshot, 30_000, 'initial')
+    const unchanged = advancePresentation(initial, 30_005, 'clock')
+    const expired = advancePresentation(unchanged, 30_010, 'clock')
+
+    expect(diffWorkbenchEvents(initial.presentation, unchanged.presentation, { kind: 'timer-tick' })).toEqual([])
+    expect(diffWorkbenchEvents(unchanged.presentation, expired.presentation, { kind: 'timer-tick' })).toEqual([
+      '当前状态新鲜度已失效',
+    ])
+    expect(diffWorkbenchEvents(expired.presentation, expired.presentation, { kind: 'timer-tick' })).toEqual([])
   })
 
   it('status labels cover known, future, and statusless values', () => {

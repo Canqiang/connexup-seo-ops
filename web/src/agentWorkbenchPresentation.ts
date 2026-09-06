@@ -97,6 +97,10 @@ export function diffWorkbenchEvents(
   if (context.kind === 'run-id-copy') {
     return context.succeeded ? [`已复制 Run ID：${context.runId}`] : []
   }
+  if (context.kind === 'timer-tick') {
+    if (!previous || !next || previous.aggregate_fresh === next.aggregate_fresh) return []
+    return [next.aggregate_fresh ? '当前状态新鲜度已恢复' : '当前状态新鲜度已失效']
+  }
   if (context.kind !== 'snapshot' || !previous || !next) return []
   const previousById = new Map(previous.signals.map(signal => [signal.coreai_run_id, signal]))
   const announcements = next.signals
@@ -121,7 +125,8 @@ export type PresentationState = {
   presentation: PresentedWorkbench | null
   clock: SnapshotClock | null
   pausedAtMonotonicMs: number | null
-  freshnessBarrier: 'hidden' | 'focus' | 'pause' | 'mutation' | null
+  freshnessBarrier: 'hidden' | 'focus' | 'pause' | 'mutation' | 'resume' | null
+  freshnessBarrierAtMonotonicMs: number | null
   seenReceiptIds: ReadonlySet<string>
   lastReplacementReason: SnapshotReplacementReason | null
 }
@@ -153,8 +158,10 @@ export function reconcileSignalSelection(
   }
   if (selectedSignalId === null) {
     const newest = [...nextSignals].sort((left, right) => {
-      const timeOrder = right.effective_started_at.localeCompare(left.effective_started_at)
-      return timeOrder !== 0 ? timeOrder : right.coreai_run_id.localeCompare(left.coreai_run_id)
+      const timeOrder = Date.parse(right.effective_started_at) - Date.parse(left.effective_started_at)
+      return Number.isFinite(timeOrder) && timeOrder !== 0
+        ? timeOrder
+        : right.coreai_run_id.localeCompare(left.coreai_run_id)
     })[0]
     return { selectedSignalId: newest.coreai_run_id, selectedWasRemoved: false, focusStageHeading: false }
   }
@@ -197,12 +204,19 @@ export function createPresentationState(): PresentationState {
     clock: null,
     pausedAtMonotonicMs: null,
     freshnessBarrier: null,
+    freshnessBarrierAtMonotonicMs: null,
     seenReceiptIds: new Set(),
     lastReplacementReason: null,
   }
 }
 
-function unknownCountCopy(value: number | null, observedAt: string | null): string {
+function unknownCountCopy(value: number | null, observedAt: string | null, absoluteTiming: boolean): string {
+  if (absoluteTiming) {
+    if (observedAt !== null && value !== null) return `数据截至 ${observedAt} · 已确认 ${value}`
+    if (observedAt !== null) return `数据截至 ${observedAt} · 当前数量未知`
+    if (value !== null) return `数据截至未知 · 上次确认 ${value}`
+    return '数据截至未知 · 尚无成功确认'
+  }
   return value !== null && observedAt !== null
     ? `当前数量未知 · 上次确认 ${value}（${observedAt}）`
     : '当前数量未知 · 尚无成功确认'
@@ -213,6 +227,7 @@ function currentCount(
   claimIsCurrent: boolean,
   running: boolean,
   observedAtFallback: string | null,
+  absoluteTiming = false,
 ): PresentedCurrentCount {
   if (claimIsCurrent && count.quality !== 'unknown') {
     return {
@@ -229,10 +244,18 @@ function currentCount(
     quality: 'unknown',
     last_observed_value: lastObservedValue,
     last_observed_at: lastObservedAt,
-    copy: unknownCountCopy(lastObservedValue, lastObservedAt),
+    copy: unknownCountCopy(lastObservedValue, lastObservedAt, absoluteTiming),
     claim_is_current: false,
     exact_owner_claim_allowed: false,
   }
+}
+
+function absoluteSignalTimingCopy(signal: WorkbenchSignal, elapsedSeconds: number): string {
+  const parts = [`数据截至 ${signal.last_synced_at}`]
+  if (signal.completed_at !== null) parts.push(`完成于 ${signal.completed_at}`)
+  if (signal.terminal_observed_at !== null) parts.push(`终态观测于 ${signal.terminal_observed_at}`)
+  if (parts.length === 1) parts.push(`已持续 ${elapsedSeconds} 秒`)
+  return parts.join(' · ')
 }
 
 function buildPresentation(
@@ -245,19 +268,37 @@ function buildPresentation(
 ): PresentedWorkbench {
   const alignedNow = alignedEpochMs(clock, nowMonotonicMs)
   const freshUntil = snapshot.fresh_until === null ? null : Date.parse(snapshot.fresh_until)
-  const aggregateDeadlineExpired = freshUntil !== null && alignedNow >= freshUntil
   const aggregateFresh =
     !forceStale && snapshot.sync_health === 'fresh' && !snapshot.stale && freshUntil !== null && alignedNow < freshUntil
   const countsAreCurrent = aggregateFresh && snapshot.current_state_complete === true
   const currentCounts = {
-    running: currentCount(snapshot.current_counts.running, countsAreCurrent, true, snapshot.current_state_checked_at),
-    queued: currentCount(snapshot.current_counts.queued, countsAreCurrent, false, snapshot.current_state_checked_at),
-    waiting: currentCount(snapshot.current_counts.waiting, countsAreCurrent, false, snapshot.current_state_checked_at),
+    running: currentCount(
+      snapshot.current_counts.running,
+      countsAreCurrent,
+      true,
+      snapshot.current_state_checked_at,
+      absoluteTiming,
+    ),
+    queued: currentCount(
+      snapshot.current_counts.queued,
+      countsAreCurrent,
+      false,
+      snapshot.current_state_checked_at,
+      absoluteTiming,
+    ),
+    waiting: currentCount(
+      snapshot.current_counts.waiting,
+      countsAreCurrent,
+      false,
+      snapshot.current_state_checked_at,
+      absoluteTiming,
+    ),
     legacy_nonterminal: currentCount(
       snapshot.current_counts.legacy_nonterminal,
       countsAreCurrent,
       false,
-      snapshot.current_state_checked_at,
+      null,
+      absoluteTiming,
     ),
   }
   let runningClaimCurrent = countsAreCurrent
@@ -277,7 +318,6 @@ function buildPresentation(
       alignedNow >= suspectAt
     const locallyFresh =
       !forceStale &&
-      !aggregateDeadlineExpired &&
       signal.fresh &&
       !suspectExpired &&
       signalFreshUntil !== null &&
@@ -296,18 +336,36 @@ function buildPresentation(
       locally_fresh: locallyFresh,
       may_animate: mayAnimateRunning(signal, locallyFresh),
       timing_copy: absoluteTiming
-        ? `截至 ${new Date(alignedNow).toISOString()} · 已持续 ${elapsedSeconds} 秒`
+        ? absoluteSignalTimingCopy(signal, elapsedSeconds)
         : `已持续 ${elapsedSeconds} 秒`,
     }
   })
   if (!runningClaimCurrent) {
-    currentCounts.running = currentCount(snapshot.current_counts.running, false, true, snapshot.current_state_checked_at)
+    currentCounts.running = currentCount(
+      snapshot.current_counts.running,
+      false,
+      true,
+      snapshot.current_state_checked_at,
+      absoluteTiming,
+    )
   }
   if (!queuedClaimCurrent) {
-    currentCounts.queued = currentCount(snapshot.current_counts.queued, false, false, snapshot.current_state_checked_at)
+    currentCounts.queued = currentCount(
+      snapshot.current_counts.queued,
+      false,
+      false,
+      snapshot.current_state_checked_at,
+      absoluteTiming,
+    )
   }
   if (!waitingClaimCurrent) {
-    currentCounts.waiting = currentCount(snapshot.current_counts.waiting, false, false, snapshot.current_state_checked_at)
+    currentCounts.waiting = currentCount(
+      snapshot.current_counts.waiting,
+      false,
+      false,
+      snapshot.current_state_checked_at,
+      absoluteTiming,
+    )
   }
   const hasActiveAgents = snapshot.agents.some(agent => agent.lifecycle_status === 'active')
   const idleEligible =
@@ -341,7 +399,16 @@ export function replacePresentationSnapshot(
   snapshot: AgentWorkbenchSnapshot,
   receivedAtMonotonicMs: number,
   reason: SnapshotReplacementReason,
+  requestStartedAtMonotonicMs?: number,
 ): PresentationState {
+  const protectsAgainstOlderRequests = state.freshnessBarrier !== null && state.freshnessBarrier !== 'pause'
+  if (
+    protectsAgainstOlderRequests &&
+    state.freshnessBarrierAtMonotonicMs !== null &&
+    (requestStartedAtMonotonicMs === undefined || requestStartedAtMonotonicMs < state.freshnessBarrierAtMonotonicMs)
+  ) {
+    return state
+  }
   const clock = {
     snapshotEpochMs: Date.parse(snapshot.snapshot_at),
     receivedAtMonotonicMs,
@@ -365,12 +432,13 @@ export function replacePresentationSnapshot(
       snapshot,
       clock,
       receivedAtMonotonicMs,
-      enteringReceiptIds,
+      remainPaused ? [] : enteringReceiptIds,
       remainPaused,
       remainPaused,
     ),
     pausedAtMonotonicMs: remainPaused ? receivedAtMonotonicMs : null,
     freshnessBarrier: remainPaused ? 'pause' : null,
+    freshnessBarrierAtMonotonicMs: remainPaused ? receivedAtMonotonicMs : null,
     seenReceiptIds,
     lastReplacementReason: reason,
   }
@@ -382,10 +450,12 @@ export function advancePresentation(
   reason: PresentationAdvanceReason,
 ): PresentationState {
   if (!state.snapshot || !state.clock) return state
-  const freshnessBarrier =
-    reason === 'hidden' || reason === 'focus' || reason === 'pause' || reason === 'mutation'
-      ? reason
-      : state.freshnessBarrier
+  const establishesFreshnessBarrier =
+    reason === 'hidden' || reason === 'focus' || reason === 'pause' || reason === 'mutation' || reason === 'resume'
+  const freshnessBarrier = establishesFreshnessBarrier ? reason : state.freshnessBarrier
+  const freshnessBarrierAtMonotonicMs = establishesFreshnessBarrier
+    ? nowMonotonicMs
+    : state.freshnessBarrierAtMonotonicMs
   const forceStale = freshnessBarrier !== null
   const pausedAtMonotonicMs =
     reason === 'resume'
@@ -406,5 +476,6 @@ export function advancePresentation(
     ),
     pausedAtMonotonicMs,
     freshnessBarrier,
+    freshnessBarrierAtMonotonicMs,
   }
 }
