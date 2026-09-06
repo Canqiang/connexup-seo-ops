@@ -143,7 +143,9 @@ export default function AgentManagerDrawer({ mode, autoUpdate, requestRefresh, o
     if (event.key !== 'Tab') return
     const controls = [...(dialogRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ?? [])]
     if (controls.length === 0) return
-    if (!event.shiftKey && document.activeElement === controls.at(-1)) {
+    if (event.shiftKey && document.activeElement === headingRef.current) {
+      event.preventDefault(); controls.at(-1)?.focus()
+    } else if (!event.shiftKey && document.activeElement === controls.at(-1)) {
       event.preventDefault(); controls[0].focus()
     } else if (event.shiftKey && document.activeElement === controls[0]) {
       event.preventDefault(); controls.at(-1)?.focus()

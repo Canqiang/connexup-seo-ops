@@ -3394,7 +3394,7 @@ pre {
 .agent-workbench .agent-workbench__update-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .agent-workbench .agent-workbench__update-controls p { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .agent-workbench .agent-workbench__update-controls strong { color: var(--aw-secondary); font-size: 12px; font-weight: 600; }
-.agent-workbench .agent-workbench__pending-range { flex-basis: 100%; margin: 0; color: var(--aw-action-small); font-size: 12px; text-align: right; }
+.agent-workbench .agent-workbench__pending-range { flex-basis: 100%; margin: 0; color: var(--aw-secondary); font-size: 12px; text-align: right; }
 .agent-workbench .agent-workbench__loading,
 .agent-workbench .agent-workbench__notice {
   margin: 0 0 14px;

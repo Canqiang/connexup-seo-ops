@@ -53,8 +53,37 @@ function mediaBlocks(condition: string) {
   return blocks.join('\n')
 }
 
+function selectorsWithDeclaration(source: string, declaration: string) {
+  return [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, , declarations]) => declarations.includes(declaration))
+    .flatMap(([, selectors]) => selectors.split(',').map(selector => selector.trim().replace(/\s+/g, ' ')))
+}
+
+function workbenchTokenMap() {
+  return Object.fromEntries(
+    [...rule('.agent-workbench').matchAll(/(--aw-[\w-]+):\s*(#[0-9a-f]{6})\s*;/gi)]
+      .map(([, name, value]) => [name, value.toUpperCase()]),
+  )
+}
+
 describe('Agent Workbench styles', () => {
   it('workbench palette meets contrast contract', () => {
+    expect(workbenchTokenMap()).toEqual({
+      '--aw-stage': '#19324A',
+      '--aw-page': '#F5F7F9',
+      '--aw-card': '#FFFFFF',
+      '--aw-live': '#2CCBB6',
+      '--aw-live-dark': '#176B60',
+      '--aw-success': '#26765B',
+      '--aw-action-small': '#9D5712',
+      '--aw-failure': '#B4372E',
+      '--aw-stage-success': '#71D7AF',
+      '--aw-stage-warning': '#F2B56B',
+      '--aw-stage-failure': '#FF9A91',
+      '--aw-secondary': '#596F81',
+      '--aw-stage-divider': '#5E7F95',
+      '--aw-stage-secondary': '#A9BDC9',
+    })
     const stage = cssVariable('--aw-stage')
     const card = cssVariable('--aw-card')
     for (const name of ['--aw-live', '--aw-stage-success', '--aw-stage-warning', '--aw-stage-failure', '--aw-stage-secondary', '--aw-card']) {
@@ -72,10 +101,9 @@ describe('Agent Workbench styles', () => {
 
   it('reserves orange for actions and attention and bright teal for proven motion', () => {
     const orangeRules = [...css.matchAll(/([^{}]+)\{([^{}]*var\(--aw-action-small\)[^{}]*)\}/g)]
-    expect(orangeRules).toHaveLength(2)
-    for (const [, selector] of orangeRules) {
-      expect(selector.includes('operator-action') || selector.includes('pending-range')).toBe(true)
-    }
+    expect(orangeRules).toHaveLength(1)
+    expect(orangeRules[0][1].trim()).toBe('.agent-workbench .agent-workbench__operator-action')
+    expect(rule('.agent-workbench .agent-workbench__pending-range')).toMatch(/color:\s*var\(--aw-secondary\)/)
     const brightTealRules = [...css.matchAll(/([^{}]+)\{([^{}]*var\(--aw-live\)[^{}]*)\}/g)]
     expect(brightTealRules).toHaveLength(2)
     for (const [, selector] of brightTealRules) {
@@ -105,24 +133,36 @@ describe('Agent Workbench styles', () => {
   })
 
   it('motion is exclusive to truthful motion selectors and fully disabled when reduced', () => {
-    const motionRules = [...css.matchAll(/([^{}]+)\{([^{}]*animation:\s*(?:aw-live-pulse|aw-rail-pulse)[^{}]*)\}/g)]
-    expect(motionRules).toHaveLength(2)
-    for (const [, selector, declarations] of motionRules) {
-      expect(selector).toContain('--motion')
-      expect(declarations).toContain('infinite')
-    }
+    const workbenchCss = css.slice(css.indexOf('/* ---- Agent Workbench: truthful execution signal ---- */'))
+    const animatedSelectors = new Set(
+      [...workbenchCss.matchAll(/([^{}]+)\{([^{}]*animation:\s*[^{}]*)\}/g)]
+        .filter(([, , declarations]) => [...declarations.matchAll(/animation:\s*([^;]+)/g)].some(([, value]) => value.trim() !== 'none'))
+        .map(([, selector]) => selector.trim().replace(/\s+/g, ' ')),
+    )
+    const infiniteAnimations = [...workbenchCss.matchAll(/([^{}]+)\{[^{}]*animation:\s*([\w-]+)[^;{}]*\binfinite\b[^{}]*\}/g)]
+      .map(([, selector, animation]) => ({ selector: selector.trim().replace(/\s+/g, ' '), animation }))
+    expect(infiniteAnimations).toEqual([
+      { selector: '.agent-workbench .agent-workbench__signal--motion .agent-workbench__signal-dot', animation: 'aw-live-pulse' },
+      { selector: '.agent-workbench .agent-workbench__stage:has(.agent-workbench__signal--motion) .agent-workbench__signal-detail--motion .agent-workbench__rail li[aria-current="step"] > span', animation: 'aw-rail-pulse' },
+    ])
 
     const reducedMotion = mediaBlocks('prefers-reduced-motion: reduce')
+    const animationNoneSelectors = new Set(selectorsWithDeclaration(reducedMotion, 'animation: none'))
+    for (const selector of animatedSelectors) expect(animationNoneSelectors.has(selector), selector).toBe(true)
     for (const selector of [
-      '.agent-workbench__signal--motion',
-      '.agent-workbench__signal-detail--motion',
-      '.agent-workbench__receipt--enter',
+      '.agent-workbench .agent-workbench__signal--motion .agent-workbench__signal-dot',
+      '.agent-workbench .agent-workbench__signal-detail--motion .agent-workbench__rail li[aria-current="step"] > span',
+      '.agent-workbench .agent-workbench__stage:has(.agent-workbench__signal--motion) .agent-workbench__signal-detail--motion .agent-workbench__rail li[aria-current="step"] > span',
+      '.agent-workbench .agent-workbench__receipt--enter',
       '.agent-workbench.agent-workbench__portal .agent-workbench__drawer',
       '.agent-workbench.agent-workbench__portal .agent-workbench__receipt',
-    ]) expect(reducedMotion).toContain(selector)
-    expect(reducedMotion.match(/animation:\s*none/g)?.length).toBeGreaterThanOrEqual(2)
-    for (const selector of ['.agent-workbench__signals', '.agent-workbench__table-scroll']) expect(reducedMotion).toContain(selector)
-    expect(reducedMotion).toMatch(/scroll-behavior:\s*auto/)
+    ]) expect(animationNoneSelectors.has(selector), selector).toBe(true)
+    const staticScrollSelectors = new Set(selectorsWithDeclaration(reducedMotion, 'scroll-behavior: auto'))
+    for (const selector of [
+      '.agent-workbench .agent-workbench__signals',
+      '.agent-workbench .agent-workbench__table-scroll',
+      '.agent-workbench.agent-workbench__portal .agent-workbench__drawer',
+    ]) expect(staticScrollSelectors.has(selector), selector).toBe(true)
   })
 
   it('forced colors preserve borders, selection, status text, and focus without animation', () => {
@@ -147,7 +187,6 @@ describe('Agent Workbench styles', () => {
 
   it('workbench overflow and drawer selectors remain scoped', () => {
     expect(css).toContain('.agent-workbench.agent-workbench__portal .agent-workbench__drawer')
-    expect(css).toContain('.agent-workbench .agent-workbench__table-scroll')
-    expect(css).toMatch(/overflow-x:\s*auto/)
+    expect(rule('.agent-workbench .agent-workbench__table-scroll')).toMatch(/overflow-x:\s*auto/)
   })
 })

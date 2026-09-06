@@ -1279,6 +1279,19 @@ describe('Agent Workbench', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '验证并注册' }))
   })
 
+  it('retire heading wraps Shift+Tab to the final dialog control', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '归档' }))
+    const heading = screen.getByRole('heading', { name: '归档 active Agent' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+
+    fireEvent.keyDown(heading, { key: 'Tab', shiftKey: true })
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '确认归档' }))
+  })
+
   it.each(['none', 'attribute', 'property'] as const)('drawer restores preexisting inert state (%s)', async priorState => {
     const root = document.createElement('div')
     root.id = 'root'
