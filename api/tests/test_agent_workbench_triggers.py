@@ -1889,3 +1889,171 @@ def test_normalized_trigger_identity_reaches_every_source_and_projection(
     )
     chain_client.close()
     conn.close()
+
+
+@pytest.mark.parametrize("invalid_run_id", [123, "   "])
+def test_invalid_trigger_identity_never_reaches_source_or_projection(
+    tmp_path, monkeypatch, invalid_run_id
+):
+    conn = _connection(tmp_path, monkeypatch, "invalid-identities.db")
+    merchant_id = _seed_exact_idle(conn, monkeypatch)
+    merchant = conn.execute(
+        "SELECT * FROM merchants WHERE id=?", (merchant_id,)
+    ).fetchone()
+    monkeypatch.setattr(runs, "_validate_safe_diagnosis_agent", lambda *_args: None)
+    monkeypatch.setattr(runs, "build_input", lambda *_args, **_kwargs: "safe input")
+    monkeypatch.setattr(
+        runs,
+        "merchant_lifecycle_token",
+        lambda *_args: ("active", 1, "lifecycle-sha"),
+    )
+    monkeypatch.setattr(runs, "now_iso", lambda: NOW.isoformat())
+    run_posts = []
+
+    def run_handler(request):
+        run_posts.append(request)
+        return httpx.Response(
+            200, json={"run_id": invalid_run_id, "status": "RUNNING"}
+        )
+
+    run_client = _real_coreai(run_handler)
+    run = runs.start_run(conn, run_client, "agent-primary", merchant, "manual")
+    assert len(run_posts) == 1
+    assert run["coreai_run_id"] is None
+    assert run["dispatch_state"] == "UNKNOWN"
+    assert run["status"] == "running"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM seo_ops_agent_runs"
+    ).fetchone()[0] == 0
+    run_client.close()
+
+    keyword_artifact_id = conn.execute(
+        "INSERT INTO merchant_seo_artifacts "
+        "(merchant_id,cycle_id,artifact_type,schema_version,status,source_agent_id,"
+        "dispatch_state,request_json,created_at) VALUES "
+        "(?,'invalid-keyword','KEYWORD_SET','seo_ops.keyword_set.v2','running',"
+        "'keyword-skill-workflow','pending',?,?)",
+        (merchant_id, '{"expected_active_artifact_id":null}', NOW.isoformat()),
+    ).lastrowid
+    conn.commit()
+    monkeypatch.setattr(
+        seo_targets,
+        "build_keyword_request",
+        lambda *_args: {"execution_spec": {}, "rules": []},
+    )
+    monkeypatch.setattr(seo_targets, "now_iso", lambda: NOW.isoformat())
+    keyword_posts = []
+
+    def keyword_handler(request):
+        path = request.url.path
+        if path == "/api/agents/agent-primary":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "agent-primary",
+                    "skill_ids": ["seed-skill", "ranking-skill"],
+                },
+            )
+        if path.startswith("/api/skills/"):
+            skill_id = path.rsplit("/", 1)[-1]
+            return httpx.Response(
+                200,
+                json={
+                    "id": skill_id,
+                    "qualified_name": f"qualified.{skill_id}",
+                    "version": 1,
+                    "updated_at": NOW.isoformat(),
+                },
+            )
+        keyword_posts.append(request)
+        return httpx.Response(
+            200, json={"run_id": invalid_run_id, "status": "PENDING"}
+        )
+
+    keyword_client = _real_coreai(keyword_handler)
+    with pytest.raises(seo_targets.HTTPException) as exc_info:
+        seo_targets._start_keyword_skill_cycle(
+            conn,
+            merchant,
+            keyword_client,
+            seo_targets.KeywordSkillWorkflow(
+                "agent-primary", "seed-skill", "ranking-skill"
+            ),
+            keyword_artifact_id,
+            "invalid-keyword",
+        )
+    assert getattr(exc_info.value, "status_code", None) == 502
+    assert len(keyword_posts) == 1
+    keyword_source = conn.execute(
+        "SELECT coreai_run_id,dispatch_state,status "
+        "FROM merchant_seo_artifacts WHERE id=?",
+        (keyword_artifact_id,),
+    ).fetchone()
+    assert tuple(keyword_source) == (None, "unknown", "failed")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM seo_ops_agent_runs"
+    ).fetchone()[0] == 0
+    keyword_client.close()
+
+    conn.execute(
+        "INSERT INTO merchant_seo_artifacts "
+        "(merchant_id,cycle_id,artifact_type,schema_version,status,source_agent_id,"
+        "payload_json,request_json,created_at,completed_at) VALUES "
+        "(?,'invalid-chain','KEYWORD_SET','seo_ops.keyword_set.v2','ready',"
+        "'keyword-agent','{}','{}',?,?)",
+        (merchant_id, NOW.isoformat(), NOW.isoformat()),
+    )
+    conn.execute(
+        "INSERT INTO merchant_seo_artifacts "
+        "(merchant_id,cycle_id,artifact_type,schema_version,status,source_agent_id,"
+        "coreai_run_id,request_json,created_at) VALUES "
+        "(?,'invalid-chain','AUDIT_REPORT','seo_ops.audit_report.v1','running',"
+        "'audit-agent','invalid-audit-source','{}',?)",
+        (merchant_id, NOW.isoformat()),
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        seo_targets,
+        "parse_audit_report",
+        lambda *_args: SimpleNamespace(model_dump=lambda **_kwargs: {"audit": True}),
+    )
+    monkeypatch.setattr(
+        seo_targets, "_build_ranking_request", lambda *_args: {"ranking": True}
+    )
+    chain_posts = []
+
+    def chain_handler(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "invalid-audit-source",
+                    "agent_id": "audit-agent",
+                    "status": "COMPLETED",
+                    "output": "{}",
+                    "completed_at": NOW.isoformat(),
+                },
+            )
+        chain_posts.append(request)
+        return httpx.Response(
+            200, json={"run_id": invalid_run_id, "status": "PENDING"}
+        )
+
+    chain_client = _real_coreai(chain_handler)
+    seo_targets.poll_seo_targets_once(
+        chain_client,
+        seo_targets.SeoAgentIds(
+            keyword="keyword-agent", audit="audit-agent", ranking="agent-primary"
+        ),
+    )
+    assert len(chain_posts) == 1
+    chained_source = conn.execute(
+        "SELECT coreai_run_id,status FROM merchant_seo_artifacts "
+        "WHERE cycle_id='invalid-chain' AND artifact_type='RANKING_REPORT'"
+    ).fetchone()
+    assert tuple(chained_source) == (None, "failed")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM seo_ops_agent_runs"
+    ).fetchone()[0] == 0
+    chain_client.close()
+    conn.close()
