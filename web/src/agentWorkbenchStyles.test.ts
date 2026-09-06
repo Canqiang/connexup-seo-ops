@@ -18,16 +18,100 @@ function contrast(foreground: string, background: string) {
   return (values[0] + .05) / (values[1] + .05)
 }
 
+function cssVariable(name: string) {
+  const match = css.match(new RegExp(`${name}:\\s*(#[0-9a-f]{6})\\s*;`, 'i'))
+  if (!match) throw new Error(`Missing CSS variable ${name}`)
+  return match[1].toUpperCase()
+}
+
+function rule(selector: string) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))
+  if (!match) throw new Error(`Missing CSS rule ${selector}`)
+  return match[1]
+}
+
+function mediaBlocks(condition: string) {
+  const marker = `@media (${condition})`
+  const blocks: string[] = []
+  let searchFrom = 0
+  while (true) {
+    const start = css.indexOf(marker, searchFrom)
+    if (start < 0) break
+    const open = css.indexOf('{', start + marker.length)
+    let depth = 1
+    let cursor = open + 1
+    while (cursor < css.length && depth > 0) {
+      if (css[cursor] === '{') depth += 1
+      if (css[cursor] === '}') depth -= 1
+      cursor += 1
+    }
+    blocks.push(css.slice(open + 1, cursor - 1))
+    searchFrom = cursor
+  }
+  if (blocks.length === 0) throw new Error(`Missing media query ${condition}`)
+  return blocks.join('\n')
+}
+
 describe('Agent Workbench styles', () => {
   it('workbench palette meets contrast contract', () => {
-    for (const color of ['#2CCBB6', '#71D7AF', '#F2B56B', '#FF9A91', '#A9BDC9', '#FFFFFF']) expect(contrast(color, '#19324A')).toBeGreaterThanOrEqual(4.5)
-    for (const color of ['#176B60', '#26765B', '#9D5712', '#B4372E', '#596F81']) expect(contrast(color, '#FFFFFF')).toBeGreaterThanOrEqual(4.5)
+    const stage = cssVariable('--aw-stage')
+    const card = cssVariable('--aw-card')
+    for (const name of ['--aw-live', '--aw-stage-success', '--aw-stage-warning', '--aw-stage-failure', '--aw-stage-secondary', '--aw-card']) {
+      expect(contrast(cssVariable(name), stage), name).toBeGreaterThanOrEqual(4.5)
+    }
+    for (const name of ['--aw-live-dark', '--aw-success', '--aw-action-small', '--aw-failure', '--aw-secondary']) {
+      expect(contrast(cssVariable(name), card), name).toBeGreaterThanOrEqual(4.5)
+    }
+    expect(cssVariable('--aw-action-small')).toBe('#9D5712')
+    expect(rule('.agent-workbench .agent-workbench__operator-action')).toMatch(/border-color:\s*var\(--aw-action-small\)/)
+    expect(rule('.agent-workbench .agent-workbench__operator-action')).toMatch(/background:\s*var\(--aw-action-small\)/)
+    expect(css).not.toContain('#C66C14')
     expect(css).toContain('.agent-workbench .agent-workbench__summary')
   })
 
-  it('workbench accessibility fallbacks are scoped', () => {
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.agent-workbench__drawer/)
-    expect(css).toMatch(/@media \(forced-colors: active\)[\s\S]*\.agent-workbench__drawer/)
+  it('motion is exclusive to truthful motion selectors and fully disabled when reduced', () => {
+    const motionRules = [...css.matchAll(/([^{}]+)\{([^{}]*animation:\s*(?:aw-live-pulse|aw-rail-pulse)[^{}]*)\}/g)]
+    expect(motionRules).toHaveLength(2)
+    for (const [, selector, declarations] of motionRules) {
+      expect(selector).toContain('--motion')
+      expect(declarations).toContain('infinite')
+    }
+
+    const reducedMotion = mediaBlocks('prefers-reduced-motion: reduce')
+    for (const selector of [
+      '.agent-workbench__signal--motion',
+      '.agent-workbench__signal-detail--motion',
+      '.agent-workbench__receipt--enter',
+      '.agent-workbench.agent-workbench__portal .agent-workbench__drawer',
+      '.agent-workbench.agent-workbench__portal .agent-workbench__receipt',
+    ]) expect(reducedMotion).toContain(selector)
+    expect(reducedMotion.match(/animation:\s*none/g)?.length).toBeGreaterThanOrEqual(2)
+    for (const selector of ['.agent-workbench__signals', '.agent-workbench__table-scroll']) expect(reducedMotion).toContain(selector)
+    expect(reducedMotion).toMatch(/scroll-behavior:\s*auto/)
+  })
+
+  it('forced colors preserve borders, selection, status text, and focus without animation', () => {
+    const forcedColors = mediaBlocks('forced-colors: active')
+    for (const selector of [
+      '.agent-workbench__summary',
+      '.agent-workbench__registry',
+      '.agent-workbench__table-scroll',
+      '.agent-workbench__history-item',
+      '.agent-workbench.agent-workbench__portal .agent-workbench__drawer',
+    ]) expect(forcedColors).toContain(selector)
+    expect(forcedColors).toMatch(/border-color:\s*CanvasText/)
+    expect(forcedColors).toContain('.agent-workbench__range input:checked + span')
+    expect(forcedColors).toContain('.agent-workbench__signal[aria-selected="true"]')
+    expect(forcedColors).toMatch(/outline:\s*2px solid Highlight/)
+    expect(forcedColors).toContain('.agent-workbench__badge')
+    expect(forcedColors).toMatch(/color:\s*CanvasText/)
+    expect(forcedColors).toContain(':focus-visible')
+    expect(forcedColors).toMatch(/outline:\s*3px solid Highlight/)
+    expect(forcedColors).not.toMatch(/animation\s*:/)
+  })
+
+  it('workbench overflow and drawer selectors remain scoped', () => {
     expect(css).toContain('.agent-workbench.agent-workbench__portal .agent-workbench__drawer')
     expect(css).toContain('.agent-workbench .agent-workbench__table-scroll')
     expect(css).toMatch(/overflow-x:\s*auto/)

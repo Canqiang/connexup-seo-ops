@@ -214,6 +214,12 @@ type MutationKind = 'register' | 'edit' | 'disable' | 're-enable' | 'retire' | '
 
 const mutationKinds: MutationKind[] = ['register', 'edit', 'disable', 're-enable', 'retire', 'replace']
 
+const lifecycleCopy = {
+  active: '启用',
+  disabled: '停用',
+  retired: '已归档',
+} as const
+
 function mutationAgent(kind: MutationKind): WorkbenchAgent {
   return kind === 're-enable' ? makeAgent('disabled') : makeAgent()
 }
@@ -281,7 +287,7 @@ function expectExactMutationCall(kind: MutationKind, mutation: ReturnType<typeof
       display_name: 'Matrix Agent',
       role: 'Matrix Role',
       sort_order: 0,
-      suspect_after_seconds: 120,
+      suspect_after_seconds: 1800,
     })
   } else if (kind === 'edit') {
     expect(mutation).toHaveBeenCalledWith('agent-active', {
@@ -1005,6 +1011,83 @@ describe('Agent Workbench', () => {
     expect(screen.getByText('业务关联待确认')).not.toBeNull()
   })
 
+  it.each(['pause', 'hidden', 'focus', 'freshness-expiry'] as const)('registry revokes raw exact current counts after %s', async mode => {
+    vi.useFakeTimers()
+    const waitingRead = deferred<AgentWorkbenchSnapshot>()
+    const agent = {
+      ...makeAgent(),
+      current_counts: { running: exactCount(1), queued: exactCount(0), waiting: exactCount(0) },
+    }
+    vi.spyOn(api, 'getAgentWorkbench')
+      .mockResolvedValueOnce(makeSnapshot({
+        agents: [agent],
+        fresh_until: '2026-09-06T01:00:01.250Z',
+        current_counts: { running: exactCount(1), queued: exactCount(0), waiting: exactCount(0), legacy_nonterminal: exactCount(0) },
+      }))
+      .mockReturnValue(waitingRead.promise)
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    const currentCell = screen.getByRole('rowheader', { name: /active Agent/ }).closest('tr')!.querySelectorAll('td')[1]
+    expect(currentCell.textContent).toBe('1 运行')
+
+    if (mode === 'pause') {
+      fireEvent.click(screen.getByRole('button', { name: '暂停自动更新' }))
+    } else if (mode === 'hidden') {
+      setVisibility('hidden')
+      fireEvent(document, new Event('visibilitychange'))
+    } else if (mode === 'focus') {
+      fireEvent.focus(window)
+    } else {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_250) })
+    }
+
+    expect(currentCell.textContent).toBe('截至 2026-09-06T01:00:00.000Z · 已确认 1 运行')
+  })
+
+  it('registry keeps range and history completeness qualifiers independent', async () => {
+    const rangeComplete = {
+      ...makeAgent(),
+      id: 'range-complete',
+      display_name: '范围完整 Agent',
+      coverage: { ...makeAgent().coverage, range_complete: true, history_complete: false, mirrored_run_count: 5, remote_total_runs: 10 },
+    }
+    const historyComplete = {
+      ...makeAgent(),
+      id: 'history-complete',
+      display_name: '历史完整 Agent',
+      sort_order: 2,
+      coverage: { ...makeAgent().coverage, range_complete: false, history_complete: true, mirrored_run_count: 5, remote_total_runs: 10 },
+    }
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot({ agents: [rangeComplete, historyComplete] }))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+
+    const rangeRow = screen.getByRole('rowheader', { name: /范围完整 Agent/ }).closest('tr')!
+    const historyRow = screen.getByRole('rowheader', { name: /历史完整 Agent/ }).closest('tr')!
+    expect(rangeRow.querySelectorAll('td')[2].textContent).not.toContain('基于已镜像')
+    expect(rangeRow.querySelectorAll('td')[5].textContent).toContain('基于已镜像 5/10 次')
+    expect(historyRow.querySelectorAll('td')[2].textContent).toContain('基于已镜像 5/10 次')
+    expect(historyRow.querySelectorAll('td')[5].textContent).toContain('历史完整')
+    expect(historyRow.querySelectorAll('td')[5].textContent).not.toContain('基于已镜像')
+  })
+
+  it('registry and mutation receipts localize lifecycle labels', async () => {
+    const agents = [makeAgent(), { ...makeAgent('disabled'), sort_order: 2 }, { ...makeAgent('retired'), sort_order: 3 }]
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot({ agents }))
+    vi.spyOn(api, 'updateAgent').mockResolvedValue({ agent: makeAgent(), sync_pending: false })
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看已归档' }))
+
+    for (const label of ['启用', '停用', '已归档']) {
+      expect(screen.getByText(label, { selector: '.agent-workbench__badge' })).not.toBeNull()
+    }
+    const activeRow = screen.getByRole('rowheader', { name: /active Agent/ }).closest('tr')!
+    fireEvent.click(within(activeRow).getByRole('button', { name: '编辑' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    expect(await screen.findByText(/设置已保存 · 启用 · 无同步待处理/)).not.toBeNull()
+  })
+
   it('retired rows retain history but suppress all mutation controls', async () => {
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot({ agents: [makeAgent('retired')] }))
     vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory())
@@ -1040,9 +1123,9 @@ describe('Agent Workbench', () => {
       display_name: '内容 Agent',
       role: '内容运营',
       sort_order: 0,
-      suspect_after_seconds: 120,
+      suspect_after_seconds: 1800,
     }))
-    expect(await screen.findByText(/设置已保存.*active.*同步待处理/)).not.toBeNull()
+    expect(await screen.findByText(/设置已保存.*启用.*同步待处理/)).not.toBeNull()
   })
 
   it('edit disable and re-enable use exact contracts', async () => {
@@ -1107,7 +1190,7 @@ describe('Agent Workbench', () => {
     getWorkbench.mockClear()
     submitMutation(kind)
     expect(await screen.findByText(/页面仍为暂停快照/)).not.toBeNull()
-    expect(screen.getByText(new RegExp(`设置已保存.*${response.agent.lifecycle_status}.*${response.sync_pending ? '同步待处理' : '无同步待处理'}`))).not.toBeNull()
+    expect(screen.getByText(new RegExp(`设置已保存.*${lifecycleCopy[response.agent.lifecycle_status]}.*${response.sync_pending ? '同步待处理' : '无同步待处理'}`))).not.toBeNull()
     expectExactMutationCall(kind, mutation)
     expect(getWorkbench).not.toHaveBeenCalled()
     expect(history).not.toHaveBeenCalled()
@@ -1160,6 +1243,18 @@ describe('Agent Workbench', () => {
     )
   })
 
+  it('register defaults suspect threshold to 1800 while edit preserves persisted value', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '管理 Agent' }))
+    expect((screen.getByLabelText('状态待确认阈值') as HTMLInputElement).value).toBe('1800')
+    fireEvent.click(screen.getByRole('button', { name: '关闭 Agent 管理' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    expect((screen.getByLabelText('状态待确认阈值') as HTMLInputElement).value).toBe('120')
+  })
+
   it('drawer explicit focus handler wraps forward', async () => {
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
     render(<AgentWorkbench />)
@@ -1201,6 +1296,19 @@ describe('Agent Workbench', () => {
     root.remove()
   })
 
+  it.each(['归档', '替换'])('drawer restores focus to a connected fallback after %s opener disappears', async openerName => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    const opener = screen.getByRole('button', { name: openerName })
+    fireEvent.click(opener)
+    opener.remove()
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭 Agent 管理' }))
+
+    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Agent 台账' }))
+  })
+
   it('drawer escape restores opener during pending request', async () => {
     const mutation = deferred<{ agent: ReturnType<typeof makeAgent>; sync_pending: boolean }>()
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
@@ -1220,6 +1328,53 @@ describe('Agent Workbench', () => {
     mutation.resolve({ agent: makeAgent(), sync_pending: false })
     await act(async () => { await Promise.resolve() })
     expect(screen.queryByText(/设置已保存/)).toBeNull()
+  })
+
+  it('closed drawer still coordinates persisted mutation readback', async () => {
+    const mutation = deferred<AgentMutationResponse>()
+    const readback = deferred<AgentWorkbenchSnapshot>()
+    const aggregate = vi.spyOn(api, 'getAgentWorkbench')
+      .mockResolvedValueOnce(makeSnapshot())
+      .mockReturnValueOnce(readback.promise)
+    vi.spyOn(api, 'registerAgent').mockReturnValue(mutation.promise)
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    submitMutation('register')
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    mutation.resolve(mutationResponse('register'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByText(/设置已保存/)).toBeNull()
+    expect(aggregate).toHaveBeenCalledTimes(2)
+    readback.resolve(makeSnapshot())
+  })
+
+  it('closed drawer publishes mutation readback using current pause state', async () => {
+    const mutation = deferred<AgentMutationResponse>()
+    const resume = deferred<AgentWorkbenchSnapshot>()
+    const readback = deferred<AgentWorkbenchSnapshot>()
+    const aggregate = vi.spyOn(api, 'getAgentWorkbench')
+      .mockResolvedValueOnce(makeSnapshot())
+      .mockReturnValueOnce(resume.promise)
+      .mockReturnValueOnce(readback.promise)
+    vi.spyOn(api, 'registerAgent').mockReturnValue(mutation.promise)
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '暂停自动更新' }))
+    submitMutation('register')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: '恢复自动更新' }))
+    resume.resolve(makeSnapshot())
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(aggregate).toHaveBeenCalledTimes(2)
+
+    mutation.resolve(mutationResponse('register'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(aggregate).toHaveBeenCalledTimes(3)
+    readback.resolve(makeSnapshot())
   })
 
   it('expansion loads first local history page', async () => {
@@ -1407,6 +1562,49 @@ describe('Agent Workbench', () => {
     expect(screen.getByRole('button', { name: '复制完整 Run ID history-facts-id' })).not.toBeNull()
   })
 
+  it('history association without href retains its factual local label', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d', {
+      items: [makeHistoryItem({ association: { kind: 'run', source_local_id: 9, merchant_id: 2, merchant_name: 'Bear', local_href: null, local_label: '本地 Run #9' } })],
+    }))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+
+    expect(await screen.findByText('本地 Run #9')).not.toBeNull()
+    expect(screen.queryByRole('link', { name: '本地 Run #9' })).toBeNull()
+    expect(screen.queryByText('未关联商户')).toBeNull()
+  })
+
+  it.each(['COMPLETED', 'FAILED', 'TIMEOUT', 'CANCELLED', 'SKIPPED'])('terminal history row with missing timing is unavailable (%s)', async rawStatus => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d', {
+      items: [makeHistoryItem({ raw_status: rawStatus, completed_at: null, duration_seconds: null })],
+    }))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+    const history = await screen.findByRole('region', { name: 'active Agent 运行历史' })
+
+    expect(within(history).getByText('完成').parentElement?.textContent).toBe('完成不可用')
+    expect(within(history).getByText('耗时').parentElement?.textContent).toBe('耗时不可用')
+    expect(within(history).queryByText('未完成')).toBeNull()
+    expect(within(history).queryByText('进行中')).toBeNull()
+  })
+
+  it.each(['PENDING', 'RUNNING', 'PAUSED'])('known nonterminal history row uses elapsed seconds (%s)', async rawStatus => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d', {
+      items: [makeHistoryItem({ raw_status: rawStatus, presentation_group: 'active', completed_at: null, duration_seconds: null, elapsed_seconds: 47 })],
+    }))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+    const history = await screen.findByRole('region', { name: 'active Agent 运行历史' })
+
+    expect(within(history).getByText('耗时').parentElement?.textContent).toBe('耗时已持续 47 秒')
+  })
+
   it.each(mutationKinds)('running mutations linearize aggregate readback after write (%s)', async kind => {
     vi.useFakeTimers()
     const oldRead = deferred<AgentWorkbenchSnapshot>()
@@ -1439,7 +1637,7 @@ describe('Agent Workbench', () => {
     events.push('mutation-resolved')
     mutationResult.resolve(response)
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
-    expect(screen.getByText(new RegExp(`设置已保存.*${response.agent.lifecycle_status}.*${response.sync_pending ? '同步待处理' : '无同步待处理'}`))).not.toBeNull()
+    expect(screen.getByText(new RegExp(`设置已保存.*${lifecycleCopy[response.agent.lifecycle_status]}.*${response.sync_pending ? '同步待处理' : '无同步待处理'}`))).not.toBeNull()
     expect(signals[1].aborted).toBe(true)
     expect(aggregate).toHaveBeenCalledTimes(2)
     oldRead.resolve(makeSnapshot({ summary: { ...makeSnapshot().summary, run_count: 99 } }))
@@ -1711,7 +1909,11 @@ describe('Agent Workbench', () => {
     render(<AgentWorkbench />)
     await act(async () => { await Promise.resolve() })
     expect(screen.getByText('当前没有在册 Agent')).not.toBeNull()
-    expect(screen.getByRole('link', { name: '查看已归档' })).not.toBeNull()
+    const reveal = screen.getByRole('link', { name: '查看已归档' })
+    expect(screen.queryByRole('rowheader', { name: /retired Agent/ })).toBeNull()
+    fireEvent.click(reveal)
+    expect(screen.getByRole('rowheader', { name: /retired Agent/ })).not.toBeNull()
+    expect(screen.getByRole('button', { name: '隐藏已归档' })).not.toBeNull()
     expect(screen.getByRole('tab', { name: /研究 Agent/ })).not.toBeNull()
   })
 

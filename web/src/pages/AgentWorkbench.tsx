@@ -32,6 +32,7 @@ export default function AgentWorkbench() {
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null)
   const [managerMode, setManagerMode] = useState<AgentManagerMode | null>(null)
   const [managerOpener, setManagerOpener] = useState<HTMLElement | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
   const result = useAgentWorkbenchPolling(range)
   const { snapshot, presentation, loading, refreshing, error, autoUpdate, requestRefresh, setAutoUpdate } = result
   const displayedRange = snapshot?.range ?? '30d'
@@ -152,10 +153,10 @@ export default function AgentWorkbench() {
         <section className="agent-workbench__notice"><strong>当前没有启用的 Agent</strong></section>
       )}
       {snapshot && activeAgents.length === 0 && disabledAgents.length === 0 && retiredAgents.length > 0 && (
-        <section className="agent-workbench__notice"><strong>当前没有在册 Agent</strong><a href="#agent-workbench-registry">查看已归档</a></section>
+        <section className="agent-workbench__notice"><strong>当前没有在册 Agent</strong><a href="#agent-workbench-registry" onClick={() => setShowArchived(true)}>查看已归档</a></section>
       )}
 
-      {snapshot && <AgentRegistryTable agents={snapshot.agents} range={displayedRange} autoUpdate={autoUpdate} onManage={openManager} onAnnouncement={result.publishAnnouncement} />}
+      {snapshot && presentation && <AgentRegistryTable agents={snapshot.agents} presentation={presentation} snapshotAt={snapshot.snapshot_at} range={displayedRange} autoUpdate={autoUpdate} showArchived={showArchived} onShowArchivedChange={setShowArchived} onManage={openManager} onAnnouncement={result.publishAnnouncement} />}
 
       {snapshot && snapshot.sync_warnings.length > 0 && <section className="agent-workbench__warnings" aria-labelledby="agent-workbench-warnings-heading"><h2 id="agent-workbench-warnings-heading">运行告警</h2><ul>{snapshot.sync_warnings.map((warning, index) => <li key={`${warning.code}-${index}`}><strong>{warning.message}</strong>{warning.local_agent_id && <span>Agent {warning.local_agent_id}</span>}{warning.coreai_run_id && <span>Run {warning.coreai_run_id}</span>}</li>)}</ul></section>}
 

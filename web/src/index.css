@@ -3529,7 +3529,7 @@ pre {
 .agent-workbench .agent-workbench__registry > header > div:last-child { display: flex; gap: 8px; }
 .agent-workbench .agent-workbench__registry > header p { margin: 0; color: var(--aw-secondary); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 .agent-workbench .agent-workbench__registry > header h2 { margin: 1px 0 0; }
-.agent-workbench .agent-workbench__operator-action { border-color: #C66C14; background: #C66C14; color: #fff; }
+.agent-workbench .agent-workbench__operator-action { border-color: var(--aw-action-small); background: var(--aw-action-small); color: #fff; }
 .agent-workbench .agent-workbench__table-scroll { max-width: 100%; overflow-x: auto; outline-offset: -2px; }
 .agent-workbench .agent-workbench__table-scroll:focus-visible,
 .agent-workbench .agent-workbench__drawer :focus-visible { outline: 3px solid var(--aw-action-small); outline-offset: 2px; }
