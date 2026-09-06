@@ -1,8 +1,10 @@
+import asyncio
 import base64
 import json
 import math
 import os
 import re
+import threading
 import unicodedata
 import uuid
 from dataclasses import asdict, dataclass
@@ -20,7 +22,7 @@ from .config import (
     coreai_connection_settings,
 )
 from .coreai import CoreAiClient, CoreAiContractError, CoreAiError
-from .db import get_db
+from .db import connect, get_db
 
 
 router = APIRouter(prefix="/api/agent-workbench", tags=["agent-workbench"])
@@ -43,6 +45,23 @@ KNOWN_TERMINAL = frozenset(
 WORKBENCH_RANGES = frozenset({"today", "7d", "30d", "all"})
 OUTCOME_STATUSES = frozenset({"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"})
 SUCCESS_STATUSES = frozenset({"COMPLETED"})
+
+SYNC_TICK_SECONDS = 1
+MAX_CONCURRENT_AGENT_SYNCS = 8
+MAX_CONCURRENT_METADATA_SYNCS = 4
+STARTUP_DEDUP_WINDOW_SECONDS = 10
+ACTIVE_DISCOVERY_SECONDS = 30
+DISABLED_DISCOVERY_SECONDS = 15 * 60
+RETIRED_DISCOVERY_SECONDS = 24 * 60 * 60
+FAST_STATUS_SECONDS = 5
+RUN_FRESH_SECONDS = 15
+PROOF_FRESH_SECONDS = 90
+SYNC_BACKOFF_BASE_SECONDS = 5
+SYNC_BACKOFF_MAX_SECONDS = 60
+METADATA_SUCCESS_SECONDS = 24 * 60 * 60
+METADATA_BACKOFF_BASE_SECONDS = 60
+METADATA_BACKOFF_MAX_SECONDS = 60 * 60
+LEASE_SECONDS = 45
 
 
 def _is_unknown_status(status: str | None) -> bool:
@@ -562,16 +581,16 @@ def _agent_health(agent, runs, now, configured, complete):
         return "unavailable", None
     if discovery is None or (agent["status"] == "active" and checked is None):
         return "unavailable", None
-    deadlines = [discovery + timedelta(seconds=90)]
+    deadlines = [discovery + timedelta(seconds=PROOF_FRESH_SECONDS)]
     if agent["status"] == "active":
-        deadlines.append(checked + timedelta(seconds=90))
+        deadlines.append(checked + timedelta(seconds=PROOF_FRESH_SECONDS))
     for row in runs:
         if row["raw_status"] not in {"PENDING", "RUNNING"}:
             continue
         synced = _parse_time(row["last_synced_at"])
         effective = _effective_start(row)
         if synced:
-            deadlines.append(synced + timedelta(seconds=15))
+            deadlines.append(synced + timedelta(seconds=RUN_FRESH_SECONDS))
         if effective:
             deadlines.append(effective + timedelta(seconds=agent["suspect_after_seconds"]))
     boundary = min(deadlines)
@@ -920,7 +939,7 @@ def _workbench_signal(
         fresh = bool(
             row["last_synced_at"] and not poll_failed and health == "fresh"
         )
-        fresh_until = now + timedelta(seconds=15) if fresh else None
+        fresh_until = now + timedelta(seconds=RUN_FRESH_SECONDS) if fresh else None
         signal_state = "archiving"
     elif has_receipt:
         signal_state = "completed"
@@ -932,7 +951,8 @@ def _workbench_signal(
             if row["raw_status"] in {"PENDING", "RUNNING"}:
                 synced = _parse_time(row["last_synced_at"])
                 candidates = [candidate for candidate in (
-                    agent_boundary, synced + timedelta(seconds=15) if synced else None,
+                    agent_boundary,
+                    synced + timedelta(seconds=RUN_FRESH_SECONDS) if synced else None,
                     suspect_at,
                 ) if candidate]
                 fresh_until = min(candidates) if candidates else None
@@ -2060,12 +2080,1409 @@ def utc_now() -> datetime:
 
 
 @dataclass(frozen=True)
+class AgentRunSyncLease:
+    local_agent_id: str
+    coreai_agent_id: str
+    lifecycle_status: str
+    owner: str
+    epoch: int
+    lease_until: str
+    discovery_due: bool
+    fast_statuses: Sequence[str]
+    local_event_epoch: int
+    history_event_epoch: int
+
+
+@dataclass(frozen=True)
+class AgentMetadataLease:
+    local_agent_id: str
+    coreai_agent_id: str
+    owner: str
+    epoch: int
+    lease_until: str
+    local_event_epoch: int
+
+
+def _time_due(value: str | None, now: datetime) -> bool:
+    parsed = _parse_time(value)
+    return parsed is None or parsed <= now
+
+
+def _live_lease(owner: str | None, until: str | None, now: datetime) -> bool:
+    expiry = _parse_time(until)
+    return bool(owner and expiry and expiry > now)
+
+
+def claim_due_run_sync(
+    conn, local_agent_id: str, owner: str, now: datetime
+) -> AgentRunSyncLease | None:
+    lease_until = _utc_iso(now + timedelta(seconds=LEASE_SECONDS))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT a.id,a.coreai_agent_id,a.status,a.suspect_after_seconds,"
+            "s.* FROM seo_ops_agents a JOIN seo_ops_agent_sync_state s "
+            "ON s.seo_ops_agent_id=a.id WHERE a.id=?",
+            (local_agent_id,),
+        ).fetchone()
+        if row is None or _live_lease(row["lease_owner"], row["lease_until"], now):
+            conn.commit()
+            return None
+        discovery_due = _time_due(row["next_discovery_at"], now)
+        fast_due = bool(
+            row["status"] == "active"
+            and row["next_fast_poll_at"] is not None
+            and _time_due(row["next_fast_poll_at"], now)
+        )
+        fast_statuses = []
+        if fast_due and not discovery_due:
+            for status in ("PENDING", "RUNNING"):
+                candidates = conn.execute(
+                    "SELECT started_at,first_seen_at FROM seo_ops_agent_runs "
+                    "WHERE seo_ops_agent_id=? AND raw_status=?",
+                    (local_agent_id, status),
+                ).fetchall()
+                if any(
+                    (effective := _effective_start(candidate)) is not None
+                    and now < effective + timedelta(seconds=row["suspect_after_seconds"])
+                    for candidate in candidates
+                ):
+                    fast_statuses.append(status)
+        if not discovery_due and not fast_statuses:
+            conn.commit()
+            return None
+        epoch = row["lease_epoch"] + 1
+        conn.execute(
+            "UPDATE seo_ops_agent_sync_state SET lease_owner=?,lease_epoch=?,"
+            "lease_until=? WHERE seo_ops_agent_id=?",
+            (owner, epoch, lease_until, local_agent_id),
+        )
+        conn.commit()
+        return AgentRunSyncLease(
+            local_agent_id=local_agent_id,
+            coreai_agent_id=row["coreai_agent_id"],
+            lifecycle_status=row["status"],
+            owner=owner,
+            epoch=epoch,
+            lease_until=lease_until,
+            discovery_due=discovery_due,
+            fast_statuses=tuple(fast_statuses),
+            local_event_epoch=row["local_event_epoch"],
+            history_event_epoch=row["history_event_epoch"],
+        )
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def claim_due_metadata_sync(
+    conn, local_agent_id: str, owner: str, now: datetime
+) -> AgentMetadataLease | None:
+    lease_until = _utc_iso(now + timedelta(seconds=LEASE_SECONDS))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT a.*,s.local_event_epoch FROM seo_ops_agents a "
+            "JOIN seo_ops_agent_sync_state s ON s.seo_ops_agent_id=a.id "
+            "WHERE a.id=?",
+            (local_agent_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "active"
+            or not _time_due(row["next_verification_at"], now)
+            or _live_lease(
+                row["metadata_lease_owner"], row["metadata_lease_until"], now
+            )
+        ):
+            conn.commit()
+            return None
+        epoch = row["metadata_lease_epoch"] + 1
+        conn.execute(
+            "UPDATE seo_ops_agents SET metadata_lease_owner=?,"
+            "metadata_lease_epoch=?,metadata_lease_until=? WHERE id=?",
+            (owner, epoch, lease_until, local_agent_id),
+        )
+        conn.commit()
+        return AgentMetadataLease(
+            local_agent_id=local_agent_id,
+            coreai_agent_id=row["coreai_agent_id"],
+            owner=owner,
+            epoch=epoch,
+            lease_until=lease_until,
+            local_event_epoch=row["local_event_epoch"],
+        )
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def renew_run_lease(
+    conn, lease: AgentRunSyncLease, now: datetime
+) -> bool:
+    stamp = _utc_iso(now)
+    lease_until = _utc_iso(now + timedelta(seconds=LEASE_SECONDS))
+    cursor = conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET lease_until=? "
+        "WHERE seo_ops_agent_id=? AND lease_owner=? AND lease_epoch=? "
+        "AND lease_until>?",
+        (
+            lease_until,
+            lease.local_agent_id,
+            lease.owner,
+            lease.epoch,
+            stamp,
+        ),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def renew_metadata_lease(
+    conn, lease: AgentMetadataLease, now: datetime
+) -> bool:
+    stamp = _utc_iso(now)
+    lease_until = _utc_iso(now + timedelta(seconds=LEASE_SECONDS))
+    cursor = conn.execute(
+        "UPDATE seo_ops_agents SET metadata_lease_until=? "
+        "WHERE id=? AND metadata_lease_owner=? AND metadata_lease_epoch=? "
+        "AND metadata_lease_until>?",
+        (
+            lease_until,
+            lease.local_agent_id,
+            lease.owner,
+            lease.epoch,
+            stamp,
+        ),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def release_run_lease(conn, lease: AgentRunSyncLease) -> bool:
+    cursor = conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET lease_owner=NULL,lease_until=NULL "
+        "WHERE seo_ops_agent_id=? AND lease_owner=? AND lease_epoch=?",
+        (lease.local_agent_id, lease.owner, lease.epoch),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def release_metadata_lease(conn, lease: AgentMetadataLease) -> bool:
+    cursor = conn.execute(
+        "UPDATE seo_ops_agents SET metadata_lease_owner=NULL,"
+        "metadata_lease_until=NULL WHERE id=? AND metadata_lease_owner=? "
+        "AND metadata_lease_epoch=?",
+        (lease.local_agent_id, lease.owner, lease.epoch),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+@dataclass(frozen=True)
+class RunPageOutcome:
+    status: str | None
+    page: ParsedAgentRunPage | None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class RunCycleResult:
+    observed_at: datetime
+    outcomes: Sequence[RunPageOutcome]
+
+
+@dataclass(frozen=True)
+class MetadataResult:
+    observed_at: datetime
+    metadata: "VerifiedAgentMetadata | None"
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+def _run_error(exc: BaseException) -> tuple[str, str]:
+    if isinstance(exc, CoreAiError):
+        if exc.status_code:
+            return "COREAI_HTTP_ERROR", "Core AI Run 列表请求失败"
+        return "COREAI_TRANSPORT_ERROR", "Core AI Run 列表暂时不可用"
+    if isinstance(exc, (KeyError, TypeError, ValueError)):
+        return "COREAI_RUN_LIST_INVALID", "Core AI Run 列表格式无效"
+    return "COREAI_SYNC_FAILED", "Core AI Run 同步暂时不可用"
+
+
+def execute_run_request_plan(
+    client,
+    lease: AgentRunSyncLease,
+    now: datetime,
+    history_limit: int,
+    *,
+    renew=None,
+    clock=None,
+    stop_event: threading.Event | None = None,
+    cached_ids_by_status: dict[str, set[str]] | None = None,
+) -> RunCycleResult:
+    statuses: list[str | None] = (
+        [None, "PENDING", "RUNNING", "PAUSED"]
+        if lease.discovery_due
+        else list(dict.fromkeys(lease.fast_statuses))
+    )
+    outcomes: list[RunPageOutcome] = []
+
+    def request(status: str | None) -> bool:
+        if stop_event is not None and stop_event.is_set():
+            return False
+        if renew is not None and not renew():
+            return False
+        try:
+            raw_page = client.list_agent_runs(
+                lease.coreai_agent_id, status, history_limit
+            )
+            observed_at = clock() if clock is not None else now
+            page = parse_agent_run_page(
+                lease.coreai_agent_id,
+                raw_page,
+                observed_at,
+                expected_status=status,
+                sensitive_values=_sync_sensitive_values(),
+            )
+        except Exception as exc:
+            code, message = _run_error(exc)
+            outcomes.append(RunPageOutcome(status, None, code, message))
+        else:
+            outcomes.append(RunPageOutcome(status, page))
+        return True
+
+    for status in statuses:
+        if not request(status):
+            break
+
+    if not lease.discovery_due and None not in statuses and cached_ids_by_status:
+        observed_ids = {
+            run.coreai_run_id
+            for outcome in outcomes
+            if outcome.page is not None
+            for run in outcome.page.runs
+        }
+        expected_ids = set().union(
+            *(cached_ids_by_status.get(status, set()) for status in lease.fast_statuses)
+        )
+        if expected_ids - observed_ids:
+            request(None)
+    observed_at = clock() if clock is not None else now
+    return RunCycleResult(observed_at, tuple(outcomes))
+
+
+def _sync_sensitive_values() -> tuple[str, ...]:
+    settings = coreai_connection_settings()
+    values = []
+    if settings is not None:
+        values.extend((settings.api_key, settings.base_url))
+    for key in (
+        "SEO_OPS_AUTH_USERNAME",
+        "SEO_OPS_AUTH_PASSWORD",
+        "SEO_OPS_AUTH_SECRET",
+    ):
+        value = os.environ.get(key)
+        if value:
+            values.append(value)
+    return tuple(values)
+
+
+def _find_local_binding_tx(conn, coreai_run_id: str) -> LocalRunBinding | None:
+    matches = conn.execute(
+        "SELECT 'run',id FROM runs WHERE coreai_run_id=? UNION ALL "
+        "SELECT 'task_execution',id FROM task_executions WHERE coreai_run_id=? "
+        "UNION ALL SELECT 'merchant_seo_artifact',id "
+        "FROM merchant_seo_artifacts WHERE coreai_run_id=?",
+        (coreai_run_id, coreai_run_id, coreai_run_id),
+    ).fetchall()
+    if len(matches) != 1:
+        return None
+    return LocalRunBinding(matches[0][0], matches[0][1])
+
+
+def _merge_warning_codes(existing, incoming=(), *, discard=()):
+    values = set(json.loads(existing or "[]"))
+    values.difference_update(discard)
+    values.update(incoming)
+    return json.dumps(tuple(sorted(values)), separators=(",", ":"))
+
+
+def _apply_sync_run_tx(
+    conn,
+    local_agent_id: str,
+    run: ParsedAgentRun,
+    observed_at: datetime,
+    *,
+    allow_equal: bool = False,
+) -> None:
+    stamp = _utc_iso(observed_at)
+    existing = conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE coreai_run_id=?",
+        (run.coreai_run_id,),
+    ).fetchone()
+    if existing is not None and existing["seo_ops_agent_id"] != local_agent_id:
+        raise ValueError("projected run already has another owner")
+    if existing is None:
+        binding = _find_local_binding_tx(conn, run.coreai_run_id)
+        merchant_id = _binding_merchant_id(conn, binding)
+        terminal_observed = observed_at if run.raw_status in KNOWN_TERMINAL else None
+        expiry = (
+            receipt_expiry(
+                previous_raw_status=None,
+                previous_last_synced_at=None,
+                incoming=run,
+                terminal_observed_at=observed_at,
+            )
+            if terminal_observed is not None
+            else None
+        )
+        conn.execute(
+            "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,"
+            "raw_status,trigger_type,started_at,completed_at,terminal_observed_at,"
+            "receipt_expires_at,input_tokens,output_tokens,trace_id,error_summary,"
+            "source_kind,source_local_id,merchant_id,first_seen_at,"
+            "last_poll_attempt_at,last_synced_at,last_poll_error,"
+            "data_warning_codes_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?)",
+            (
+                run.coreai_run_id,
+                local_agent_id,
+                run.raw_status,
+                run.trigger_type,
+                run.started_at,
+                run.completed_at,
+                _utc_iso(terminal_observed) if terminal_observed else None,
+                _utc_iso(expiry) if expiry else None,
+                run.input_tokens,
+                run.output_tokens,
+                run.trace_id,
+                run.error_summary,
+                binding.source_kind if binding else None,
+                binding.source_local_id if binding else None,
+                merchant_id,
+                stamp,
+                stamp,
+                stamp,
+                json.dumps(tuple(sorted(set(run.warnings))), separators=(",", ":")),
+            ),
+        )
+        return
+
+    previous_sync = _parse_time(existing["last_synced_at"])
+    if previous_sync is not None and (
+        observed_at < previous_sync
+        or (observed_at == previous_sync and not allow_equal)
+    ):
+        return
+    if existing["source_kind"] is None:
+        binding = _find_local_binding_tx(conn, run.coreai_run_id)
+        if binding is not None:
+            conn.execute(
+                "UPDATE seo_ops_agent_runs SET source_kind=?,source_local_id=?,"
+                "merchant_id=? WHERE coreai_run_id=? AND source_kind IS NULL",
+                (
+                    binding.source_kind,
+                    binding.source_local_id,
+                    _binding_merchant_id(conn, binding),
+                    run.coreai_run_id,
+                ),
+            )
+    existing_status = existing["raw_status"]
+    incoming_status = run.raw_status
+    warnings = tuple(run.warnings)
+    terminal_observed_at = existing["terminal_observed_at"]
+    receipt_expires_at = existing["receipt_expires_at"]
+    if existing_status in KNOWN_TERMINAL:
+        conflict = (
+            incoming_status != existing_status
+            and incoming_status not in KNOWN_NONTERMINAL
+        )
+        warning_json = _merge_warning_codes(
+            existing["data_warning_codes_json"],
+            ("TERMINAL_STATUS_CONFLICT",) if conflict else (),
+        )
+        conn.execute(
+            "UPDATE seo_ops_agent_runs SET last_poll_attempt_at=?,last_synced_at=?,"
+            "last_poll_error=NULL,data_warning_codes_json=? WHERE coreai_run_id=?",
+            (stamp, stamp, warning_json, run.coreai_run_id),
+        )
+        return
+    if incoming_status in KNOWN_TERMINAL and terminal_observed_at is None:
+        expiry = receipt_expiry(
+            previous_raw_status=existing_status,
+            previous_last_synced_at=previous_sync,
+            incoming=run,
+            terminal_observed_at=observed_at,
+        )
+        terminal_observed_at = stamp
+        receipt_expires_at = _utc_iso(expiry) if expiry else None
+    warning_json = _merge_warning_codes(
+        existing["data_warning_codes_json"],
+        warnings,
+        discard=("LOCAL_TRIGGER_STATUS_MISSING", "STATUS_NOT_IN_BOUNDED_LIST"),
+    )
+    conn.execute(
+        "UPDATE seo_ops_agent_runs SET raw_status=?,trigger_type=?,started_at=?,"
+        "completed_at=?,terminal_observed_at=?,receipt_expires_at=?,"
+        "input_tokens=?,output_tokens=?,trace_id=?,error_summary=?,"
+        "last_poll_attempt_at=?,last_synced_at=?,last_poll_error=NULL,"
+        "data_warning_codes_json=? WHERE coreai_run_id=?",
+        (
+            incoming_status,
+            run.trigger_type,
+            run.started_at,
+            run.completed_at,
+            terminal_observed_at,
+            receipt_expires_at,
+            run.input_tokens,
+            run.output_tokens,
+            run.trace_id,
+            run.error_summary,
+            stamp,
+            stamp,
+            warning_json,
+            run.coreai_run_id,
+        ),
+    )
+
+
+_SYNC_STATE_SEMANTIC_FIELDS = (
+    "remote_total_runs",
+    "last_discovery_error",
+    "last_discovery_returned_count",
+    "coverage_start_at",
+    "finite_range_proven_start_at",
+    "pending_observed_count",
+    "pending_upstream_total",
+    "pending_set_quality",
+    "running_observed_count",
+    "running_upstream_total",
+    "running_set_quality",
+    "paused_observed_count",
+    "paused_upstream_total",
+    "paused_set_quality",
+    "unresolved_unknown_status_count",
+    "current_state_complete",
+    "current_state_error",
+    "sync_pending",
+    "history_event_epoch",
+    "unfiltered_proven_event_epoch",
+    "last_fast_poll_error",
+)
+_RUN_SEMANTIC_FIELDS = (
+    "coreai_run_id",
+    "raw_status",
+    "trigger_type",
+    "started_at",
+    "completed_at",
+    "terminal_observed_at",
+    "receipt_expires_at",
+    "input_tokens",
+    "output_tokens",
+    "trace_id",
+    "error_summary",
+    "source_kind",
+    "source_local_id",
+    "merchant_id",
+    "last_poll_error",
+    "data_warning_codes_json",
+)
+
+
+def _projection_semantic_tuple(conn, local_agent_id: str):
+    state = conn.execute(
+        "SELECT * FROM seo_ops_agent_sync_state WHERE seo_ops_agent_id=?",
+        (local_agent_id,),
+    ).fetchone()
+    runs = conn.execute(
+        "SELECT * FROM seo_ops_agent_runs WHERE seo_ops_agent_id=? "
+        "ORDER BY coreai_run_id",
+        (local_agent_id,),
+    ).fetchall()
+    return (
+        tuple(state[field] for field in _SYNC_STATE_SEMANTIC_FIELDS),
+        tuple(tuple(row[field] for field in _RUN_SEMANTIC_FIELDS) for row in runs),
+    )
+
+
+def _page_quality(page: ParsedAgentRunPage) -> str:
+    return "exact" if page.returned_count == page.total else "lower_bound"
+
+
+def _lifecycle_discovery_seconds(status: str) -> int:
+    if status == "disabled":
+        return DISABLED_DISCOVERY_SECONDS
+    if status == "retired":
+        return RETIRED_DISCOVERY_SECONDS
+    return ACTIVE_DISCOVERY_SECONDS
+
+
+def _discovery_backoff(failure_count: int) -> int:
+    return min(
+        SYNC_BACKOFF_BASE_SECONDS * (2 ** max(0, failure_count - 1)),
+        SYNC_BACKOFF_MAX_SECONDS,
+    )
+
+
+def _oldest_supported_range_start(now: datetime) -> datetime:
+    start, _ = _range_bounds(
+        "30d", now, str(agent_workbench_settings().timezone)
+    )
+    return start
+
+
+def _next_instant(value: datetime) -> datetime:
+    return value + timedelta(microseconds=1)
+
+
+def _valid_unfiltered_history_proof(
+    conn,
+    local_agent_id: str,
+    page: ParsedAgentRunPage,
+    projected_before_filtered: set[str],
+) -> bool:
+    returned = {run.coreai_run_id for run in page.runs}
+    if page.returned_count == page.total:
+        return returned == projected_before_filtered
+    starts = [_parse_time(run.started_at) for run in page.runs]
+    if not starts or any(value is None for value in starts):
+        return False
+    coverage = min(starts)
+    rows = conn.execute(
+        "SELECT coreai_run_id,started_at FROM seo_ops_agent_runs "
+        "WHERE seo_ops_agent_id=?",
+        (local_agent_id,),
+    ).fetchall()
+    rows = [row for row in rows if row["coreai_run_id"] in projected_before_filtered]
+    if any(_parse_time(row["started_at"]) is None for row in rows):
+        return False
+    return all(
+        _parse_time(row["started_at"]) < coverage
+        or row["coreai_run_id"] in returned
+        for row in rows
+    )
+
+
+def _finite_range_marker(
+    conn,
+    local_agent_id: str,
+    page: ParsedAgentRunPage,
+    unfiltered_ids: set[str],
+    existing_marker: str | None,
+    filtered_only_ids: set[str],
+    observed_at: datetime,
+) -> str | None:
+    rows = conn.execute(
+        "SELECT coreai_run_id,started_at,first_seen_at,last_synced_at "
+        "FROM seo_ops_agent_runs WHERE seo_ops_agent_id=?",
+        (local_agent_id,),
+    ).fetchall()
+    if page.returned_count == page.total:
+        marker = _oldest_supported_range_start(observed_at)
+        absent = [row for row in rows if row["coreai_run_id"] not in unfiltered_ids]
+    else:
+        starts = [_parse_time(run.started_at) for run in page.runs]
+        if not starts or any(value is None for value in starts):
+            return None
+        marker = min(starts)
+        if any(
+            _parse_time(row["started_at"]) is not None
+            and _parse_time(row["started_at"]) >= marker
+            and row["last_synced_at"] is not None
+            and row["coreai_run_id"] not in unfiltered_ids
+            and row["coreai_run_id"] not in filtered_only_ids
+            for row in rows
+        ):
+            return None
+        absent = [
+            row
+            for row in rows
+            if row["coreai_run_id"] not in unfiltered_ids
+            and (
+                _parse_time(row["started_at"]) is None
+                or row["last_synced_at"] is None
+            )
+        ]
+    blockers = absent + [
+        row for row in rows if row["coreai_run_id"] in filtered_only_ids
+    ]
+    for row in blockers:
+        effective = _parse_time(row["started_at"]) or _parse_time(row["first_seen_at"])
+        if effective is not None and effective >= marker:
+            marker = _next_instant(effective)
+    if existing_marker is not None:
+        existing = _parse_time(existing_marker)
+        if existing is not None and filtered_only_ids and marker < existing:
+            marker = existing
+    return _utc_iso(marker) if marker is not None else None
+
+
+def commit_discovery_cycle(
+    conn,
+    lease: AgentRunSyncLease,
+    result: RunCycleResult,
+    now: datetime | None = None,
+) -> bool:
+    now = now or result.observed_at
+    stamp = _utc_iso(result.observed_at)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        joined = conn.execute(
+            "SELECT a.status,a.coreai_agent_id,a.suspect_after_seconds,s.* "
+            "FROM seo_ops_agents a "
+            "JOIN seo_ops_agent_sync_state s ON s.seo_ops_agent_id=a.id "
+            "WHERE a.id=?",
+            (lease.local_agent_id,),
+        ).fetchone()
+        if (
+            joined is None
+            or joined["coreai_agent_id"] != lease.coreai_agent_id
+            or joined["lease_owner"] != lease.owner
+            or joined["lease_epoch"] != lease.epoch
+            or not _live_lease(joined["lease_owner"], joined["lease_until"], now)
+        ):
+            conn.rollback()
+            return False
+        before = _projection_semantic_tuple(conn, lease.local_agent_id)
+        original_revision = joined["projection_revision"]
+        existing_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT coreai_run_id FROM seo_ops_agent_runs "
+                "WHERE seo_ops_agent_id=?",
+                (lease.local_agent_id,),
+            )
+        }
+        valid = [outcome for outcome in result.outcomes if outcome.page is not None]
+        unfiltered = next((item for item in valid if item.status is None), None)
+        statuses_by_id: dict[str, set[str]] = {}
+        observed_ids: set[str] = set()
+        unfiltered_ids: set[str] = set()
+        for outcome in valid:
+            for run in outcome.page.runs:
+                repeated_in_cycle = run.coreai_run_id in observed_ids
+                statuses_by_id.setdefault(run.coreai_run_id, set()).add(run.raw_status)
+                observed_ids.add(run.coreai_run_id)
+                if outcome.status is None:
+                    unfiltered_ids.add(run.coreai_run_id)
+                _apply_sync_run_tx(
+                    conn,
+                    lease.local_agent_id,
+                    run,
+                    result.observed_at,
+                    allow_equal=repeated_in_cycle,
+                )
+        conflicts = {
+            run_id for run_id, statuses in statuses_by_id.items() if len(statuses) > 1
+        }
+        absent_fast_rows = []
+        if not lease.discovery_due and lease.fast_statuses:
+            placeholders = ",".join("?" for _ in lease.fast_statuses)
+            absent_fast_rows = [
+                row
+                for row in conn.execute(
+                    "SELECT coreai_run_id,raw_status,data_warning_codes_json "
+                    "FROM seo_ops_agent_runs WHERE seo_ops_agent_id=? "
+                    f"AND raw_status IN ({placeholders})",
+                    (lease.local_agent_id, *lease.fast_statuses),
+                )
+                if row["coreai_run_id"] not in observed_ids
+            ]
+            for row in absent_fast_rows:
+                conn.execute(
+                    "UPDATE seo_ops_agent_runs SET last_poll_attempt_at=?,"
+                    "last_poll_error=?,data_warning_codes_json=? "
+                    "WHERE coreai_run_id=?",
+                    (
+                        stamp,
+                        "STATUS_NOT_IN_BOUNDED_LIST: Run 未出现在有界列表中",
+                        _merge_warning_codes(
+                            row["data_warning_codes_json"],
+                            ("STATUS_NOT_IN_BOUNDED_LIST",),
+                        ),
+                        row["coreai_run_id"],
+                    ),
+                )
+        after_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT coreai_run_id FROM seo_ops_agent_runs "
+                "WHERE seo_ops_agent_id=?",
+                (lease.local_agent_id,),
+            )
+        }
+        new_ids = after_ids - existing_ids
+        new_unfiltered_ids = new_ids & unfiltered_ids
+        filtered_only_ids = new_ids - unfiltered_ids
+        history_epoch = joined["history_event_epoch"] + len(new_ids)
+        proven_epoch = joined["unfiltered_proven_event_epoch"]
+        coverage_start = joined["coverage_start_at"]
+        finite_marker = joined["finite_range_proven_start_at"]
+        remote_total = joined["remote_total_runs"]
+        returned_count = joined["last_discovery_returned_count"]
+        if unfiltered is not None:
+            page = unfiltered.page
+            remote_total = page.total
+            returned_count = page.returned_count
+            starts = [_parse_time(run.started_at) for run in page.runs]
+            coverage_start = (
+                _utc_iso(min(starts))
+                if starts and all(value is not None for value in starts)
+                else None
+            )
+            projected_before_filtered = existing_ids | new_unfiltered_ids
+            epoch_unchanged = (
+                joined["history_event_epoch"] == lease.history_event_epoch
+                and joined["local_event_epoch"] == lease.local_event_epoch
+            )
+            if epoch_unchanged and _valid_unfiltered_history_proof(
+                conn, lease.local_agent_id, page, projected_before_filtered
+            ):
+                proven_epoch = lease.history_event_epoch + len(new_unfiltered_ids)
+            if epoch_unchanged:
+                finite_marker = _finite_range_marker(
+                    conn,
+                    lease.local_agent_id,
+                    page,
+                    unfiltered_ids,
+                    finite_marker,
+                    filtered_only_ids,
+                    result.observed_at,
+                )
+        elif filtered_only_ids and finite_marker is not None:
+            marker_dt = _parse_time(finite_marker)
+            for row in conn.execute(
+                "SELECT started_at,first_seen_at FROM seo_ops_agent_runs "
+                "WHERE seo_ops_agent_id=? AND coreai_run_id IN (%s)"
+                % ",".join("?" for _ in filtered_only_ids),
+                (lease.local_agent_id, *sorted(filtered_only_ids)),
+            ):
+                effective = _effective_start(row)
+                if effective is not None and marker_dt is not None and effective >= marker_dt:
+                    marker_dt = _next_instant(effective)
+            finite_marker = _utc_iso(marker_dt) if marker_dt is not None else None
+
+        values = {}
+        unfiltered_full = bool(
+            unfiltered is not None
+            and unfiltered.page.returned_count == unfiltered.page.total
+            and unfiltered_ids == (existing_ids | new_unfiltered_ids)
+        )
+        for status, prefix in (
+            ("PENDING", "pending"),
+            ("RUNNING", "running"),
+            ("PAUSED", "paused"),
+        ):
+            outcome = next((item for item in valid if item.status == status), None)
+            failed = next(
+                (
+                    item
+                    for item in result.outcomes
+                    if item.status == status and item.page is None
+                ),
+                None,
+            )
+            if unfiltered_full and not conflicts:
+                count = sum(run.raw_status == status for run in unfiltered.page.runs)
+                values[prefix] = (count, count, stamp, "exact")
+            elif outcome is not None:
+                values[prefix] = (
+                    outcome.page.returned_count,
+                    outcome.page.total,
+                    stamp,
+                    _page_quality(outcome.page),
+                )
+            elif failed is not None:
+                values[prefix] = (
+                    joined[f"{prefix}_observed_count"],
+                    joined[f"{prefix}_upstream_total"],
+                    joined[f"{prefix}_last_observed_at"],
+                    "unknown",
+                )
+                conn.execute(
+                    "UPDATE seo_ops_agent_runs SET last_poll_attempt_at=?,"
+                    "last_poll_error=? WHERE seo_ops_agent_id=? AND raw_status=?",
+                    (stamp, failed.error_message, lease.local_agent_id, status),
+                )
+            else:
+                values[prefix] = (
+                    joined[f"{prefix}_observed_count"],
+                    joined[f"{prefix}_upstream_total"],
+                    joined[f"{prefix}_last_observed_at"],
+                    joined[f"{prefix}_set_quality"],
+                )
+
+        unconfirmed = conn.execute(
+            "SELECT coreai_run_id,raw_status,first_seen_at,started_at "
+            "FROM seo_ops_agent_runs WHERE seo_ops_agent_id=? "
+            "AND last_synced_at IS NULL",
+            (lease.local_agent_id,),
+        ).fetchall()
+        unresolved_rows = [
+            row for row in unconfirmed if row["coreai_run_id"] not in observed_ids
+        ]
+        if joined["local_event_epoch"] != lease.local_event_epoch:
+            unresolved_rows = list(unconfirmed) or [None]
+        if conflicts:
+            for prefix in ("pending", "running", "paused"):
+                values[prefix] = (*values[prefix][:3], "unknown")
+        for row in absent_fast_rows:
+            prefix = row["raw_status"].lower()
+            values[prefix] = (*values[prefix][:3], "unknown")
+        for row in unresolved_rows:
+            status = row["raw_status"] if row is not None else None
+            if status in KNOWN_NONTERMINAL:
+                prefix = status.lower()
+                values[prefix] = (*values[prefix][:3], "unknown")
+            else:
+                for prefix in ("pending", "running", "paused"):
+                    values[prefix] = (*values[prefix][:3], "unknown")
+        unknown_count = conn.execute(
+            "SELECT COUNT(*) FROM seo_ops_agent_runs WHERE seo_ops_agent_id=? "
+            "AND (raw_status IS NULL OR raw_status NOT IN "
+            "('PENDING','RUNNING','PAUSED','COMPLETED','FAILED','TIMEOUT',"
+            "'CANCELLED','SKIPPED'))",
+            (lease.local_agent_id,),
+        ).fetchone()[0]
+        all_exact = all(values[prefix][3] == "exact" for prefix in values)
+        epoch_match = joined["local_event_epoch"] == lease.local_event_epoch
+        complete = bool(all_exact and unknown_count == 0 and epoch_match and not conflicts)
+        sync_pending = 0 if complete else 1
+        cycle_errors = [item for item in result.outcomes if item.page is None]
+        if conflicts:
+            current_error = "SAME_CYCLE_STATUS_CONFLICT: Run 状态证明冲突"
+        elif absent_fast_rows:
+            current_error = (
+                "STATUS_NOT_IN_BOUNDED_LIST: Run 未出现在有界列表中"
+            )
+        elif not epoch_match:
+            current_error = "LOCAL_EVENT_EPOCH_CHANGED: 本地 Run 等待确认"
+        elif unresolved_rows:
+            current_error = "LOCAL_RUN_UNCONFIRMED: 本地 Run 等待列表确认"
+        elif cycle_errors:
+            current_error = "; ".join(
+                f"{item.error_code}: {item.error_message}" for item in cycle_errors
+            )
+        else:
+            current_error = None
+
+        lifecycle = joined["status"]
+        discovery_failure = joined["discovery_failure_count"]
+        fast_failure = joined["fast_poll_failure_count"]
+        next_discovery = joined["next_discovery_at"]
+        next_fast = joined["next_fast_poll_at"]
+        discovery_attempt = joined["last_discovery_attempt_at"]
+        discovery_success = joined["last_discovery_success_at"]
+        discovery_error = joined["last_discovery_error"]
+        fast_attempt = joined["last_fast_poll_attempt_at"]
+        fast_success = joined["last_fast_poll_success_at"]
+        fast_error = joined["last_fast_poll_error"]
+        if lease.discovery_due:
+            discovery_attempt = stamp
+            if unfiltered is not None:
+                discovery_success = stamp
+                discovery_failure = 0
+                discovery_error = None if not cycle_errors else current_error
+                next_discovery = _utc_iso(
+                    result.observed_at
+                    + timedelta(seconds=_lifecycle_discovery_seconds(lifecycle))
+                )
+            else:
+                discovery_failure += 1
+                discovery_error = current_error or "COREAI_SYNC_FAILED: Run 同步失败"
+                next_discovery = _utc_iso(
+                    result.observed_at
+                    + timedelta(seconds=_discovery_backoff(discovery_failure))
+                )
+        else:
+            fast_attempt = stamp
+            if cycle_errors or absent_fast_rows:
+                fast_failure += 1
+                fast_error = current_error
+                next_fast = _utc_iso(
+                    result.observed_at
+                    + timedelta(seconds=_discovery_backoff(fast_failure))
+                )
+            else:
+                fast_failure = 0
+                fast_success = stamp
+                fast_error = None
+
+        if lifecycle != "active":
+            next_fast = None
+            if lease.discovery_due and unfiltered is not None:
+                next_discovery = _utc_iso(
+                    result.observed_at
+                    + timedelta(seconds=_lifecycle_discovery_seconds(lifecycle))
+                )
+        elif unresolved_rows:
+            quick = any(
+                row is not None and row["raw_status"] in {"PENDING", "RUNNING"}
+                for row in unresolved_rows
+            )
+            if quick:
+                next_fast = _utc_iso(
+                    result.observed_at + timedelta(seconds=FAST_STATUS_SECONDS)
+                )
+            else:
+                confirmation = _utc_iso(
+                    result.observed_at + timedelta(seconds=ACTIVE_DISCOVERY_SECONDS)
+                )
+                if _parse_time(next_discovery) is None or _parse_time(next_discovery) > _parse_time(confirmation):
+                    next_discovery = confirmation
+        elif complete:
+            active_rows = conn.execute(
+                "SELECT raw_status,started_at,first_seen_at FROM seo_ops_agent_runs "
+                "WHERE seo_ops_agent_id=? AND raw_status IN ('PENDING','RUNNING')",
+                (lease.local_agent_id,),
+            ).fetchall()
+            if any(
+                (effective := _effective_start(row)) is not None
+                and result.observed_at
+                < effective + timedelta(seconds=joined["suspect_after_seconds"])
+                for row in active_rows
+            ):
+                next_fast = _utc_iso(
+                    result.observed_at + timedelta(seconds=FAST_STATUS_SECONDS)
+                )
+            else:
+                next_fast = None
+        if conflicts:
+            next_discovery = _utc_iso(
+                result.observed_at + timedelta(seconds=SYNC_BACKOFF_BASE_SECONDS)
+            )
+        if absent_fast_rows:
+            candidate = result.observed_at + timedelta(
+                seconds=SYNC_BACKOFF_BASE_SECONDS
+            )
+            if _parse_time(next_discovery) is None or _parse_time(next_discovery) > candidate:
+                next_discovery = _utc_iso(candidate)
+        if not epoch_match:
+            next_discovery = joined["next_discovery_at"] or stamp
+            next_fast = joined["next_fast_poll_at"]
+
+        conn.execute(
+            "UPDATE seo_ops_agent_sync_state SET remote_total_runs=?,"
+            "last_discovery_attempt_at=?,last_discovery_success_at=?,"
+            "last_discovery_error=?,last_discovery_returned_count=?,coverage_start_at=?,"
+            "finite_range_proven_start_at=?,current_state_checked_at=?,"
+            "pending_observed_count=?,pending_upstream_total=?,pending_last_observed_at=?,"
+            "pending_set_quality=?,running_observed_count=?,running_upstream_total=?,"
+            "running_last_observed_at=?,running_set_quality=?,paused_observed_count=?,"
+            "paused_upstream_total=?,paused_last_observed_at=?,paused_set_quality=?,"
+            "unresolved_unknown_status_count=?,current_state_complete=?,"
+            "current_state_error=?,sync_pending=?,history_event_epoch=?,"
+            "unfiltered_proven_event_epoch=?,next_discovery_at=?,"
+            "last_fast_poll_attempt_at=?,last_fast_poll_success_at=?,"
+            "last_fast_poll_error=?,next_fast_poll_at=?,discovery_failure_count=?,"
+            "fast_poll_failure_count=?,lease_owner=NULL,lease_until=NULL "
+            "WHERE seo_ops_agent_id=? AND lease_owner=? AND lease_epoch=?",
+            (
+                remote_total,
+                discovery_attempt,
+                discovery_success,
+                discovery_error,
+                returned_count,
+                coverage_start,
+                finite_marker,
+                stamp,
+                *values["pending"],
+                *values["running"],
+                *values["paused"],
+                unknown_count,
+                int(complete),
+                current_error,
+                sync_pending,
+                history_epoch,
+                proven_epoch,
+                next_discovery,
+                fast_attempt,
+                fast_success,
+                fast_error,
+                next_fast,
+                discovery_failure,
+                fast_failure,
+                lease.local_agent_id,
+                lease.owner,
+                lease.epoch,
+            ),
+        )
+        after = _projection_semantic_tuple(conn, lease.local_agent_id)
+        if after != before:
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET projection_revision=? "
+                "WHERE seo_ops_agent_id=?",
+                (original_revision + 1, lease.local_agent_id),
+            )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def sync_registered_agent_runs_once(
+    local_agent_id: str,
+    *,
+    now: datetime | None = None,
+    owner: str | None = None,
+    connection_factory=connect,
+    client_factory=None,
+    stop_event: threading.Event | None = None,
+) -> bool:
+    fixed_now = now
+    now = fixed_now or utc_now()
+    clock = (lambda: fixed_now) if fixed_now is not None else utc_now
+    settings = coreai_connection_settings()
+    if settings is None:
+        return False
+    conn = connection_factory()
+    lease = None
+    client = None
+    try:
+        lease = claim_due_run_sync(
+            conn,
+            local_agent_id,
+            owner or f"{os.getpid()}:{uuid.uuid4()}",
+            now,
+        )
+        if lease is None:
+            return False
+        client = (
+            client_factory()
+            if client_factory is not None
+            else CoreAiClient(settings.base_url, settings.api_key)
+        )
+        cached: dict[str, set[str]] = {}
+        for status in lease.fast_statuses:
+            cached[status] = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT coreai_run_id FROM seo_ops_agent_runs "
+                    "WHERE seo_ops_agent_id=? AND raw_status=?",
+                    (local_agent_id, status),
+                )
+            }
+        result = execute_run_request_plan(
+            client,
+            lease,
+            now,
+            agent_workbench_settings().history_limit,
+            renew=lambda: renew_run_lease(conn, lease, clock()),
+            clock=clock,
+            stop_event=stop_event,
+            cached_ids_by_status=cached,
+        )
+        if not result.outcomes:
+            release_run_lease(conn, lease)
+            return False
+        return commit_discovery_cycle(conn, lease, result, clock())
+    finally:
+        if client is not None:
+            client.close()
+        conn.close()
+
+
+@dataclass(frozen=True)
 class VerifiedAgentMetadata:
     coreai_agent_id: str
     name: str
     model: str | None
     timeout_hint_seconds: int | None
     verified_at: str
+
+
+def _metadata_error(exc: BaseException) -> tuple[str, str]:
+    if isinstance(exc, CoreAiContractError):
+        return "COREAI_METADATA_INVALID", "Core AI Agent 元数据无效"
+    if isinstance(exc, CoreAiError):
+        if exc.status_code:
+            return "COREAI_METADATA_HTTP_ERROR", "Core AI Agent 验证请求失败"
+        return "COREAI_METADATA_TRANSPORT_ERROR", "Core AI Agent 验证暂时不可用"
+    if isinstance(exc, WorkbenchError):
+        return "COREAI_METADATA_INVALID", "Core AI Agent 元数据无效"
+    return "COREAI_METADATA_FAILED", "Core AI Agent 验证暂时不可用"
+
+
+class _StaticAgentMetadataClient:
+    def __init__(self, value):
+        self.value = value
+
+    def get_agent(self, _coreai_agent_id):
+        return self.value
+
+
+def commit_metadata_verification(
+    conn,
+    lease: AgentMetadataLease,
+    result: MetadataResult,
+    now: datetime | None = None,
+) -> bool:
+    now = now or result.observed_at
+    stamp = _utc_iso(result.observed_at)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT a.*,s.local_event_epoch FROM seo_ops_agents a "
+            "JOIN seo_ops_agent_sync_state s ON s.seo_ops_agent_id=a.id "
+            "WHERE a.id=?",
+            (lease.local_agent_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "active"
+            or row["coreai_agent_id"] != lease.coreai_agent_id
+            or row["local_event_epoch"] != lease.local_event_epoch
+            or row["metadata_lease_owner"] != lease.owner
+            or row["metadata_lease_epoch"] != lease.epoch
+            or not _live_lease(
+                row["metadata_lease_owner"], row["metadata_lease_until"], now
+            )
+        ):
+            conn.rollback()
+            return False
+        if result.metadata is not None:
+            metadata = result.metadata
+            conn.execute(
+                "UPDATE seo_ops_agents SET coreai_name=?,coreai_model=?,"
+                "coreai_timeout_hint_seconds=?,last_verification_attempt_at=?,"
+                "last_verified_at=?,last_verification_error=NULL,"
+                "verification_failure_count=0,next_verification_at=?,"
+                "metadata_lease_owner=NULL,metadata_lease_until=NULL WHERE id=? "
+                "AND metadata_lease_owner=? AND metadata_lease_epoch=?",
+                (
+                    metadata.name,
+                    metadata.model,
+                    metadata.timeout_hint_seconds,
+                    stamp,
+                    metadata.verified_at,
+                    _utc_iso(
+                        result.observed_at
+                        + timedelta(seconds=METADATA_SUCCESS_SECONDS)
+                    ),
+                    lease.local_agent_id,
+                    lease.owner,
+                    lease.epoch,
+                ),
+            )
+        else:
+            failure_count = row["verification_failure_count"] + 1
+            delay = min(
+                METADATA_BACKOFF_BASE_SECONDS
+                * (2 ** max(0, failure_count - 1)),
+                METADATA_BACKOFF_MAX_SECONDS,
+            )
+            safe_error = (
+                f"{result.error_code}: {result.error_message}"
+                if result.error_code and result.error_message
+                else "COREAI_METADATA_FAILED: Core AI Agent 验证暂时不可用"
+            )
+            conn.execute(
+                "UPDATE seo_ops_agents SET last_verification_attempt_at=?,"
+                "last_verification_error=?,verification_failure_count=?,"
+                "next_verification_at=?,metadata_lease_owner=NULL,"
+                "metadata_lease_until=NULL WHERE id=? AND metadata_lease_owner=? "
+                "AND metadata_lease_epoch=?",
+                (
+                    stamp,
+                    safe_error,
+                    failure_count,
+                    _utc_iso(result.observed_at + timedelta(seconds=delay)),
+                    lease.local_agent_id,
+                    lease.owner,
+                    lease.epoch,
+                ),
+            )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def verify_registered_agent_metadata_once(
+    local_agent_id: str,
+    *,
+    now: datetime | None = None,
+    owner: str | None = None,
+    connection_factory=connect,
+    client_factory=None,
+    stop_event: threading.Event | None = None,
+) -> bool:
+    fixed_now = now
+    now = fixed_now or utc_now()
+    clock = (lambda: fixed_now) if fixed_now is not None else utc_now
+    settings = coreai_connection_settings()
+    if settings is None:
+        return False
+    conn = connection_factory()
+    client = None
+    try:
+        lease = claim_due_metadata_sync(
+            conn,
+            local_agent_id,
+            owner or f"{os.getpid()}:{uuid.uuid4()}",
+            now,
+        )
+        if lease is None:
+            return False
+        if stop_event is not None and stop_event.is_set():
+            release_metadata_lease(conn, lease)
+            return False
+        client = (
+            client_factory()
+            if client_factory is not None
+            else CoreAiClient(settings.base_url, settings.api_key)
+        )
+        if not renew_metadata_lease(conn, lease, clock()):
+            return False
+        try:
+            raw_metadata = client.get_agent(lease.coreai_agent_id)
+            observed_at = clock()
+            metadata = verify_agent_metadata(
+                _StaticAgentMetadataClient(raw_metadata),
+                lease.coreai_agent_id,
+                observed_at,
+                sensitive_values=_sync_sensitive_values(),
+            )
+            result = MetadataResult(observed_at, metadata)
+        except Exception as exc:
+            code, message = _metadata_error(exc)
+            result = MetadataResult(clock(), None, code, message)
+        return commit_metadata_verification(conn, lease, result, clock())
+    finally:
+        if client is not None:
+            client.close()
+        conn.close()
+
+
+def list_due_run_agent_ids(conn, now: datetime) -> list[str]:
+    stamp = _utc_iso(now)
+    rows = conn.execute(
+        "SELECT a.id,CASE WHEN a.status='active' AND s.sync_pending=1 "
+        "AND s.next_discovery_at IS NULL THEN '' "
+        "WHEN s.next_discovery_at IS NOT NULL AND s.next_discovery_at<=? "
+        "AND s.next_fast_poll_at IS NOT NULL AND s.next_fast_poll_at<=? "
+        "THEN MIN(s.next_discovery_at,s.next_fast_poll_at) "
+        "WHEN s.next_discovery_at IS NOT NULL AND s.next_discovery_at<=? "
+        "THEN s.next_discovery_at ELSE s.next_fast_poll_at END AS due_at "
+        "FROM seo_ops_agents a JOIN seo_ops_agent_sync_state s "
+        "ON s.seo_ops_agent_id=a.id WHERE "
+        "((a.status='active' AND s.sync_pending=1 AND s.next_discovery_at IS NULL) "
+        "OR (s.next_discovery_at IS NOT NULL "
+        "AND s.next_discovery_at<=?) OR (a.status='active' "
+        "AND s.next_fast_poll_at IS NOT NULL AND s.next_fast_poll_at<=?)) "
+        "AND NOT (s.lease_owner IS NOT NULL AND s.lease_until>?) "
+        "ORDER BY due_at,a.id",
+        (stamp, stamp, stamp, stamp, stamp, stamp),
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def list_due_metadata_agent_ids(conn, now: datetime) -> list[str]:
+    stamp = _utc_iso(now)
+    rows = conn.execute(
+        "SELECT id FROM seo_ops_agents WHERE status='active' "
+        "AND (next_verification_at IS NULL OR next_verification_at<=?) "
+        "AND NOT (metadata_lease_owner IS NOT NULL "
+        "AND metadata_lease_until>?) ORDER BY COALESCE(next_verification_at,''),id",
+        (stamp, stamp),
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def prime_agent_workbench_startup(conn, startup_at: datetime) -> None:
+    stamp = _utc_iso(startup_at)
+    cutoff = _utc_iso(
+        startup_at - timedelta(seconds=STARTUP_DEDUP_WINDOW_SECONDS)
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE seo_ops_agent_sync_state SET next_discovery_at=? "
+            "WHERE seo_ops_agent_id IN (SELECT id FROM seo_ops_agents "
+            "WHERE status='active') AND (last_discovery_attempt_at IS NULL "
+            "OR last_discovery_attempt_at<?)",
+            (stamp, cutoff),
+        )
+        conn.execute(
+            "UPDATE seo_ops_agents SET next_verification_at=? "
+            "WHERE status='active' AND (last_verification_attempt_at IS NULL "
+            "OR last_verification_attempt_at<?)",
+            (stamp, cutoff),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+async def agent_workbench_sync_loop(
+    *,
+    connection_factory=connect,
+    run_worker=sync_registered_agent_runs_once,
+    metadata_worker=verify_registered_agent_metadata_once,
+    stop_event: threading.Event | None = None,
+) -> None:
+    shutdown = stop_event or threading.Event()
+    run_tasks: dict[str, asyncio.Task] = {}
+    metadata_tasks: dict[str, asyncio.Task] = {}
+    try:
+        conn = connection_factory()
+        try:
+            prime_agent_workbench_startup(conn, utc_now())
+        finally:
+            conn.close()
+        while True:
+            run_tasks = _reap_workbench_tasks(run_tasks)
+            metadata_tasks = _reap_workbench_tasks(metadata_tasks)
+            if coreai_connection_settings() is not None:
+                conn = connection_factory()
+                try:
+                    run_due = list_due_run_agent_ids(conn, utc_now())
+                    metadata_due = list_due_metadata_agent_ids(conn, utc_now())
+                finally:
+                    conn.close()
+                for local_id in run_due:
+                    if len(run_tasks) >= MAX_CONCURRENT_AGENT_SYNCS:
+                        break
+                    if local_id not in run_tasks:
+                        run_tasks[local_id] = asyncio.create_task(
+                            asyncio.to_thread(
+                                run_worker, local_id, stop_event=shutdown
+                            )
+                        )
+                for local_id in metadata_due:
+                    if len(metadata_tasks) >= MAX_CONCURRENT_METADATA_SYNCS:
+                        break
+                    if local_id not in metadata_tasks:
+                        metadata_tasks[local_id] = asyncio.create_task(
+                            asyncio.to_thread(
+                                metadata_worker, local_id, stop_event=shutdown
+                            )
+                        )
+            await asyncio.sleep(SYNC_TICK_SECONDS)
+    except asyncio.CancelledError:
+        shutdown.set()
+        pending = tuple(run_tasks.values()) + tuple(metadata_tasks.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        raise
+
+
+def _reap_workbench_tasks(tasks: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
+    active = {}
+    for key, task in tasks.items():
+        if not task.done():
+            active[key] = task
+            continue
+        try:
+            task.result()
+        except BaseException:
+            pass
+    return active
 
 
 def verify_agent_metadata(
