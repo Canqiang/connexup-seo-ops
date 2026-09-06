@@ -36,8 +36,7 @@ function RunItem({ item, onAnnouncement }: { item: ProjectedRunSummary; onAnnoun
     }
   }
   const warnings = [...new Set([...item.warning_codes, ...(item.archive_delayed ? ['ARCHIVE_DELAY'] : [])])]
-  const terminal = item.raw_status !== null && ['COMPLETED', 'FAILED', 'TIMEOUT', 'CANCELLED', 'SKIPPED'].includes(item.raw_status)
-  const knownNonterminal = item.raw_status !== null && ['PENDING', 'RUNNING', 'PAUSED'].includes(item.raw_status)
+  const knownNonterminal = item.presentation_group === 'queued' || item.presentation_group === 'active' || item.presentation_group === 'waiting'
   const durationCopy = item.duration_seconds !== null
     ? `${item.duration_seconds} 秒`
     : knownNonterminal
@@ -51,7 +50,7 @@ function RunItem({ item, onAnnouncement }: { item: ProjectedRunSummary; onAnnoun
       </header>
       <dl>
         <div><dt>开始</dt><dd><time dateTime={item.effective_started_at} aria-label={`开始时间 ${item.effective_started_at}`}>{item.effective_started_at}</time></dd></div>
-        <div><dt>完成</dt><dd>{item.completed_at ? <time dateTime={item.completed_at} aria-label={`完成时间 ${item.completed_at}`}>{item.completed_at}</time> : terminal ? '不可用' : '未完成'}</dd></div>
+        <div><dt>完成</dt><dd>{item.completed_at ? <time dateTime={item.completed_at} aria-label={`完成时间 ${item.completed_at}`}>{item.completed_at}</time> : knownNonterminal ? '未完成' : '不可用'}</dd></div>
         <div><dt>耗时</dt><dd>{durationCopy}</dd></div>
         <div><dt>触发</dt><dd>{item.trigger_type ?? '触发来源待确认'}</dd></div>
         <div><dt>Tokens</dt><dd aria-label={item.token_state === 'known' ? `完整 Token 数 ${item.input_tokens ?? 0} ${item.output_tokens ?? 0} ${item.total_tokens ?? 0}` : undefined}>{tokenCopy(item)}</dd></div>

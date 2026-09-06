@@ -28,11 +28,14 @@ type AgentRegistryTableProps = {
   onAnnouncement: (message: string) => void
 }
 
-function rangeQualifier(agent: WorkbenchAgent): string | null {
-  if (agent.coverage.range_complete) return null
+function incompleteCoverageQualifier(agent: WorkbenchAgent): string {
   return agent.coverage.remote_total_runs === null
     ? `基于已镜像 ${agent.coverage.mirrored_run_count} 次 · 上游总数未知`
     : `基于已镜像 ${agent.coverage.mirrored_run_count}/${agent.coverage.remote_total_runs} 次`
+}
+
+function rangeQualifier(agent: WorkbenchAgent): string | null {
+  return agent.coverage.range_complete ? null : incompleteCoverageQualifier(agent)
 }
 
 function statusCopy(agent: WorkbenchAgent, presentation: PresentedWorkbench, snapshotAt: string): string {
@@ -105,7 +108,7 @@ function AgentRow({ agent, presentation, snapshotAt, expanded, onToggle, range, 
           <small>已知 {agent.range_metrics.token_known_runs}/{agent.range_metrics.token_eligible_runs} 次</small>
           {terminalTokenCopy(agent) && <small>{terminalTokenCopy(agent)}</small>}
         </td>
-        <td>{agent.sync.last_discovery_success_at ?? '尚无成功同步'}<small>{agent.coverage.history_complete ? '历史完整' : `基于已镜像 ${agent.coverage.mirrored_run_count}/${agent.coverage.remote_total_runs} 次`}</small></td>
+        <td>{agent.sync.last_discovery_success_at ?? '尚无成功同步'}<small>{agent.coverage.history_complete ? '历史完整' : incompleteCoverageQualifier(agent)}</small></td>
         <td>
           <button type="button" aria-expanded={expanded} aria-controls={historyId} onClick={onToggle}>{expanded ? '收起历史' : '查看历史'}</button>
           {agent.lifecycle_status !== 'retired' && <>

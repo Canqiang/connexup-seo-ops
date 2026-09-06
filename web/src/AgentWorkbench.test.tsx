@@ -1049,7 +1049,7 @@ describe('Agent Workbench', () => {
       ...makeAgent(),
       id: 'range-complete',
       display_name: '范围完整 Agent',
-      coverage: { ...makeAgent().coverage, range_complete: true, history_complete: false, mirrored_run_count: 5, remote_total_runs: 10 },
+      coverage: { ...makeAgent().coverage, range_complete: true, history_complete: false, mirrored_run_count: 5, remote_total_runs: null },
     }
     const historyComplete = {
       ...makeAgent(),
@@ -1065,7 +1065,8 @@ describe('Agent Workbench', () => {
     const rangeRow = screen.getByRole('rowheader', { name: /范围完整 Agent/ }).closest('tr')!
     const historyRow = screen.getByRole('rowheader', { name: /历史完整 Agent/ }).closest('tr')!
     expect(rangeRow.querySelectorAll('td')[2].textContent).not.toContain('基于已镜像')
-    expect(rangeRow.querySelectorAll('td')[5].textContent).toContain('基于已镜像 5/10 次')
+    expect(rangeRow.querySelectorAll('td')[5].textContent).toContain('基于已镜像 5 次 · 上游总数未知')
+    expect(rangeRow.textContent).not.toContain('5/null')
     expect(historyRow.querySelectorAll('td')[2].textContent).toContain('基于已镜像 5/10 次')
     expect(historyRow.querySelectorAll('td')[5].textContent).toContain('历史完整')
     expect(historyRow.querySelectorAll('td')[5].textContent).not.toContain('基于已镜像')
@@ -1576,15 +1577,23 @@ describe('Agent Workbench', () => {
     expect(screen.queryByText('未关联商户')).toBeNull()
   })
 
-  it.each(['COMPLETED', 'FAILED', 'TIMEOUT', 'CANCELLED', 'SKIPPED'])('terminal history row with missing timing is unavailable (%s)', async rawStatus => {
+  it.each([
+    ['COMPLETED', 'success'],
+    ['FAILED', 'failure'],
+    ['TIMEOUT', 'failure'],
+    ['CANCELLED', 'cancelled'],
+    ['SKIPPED', 'skipped'],
+  ] as const)('terminal history row with missing timing is unavailable (%s)', async (rawStatus, presentationGroup) => {
+    const runId = `terminal-timing-${rawStatus}`
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
     vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d', {
-      items: [makeHistoryItem({ raw_status: rawStatus, completed_at: null, duration_seconds: null })],
+      items: [makeHistoryItem({ coreai_run_id: runId, raw_status: rawStatus, presentation_group: presentationGroup, completed_at: null, duration_seconds: null })],
     }))
     render(<AgentWorkbench />)
     await act(async () => { await Promise.resolve() })
     fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
-    const history = await screen.findByRole('region', { name: 'active Agent 运行历史' })
+    await screen.findByText(runId)
+    const history = screen.getByRole('region', { name: 'active Agent 运行历史' })
 
     expect(within(history).getByText('完成').parentElement?.textContent).toBe('完成不可用')
     expect(within(history).getByText('耗时').parentElement?.textContent).toBe('耗时不可用')
@@ -1592,17 +1601,43 @@ describe('Agent Workbench', () => {
     expect(within(history).queryByText('进行中')).toBeNull()
   })
 
-  it.each(['PENDING', 'RUNNING', 'PAUSED'])('known nonterminal history row uses elapsed seconds (%s)', async rawStatus => {
+  it.each([
+    ['PENDING', 'queued'],
+    ['RUNNING', 'active'],
+    ['PAUSED', 'waiting'],
+  ] as const)('known nonterminal history row uses elapsed seconds (%s)', async (rawStatus, presentationGroup) => {
+    const runId = `nonterminal-timing-${rawStatus}`
     vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
     vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d', {
-      items: [makeHistoryItem({ raw_status: rawStatus, presentation_group: 'active', completed_at: null, duration_seconds: null, elapsed_seconds: 47 })],
+      items: [makeHistoryItem({ coreai_run_id: runId, raw_status: rawStatus, presentation_group: presentationGroup, completed_at: null, duration_seconds: null, elapsed_seconds: 47 })],
     }))
     render(<AgentWorkbench />)
     await act(async () => { await Promise.resolve() })
     fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
-    const history = await screen.findByRole('region', { name: 'active Agent 运行历史' })
+    await screen.findByText(runId)
+    const history = screen.getByRole('region', { name: 'active Agent 运行历史' })
 
+    expect(within(history).getByText('完成').parentElement?.textContent).toBe('完成未完成')
     expect(within(history).getByText('耗时').parentElement?.textContent).toBe('耗时已持续 47 秒')
+  })
+
+  it.each([
+    ['unknown', 'RUNNING'],
+    ['statusless', null],
+  ] as const)('%s history timing follows unknown presentation group', async (label, rawStatus) => {
+    const runId = `unavailable-timing-${label}`
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d', {
+      items: [makeHistoryItem({ coreai_run_id: runId, raw_status: rawStatus, presentation_group: 'unknown', completed_at: null, duration_seconds: null, elapsed_seconds: 47 })],
+    }))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+    await screen.findByText(runId)
+    const history = screen.getByRole('region', { name: 'active Agent 运行历史' })
+
+    expect(within(history).getByText('完成').parentElement?.textContent).toBe('完成不可用')
+    expect(within(history).getByText('耗时').parentElement?.textContent).toBe('耗时不可用')
   })
 
   it.each(mutationKinds)('running mutations linearize aggregate readback after write (%s)', async kind => {

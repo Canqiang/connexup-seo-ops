@@ -3390,7 +3390,7 @@ pre {
 }
 .agent-workbench .agent-workbench__range label + label span { border-left: 0; }
 .agent-workbench .agent-workbench__range input:checked + span { background: var(--paper-blue); color: var(--aw-stage); font-weight: 650; }
-.agent-workbench .agent-workbench__range input:focus-visible + span { outline: 2px solid var(--brand); outline-offset: 2px; }
+.agent-workbench .agent-workbench__range input:focus-visible + span { outline: 3px solid var(--aw-stage); outline-offset: 2px; }
 .agent-workbench .agent-workbench__update-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .agent-workbench .agent-workbench__update-controls p { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .agent-workbench .agent-workbench__update-controls strong { color: var(--aw-secondary); font-size: 12px; font-weight: 600; }
@@ -3414,7 +3414,7 @@ pre {
 .agent-workbench .agent-workbench__stage-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
 .agent-workbench .agent-workbench__stage-header p { margin: 0; color: var(--aw-stage-secondary); font-size: 11px; letter-spacing: .06em; }
 .agent-workbench .agent-workbench__stage-header h2 { margin: 2px 0 0; color: var(--aw-card); font-size: 22px; letter-spacing: 0; }
-.agent-workbench .agent-workbench__stage-header h2:focus-visible { outline-color: var(--aw-live); }
+.agent-workbench .agent-workbench__stage-header h2:focus-visible { outline: 3px solid var(--aw-card); outline-offset: 3px; }
 .agent-workbench .agent-workbench__stage-facts { display: flex; justify-content: flex-end; gap: 8px 18px; flex-wrap: wrap; text-align: right; }
 .agent-workbench .agent-workbench__stage-facts strong { color: var(--aw-card); font-size: 13px; font-weight: 600; }
 .agent-workbench .agent-workbench__signals {
@@ -3439,10 +3439,10 @@ pre {
 }
 .agent-workbench .agent-workbench__signal[aria-selected="true"] { border-color: var(--aw-card); background: rgb(255 255 255 / 10%); color: var(--aw-card); }
 .agent-workbench .agent-workbench__signal:hover { border-color: var(--aw-card); color: var(--aw-card); }
-.agent-workbench .agent-workbench__signal:focus-visible { outline-color: var(--aw-live); outline-offset: 2px; }
+.agent-workbench .agent-workbench__signal:focus-visible { outline: 3px solid var(--aw-card); outline-offset: 2px; }
 .agent-workbench .agent-workbench__signal-dot { grid-row: 1 / span 2; width: 8px; height: 8px; margin-top: 5px; border: 1px solid currentColor; border-radius: 50%; }
 .agent-workbench .agent-workbench__signal strong { color: inherit; font-size: 12px; }
-.agent-workbench .agent-workbench__signal small { grid-column: 2; color: var(--aw-stage-warning); }
+.agent-workbench .agent-workbench__signal small { grid-column: 2; color: var(--aw-stage-secondary); }
 .agent-workbench .agent-workbench__signal-detail { border-top: 1px solid var(--aw-stage-divider); padding-top: 18px; }
 .agent-workbench .agent-workbench__signal-identity { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--aw-stage-divider); }
 .agent-workbench .agent-workbench__signal-identity > div { display: grid; gap: 2px; min-width: 0; padding: 12px 14px; background: var(--aw-stage); }
@@ -3455,7 +3455,7 @@ pre {
 .agent-workbench .agent-workbench__rail li { position: relative; flex: 1; min-width: 120px; padding: 18px 12px 0 0; border-top: 1px solid var(--aw-stage-divider); color: var(--aw-stage-secondary); font-size: 12px; }
 .agent-workbench .agent-workbench__rail li > span { position: absolute; top: -5px; left: 0; width: 9px; height: 9px; border: 2px solid var(--aw-stage); border-radius: 50%; background: var(--aw-stage-divider); }
 .agent-workbench .agent-workbench__rail li[aria-current="step"] { color: var(--aw-card); }
-.agent-workbench .agent-workbench__rail li[aria-current="step"] > span { background: var(--aw-stage-warning); }
+.agent-workbench .agent-workbench__rail li[aria-current="step"] > span { background: var(--aw-card); }
 .agent-workbench .agent-workbench__facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--aw-stage-divider); }
 .agent-workbench .agent-workbench__facts > div { min-width: 0; padding: 11px 12px; background: var(--aw-stage); }
 .agent-workbench .agent-workbench__facts dt,
@@ -3471,8 +3471,6 @@ pre {
 .agent-workbench .agent-workbench__idle p { margin: 0; }
 .agent-workbench .agent-workbench__registry { padding: 18px; border: 1px solid var(--line); background: var(--aw-card); }
 .agent-workbench .agent-workbench__registry h2 { margin-top: 0; color: var(--aw-stage); font-size: 15px; letter-spacing: 0; }
-.agent-workbench .agent-workbench__registry ul { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
-.agent-workbench .agent-workbench__registry li { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr) 90px; gap: 16px; padding: 9px 0; border-top: 1px solid var(--line); }
 .agent-workbench .agent-workbench__registry small { color: var(--aw-secondary); }
 .agent-workbench .agent-workbench__announcer { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .agent-workbench .agent-workbench__signal--motion .agent-workbench__signal-dot { border-color: var(--aw-live); background: var(--aw-live); animation: aw-live-pulse 1.8s ease-in-out infinite; }
@@ -3489,7 +3487,6 @@ pre {
   .agent-workbench .agent-workbench__stage-facts { justify-items: start; justify-content: flex-start; text-align: left; }
   .agent-workbench .agent-workbench__signal-identity,
   .agent-workbench .agent-workbench__facts { grid-template-columns: minmax(0, 1fr); }
-  .agent-workbench .agent-workbench__registry li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .agent-workbench .agent-workbench__signal--motion .agent-workbench__signal-dot,
@@ -3531,8 +3528,9 @@ pre {
 .agent-workbench .agent-workbench__registry > header h2 { margin: 1px 0 0; }
 .agent-workbench .agent-workbench__operator-action { border-color: var(--aw-action-small); background: var(--aw-action-small); color: #fff; }
 .agent-workbench .agent-workbench__table-scroll { max-width: 100%; overflow-x: auto; outline-offset: -2px; }
+.agent-workbench .agent-workbench__registry:focus-visible { outline: 3px solid var(--aw-stage); outline-offset: 3px; }
 .agent-workbench .agent-workbench__table-scroll:focus-visible,
-.agent-workbench .agent-workbench__drawer :focus-visible { outline: 3px solid var(--aw-action-small); outline-offset: 2px; }
+.agent-workbench .agent-workbench__drawer :focus-visible { outline: 3px solid var(--aw-stage); outline-offset: 2px; }
 .agent-workbench .agent-workbench__registry table { width: 100%; min-width: 1040px; border-collapse: collapse; font-size: 11px; }
 .agent-workbench .agent-workbench__registry th,
 .agent-workbench .agent-workbench__registry td { padding: 10px 11px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; font-variant-numeric: tabular-nums; }
@@ -3544,7 +3542,7 @@ pre {
 .agent-workbench .agent-workbench__badge,
 .agent-workbench .agent-workbench__badges li { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 7px; border: 1px solid currentColor; border-radius: 999px; color: var(--aw-secondary); font-size: 10px; }
 .agent-workbench .agent-workbench__badge--active { color: var(--aw-live-dark); }
-.agent-workbench .agent-workbench__badge--disabled { color: var(--aw-action-small); }
+.agent-workbench .agent-workbench__badge--disabled { color: var(--aw-secondary); }
 .agent-workbench .agent-workbench__badge--retired { color: var(--aw-secondary); text-decoration: line-through; }
 .agent-workbench .agent-workbench__warning-row td { padding-block: 7px; background: #FFFAF4; }
 .agent-workbench .agent-workbench__badges { display: flex; flex-wrap: wrap; gap: 5px; margin: 0; padding: 0; list-style: none; }
@@ -3603,6 +3601,8 @@ pre {
   .agent-workbench .agent-workbench__signal[aria-selected="true"] { outline: 2px solid Highlight; }
   .agent-workbench .agent-workbench__badge,
   .agent-workbench .agent-workbench__badges li { border: 1px solid CanvasText; color: CanvasText; }
+  .agent-workbench .agent-workbench__registry:focus-visible,
+  .agent-workbench .agent-workbench__stage-header h2:focus-visible,
   .agent-workbench .agent-workbench__table-scroll:focus-visible,
   .agent-workbench.agent-workbench__portal .agent-workbench__drawer :focus-visible { outline: 3px solid Highlight; }
 }
