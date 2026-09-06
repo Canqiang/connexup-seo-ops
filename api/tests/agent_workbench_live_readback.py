@@ -13,6 +13,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import multiprocessing
 import os
 import re
 import sqlite3
@@ -686,6 +687,138 @@ def _segment_attempt_record(
     )
 
 
+def _fetch_bundles_in_supervisor(
+    selected: tuple[str, ...],
+    values: Mapping[str, str],
+    timeout_seconds: float,
+    core_client_factory: Callable[..., object],
+) -> dict[str, dict]:
+    """Run bounded fan-out inside a process the caller can terminate."""
+
+    deadline = Deadline.start(timeout_seconds)
+    cancel_event = threading.Event()
+    bundles: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(MAX_LIVE_READBACK_WORKERS, len(selected))
+    ) as executor:
+        futures = {
+            executor.submit(
+                _direct_bundle,
+                core_id,
+                values,
+                deadline,
+                core_client_factory=core_client_factory,
+                cancel_event=cancel_event,
+            ): core_id
+            for core_id in selected
+        }
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                bundles[futures[future]] = future.result()
+        except BaseException:
+            cancel_event.set()
+            for future in futures:
+                future.cancel()
+            raise
+    return bundles
+
+
+def _supervised_bundle_process(
+    sender,
+    selected: tuple[str, ...],
+    values: dict[str, str],
+    timeout_seconds: float,
+    core_client_factory: Callable[..., object],
+) -> None:
+    try:
+        try:
+            payload = (
+                "ok",
+                _fetch_bundles_in_supervisor(
+                    selected, values, timeout_seconds, core_client_factory
+                ),
+            )
+        except GateFailure as failure:
+            payload = (
+                "failure",
+                failure.code if failure.code in EXIT_CODES else RESULT_UNAVAILABLE,
+            )
+        except BaseException:
+            payload = ("failure", RESULT_UNAVAILABLE)
+        try:
+            sender.send(payload)
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        sender.close()
+
+
+def _terminate_supervisor(process: multiprocessing.Process) -> None:
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=0.05)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=0.05)
+    if process.is_alive():
+        raise RuntimeError("live-readback supervisor could not be terminated")
+
+
+def _supervised_direct_bundles(
+    selected: tuple[str, ...],
+    values: Mapping[str, str],
+    deadline: Deadline,
+    core_client_factory: Callable[..., object],
+) -> dict[str, dict]:
+    if "fork" not in multiprocessing.get_all_start_methods():
+        raise GateFailure(RESULT_UNAVAILABLE)
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_supervised_bundle_process,
+        args=(
+            sender,
+            selected,
+            dict(values),
+            deadline.remaining(),
+            core_client_factory,
+        ),
+        name="agent-workbench-live-readback",
+        daemon=True,
+    )
+    started = False
+    try:
+        process.start()
+        started = True
+        sender.close()
+        if not receiver.poll(deadline.remaining()):
+            raise GateFailure(RESULT_TIMEOUT)
+        try:
+            outcome, payload = receiver.recv()
+        except (EOFError, OSError):
+            raise GateFailure(RESULT_UNAVAILABLE) from None
+        try:
+            process.join(timeout=deadline.remaining())
+        except GateFailure:
+            raise GateFailure(RESULT_TIMEOUT) from None
+        if process.is_alive():
+            raise GateFailure(RESULT_TIMEOUT)
+        if outcome == "failure" and payload in EXIT_CODES:
+            raise GateFailure(payload)
+        if outcome != "ok" or not isinstance(payload, dict):
+            raise GateFailure(RESULT_UNAVAILABLE)
+        return payload
+    finally:
+        try:
+            sender.close()
+        except OSError:
+            pass
+        receiver.close()
+        if started:
+            _terminate_supervisor(process)
+            process.close()
+
+
 def _collect_segment_attempts(
     conn: sqlite3.Connection,
     core_ids: Iterable[str],
@@ -702,50 +835,22 @@ def _collect_segment_attempts(
         for core_id in selected
     }
     started = {core_id: datetime.now(timezone.utc) for core_id in selected}
-    executor = concurrent.futures.ThreadPoolExecutor(
-        max_workers=min(MAX_LIVE_READBACK_WORKERS, len(selected))
+    bundles = _supervised_direct_bundles(
+        selected, values, deadline, core_client_factory
     )
-    cancel_event = threading.Event()
-    futures = {
-        executor.submit(
-            _direct_bundle,
-            core_id,
-            values,
-            deadline,
-            core_client_factory=core_client_factory,
-            cancel_event=cancel_event,
-        ): core_id
+    if set(bundles) != set(selected):
+        raise GateFailure(RESULT_UNAVAILABLE)
+    return {
+        core_id: _segment_attempt_record(
+            conn,
+            str(registry_by_core[core_id]["id"]),
+            bundles[core_id],
+            markers[core_id],
+            started[core_id],
+            datetime.now(timezone.utc),
+        )
         for core_id in selected
     }
-    attempts: dict[str, SegmentAttempt] = {}
-    try:
-        for future in concurrent.futures.as_completed(
-            futures, timeout=deadline.remaining()
-        ):
-            core_id = futures[future]
-            attempts[core_id] = _segment_attempt_record(
-                conn,
-                str(registry_by_core[core_id]["id"]),
-                future.result(),
-                markers[core_id],
-                started[core_id],
-                datetime.now(timezone.utc),
-            )
-    except concurrent.futures.TimeoutError:
-        cancel_event.set()
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=True, cancel_futures=True)
-        raise GateFailure(RESULT_TIMEOUT) from None
-    except BaseException:
-        cancel_event.set()
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=True, cancel_futures=True)
-        raise
-    else:
-        executor.shutdown(wait=True)
-    return attempts
 
 
 def _retry_failure(first: SegmentAttempt, second: SegmentAttempt) -> str:

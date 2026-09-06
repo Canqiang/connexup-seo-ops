@@ -21,6 +21,7 @@ import stat
 import sys
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator
@@ -39,6 +40,14 @@ GENERATION_SCHEMA = "agent_workbench_visual_fixture_generation.v1"
 REFRESH_SCHEMA = "agent_workbench_visual_fixture_refresh.v1"
 LONG_DISPLAY_NAME = "Agent " + ("超长名称用于百分之二百缩放与表格换行验证" * 8)
 LONG_DISPLAY_NAME = LONG_DISPLAY_NAME[:110]
+
+
+@dataclass(frozen=True)
+class _ValidatedRefreshTarget:
+    path: Path
+    scenario: str
+    device: int
+    inode: int
 
 
 def utc_now() -> datetime:
@@ -707,26 +716,46 @@ def _read_marker(conn: sqlite3.Connection) -> tuple[str, str]:
     return str(rows[0]["scenario"]), str(rows[0]["marker_version"])
 
 
-def validate_refresh_database(raw_path: str | os.PathLike[str]) -> tuple[Path, str]:
+def _require_refresh_identity(target: _ValidatedRefreshTarget) -> None:
+    current = _single_link_regular_file(target.path)
+    if (current.st_dev, current.st_ino) != (target.device, target.inode):
+        raise ValueError("fixture database changed after validation")
+
+
+def _validated_refresh_target(
+    raw_path: str | os.PathLike[str],
+) -> _ValidatedRefreshTarget:
     path = Path(raw_path).expanduser().absolute()
     expected = _single_link_regular_file(path)
     canonical = path.resolve(strict=True)
     _reject_default_tree(canonical.parent)
     conn = sqlite3.connect(f"file:{canonical}?mode=ro", uri=True)
-    opened = _single_link_regular_file(canonical)
-    if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
-        conn.close()
-        raise ValueError("fixture database changed before refresh")
     conn.row_factory = sqlite3.Row
     try:
+        opened = _single_link_regular_file(canonical)
+        if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+            raise ValueError("fixture database changed before refresh")
         scenario, _version = _read_marker(conn)
+        reopened = _single_link_regular_file(canonical)
+        if (reopened.st_dev, reopened.st_ino) != (expected.st_dev, expected.st_ino):
+            raise ValueError("fixture database changed during validation")
     finally:
         conn.close()
     if scenario not in REFRESHABLE_SCENARIOS:
         raise ValueError("fixture scenario cannot be refreshed")
     if path.name != f"{scenario}.db":
         raise ValueError("fixture marker does not match filename")
-    return canonical, scenario
+    return _ValidatedRefreshTarget(
+        path=canonical,
+        scenario=scenario,
+        device=expected.st_dev,
+        inode=expected.st_ino,
+    )
+
+
+def validate_refresh_database(raw_path: str | os.PathLike[str]) -> tuple[Path, str]:
+    target = _validated_refresh_target(raw_path)
+    return target.path, target.scenario
 
 
 def _refresh_common_agent_proof(
@@ -849,14 +878,21 @@ def refresh_fixture(
     now_factory: Callable[[], datetime] = utc_now,
     receipt_id_factory: Callable[[], str] = lambda: f"preview-receipt-{uuid.uuid4()}",
 ) -> dict:
-    path, scenario = validate_refresh_database(database_path)
+    target = _validated_refresh_target(database_path)
+    path, scenario = target.path, target.scenario
     refreshed_at = _aware_utc(now_factory())
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = sqlite3.connect(f"file:{path}?mode=rw", uri=True)
     new_receipt_id = None
     try:
+        _require_refresh_identity(target)
+        conn.row_factory = sqlite3.Row
+        if _read_marker(conn) != (scenario, "v1"):
+            raise ValueError("fixture marker changed before refresh")
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("BEGIN IMMEDIATE")
+        _require_refresh_identity(target)
+        if _read_marker(conn) != (scenario, "v1"):
+            raise ValueError("fixture marker changed during refresh")
         if scenario == "active":
             new_receipt_id = _refresh_active(conn, refreshed_at, receipt_id_factory)
         elif scenario == "idle":
@@ -865,7 +901,9 @@ def refresh_fixture(
             _refresh_partial(conn, refreshed_at)
         else:  # defensive; validate_refresh_database already rejects this.
             raise ValueError("fixture scenario cannot be refreshed")
+        _require_refresh_identity(target)
         conn.commit()
+        _require_refresh_identity(target)
     except BaseException:
         conn.rollback()
         raise

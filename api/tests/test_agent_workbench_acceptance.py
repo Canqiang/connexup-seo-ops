@@ -13,7 +13,9 @@ import ast
 import hashlib
 import importlib
 import json
+import multiprocessing
 import os
+import shutil
 import signal
 import socket
 import sqlite3
@@ -2227,41 +2229,33 @@ def test_live_readback_local_bracket_discards_one_unstable_attempt(monkeypatch):
     assert caught.value.code == live_readback.RESULT_UNSTABLE
 
 
-def test_live_readback_global_deadline_joins_all_workers(monkeypatch):
+def test_live_readback_global_deadline_terminates_noncooperative_workers(monkeypatch):
     core_ids = tuple(f"agent-{index:02d}" for index in range(17))
     registry = {
         core_id: {"id": f"local-{index:02d}"}
         for index, core_id in enumerate(core_ids)
     }
     monkeypatch.setattr(live_readback, "_agent_marker", lambda *_args: "stable")
-    lock = threading.Lock()
-    active = 0
-    peak = 0
-    constructed = []
-    closed = []
+    context = multiprocessing.get_context("fork")
+    worker_started = context.Event()
+    original_threads = {thread.ident for thread in threading.enumerate()}
+    original_children = {process.pid for process in multiprocessing.active_children()}
 
     class SlowClient:
-        def __init__(self, timeout):
-            self.timeout = timeout
-            constructed.append(self)
+        def __init__(self, _timeout):
+            pass
 
         def get_agent(self, agent_id):
-            nonlocal active, peak
-            with lock:
-                active += 1
-                peak = max(peak, active)
-            try:
-                time.sleep(self.timeout + 0.01)
-                return {"id": agent_id}
-            finally:
-                with lock:
-                    active -= 1
+            worker_started.set()
+            # Deliberately ignores the supplied transport timeout.
+            time.sleep(0.30)
+            return {"id": agent_id}
 
         def list_agent_runs(self, *_args):
             return {"runs": [], "total": 0}
 
         def close(self):
-            closed.append(self)
+            pass
 
     def factory(_url, _key, *, timeout):
         return SlowClient(timeout)
@@ -2281,11 +2275,12 @@ def test_live_readback_global_deadline_joins_all_workers(monkeypatch):
         )
     elapsed = time.monotonic() - started
     assert caught.value.code == live_readback.RESULT_TIMEOUT
-    assert active == 0
-    assert len(closed) == len(constructed)
-    assert {id(client) for client in closed} == {id(client) for client in constructed}
-    assert peak <= live_readback.MAX_LIVE_READBACK_WORKERS
-    assert elapsed < 0.5
+    assert worker_started.is_set()
+    assert elapsed < 0.20
+    assert {thread.ident for thread in threading.enumerate()} == original_threads
+    assert {
+        process.pid for process in multiprocessing.active_children()
+    } == original_children
 
 
 def _eligible_aggregate(run_id, status="RUNNING"):
@@ -2389,8 +2384,9 @@ def test_live_readback_observe_mode_proves_same_run_transition(
     assert report["final_raw_status"] == terminal_status
     assert report["terminal_token_match"] is True
     assert report["transition_observed"] is True
-    assert fake.get_run_calls == 0
-    assert len(fake.calls) == 4
+    # Success requires the isolated bundle's ALL page to match this same Run
+    # and Token tuple. Exact list-only call shape is asserted directly in
+    # test_live_readback_directly_reads_every_active_or_configured_agent.
 
 
 def test_live_readback_observe_mode_times_out_honestly_on_token_mismatch(
@@ -2658,6 +2654,44 @@ def test_visual_fixture_rejects_database_replaced_by_symlink_before_sqlite_open(
         visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
     assert outside.read_bytes() == b"unchanged"
     assert list(output.iterdir()) == []
+
+
+def test_visual_fixture_refresh_rejects_path_replaced_after_read_only_validation(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "refresh-race"
+    output.mkdir()
+    monkeypatch.setattr(
+        visual_fixture.app_db,
+        "DEFAULT_DB_PATH",
+        tmp_path / "configured" / "seo.db",
+    )
+    record = visual_fixture.generate_fixtures(output, now_factory=lambda: NOW)
+    active = Path(record["database_paths"]["active"])
+    outside = tmp_path / "outside-marked.db"
+    shutil.copy2(active, outside)
+    outside_before = outside.read_bytes()
+    real_connect = visual_fixture.sqlite3.connect
+    calls = 0
+
+    def swap_before_write_connect(database, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            active.unlink()
+            active.symlink_to(outside)
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(visual_fixture.sqlite3, "connect", swap_before_write_connect)
+    with pytest.raises(ValueError):
+        visual_fixture.refresh_fixture(
+            active,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+            receipt_id_factory=lambda: "must-not-be-written",
+        )
+    assert calls == 2
+    assert active.is_symlink()
+    assert outside.read_bytes() == outside_before
 
 
 def test_visual_fixture_generation_output_is_canonical(tmp_path, monkeypatch):
