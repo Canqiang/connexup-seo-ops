@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from dataclasses import asdict, fields
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from app.db import get_db, init_db
 
 
 NOW = datetime(2026, 9, 3, 1, 2, 3, tzinfo=timezone.utc)
+SNAPSHOT_NOW = datetime(2026, 9, 3, 4, 0, 0, tzinfo=timezone.utc)
 LOCAL_ID = "11111111-1111-4111-8111-111111111111"
 REGISTER_BODY = {
     "coreai_agent_id": "agent-extra",
@@ -26,6 +28,173 @@ REGISTER_BODY = {
     "role": "监控关键引用与目录变化",
     "sort_order": 70,
     "suspect_after_seconds": 1800,
+}
+EMPTY_WORKBENCH_SNAPSHOT = {
+    "snapshot_at": "2026-09-03T04:00:00+00:00",
+    "last_complete_discovery_at": None,
+    "sync_health": "not_configured",
+    "stale": False,
+    "current_state_complete": None,
+    "current_state_checked_at": None,
+    "current_state_incomplete_statuses": [],
+    "fresh_until": None,
+    "has_active_runs": False,
+    "has_queued_runs": False,
+    "has_waiting_runs": False,
+    "current_counts": {
+        name: {
+            "value": 0,
+            "quality": "exact",
+            "last_observed_value": None,
+            "last_observed_at": None,
+        }
+        for name in ("running", "queued", "waiting", "legacy_nonterminal")
+    },
+    "refresh_after_ms": 30000,
+    "range": "30d",
+    "timezone": "Asia/Shanghai",
+    "range_start": "2026-08-04T16:00:00+00:00",
+    "range_end": "2026-09-03T16:00:00+00:00",
+    "metrics_complete_for_range": True,
+    "coverage": {
+        "mirrored_run_count": 0,
+        "remote_total_runs": 0,
+        "history_complete": True,
+        "range_complete": True,
+        "coverage_start_at": None,
+        "coverage_as_of": None,
+    },
+    "summary": {
+        "run_count": 0,
+        "terminal_runs": 0,
+        "successful_runs": 0,
+        "success_rate": None,
+        "known_input_tokens": 0,
+        "known_output_tokens": 0,
+        "known_total_tokens": 0,
+        "token_known_runs": 0,
+        "token_eligible_runs": 0,
+    },
+    "signals": [],
+    "agents": [],
+    "sync_warnings": [],
+}
+
+
+def _expected_canonical_agent(
+    local_id, agent_key, core_id, display_name, role, sort_order,
+    core_name, model, coverage_start_at, next_discovery_at,
+):
+    observed_zero = {
+        "value": 0, "quality": "exact", "last_observed_value": 0,
+        "last_observed_at": "2026-09-03T03:59:55+00:00",
+    }
+    metrics = {
+        "run_count": 0, "terminal_runs": 0, "successful_runs": 0,
+        "success_rate": None, "known_input_tokens": 0,
+        "known_output_tokens": 0, "known_total_tokens": 0,
+        "token_known_runs": 0, "token_eligible_runs": 0,
+    }
+    return {
+        "id": local_id,
+        "agent_key": agent_key,
+        "coreai_agent_id": core_id,
+        "display_name": display_name,
+        "role": role,
+        "sort_order": sort_order,
+        "lifecycle_status": "active",
+        "coreai_metadata": {
+            "name": core_name, "model": model, "timeout_hint_seconds": None,
+            "last_verified_at": "2026-09-03T04:00:00+00:00",
+            "verification_error": None,
+        },
+        "suspect_after_seconds": 1800,
+        "sync_pending": False,
+        "sync": {
+            "health": "fresh",
+            "last_discovery_attempt_at": "2026-09-03T03:59:50+00:00",
+            "last_discovery_success_at": "2026-09-03T03:59:50+00:00",
+            "discovery_error": None,
+            "current_state_checked_at": "2026-09-03T03:59:55+00:00",
+            "current_state_error": None,
+            "next_discovery_at": next_discovery_at,
+            "last_fast_poll_attempt_at": None,
+            "last_fast_poll_success_at": None,
+            "fast_poll_error": None,
+        },
+        "current_state_complete": True,
+        "current_counts": {
+            "running": dict(observed_zero), "queued": dict(observed_zero),
+            "waiting": dict(observed_zero),
+        },
+        "range_metrics": metrics,
+        "coverage": {
+            "mirrored_run_count": 0, "remote_total_runs": 0,
+            "history_complete": True, "range_complete": True,
+            "coverage_start_at": coverage_start_at,
+            "coverage_as_of": "2026-09-03T03:59:50+00:00",
+        },
+        "last_terminal_run": None,
+        "warnings": [],
+    }
+
+
+EXPECTED_WORKBENCH_SNAPSHOT = {
+    "snapshot_at": "2026-09-03T04:00:00+00:00",
+    "last_complete_discovery_at": "2026-09-03T03:59:50+00:00",
+    "sync_health": "fresh",
+    "stale": False,
+    "current_state_complete": True,
+    "current_state_checked_at": "2026-09-03T03:59:55+00:00",
+    "current_state_incomplete_statuses": [],
+    "fresh_until": "2026-09-03T04:01:20+00:00",
+    "has_active_runs": False,
+    "has_queued_runs": False,
+    "has_waiting_runs": False,
+    "current_counts": {
+        name: {
+            "value": 0, "quality": "exact", "last_observed_value": 0,
+            "last_observed_at": "2026-09-03T03:59:55+00:00",
+        }
+        for name in ("running", "queued", "waiting")
+    } | {
+        "legacy_nonterminal": {
+            "value": 0, "quality": "exact", "last_observed_value": None,
+            "last_observed_at": None,
+        }
+    },
+    "refresh_after_ms": 30000,
+    "range": "30d",
+    "timezone": "Asia/Shanghai",
+    "range_start": "2026-08-04T16:00:00+00:00",
+    "range_end": "2026-09-03T16:00:00+00:00",
+    "metrics_complete_for_range": True,
+    "coverage": {
+        "mirrored_run_count": 0, "remote_total_runs": 0,
+        "history_complete": True, "range_complete": True,
+        "coverage_start_at": "2026-08-02T00:00:00+00:00",
+        "coverage_as_of": "2026-09-03T03:59:50+00:00",
+    },
+    "summary": {
+        "run_count": 0, "terminal_runs": 0, "successful_runs": 0,
+        "success_rate": None, "known_input_tokens": 0,
+        "known_output_tokens": 0, "known_total_tokens": 0,
+        "token_known_runs": 0, "token_eligible_runs": 0,
+    },
+    "signals": [],
+    "agents": [
+        _expected_canonical_agent(
+            LOCAL_ID, "diagnosis-plan", "agent-primary", "诊断与计划 Agent",
+            "诊断商户并生成可审核 SEO 计划", 10, "Core Shape", "model-shape",
+            "2026-08-01T00:00:00+00:00", "2026-09-03T01:02:03+00:00",
+        ),
+        _expected_canonical_agent(
+            "22222222-2222-4222-8222-222222222222", "second", "core-second",
+            "Second Agent", "Second role", 20, "Core Second", "model-second",
+            "2026-08-02T00:00:00+00:00", None,
+        ),
+    ],
+    "sync_warnings": [],
 }
 
 
@@ -63,6 +232,1085 @@ def _request(raw: bytes) -> Request:
         return {"type": "http.request", "body": raw, "more_body": False}
 
     return Request({"type": "http", "method": "POST", "path": "/"}, receive)
+
+
+def test_empty_workbench_snapshot_contract(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch)
+
+    assert agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    ) == {
+        "snapshot_at": "2026-09-03T04:00:00+00:00",
+        "last_complete_discovery_at": None,
+        "sync_health": "not_configured",
+        "stale": False,
+        "current_state_complete": None,
+        "current_state_checked_at": None,
+        "current_state_incomplete_statuses": [],
+        "fresh_until": None,
+        "has_active_runs": False,
+        "has_queued_runs": False,
+        "has_waiting_runs": False,
+        "current_counts": {
+            name: {
+                "value": 0,
+                "quality": "exact",
+                "last_observed_value": None,
+                "last_observed_at": None,
+            }
+            for name in ("running", "queued", "waiting", "legacy_nonterminal")
+        },
+        "refresh_after_ms": 30000,
+        "range": "30d",
+        "timezone": "Asia/Shanghai",
+        "range_start": "2026-08-04T16:00:00+00:00",
+        "range_end": "2026-09-03T16:00:00+00:00",
+        "metrics_complete_for_range": True,
+        "coverage": {
+            "mirrored_run_count": 0,
+            "remote_total_runs": 0,
+            "history_complete": True,
+            "range_complete": True,
+            "coverage_start_at": None,
+            "coverage_as_of": None,
+        },
+        "summary": {
+            "run_count": 0,
+            "terminal_runs": 0,
+            "successful_runs": 0,
+            "success_rate": None,
+            "known_input_tokens": 0,
+            "known_output_tokens": 0,
+            "known_total_tokens": 0,
+            "token_known_runs": 0,
+            "token_eligible_runs": 0,
+        },
+        "signals": [],
+        "agents": [],
+        "sync_warnings": [],
+    }
+
+
+def test_snapshot_read_transaction_prevents_torn_second_connection_read(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "snapshot-wal.db")
+    conn.execute("PRAGMA journal_mode=WAL")
+    _seed_agent_for_projection(conn, monkeypatch)
+    database = conn.execute("PRAGMA database_list").fetchone()[2]
+    writer = sqlite3.connect(database)
+    writer.execute("PRAGMA foreign_keys=ON")
+
+    class MutatingConnection:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.saw_agent_read = False
+
+        def execute(self, sql, parameters=()):
+            cursor = self.wrapped.execute(sql, parameters)
+            if "FROM seo_ops_agents a" in sql and not self.saw_agent_read:
+                self.saw_agent_read = True
+                writer.execute(
+                    "INSERT INTO seo_ops_agent_runs ("
+                    "coreai_run_id,seo_ops_agent_id,raw_status,trigger_type,"
+                    "started_at,first_seen_at,last_synced_at) "
+                    "VALUES ('concurrent-run',?,'RUNNING','WORKFLOW',?,?,?)",
+                    (LOCAL_ID, SNAPSHOT_NOW.isoformat(), SNAPSHOT_NOW.isoformat(),
+                     SNAPSHOT_NOW.isoformat()),
+                )
+                writer.commit()
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+    guarded = MutatingConnection(conn)
+    snapshot = agent_workbench.build_workbench_snapshot(
+        guarded, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+
+    assert guarded.saw_agent_read
+    assert snapshot["coverage"]["mirrored_run_count"] == 0
+    assert snapshot["summary"]["run_count"] == 0
+    assert conn.in_transaction is False
+    assert writer.execute("SELECT COUNT(*) FROM seo_ops_agent_runs").fetchone()[0] == 1
+    writer.close()
+    conn.close()
+
+
+def test_snapshot_warning_association_and_agent_shapes():
+    assert agent_workbench._workbench_warning(
+        "TOKEN_USAGE_INVALID", "Token 用量不可用", LOCAL_ID, "run-shape"
+    ) == {
+        "code": "TOKEN_USAGE_INVALID",
+        "message": "Token 用量不可用",
+        "local_agent_id": LOCAL_ID,
+        "coreai_run_id": "run-shape",
+    }
+    assert agent_workbench._serialize_association(
+        {
+            "source_kind": "run",
+            "source_local_id": 42,
+            "merchant_id": 7,
+            "merchant_name": "Shape Merchant",
+            "local_href": "/runs/42",
+            "local_label": "Run #42",
+        }
+    ) == {
+        "kind": "run",
+        "source_local_id": 42,
+        "merchant_id": 7,
+        "merchant_name": "Shape Merchant",
+        "local_href": "/runs/42",
+        "local_label": "Run #42",
+    }
+    signal = {
+        "coreai_run_id": "run-shape",
+        "local_agent_id": LOCAL_ID,
+        "agent_name": "Shape Agent",
+        "agent_role": "Shape role",
+        "lifecycle_status": "active",
+        "agent_current_state_complete": False,
+        "raw_status": None,
+        "presentation_group": "unknown",
+        "signal_state": "uncertain",
+        "trigger_type": None,
+        "fresh": False,
+        "suspect": False,
+        "suspect_reason": "状态待确认（上游未返回状态）",
+        "started_at": None,
+        "effective_started_at": "2026-09-03T03:59:00+00:00",
+        "completed_at": None,
+        "terminal_observed_at": None,
+        "receipt_expires_at": None,
+        "elapsed_seconds": 60,
+        "last_synced_at": None,
+        "fresh_until": None,
+        "suspect_at": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "token_state": "unconfirmed",
+        "association": None,
+        "private": "must-not-leak",
+    }
+    assert agent_workbench._serialize_signal(signal) == {
+        key: value for key, value in signal.items() if key != "private"
+    }
+    registry = agent_workbench._serialize_registry_record(
+        {
+            "id": LOCAL_ID,
+            "agent_key": "shape",
+            "coreai_agent_id": "core-shape",
+            "display_name": "Shape Agent",
+            "role": "Shape role",
+            "sort_order": 3,
+            "status": "active",
+            "coreai_name": None,
+            "coreai_model": None,
+            "coreai_timeout_hint_seconds": None,
+            "last_verified_at": None,
+            "last_verification_error": None,
+            "suspect_after_seconds": 1800,
+            "sync_pending": 1,
+        }
+    )
+    assert registry == {
+        "id": LOCAL_ID,
+        "agent_key": "shape",
+        "coreai_agent_id": "core-shape",
+        "display_name": "Shape Agent",
+        "role": "Shape role",
+        "sort_order": 3,
+        "lifecycle_status": "active",
+        "coreai_metadata": {
+            "name": None,
+            "model": None,
+            "timeout_hint_seconds": None,
+            "last_verified_at": None,
+            "verification_error": None,
+        },
+        "suspect_after_seconds": 1800,
+        "sync_pending": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "group", "counts", "motion", "outcome", "eligible"),
+    [
+        ("PENDING", "queued", True, False, False, False),
+        ("RUNNING", "active", True, True, False, False),
+        ("PAUSED", "waiting", True, False, False, False),
+        ("COMPLETED", "success", True, False, True, True),
+        ("FAILED", "failure", True, False, True, True),
+        ("TIMEOUT", "failure", True, False, True, True),
+        ("CANCELLED", "cancelled", True, False, True, True),
+        ("SKIPPED", "skipped", False, False, False, False),
+        ("FUTURE_STATE", "unknown", True, False, False, False),
+        (None, "unknown", True, False, False, False),
+    ],
+)
+def test_status_classifier_truth_table(
+    status, group, counts, motion, outcome, eligible
+):
+    assert agent_workbench.classify_workbench_status(status) == {
+        "presentation_group": group,
+        "counts_as_run": counts,
+        "outcome": outcome,
+        "token_eligible": eligible,
+        "motion_eligible": motion,
+    }
+
+
+@pytest.mark.parametrize(
+    ("range_key", "expected_start"),
+    [
+        ("today", "2026-09-02T16:00:00+00:00"),
+        ("7d", "2026-08-27T16:00:00+00:00"),
+        ("30d", "2026-08-04T16:00:00+00:00"),
+        ("all", None),
+    ],
+)
+def test_calendar_range_boundaries(tmp_path, monkeypatch, range_key, expected_start):
+    conn = _workbench_conn(tmp_path, monkeypatch, f"range-{range_key}.db")
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, range_key, SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["range_start"] == expected_start
+    assert snapshot["range_end"] == "2026-09-03T16:00:00+00:00"
+    conn.close()
+
+
+def test_calendar_range_boundaries_new_york_dst(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "range-dst.db")
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn,
+        "today",
+        datetime(2026, 3, 8, 16, tzinfo=timezone.utc),
+        "America/New_York",
+        20,
+    )
+    assert snapshot["range_start"] == "2026-03-08T05:00:00+00:00"
+    assert snapshot["range_end"] == "2026-03-09T04:00:00+00:00"
+    conn.close()
+
+
+def _prepare_snapshot_agent(conn, monkeypatch, *, status="active"):
+    _seed_agent_for_projection(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agents SET status=?,coreai_name='Core Shape',"
+        "coreai_model='model-shape',last_verified_at=? WHERE id=?",
+        (status, SNAPSHOT_NOW.isoformat(), LOCAL_ID),
+    )
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET sync_pending=0,"
+        "last_discovery_attempt_at=?,last_discovery_success_at=?,"
+        "current_state_checked_at=?,current_state_complete=1,"
+        "pending_observed_count=0,pending_set_quality='exact',pending_last_observed_at=?,"
+        "running_observed_count=0,running_set_quality='exact',running_last_observed_at=?,"
+        "paused_observed_count=0,paused_set_quality='exact',paused_last_observed_at=?,"
+        "unfiltered_proven_event_epoch=history_event_epoch,"
+        "finite_range_proven_start_at=? WHERE seo_ops_agent_id=?",
+        (
+            (SNAPSHOT_NOW - timedelta(seconds=10)).isoformat(),
+            (SNAPSHOT_NOW - timedelta(seconds=10)).isoformat(),
+            (SNAPSHOT_NOW - timedelta(seconds=5)).isoformat(),
+            (SNAPSHOT_NOW - timedelta(seconds=5)).isoformat(),
+            (SNAPSHOT_NOW - timedelta(seconds=5)).isoformat(),
+            (SNAPSHOT_NOW - timedelta(seconds=5)).isoformat(),
+            "2026-08-01T00:00:00+00:00",
+            LOCAL_ID,
+        ),
+    )
+    conn.commit()
+
+
+def _insert_snapshot_run(
+    conn,
+    run_id,
+    status,
+    *,
+    started_at="2026-09-03T03:00:00+00:00",
+    completed_at=None,
+    tokens=None,
+    last_synced_at="2026-09-03T03:59:55+00:00",
+    terminal_observed_at=None,
+    receipt_expires_at=None,
+    warning_codes=(),
+):
+    conn.execute(
+        "INSERT INTO seo_ops_agent_runs ("
+        "coreai_run_id,seo_ops_agent_id,raw_status,trigger_type,started_at,"
+        "completed_at,terminal_observed_at,receipt_expires_at,input_tokens,"
+        "output_tokens,first_seen_at,last_poll_attempt_at,last_synced_at,"
+        "data_warning_codes_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id, LOCAL_ID, status, "WORKFLOW", started_at, completed_at,
+            terminal_observed_at, receipt_expires_at,
+            tokens[0] if tokens else None, tokens[1] if tokens else None,
+            "2026-09-03T03:00:00+00:00", last_synced_at, last_synced_at,
+            json.dumps(list(warning_codes)),
+        ),
+    )
+    conn.commit()
+
+
+def _complete_snapshot_coverage(conn):
+    total = conn.execute(
+        "SELECT COUNT(*) FROM seo_ops_agent_runs WHERE seo_ops_agent_id=?",
+        (LOCAL_ID,),
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET remote_total_runs=?,"
+        "last_discovery_returned_count=?,coverage_start_at=? "
+        "WHERE seo_ops_agent_id=?",
+        (total, total, "2026-08-01T00:00:00+00:00", LOCAL_ID),
+    )
+    conn.commit()
+
+
+def test_range_metric_truth_table(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "metrics.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    for status in ("PENDING", "RUNNING", "PAUSED"):
+        _insert_snapshot_run(conn, f"run-{status}", status)
+    _insert_snapshot_run(
+        conn, "run-COMPLETED", "COMPLETED",
+        completed_at="2026-09-03T03:30:00+00:00", tokens=(1, 2),
+    )
+    _insert_snapshot_run(
+        conn, "run-FAILED", "FAILED",
+        completed_at="2026-09-03T03:30:00+00:00", tokens=(0, 0),
+    )
+    for status in ("TIMEOUT", "CANCELLED"):
+        _insert_snapshot_run(
+            conn, f"run-{status}", status,
+            completed_at="2026-09-03T03:30:00+00:00",
+        )
+    _insert_snapshot_run(conn, "run-SKIPPED", "SKIPPED")
+    _insert_snapshot_run(conn, "run-FUTURE", "FUTURE_STATE")
+    _complete_snapshot_coverage(conn)
+
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["summary"] == {
+        "run_count": 8,
+        "terminal_runs": 4,
+        "successful_runs": 1,
+        "success_rate": 0.25,
+        "known_input_tokens": 1,
+        "known_output_tokens": 2,
+        "known_total_tokens": 3,
+        "token_known_runs": 2,
+        "token_eligible_runs": 4,
+    }
+    assert snapshot["metrics_complete_for_range"] is False
+    conn.close()
+
+
+def test_current_count_quality_truth_table():
+    exact = {"value": 2, "quality": "exact", "last_observed_value": 2,
+             "last_observed_at": "2026-09-03T03:59:00+00:00"}
+    lower = {"value": 3, "quality": "lower_bound", "last_observed_value": 3,
+             "last_observed_at": "2026-09-03T03:58:00+00:00"}
+    unknown = {"value": None, "quality": "unknown", "last_observed_value": 4,
+               "last_observed_at": "2026-09-03T03:57:00+00:00"}
+    assert agent_workbench._aggregate_counts([exact])["quality"] == "exact"
+    aggregate = agent_workbench._aggregate_counts([exact, lower])
+    assert (aggregate["quality"], aggregate["value"], aggregate["last_observed_value"]) == (
+        "lower_bound", 5, 5
+    )
+    aggregate = agent_workbench._aggregate_counts([exact, unknown])
+    assert (aggregate["quality"], aggregate["value"], aggregate["last_observed_value"]) == (
+        "unknown", None, 6
+    )
+    assert agent_workbench._aggregate_counts([]) == {
+        "value": 0, "quality": "exact", "last_observed_value": None,
+        "last_observed_at": None,
+    }
+
+
+def test_aggregate_health_and_freshness_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "health.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _complete_snapshot_coverage(conn)
+    fresh = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert fresh["sync_health"] == "fresh"
+    assert fresh["stale"] is False
+    assert fresh["current_state_complete"] is True
+    assert fresh["fresh_until"] == "2026-09-03T04:01:20+00:00"
+    assert fresh["agents"][0]["sync"]["health"] == "fresh"
+
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET last_discovery_attempt_at=?,"
+        "last_discovery_error='safe failure' WHERE seo_ops_agent_id=?",
+        (SNAPSHOT_NOW.isoformat(), LOCAL_ID),
+    )
+    conn.commit()
+    stale = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert stale["sync_health"] == "stale"
+    assert stale["stale"] is True
+    assert stale["current_state_checked_at"] == "2026-09-03T03:59:55+00:00"
+    conn.close()
+
+
+def test_due_discovery_failure_makes_range_metrics_incomplete(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "due-failure.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _complete_snapshot_coverage(conn)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET last_discovery_attempt_at=?,"
+        "last_discovery_error='safe failure',next_discovery_at=? "
+        "WHERE seo_ops_agent_id=?",
+        (SNAPSHOT_NOW.isoformat(), (SNAPSHOT_NOW + timedelta(seconds=3)).isoformat(), LOCAL_ID),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["coverage"]["range_complete"] is True
+    assert snapshot["metrics_complete_for_range"] is False
+    assert snapshot["refresh_after_ms"] == 3000
+    conn.close()
+
+
+def test_later_fast_poll_failure_makes_run_and_agent_static_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "fast-failure.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(conn, "fast-running", "RUNNING")
+    _complete_snapshot_coverage(conn)
+    conn.execute(
+        "UPDATE seo_ops_agent_runs SET last_poll_attempt_at=?,last_poll_error='safe' "
+        "WHERE coreai_run_id='fast-running'",
+        (SNAPSHOT_NOW.isoformat(),),
+    )
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET last_fast_poll_attempt_at=?,"
+        "last_fast_poll_success_at=?,last_fast_poll_error='safe' WHERE seo_ops_agent_id=?",
+        (SNAPSHOT_NOW.isoformat(), (SNAPSHOT_NOW - timedelta(seconds=10)).isoformat(), LOCAL_ID),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["agents"][0]["sync"]["health"] == "stale"
+    signal = snapshot["signals"][0]
+    assert (signal["signal_state"], signal["fresh"], signal["suspect_reason"]) == (
+        "uncertain", False, "状态待确认"
+    )
+    conn.close()
+
+
+def test_sync_pending_never_reuses_old_complete_proof(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "pending-proof.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET sync_pending=1,running_observed_count=2 "
+        "WHERE seo_ops_agent_id=?", (LOCAL_ID,),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["current_counts"]["running"] == {
+        "value": None, "quality": "unknown", "last_observed_value": 2,
+        "last_observed_at": "2026-09-03T03:59:55+00:00",
+    }
+    assert snapshot["has_active_runs"] is None
+    assert snapshot["current_state_complete"] is False
+    assert snapshot["agents"][0]["current_state_complete"] is False
+    conn.close()
+
+
+def test_reenabled_agent_immediate_aggregate_revokes_archival_proof(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "reenable.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET sync_pending=1,local_event_epoch=1,"
+        "current_state_complete=0 WHERE seo_ops_agent_id=?", (LOCAL_ID,),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["current_state_complete"] is False
+    assert snapshot["has_active_runs"] is None
+    conn.close()
+
+
+def test_reenabled_agent_aggregate_requires_post_epoch_complete_proof(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "post-epoch.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET local_event_epoch=1,history_event_epoch=1,"
+        "unfiltered_proven_event_epoch=1,sync_pending=0,current_state_complete=1 "
+        "WHERE seo_ops_agent_id=?", (LOCAL_ID,),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["current_state_complete"] is True
+    conn.close()
+
+
+def test_aggregate_coverage_sum_max_min_and_nulls():
+    coverages = [
+        {"mirrored_run_count": 2, "remote_total_runs": 3,
+         "coverage_start_at": "2026-08-01T00:00:00+00:00",
+         "coverage_as_of": "2026-09-03T03:59:00+00:00"},
+        {"mirrored_run_count": 4, "remote_total_runs": 5,
+         "coverage_start_at": "2026-08-02T00:00:00+00:00",
+         "coverage_as_of": "2026-09-03T03:58:00+00:00"},
+    ]
+    assert sum(item["mirrored_run_count"] for item in coverages) == 6
+    assert sum(item["remote_total_runs"] for item in coverages) == 8
+    assert agent_workbench._aggregate_boundary(
+        [item["coverage_start_at"] for item in coverages], max
+    ) == "2026-08-02T00:00:00+00:00"
+    assert agent_workbench._aggregate_boundary(
+        [item["coverage_as_of"] for item in coverages], min
+    ) == "2026-09-03T03:58:00+00:00"
+    assert agent_workbench._aggregate_boundary([None, "2026-08-01T00:00:00+00:00"], max) is None
+
+
+def _insert_null_marker(conn, run_id, *, first_seen="2026-09-03T03:00:00+00:00"):
+    merchant_id, source_id = _insert_local_run(conn, run_id)
+    conn.execute(
+        "INSERT INTO seo_ops_agent_runs ("
+        "coreai_run_id,seo_ops_agent_id,raw_status,source_kind,source_local_id,"
+        "merchant_id,first_seen_at,data_warning_codes_json) "
+        "VALUES (?,?,NULL,'run',?,?,?,'[\"LOCAL_TRIGGER_STATUS_MISSING\"]')",
+        (run_id, LOCAL_ID, source_id, merchant_id, first_seen),
+    )
+    conn.commit()
+
+
+def test_unconfirmed_local_run_invalidates_effective_history_proof(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "unconfirmed.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_null_marker(conn, "null-marker")
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET history_event_epoch=1,"
+        "unfiltered_proven_event_epoch=1,remote_total_runs=1,"
+        "last_discovery_returned_count=1 WHERE seo_ops_agent_id=?", (LOCAL_ID,),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["coverage"]["mirrored_run_count"] == 1
+    assert snapshot["coverage"]["remote_total_runs"] is None
+    assert snapshot["coverage"]["history_complete"] is False
+    assert snapshot["coverage"]["range_complete"] is False
+    assert {warning["code"] for warning in snapshot["sync_warnings"]} >= {
+        "LOCAL_RUN_UNCONFIRMED", "LOCAL_TRIGGER_STATUS_MISSING"
+    }
+    conn.close()
+
+
+def test_out_of_range_global_history_barriers_do_not_poison_finite_range(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "old-barrier.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_null_marker(conn, "old-null", first_seen="2026-08-01T00:00:00+00:00")
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET history_event_epoch=1,"
+        "unfiltered_proven_event_epoch=0,remote_total_runs=1,"
+        "last_discovery_returned_count=1,finite_range_proven_start_at=? "
+        "WHERE seo_ops_agent_id=?",
+        ("2026-08-04T16:00:00+00:00", LOCAL_ID),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["coverage"]["history_complete"] is False
+    assert snapshot["coverage"]["range_complete"] is True
+    assert snapshot["metrics_complete_for_range"] is True
+    conn.close()
+
+
+def test_remote_total_below_mirrored_is_never_usable(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "bad-total.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(conn, "confirmed", "COMPLETED")
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET remote_total_runs=0,"
+        "last_discovery_returned_count=0 WHERE seo_ops_agent_id=?", (LOCAL_ID,),
+    )
+    conn.commit()
+    broken = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert broken["coverage"]["remote_total_runs"] is None
+    assert "REMOTE_TOTAL_BELOW_MIRRORED" in {
+        warning["code"] for warning in broken["sync_warnings"]
+    }
+    _complete_snapshot_coverage(conn)
+    repaired = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert repaired["coverage"]["remote_total_runs"] == 1
+    assert "REMOTE_TOTAL_BELOW_MIRRORED" not in {
+        warning["code"] for warning in repaired["sync_warnings"]
+    }
+    conn.close()
+
+
+def test_effective_start_and_elapsed_seconds_are_snapshot_aligned(
+    tmp_path, monkeypatch
+):
+    conn = _workbench_conn(tmp_path, monkeypatch, "elapsed.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(
+        conn, "elapsed", "RUNNING", started_at="2026-09-03T03:59:58.750+00:00"
+    )
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    history = agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 20, None, SNAPSHOT_NOW, "Asia/Shanghai"
+    )
+    assert snapshot["signals"][0]["effective_started_at"] == history["items"][0]["effective_started_at"]
+    assert snapshot["signals"][0]["elapsed_seconds"] == history["items"][0]["elapsed_seconds"] == 1
+    conn.close()
+
+
+def test_terminal_duration_seconds_is_factual_and_bounded(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "duration.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(
+        conn, "duration", "COMPLETED", started_at="2026-09-03T03:00:00.250+00:00",
+        completed_at="2026-09-03T03:00:02+00:00",
+    )
+    _insert_snapshot_run(
+        conn, "negative", "FAILED", started_at="2026-09-03T03:00:02+00:00",
+        completed_at="2026-09-03T03:00:00+00:00",
+    )
+    history = agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 20, None, SNAPSHOT_NOW, "Asia/Shanghai"
+    )
+    durations = {item["coreai_run_id"]: item["duration_seconds"] for item in history["items"]}
+    assert durations == {"negative": 0, "duration": 1}
+    conn.close()
+
+
+def test_stage_signal_truth_table(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "signals.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    for status in ("PENDING", "RUNNING", "PAUSED", "FUTURE_STATE"):
+        _insert_snapshot_run(
+            conn, f"signal-{status}", status, started_at="2026-09-03T03:59:50+00:00"
+        )
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    by_status = {signal["raw_status"]: signal for signal in snapshot["signals"]}
+    assert by_status["PENDING"]["signal_state"] == "queued"
+    assert by_status["RUNNING"]["signal_state"] == "active"
+    assert by_status["PAUSED"]["signal_state"] == "waiting"
+    assert by_status["FUTURE_STATE"]["signal_state"] == "uncertain"
+    assert by_status["FUTURE_STATE"]["fresh"] is False
+    assert snapshot["current_state_complete"] is False
+    conn.close()
+
+
+def test_signal_suspect_boundary_and_deadline(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "suspect.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agents SET suspect_after_seconds=60 WHERE id=?", (LOCAL_ID,)
+    )
+    _insert_snapshot_run(
+        conn, "suspect", "RUNNING", started_at="2026-09-03T03:59:00+00:00"
+    )
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    signal = snapshot["signals"][0]
+    assert signal["suspect_at"] == SNAPSHOT_NOW.isoformat()
+    assert (signal["suspect"], signal["signal_state"], signal["fresh"]) == (
+        True, "uncertain", False
+    )
+    conn.close()
+
+
+def test_refresh_after_uses_five_or_thirty_second_base_cadence(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "cadence.db")
+    assert agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )["refresh_after_ms"] == 30000
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(
+        conn, "cadence-running", "RUNNING", started_at="2026-09-03T03:59:50+00:00"
+    )
+    assert agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )["refresh_after_ms"] == 5000
+    conn.close()
+
+
+def test_failing_agent_does_not_override_healthy_five_second_cadence(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "mixed-cadence.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(
+        conn, "healthy-running", "RUNNING", started_at="2026-09-03T03:59:50+00:00"
+    )
+    second_id = "22222222-2222-4222-8222-222222222222"
+    conn.execute(
+        "INSERT INTO seo_ops_agents (id,agent_key,coreai_agent_id,display_name,role,"
+        "sort_order,status,suspect_after_seconds,created_at,updated_at) "
+        "VALUES (?,'second','core-second','Second','Second role',20,'active',1800,?,?)",
+        (second_id, SNAPSHOT_NOW.isoformat(), SNAPSHOT_NOW.isoformat()),
+    )
+    conn.execute(
+        "INSERT INTO seo_ops_agent_sync_state (seo_ops_agent_id,sync_pending,"
+        "last_discovery_attempt_at,last_discovery_error,next_discovery_at) "
+        "VALUES (?,0,?,'safe failure',?)",
+        (second_id, SNAPSHOT_NOW.isoformat(), (SNAPSHOT_NOW + timedelta(seconds=1)).isoformat()),
+    )
+    conn.commit()
+    snapshot = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert snapshot["sync_health"] == "partial"
+    assert snapshot["refresh_after_ms"] == 5000
+    conn.close()
+
+
+def test_refresh_after_clamps_due_retry_to_one_second(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "retry-clamp.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    conn.execute(
+        "UPDATE seo_ops_agent_sync_state SET last_discovery_attempt_at=?,"
+        "last_discovery_error='safe failure',next_discovery_at=? "
+        "WHERE seo_ops_agent_id=?",
+        (SNAPSHOT_NOW.isoformat(), (SNAPSHOT_NOW - timedelta(seconds=5)).isoformat(), LOCAL_ID),
+    )
+    conn.commit()
+    assert agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )["refresh_after_ms"] == 1000
+    conn.close()
+
+
+def test_archiving_and_terminal_receipts(tmp_path, monkeypatch):
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    conn = _workbench_conn(tmp_path, monkeypatch, "archiving.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    merchant_id, source_id = _insert_local_run(conn, "archive-terminal")
+    conn.execute(
+        "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,raw_status,"
+        "trigger_type,started_at,completed_at,terminal_observed_at,receipt_expires_at,"
+        "source_kind,source_local_id,merchant_id,first_seen_at,last_synced_at) "
+        "VALUES ('archive-terminal',?,'COMPLETED','WORKFLOW',?,?,?,?,"
+        "'run',?,?,?,?)",
+        (
+            LOCAL_ID, "2026-09-03T03:50:00+00:00", "2026-09-03T03:59:59+00:00",
+            "2026-09-03T03:59:59+00:00", "2026-09-03T04:00:09+00:00",
+            source_id, merchant_id, "2026-09-03T03:50:00+00:00",
+            "2026-09-03T03:59:59+00:00",
+        ),
+    )
+    conn.commit()
+    current = agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    )
+    assert current["signals"][0]["signal_state"] == "archiving"
+    assert current["refresh_after_ms"] == 5000
+    delayed_now = SNAPSHOT_NOW + timedelta(minutes=5)
+    delayed = agent_workbench.build_workbench_snapshot(
+        conn, "30d", delayed_now, "Asia/Shanghai", 20
+    )
+    assert delayed["signals"] == []
+    assert "ARCHIVE_DELAY" in delayed["agents"][0]["last_terminal_run"]["warning_codes"]
+    conn.close()
+
+
+def test_history_cursor_round_trip_and_bounds(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "history-cursor.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    for index in range(3):
+        _insert_snapshot_run(
+            conn, f"history-{index}", "COMPLETED",
+            started_at=f"2026-09-03T03:0{index}:00+00:00",
+            completed_at=f"2026-09-03T03:1{index}:00+00:00",
+        )
+    first = agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 2, None, SNAPSHOT_NOW, "Asia/Shanghai"
+    )
+    assert [item["coreai_run_id"] for item in first["items"]] == ["history-2", "history-1"]
+    assert first["next_before"]
+    second = agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 2, first["next_before"], SNAPSHOT_NOW, "Asia/Shanghai"
+    )
+    assert [item["coreai_run_id"] for item in second["items"]] == ["history-0"]
+    malformed = [
+        "not-a-cursor",
+        agent_workbench._encode_history_cursor("2026-09-03T03:00:00+00:00", "id")[:-1],
+        __import__("base64").urlsafe_b64encode(b"not-json").decode(),
+        __import__("base64").urlsafe_b64encode(
+            b'[2,"2026-09-03T03:00:00+00:00","id"]'
+        ).decode(),
+        __import__("base64").urlsafe_b64encode(b'[1,7,"id"]').decode(),
+        __import__("base64").urlsafe_b64encode(
+            b'[true,"2026-09-03T03:00:00+00:00","id"]'
+        ).decode(),
+        __import__("base64").urlsafe_b64encode(
+            b'[1,"2026-09-03T03:00:00","id"]'
+        ).decode(),
+        "",
+    ]
+    for value in malformed:
+        with pytest.raises(agent_workbench.WorkbenchError) as raised:
+            agent_workbench.list_projected_agent_runs(
+                conn, LOCAL_ID, "30d", 20, value, SNAPSHOT_NOW, "Asia/Shanghai"
+            )
+        assert raised.value.status_code == 422
+    assert len(agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 0, None, SNAPSHOT_NOW, "Asia/Shanghai"
+    )["items"]) == 1
+    assert len(agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 101, None, SNAPSHOT_NOW, "Asia/Shanghai"
+    )["items"]) == 3
+    with pytest.raises(agent_workbench.WorkbenchError) as raised:
+        agent_workbench.list_projected_agent_runs(
+            conn, "missing", "30d", 20, None, SNAPSHOT_NOW, "Asia/Shanghai"
+        )
+    assert raised.value.status_code == 404
+    conn.close()
+
+
+def test_history_privacy_and_warning_projection(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "history-privacy.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(
+        conn, "private-safe", "FAILED", completed_at="2026-09-03T03:30:00+00:00",
+        warning_codes=("TOKEN_USAGE_INVALID",),
+    )
+    item = agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 20, None, SNAPSHOT_NOW, "Asia/Shanghai"
+    )["items"][0]
+    assert set(item) == {
+        "coreai_run_id", "raw_status", "presentation_group", "trigger_type",
+        "started_at", "effective_started_at", "completed_at", "terminal_observed_at",
+        "receipt_expires_at", "elapsed_seconds", "duration_seconds", "input_tokens",
+        "output_tokens", "total_tokens", "token_state", "last_synced_at", "suspect",
+        "suspect_reason", "archiving", "archive_delayed", "warning_codes",
+        "association", "error_summary",
+    }
+    assert item["warning_codes"] == ["TOKEN_USAGE_INVALID"]
+    assert "trace_id" not in item
+    conn.close()
+
+
+def test_workbench_get_routes_contract_and_auth(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "get-routes.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    monkeypatch.setattr(agent_workbench, "utc_now", lambda: SNAPSHOT_NOW)
+    app = _build_app(conn=conn)
+    with TestClient(app) as client:
+        aggregate = client.get("/api/agent-workbench")
+        assert aggregate.status_code == 200
+        assert aggregate.json()["range"] == "30d"
+        history = client.get(f"/api/agent-workbench/agents/{LOCAL_ID}/runs")
+        assert history.status_code == 200
+        assert history.json()["range"] == "30d"
+        invalid = client.get("/api/agent-workbench?range=week")
+        assert invalid.status_code == 422
+        assert invalid.json() == {
+            "detail": {
+                "code": "INVALID_RANGE",
+                "message": "不支持的时间范围",
+                "fields": {"range": "仅支持 today、7d、30d 或 all"},
+            }
+        }
+        missing = client.get("/api/agent-workbench/agents/missing/runs")
+        assert missing.status_code == 404
+        assert missing.json() == {
+            "detail": {"code": "AGENT_NOT_FOUND", "message": "未找到 Agent", "fields": {}}
+        }
+
+    monkeypatch.setenv("SEO_OPS_AUTH_USERNAME", "operator")
+    monkeypatch.setenv("SEO_OPS_AUTH_PASSWORD", "password")
+    monkeypatch.setenv("SEO_OPS_AUTH_SECRET", "s" * 32)
+    app.dependency_overrides.pop(require_operator)
+    with TestClient(app) as client:
+        assert client.get("/api/agent-workbench").status_code == 401
+        assert client.get(f"/api/agent-workbench/agents/{LOCAL_ID}/runs").status_code == 401
+    conn.close()
+
+
+def test_workbench_snapshot_contract(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "canonical-snapshot.db")
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-key")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    second_id = "22222222-2222-4222-8222-222222222222"
+    conn.execute(
+        "INSERT INTO seo_ops_agents (id,agent_key,coreai_agent_id,display_name,role,"
+        "sort_order,status,coreai_name,coreai_model,suspect_after_seconds,"
+        "last_verified_at,created_at,updated_at) VALUES "
+        "(?,'second','core-second','Second Agent','Second role',20,'active',"
+        "'Core Second','model-second',1800,?,?,?)",
+        (second_id, SNAPSHOT_NOW.isoformat(), SNAPSHOT_NOW.isoformat(), SNAPSHOT_NOW.isoformat()),
+    )
+    recent = (SNAPSHOT_NOW - timedelta(seconds=10)).isoformat()
+    checked = (SNAPSHOT_NOW - timedelta(seconds=5)).isoformat()
+    conn.execute(
+        "INSERT INTO seo_ops_agent_sync_state (seo_ops_agent_id,remote_total_runs,"
+        "last_discovery_attempt_at,last_discovery_success_at,"
+        "last_discovery_returned_count,coverage_start_at,finite_range_proven_start_at,"
+        "current_state_checked_at,pending_observed_count,pending_last_observed_at,"
+        "pending_set_quality,running_observed_count,running_last_observed_at,"
+        "running_set_quality,paused_observed_count,paused_last_observed_at,"
+        "paused_set_quality,current_state_complete,sync_pending,"
+        "unfiltered_proven_event_epoch) VALUES "
+        "(?,0,?,?,0,'2026-08-02T00:00:00+00:00',"
+        "'2026-08-02T00:00:00+00:00',?,0,?,'exact',0,?,'exact',0,?,'exact',1,0,0)",
+        (second_id, recent, recent, checked, checked, checked, checked),
+    )
+    _complete_snapshot_coverage(conn)
+    conn.commit()
+    assert agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    ) == EXPECTED_WORKBENCH_SNAPSHOT
+    conn.close()
+
+
+def test_projection_privacy_at_aggregate_serializer(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "aggregate-privacy.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(
+        conn, "aggregate-private", "FAILED",
+        completed_at="2026-09-03T03:30:00+00:00", tokens=(3, 4),
+    )
+    conn.execute(
+        "UPDATE seo_ops_agent_runs SET error_summary='safe summary',trace_id='private-sentinel' "
+        "WHERE coreai_run_id='aggregate-private'"
+    )
+    conn.commit()
+    rendered = repr(agent_workbench.build_workbench_snapshot(
+        conn, "30d", SNAPSHOT_NOW, "Asia/Shanghai", 20
+    ))
+    assert "private-sentinel" not in rendered
+    assert "safe summary" in rendered
+    assert "'known_total_tokens': 7" in rendered
+    conn.close()
+
+
+def test_projection_privacy_at_history_serializer(tmp_path, monkeypatch):
+    conn = _workbench_conn(tmp_path, monkeypatch, "history-private-characterization.db")
+    _prepare_snapshot_agent(conn, monkeypatch)
+    _insert_snapshot_run(
+        conn, "history-private", "FAILED",
+        completed_at="2026-09-03T03:30:00+00:00", tokens=(3, 4),
+    )
+    conn.execute(
+        "UPDATE seo_ops_agent_runs SET error_summary='safe summary',trace_id='private-sentinel' "
+        "WHERE coreai_run_id='history-private'"
+    )
+    conn.commit()
+    result = agent_workbench.list_projected_agent_runs(
+        conn, LOCAL_ID, "30d", 20, None, SNAPSHOT_NOW, "Asia/Shanghai"
+    )
+    assert "private-sentinel" not in repr(result)
+    assert result["items"][0]["total_tokens"] == 7
+    assert result["items"][0]["error_summary"] == "safe summary"
+    conn.close()
+
+
+def _route_client(tmp_path, monkeypatch, name):
+    conn = _workbench_conn(tmp_path, monkeypatch, name)
+    _prepare_snapshot_agent(conn, monkeypatch)
+    monkeypatch.setattr(agent_workbench, "utc_now", lambda: SNAPSHOT_NOW)
+    return conn, TestClient(_build_app(conn=conn))
+
+
+def test_aggregate_route_range_defaults_to_30d(tmp_path, monkeypatch):
+    conn, client = _route_client(tmp_path, monkeypatch, "aggregate-default.db")
+    with client:
+        assert client.get("/api/agent-workbench").json()["range"] == "30d"
+    conn.close()
+
+
+def test_aggregate_route_invalid_range_is_422(tmp_path, monkeypatch):
+    conn, client = _route_client(tmp_path, monkeypatch, "aggregate-invalid.db")
+    with client:
+        response = client.get("/api/agent-workbench?range=invalid")
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "INVALID_RANGE"
+    conn.close()
+
+
+def test_history_route_range_defaults_to_30d(tmp_path, monkeypatch):
+    conn, client = _route_client(tmp_path, monkeypatch, "history-default.db")
+    with client:
+        response = client.get(f"/api/agent-workbench/agents/{LOCAL_ID}/runs")
+        assert response.json()["range"] == "30d"
+    conn.close()
+
+
+def test_history_route_invalid_range_is_422(tmp_path, monkeypatch):
+    conn, client = _route_client(tmp_path, monkeypatch, "history-invalid.db")
+    with client:
+        response = client.get(
+            f"/api/agent-workbench/agents/{LOCAL_ID}/runs?range=invalid"
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "INVALID_RANGE"
+    conn.close()
+
+
+def test_history_route_unknown_agent_is_404(tmp_path, monkeypatch):
+    conn, client = _route_client(tmp_path, monkeypatch, "history-missing.db")
+    with client:
+        response = client.get("/api/agent-workbench/agents/missing/runs")
+        assert response.status_code == 404
+        assert response.json() == {
+            "detail": {"code": "AGENT_NOT_FOUND", "message": "未找到 Agent", "fields": {}}
+        }
+    conn.close()
 
 
 def _build_app(conn=None, coreai=None):

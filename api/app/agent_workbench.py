@@ -1,4 +1,6 @@
+import base64
 import json
+import math
 import os
 import re
 import unicodedata
@@ -6,12 +8,17 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Sequence
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from .config import coreai_connection_settings
+from .config import (
+    agent_workbench_settings,
+    configured_agent_slots,
+    coreai_connection_settings,
+)
 from .coreai import CoreAiClient, CoreAiContractError, CoreAiError
 from .db import get_db
 
@@ -33,6 +40,9 @@ KNOWN_NONTERMINAL = frozenset({"PENDING", "RUNNING", "PAUSED"})
 KNOWN_TERMINAL = frozenset(
     {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}
 )
+WORKBENCH_RANGES = frozenset({"today", "7d", "30d", "all"})
+OUTCOME_STATUSES = frozenset({"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"})
+SUCCESS_STATUSES = frozenset({"COMPLETED"})
 
 
 def _is_unknown_status(status: str | None) -> bool:
@@ -40,6 +50,982 @@ def _is_unknown_status(status: str | None) -> bool:
         status is not None
         and status not in KNOWN_NONTERMINAL | KNOWN_TERMINAL
     )
+
+
+def classify_workbench_status(status):
+    if status in KNOWN_NONTERMINAL:
+        return {
+            "presentation_group": {
+                "PENDING": "queued", "RUNNING": "active", "PAUSED": "waiting"
+            }[status],
+            "counts_as_run": True,
+            "outcome": False,
+            "token_eligible": False,
+            "motion_eligible": status == "RUNNING",
+        }
+    if status in OUTCOME_STATUSES:
+        return {
+            "presentation_group": {
+                "COMPLETED": "success", "FAILED": "failure",
+                "TIMEOUT": "failure", "CANCELLED": "cancelled",
+            }[status],
+            "counts_as_run": True,
+            "outcome": True,
+            "token_eligible": True,
+            "motion_eligible": False,
+        }
+    if status == "SKIPPED":
+        return {
+            "presentation_group": "skipped",
+            "counts_as_run": False,
+            "outcome": False,
+            "token_eligible": False,
+            "motion_eligible": False,
+        }
+    return {
+        "presentation_group": "unknown",
+        "counts_as_run": True,
+        "outcome": False,
+        "token_eligible": False,
+        "motion_eligible": False,
+    }
+
+
+def _workbench_warning(code, message, local_agent_id=None, coreai_run_id=None):
+    return {
+        "code": code,
+        "message": message,
+        "local_agent_id": local_agent_id,
+        "coreai_run_id": coreai_run_id,
+    }
+
+
+def _serialize_association(row):
+    if row is None or row.get("source_kind") is None:
+        return None
+    return {
+        "kind": row["source_kind"],
+        "source_local_id": row["source_local_id"],
+        "merchant_id": row.get("merchant_id"),
+        "merchant_name": row.get("merchant_name"),
+        "local_href": row.get("local_href"),
+        "local_label": row["local_label"],
+    }
+
+
+SIGNAL_FIELDS = (
+    "coreai_run_id", "local_agent_id", "agent_name", "agent_role",
+    "lifecycle_status", "agent_current_state_complete", "raw_status",
+    "presentation_group", "signal_state", "trigger_type", "fresh", "suspect",
+    "suspect_reason", "started_at", "effective_started_at", "completed_at",
+    "terminal_observed_at", "receipt_expires_at", "elapsed_seconds",
+    "last_synced_at", "fresh_until", "suspect_at", "input_tokens",
+    "output_tokens", "total_tokens", "token_state", "association",
+)
+
+
+def _serialize_signal(values):
+    return {field: values[field] for field in SIGNAL_FIELDS}
+
+
+def _serialize_registry_record(row):
+    return {
+        "id": row["id"],
+        "agent_key": row["agent_key"],
+        "coreai_agent_id": row["coreai_agent_id"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+        "sort_order": row["sort_order"],
+        "lifecycle_status": row["status"],
+        "coreai_metadata": {
+            "name": row["coreai_name"],
+            "model": row["coreai_model"],
+            "timeout_hint_seconds": row["coreai_timeout_hint_seconds"],
+            "last_verified_at": row["last_verified_at"],
+            "verification_error": row["last_verification_error"],
+        },
+        "suspect_after_seconds": row["suspect_after_seconds"],
+        "sync_pending": bool(row["sync_pending"]),
+    }
+
+
+def build_workbench_snapshot(conn, range_key, now, timezone, history_limit) -> dict:
+    if range_key not in WORKBENCH_RANGES:
+        raise WorkbenchError(
+            422,
+            "INVALID_RANGE",
+            "不支持的时间范围",
+            {"range": "仅支持 today、7d、30d 或 all"},
+        )
+    conn.execute("BEGIN")
+    try:
+        agents = conn.execute(
+            "SELECT a.*,s.* FROM seo_ops_agents a "
+            "JOIN seo_ops_agent_sync_state s ON s.seo_ops_agent_id=a.id "
+            "ORDER BY a.sort_order,a.id"
+        ).fetchall()
+        runs = conn.execute(
+            "SELECT * FROM seo_ops_agent_runs ORDER BY coreai_run_id"
+        ).fetchall()
+        return _workbench_snapshot_from_rows(
+            conn, agents, runs, range_key, now, timezone, history_limit
+        )
+    finally:
+        conn.rollback()
+
+
+def _workbench_snapshot_from_rows(
+    conn, agents, runs, range_key, now, timezone, history_limit
+) -> dict:
+    range_start_dt, range_end_dt = _range_bounds(range_key, now, timezone)
+    range_start = _utc_iso(range_start_dt) if range_start_dt else None
+    range_end = _utc_iso(range_end_dt)
+    agent_rows = [dict(row) for row in agents]
+    run_rows = [dict(row) for row in runs]
+    runs_by_agent = {
+        agent["id"]: [
+            row for row in run_rows if row["seo_ops_agent_id"] == agent["id"]
+        ]
+        for agent in agent_rows
+    }
+    active_agents = [row for row in agent_rows if row["status"] == "active"]
+    archived_agents = [row for row in agent_rows if row["status"] != "active"]
+    configured = coreai_connection_settings() is not None
+    agent_dtos = []
+    all_warnings = []
+    signals = []
+    per_agent_coverages = []
+    per_agent_health = []
+    per_agent_fresh_until = []
+    any_archiving = False
+
+    unknown_rows = [
+        row for row in run_rows
+        if row["raw_status"] is None or _is_unknown_status(row["raw_status"])
+    ]
+    for agent in agent_rows:
+        owned_runs = runs_by_agent[agent["id"]]
+        selected_runs = [
+            row for row in owned_runs
+            if _in_workbench_range(row, range_start_dt, range_end_dt)
+        ]
+        counts = {
+            output: _current_count(agent, prefix, active=agent["status"] == "active")
+            for output, prefix in (
+                ("running", "running"), ("queued", "pending"),
+                ("waiting", "paused"),
+            )
+        }
+        agent_unknown = any(
+            row["raw_status"] is None or _is_unknown_status(row["raw_status"])
+            for row in owned_runs
+        )
+        agent_complete = bool(
+            agent["status"] == "active"
+            and not agent["sync_pending"]
+            and agent["current_state_complete"]
+            and all(count["quality"] == "exact" for count in counts.values())
+            and not agent_unknown
+        )
+        health, agent_fresh_until = _agent_health(
+            agent, owned_runs, now, configured, agent_complete
+        )
+        coverage, coverage_warnings = _agent_coverage(
+            agent, owned_runs, selected_runs, range_start_dt, range_key
+        )
+        metrics = _range_metrics(selected_runs)
+        warnings = list(coverage_warnings)
+        warnings.extend(_agent_sync_warnings(agent))
+        rendered_runs = []
+        for row in owned_runs:
+            association, local_running = _run_association(conn, row)
+            rendered = _projected_run_summary(
+                row, association, local_running, now, agent["suspect_after_seconds"]
+            )
+            rendered_runs.append(rendered)
+            for code in rendered["warning_codes"]:
+                warnings.append(
+                    _workbench_warning(
+                        code, _warning_message(code), agent["id"], row["coreai_run_id"]
+                    )
+                )
+            signal = _workbench_signal(
+                row, agent, association, local_running, now,
+                agent_complete, health, agent_fresh_until,
+            )
+            if signal is not None:
+                signals.append(signal)
+                any_archiving = any_archiving or signal["signal_state"] == "archiving"
+        warning_map = {
+            (warning["code"], warning["local_agent_id"], warning["coreai_run_id"]): warning
+            for warning in warnings
+        }
+        warnings = sorted(
+            warning_map.values(),
+            key=lambda item: (
+                item["code"], item["local_agent_id"] or "", item["coreai_run_id"] or ""
+            ),
+        )
+        terminal = [
+            item for row, item in zip(owned_runs, rendered_runs)
+            if row["raw_status"] in KNOWN_TERMINAL
+        ]
+        terminal.sort(
+            key=lambda item: (item["effective_started_at"], item["coreai_run_id"]),
+            reverse=True,
+        )
+        dto = _serialize_registry_record(agent)
+        dto.update(
+            {
+                "sync": {
+                    "health": health,
+                    "last_discovery_attempt_at": agent["last_discovery_attempt_at"],
+                    "last_discovery_success_at": agent["last_discovery_success_at"],
+                    "discovery_error": agent["last_discovery_error"],
+                    "current_state_checked_at": agent["current_state_checked_at"],
+                    "current_state_error": agent["current_state_error"],
+                    "next_discovery_at": agent["next_discovery_at"],
+                    "last_fast_poll_attempt_at": agent["last_fast_poll_attempt_at"],
+                    "last_fast_poll_success_at": agent["last_fast_poll_success_at"],
+                    "fast_poll_error": agent["last_fast_poll_error"],
+                },
+                "current_state_complete": agent_complete,
+                "current_counts": counts,
+                "range_metrics": metrics,
+                "coverage": coverage,
+                "last_terminal_run": terminal[0] if terminal else None,
+                "warnings": warnings,
+            }
+        )
+        agent_dtos.append(dto)
+        all_warnings.extend(warnings)
+        per_agent_coverages.append(coverage)
+        if agent["status"] == "active":
+            per_agent_health.append(health)
+            if agent_fresh_until is not None:
+                per_agent_fresh_until.append(agent_fresh_until)
+
+    active_counts = {
+        name: _aggregate_counts(
+            [_current_count(agent, prefix, active=True) for agent in active_agents]
+        )
+        for name, prefix in (
+            ("running", "running"), ("queued", "pending"),
+            ("waiting", "paused"),
+        )
+    }
+    legacy_parts = [
+        _current_count(agent, prefix, active=False)
+        for agent in archived_agents
+        for prefix in ("pending", "running", "paused")
+    ]
+    legacy_count = _aggregate_counts(legacy_parts)
+    if not agent_rows:
+        aggregate_coverage = _empty_coverage()
+    else:
+        aggregate_coverage = {
+            "mirrored_run_count": sum(
+                coverage["mirrored_run_count"] for coverage in per_agent_coverages
+            ),
+            "remote_total_runs": (
+                sum(coverage["remote_total_runs"] for coverage in per_agent_coverages)
+                if all(coverage["remote_total_runs"] is not None for coverage in per_agent_coverages)
+                else None
+            ),
+            "history_complete": all(
+                coverage["history_complete"] for coverage in per_agent_coverages
+            ),
+            "range_complete": all(
+                coverage["range_complete"] for coverage in per_agent_coverages
+            ),
+            "coverage_start_at": _aggregate_boundary(
+                [coverage["coverage_start_at"] for coverage in per_agent_coverages], max
+            ),
+            "coverage_as_of": _aggregate_boundary(
+                [coverage["coverage_as_of"] for coverage in per_agent_coverages], min
+            ),
+        }
+    summary = _range_metrics(
+        [row for row in run_rows if _in_workbench_range(row, range_start_dt, range_end_dt)]
+    )
+    aggregate_health = _aggregate_health(per_agent_health)
+    incomplete = []
+    for status, count_name in (
+        ("PENDING", "queued"), ("RUNNING", "running"), ("PAUSED", "waiting")
+    ):
+        if active_agents and active_counts[count_name]["quality"] != "exact":
+            incomplete.append(status)
+    if unknown_rows:
+        incomplete.append("UNKNOWN")
+    current_complete = (
+        None if not active_agents else
+        all(
+            agent["current_state_complete"]
+            for agent in agent_dtos
+            if agent["lifecycle_status"] == "active"
+        )
+        and not unknown_rows
+    )
+    all_warnings.extend(_configuration_snapshot_warnings(conn))
+    all_warnings.extend(_association_snapshot_warnings(conn))
+    warning_map = {
+        (warning["code"], warning["local_agent_id"], warning["coreai_run_id"]): warning
+        for warning in all_warnings
+    }
+    all_warnings = sorted(
+        warning_map.values(),
+        key=lambda item: (
+            item["code"], item["local_agent_id"] or "", item["coreai_run_id"] or ""
+        ),
+    )
+    signals.sort(
+        key=lambda item: (item["effective_started_at"], item["coreai_run_id"]),
+        reverse=True,
+    )
+    fresh_signal = any(
+        signal["fresh"] and signal["presentation_group"] in {"queued", "active"}
+        for signal in signals
+    )
+    due_retries = [
+        _parse_time(agent["next_discovery_at"])
+        for agent in active_agents
+        if agent["last_discovery_error"] and _parse_time(agent["next_discovery_at"])
+    ]
+    base_refresh = 5000 if fresh_signal or any_archiving else 30000
+    if due_retries and not fresh_signal:
+        retry_ms = max(1000, min(60000, math.floor(
+            (min(due_retries) - now).total_seconds() * 1000
+        )))
+        base_refresh = min(base_refresh, retry_ms)
+    return {
+        "snapshot_at": _utc_iso(now),
+        "last_complete_discovery_at": _oldest_or_none(
+            [agent["last_discovery_success_at"] for agent in active_agents]
+        ),
+        "sync_health": aggregate_health,
+        "stale": aggregate_health in {"partial", "stale", "unavailable"},
+        "current_state_complete": current_complete,
+        "current_state_checked_at": _oldest_or_none(
+            [agent["current_state_checked_at"] for agent in active_agents]
+        ),
+        "current_state_incomplete_statuses": incomplete,
+        "fresh_until": (
+            _utc_iso(min(per_agent_fresh_until))
+            if len(per_agent_fresh_until) == len(active_agents) and active_agents else None
+        ),
+        "has_active_runs": _count_presence(active_counts["running"]),
+        "has_queued_runs": _count_presence(active_counts["queued"]),
+        "has_waiting_runs": _count_presence(active_counts["waiting"]),
+        "current_counts": {**active_counts, "legacy_nonterminal": legacy_count},
+        "refresh_after_ms": base_refresh,
+        "range": range_key,
+        "timezone": timezone,
+        "range_start": range_start,
+        "range_end": range_end,
+        "metrics_complete_for_range": (
+            aggregate_coverage["range_complete"]
+            and all(not _latest_discovery_failed(agent) for agent in agent_rows)
+            and not any(
+                row["raw_status"] is None or _is_unknown_status(row["raw_status"])
+                for row in run_rows
+                if _in_workbench_range(row, range_start_dt, range_end_dt)
+            )
+        ),
+        "coverage": aggregate_coverage,
+        "summary": summary,
+        "signals": signals,
+        "agents": agent_dtos,
+        "sync_warnings": all_warnings,
+    }
+
+
+def _range_bounds(range_key, now, timezone_name):
+    zone = ZoneInfo(timezone_name)
+    local_now = now.astimezone(zone)
+    end_date = local_now.date() + timedelta(days=1)
+    end = datetime.combine(end_date, datetime.min.time(), zone).astimezone(timezone.utc)
+    days = {"today": 1, "7d": 7, "30d": 30}.get(range_key)
+    start = None
+    if days is not None:
+        start = datetime.combine(
+            end_date - timedelta(days=days), datetime.min.time(), zone
+        ).astimezone(timezone.utc)
+    return start, end
+
+
+def _parse_time(value):
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _effective_start(row):
+    return _parse_time(row["started_at"]) or _parse_time(row["first_seen_at"])
+
+
+def _in_workbench_range(row, start, end):
+    effective = _effective_start(row)
+    return effective is not None and effective < end and (start is None or effective >= start)
+
+
+def _range_metrics(rows):
+    selected = [row for row in rows if classify_workbench_status(row["raw_status"])["counts_as_run"]]
+    outcomes = [row for row in selected if row["raw_status"] in OUTCOME_STATUSES]
+    known = [
+        row for row in outcomes
+        if row["input_tokens"] is not None and row["output_tokens"] is not None
+        and row["last_synced_at"] is not None
+    ]
+    successful = sum(row["raw_status"] in SUCCESS_STATUSES for row in outcomes)
+    return {
+        "run_count": len(selected),
+        "terminal_runs": len(outcomes),
+        "successful_runs": successful,
+        "success_rate": successful / len(outcomes) if outcomes else None,
+        "known_input_tokens": sum(row["input_tokens"] for row in known),
+        "known_output_tokens": sum(row["output_tokens"] for row in known),
+        "known_total_tokens": sum(
+            row["input_tokens"] + row["output_tokens"] for row in known
+        ),
+        "token_known_runs": len(known),
+        "token_eligible_runs": len(outcomes),
+    }
+
+
+def _current_count(agent, prefix, *, active):
+    quality = agent[f"{prefix}_set_quality"]
+    observed = agent[f"{prefix}_observed_count"]
+    observed_at = agent[f"{prefix}_last_observed_at"]
+    if active and agent["sync_pending"]:
+        quality = "unknown"
+    return {
+        "value": observed if quality in {"exact", "lower_bound"} else None,
+        "quality": quality,
+        "last_observed_value": observed,
+        "last_observed_at": observed_at,
+    }
+
+
+def _aggregate_counts(parts):
+    if not parts:
+        return {
+            "value": 0, "quality": "exact", "last_observed_value": None,
+            "last_observed_at": None,
+        }
+    qualities = {part["quality"] for part in parts}
+    quality = "unknown" if "unknown" in qualities else (
+        "lower_bound" if "lower_bound" in qualities else "exact"
+    )
+    observations = [
+        part["last_observed_value"] for part in parts
+        if part["last_observed_value"] is not None
+    ]
+    times = [part["last_observed_at"] for part in parts if part["last_observed_at"]]
+    return {
+        "value": (
+            sum(part["value"] for part in parts if part["value"] is not None)
+            if quality != "unknown" else None
+        ),
+        "quality": quality,
+        "last_observed_value": sum(observations) if observations else None,
+        "last_observed_at": min(times, key=lambda value: _parse_time(value)) if times else None,
+    }
+
+
+def _count_presence(count):
+    if count["value"] is not None:
+        return count["value"] > 0
+    return None
+
+
+def _latest_failure(attempt, success, error):
+    attempt_at = _parse_time(attempt)
+    success_at = _parse_time(success)
+    return bool(error and attempt_at and (success_at is None or attempt_at >= success_at))
+
+
+def _latest_discovery_failed(agent):
+    return _latest_failure(
+        agent["last_discovery_attempt_at"], agent["last_discovery_success_at"],
+        agent["last_discovery_error"],
+    )
+
+
+def _agent_health(agent, runs, now, configured, complete):
+    discovery = _parse_time(agent["last_discovery_success_at"])
+    checked = _parse_time(agent["current_state_checked_at"])
+    if agent["status"] == "active" and not configured:
+        return "unavailable", None
+    if discovery is None or (agent["status"] == "active" and checked is None):
+        return "unavailable", None
+    deadlines = [discovery + timedelta(seconds=90)]
+    if agent["status"] == "active":
+        deadlines.append(checked + timedelta(seconds=90))
+    for row in runs:
+        if row["raw_status"] not in {"PENDING", "RUNNING"}:
+            continue
+        synced = _parse_time(row["last_synced_at"])
+        effective = _effective_start(row)
+        if synced:
+            deadlines.append(synced + timedelta(seconds=15))
+        if effective:
+            deadlines.append(effective + timedelta(seconds=agent["suspect_after_seconds"]))
+    boundary = min(deadlines)
+    failed = (
+        _latest_discovery_failed(agent)
+        or _latest_failure(
+            agent["last_fast_poll_attempt_at"], agent["last_fast_poll_success_at"],
+            agent["last_fast_poll_error"],
+        )
+        or bool(agent["current_state_error"])
+    )
+    if agent["status"] == "active" and (agent["sync_pending"] or not complete):
+        return "stale", boundary
+    if failed or now >= boundary:
+        return "stale", boundary
+    return "fresh", boundary
+
+
+def _agent_coverage(agent, runs, selected_runs, range_start, range_key):
+    mirrored = len(runs)
+    unconfirmed = any(row["last_synced_at"] is None for row in runs)
+    history_dirty = (
+        agent["unfiltered_proven_event_epoch"] is None
+        or agent["unfiltered_proven_event_epoch"] < agent["history_event_epoch"]
+    )
+    contradiction = (
+        agent["remote_total_runs"] is not None
+        and agent["remote_total_runs"] < mirrored
+    )
+    history_complete = bool(
+        not history_dirty and not unconfirmed and not contradiction
+        and agent["remote_total_runs"] is not None
+        and agent["last_discovery_returned_count"] == agent["remote_total_runs"] == mirrored
+    )
+    finite_proof = _parse_time(agent["finite_range_proven_start_at"])
+    range_complete = history_complete
+    if range_key != "all" and range_start is not None:
+        range_complete = bool(finite_proof and range_start >= finite_proof) or history_complete
+        if any(
+            row["last_synced_at"] is None or _parse_time(row["started_at"]) is None
+            for row in selected_runs
+        ):
+            range_complete = False
+    warnings = []
+    if history_dirty:
+        warnings.append(_workbench_warning(
+            "HISTORY_PROOF_DIRTY", _warning_message("HISTORY_PROOF_DIRTY"), agent["id"]
+        ))
+    if contradiction:
+        warnings.append(_workbench_warning(
+            "REMOTE_TOTAL_BELOW_MIRRORED",
+            _warning_message("REMOTE_TOTAL_BELOW_MIRRORED"), agent["id"]
+        ))
+    return {
+        "mirrored_run_count": mirrored,
+        "remote_total_runs": (
+            agent["remote_total_runs"]
+            if not history_dirty and not unconfirmed and not contradiction else None
+        ),
+        "history_complete": history_complete,
+        "range_complete": range_complete,
+        "coverage_start_at": agent["coverage_start_at"],
+        "coverage_as_of": agent["last_discovery_success_at"],
+    }, warnings
+
+
+def _empty_coverage():
+    return {
+        "mirrored_run_count": 0, "remote_total_runs": 0,
+        "history_complete": True, "range_complete": True,
+        "coverage_start_at": None, "coverage_as_of": None,
+    }
+
+
+def _aggregate_boundary(values, selector):
+    if not values or any(value is None for value in values):
+        return None
+    return selector(values, key=lambda value: _parse_time(value))
+
+
+def _oldest_or_none(values):
+    if not values or any(value is None for value in values):
+        return None
+    return min(values, key=lambda value: _parse_time(value))
+
+
+def _aggregate_health(healths):
+    if not healths:
+        return "not_configured"
+    unique = set(healths)
+    if unique == {"fresh"}:
+        return "fresh"
+    if unique == {"stale"}:
+        return "stale"
+    if unique == {"unavailable"}:
+        return "unavailable"
+    return "partial"
+
+
+WARNING_MESSAGES = {
+    "ARCHIVE_DELAY": "本地归档延迟",
+    "CURRENT_STATE_FAILED": "当前状态同步失败",
+    "DISCOVERY_FAILED": "Run 列表同步失败",
+    "FAST_POLL_FAILED": "Run 状态确认失败",
+    "HISTORY_PROOF_DIRTY": "历史覆盖证明待更新",
+    "INVALID_COMPLETED_AT": "完成时间不可用",
+    "INVALID_STARTED_AT": "开始时间不可用",
+    "LOCAL_ASSOCIATION_CONFLICT": "Core AI Run ID 对应多个本地记录",
+    "LOCAL_RUN_UNCONFIRMED": "本地 Run 尚未由列表确认",
+    "LOCAL_TRIGGER_STATUS_MISSING": "状态待确认（上游未返回状态）",
+    "METADATA_VERIFICATION_FAILED": "Agent 元数据验证失败",
+    "REMOTE_TOTAL_BELOW_MIRRORED": "上游总数小于已镜像 Run 数",
+    "TERMINAL_STATUS_CONFLICT": "终态状态冲突",
+    "TOKEN_USAGE_INVALID": "Token 用量不可用",
+    "UNKNOWN_STATUS": "发现未知 Core AI 状态",
+}
+
+
+def _warning_message(code):
+    return WARNING_MESSAGES.get(code, "Agent Workbench 数据待确认")
+
+
+def _agent_sync_warnings(agent):
+    warnings = []
+    for error_field, code in (
+        ("last_discovery_error", "DISCOVERY_FAILED"),
+        ("current_state_error", "CURRENT_STATE_FAILED"),
+        ("last_fast_poll_error", "FAST_POLL_FAILED"),
+        ("last_verification_error", "METADATA_VERIFICATION_FAILED"),
+    ):
+        if agent[error_field]:
+            warnings.append(_workbench_warning(
+                code, _warning_message(code), agent["id"]
+            ))
+    return warnings
+
+
+def _configuration_snapshot_warnings(conn):
+    return [
+        _workbench_warning(warning.code, warning.message)
+        for warning in bootstrap_configuration_warnings(conn, configured_agent_slots())
+    ]
+
+
+def _association_snapshot_warnings(conn):
+    return [
+        _workbench_warning(
+            warning["code"], warning["message"],
+            coreai_run_id=warning["fields"].get("coreai_run_id"),
+        )
+        for warning in association_preflight_warnings(conn)
+    ]
+
+
+def _run_association(conn, row):
+    if row["source_kind"] is None:
+        return None, False
+    source_id = row["source_local_id"]
+    merchant_id = row["merchant_id"]
+    merchant = conn.execute(
+        "SELECT name FROM merchants WHERE id=?", (merchant_id,)
+    ).fetchone() if merchant_id is not None else None
+    merchant_name = merchant[0] if merchant else None
+    local_href = None
+    local_label = f"{row['source_kind']} #{source_id}"
+    status = None
+    if row["source_kind"] == "run":
+        source = conn.execute("SELECT status FROM runs WHERE id=?", (source_id,)).fetchone()
+        status = source[0] if source else None
+        local_href = f"/runs/{source_id}" if source else None
+        local_label = f"Run #{source_id}"
+    elif row["source_kind"] == "task_execution":
+        source = conn.execute(
+            "SELECT e.status,t.id,t.title FROM task_executions e "
+            "JOIN tasks t ON t.id=e.task_id WHERE e.id=?", (source_id,)
+        ).fetchone()
+        if source:
+            status, task_id, local_label = source
+            local_href = f"/tasks/{task_id}"
+    else:
+        source = conn.execute(
+            "SELECT status,artifact_type FROM merchant_seo_artifacts WHERE id=?",
+            (source_id,),
+        ).fetchone()
+        if source:
+            status, artifact_type = source
+            local_href = f"/merchants/{merchant_id}/profile" if merchant_id else None
+            local_label = f"{artifact_type} #{source_id}"
+    association = _serialize_association({
+        "source_kind": row["source_kind"], "source_local_id": source_id,
+        "merchant_id": merchant_id, "merchant_name": merchant_name,
+        "local_href": local_href, "local_label": local_label,
+    })
+    return association, str(status).lower() == "running"
+
+
+def _token_state(row):
+    classification = classify_workbench_status(row["raw_status"])
+    if row["raw_status"] in KNOWN_NONTERMINAL:
+        return "pending"
+    if row["last_synced_at"] is None or classification["presentation_group"] == "unknown":
+        return "unconfirmed"
+    if row["raw_status"] == "SKIPPED":
+        return "unavailable"
+    if classification["token_eligible"]:
+        return "known" if row["input_tokens"] is not None else "unavailable"
+    return "unconfirmed"
+
+
+def _elapsed_seconds(now, effective):
+    return max(0, math.floor((now - effective).total_seconds()))
+
+
+def _duration_seconds(row, effective):
+    if row["raw_status"] not in KNOWN_TERMINAL:
+        return None
+    completed = _parse_time(row["completed_at"])
+    if completed is None:
+        return None
+    return max(0, math.floor((completed - effective).total_seconds()))
+
+
+def _archive_delayed(row, local_running, now):
+    observed = _parse_time(row["terminal_observed_at"])
+    return bool(local_running and observed and now >= observed + timedelta(minutes=5))
+
+
+def _projected_run_summary(row, association, local_running, now, suspect_seconds):
+    effective = _effective_start(row)
+    classification = classify_workbench_status(row["raw_status"])
+    suspect_at = (
+        effective + timedelta(seconds=suspect_seconds)
+        if row["raw_status"] in {"PENDING", "RUNNING"} else None
+    )
+    suspect = bool(suspect_at and now >= suspect_at)
+    warnings = set(json.loads(row["data_warning_codes_json"] or "[]"))
+    if row["last_synced_at"] is None:
+        warnings.add("LOCAL_RUN_UNCONFIRMED")
+    if row["raw_status"] is None:
+        warnings.add("LOCAL_TRIGGER_STATUS_MISSING")
+    if _is_unknown_status(row["raw_status"]):
+        warnings.add("UNKNOWN_STATUS")
+    delayed = _archive_delayed(row, local_running, now)
+    if delayed:
+        warnings.add("ARCHIVE_DELAY")
+    archiving = bool(
+        row["raw_status"] in KNOWN_TERMINAL and local_running and not delayed
+    )
+    return {
+        "coreai_run_id": row["coreai_run_id"],
+        "raw_status": row["raw_status"],
+        "presentation_group": classification["presentation_group"],
+        "trigger_type": row["trigger_type"],
+        "started_at": row["started_at"],
+        "effective_started_at": _utc_iso(effective),
+        "completed_at": row["completed_at"],
+        "terminal_observed_at": row["terminal_observed_at"],
+        "receipt_expires_at": row["receipt_expires_at"],
+        "elapsed_seconds": _elapsed_seconds(now, effective),
+        "duration_seconds": _duration_seconds(row, effective),
+        "input_tokens": row["input_tokens"],
+        "output_tokens": row["output_tokens"],
+        "total_tokens": (
+            row["input_tokens"] + row["output_tokens"]
+            if row["input_tokens"] is not None else None
+        ),
+        "token_state": _token_state(row),
+        "last_synced_at": row["last_synced_at"],
+        "suspect": suspect,
+        "suspect_reason": "状态待确认" if suspect else None,
+        "archiving": archiving,
+        "archive_delayed": delayed,
+        "warning_codes": sorted(warnings),
+        "association": association,
+        "error_summary": row["error_summary"],
+    }
+
+
+def _workbench_signal(
+    row, agent, association, local_running, now, agent_complete, health, agent_boundary
+):
+    classification = classify_workbench_status(row["raw_status"])
+    effective = _effective_start(row)
+    delayed = _archive_delayed(row, local_running, now)
+    archiving = bool(row["raw_status"] in KNOWN_TERMINAL and local_running and not delayed)
+    receipt = _parse_time(row["receipt_expires_at"])
+    has_receipt = bool(receipt and now < receipt)
+    uncertain_status = row["raw_status"] is None or _is_unknown_status(row["raw_status"])
+    known_nonterminal = row["raw_status"] in KNOWN_NONTERMINAL
+    if not (known_nonterminal or uncertain_status or archiving or has_receipt):
+        return None
+    suspect_at = (
+        effective + timedelta(seconds=agent["suspect_after_seconds"])
+        if row["raw_status"] in {"PENDING", "RUNNING"} else None
+    )
+    suspect = bool(suspect_at and now >= suspect_at)
+    poll_failed = _latest_failure(
+        row["last_poll_attempt_at"], row["last_synced_at"], row["last_poll_error"]
+    )
+    proof_failed = (
+        poll_failed or _latest_discovery_failed(agent)
+        or _latest_failure(
+            agent["last_fast_poll_attempt_at"], agent["last_fast_poll_success_at"],
+            agent["last_fast_poll_error"],
+        )
+        or bool(agent["current_state_error"])
+    )
+    fresh = False
+    fresh_until = None
+    if archiving:
+        fresh = bool(
+            row["last_synced_at"] and not poll_failed and health == "fresh"
+        )
+        fresh_until = now + timedelta(seconds=15) if fresh else None
+        signal_state = "archiving"
+    elif has_receipt:
+        signal_state = "completed"
+    elif uncertain_status or suspect or proof_failed:
+        signal_state = "uncertain"
+    else:
+        signal_state = classification["presentation_group"]
+        if agent["status"] == "active" and health == "fresh" and agent_complete:
+            if row["raw_status"] in {"PENDING", "RUNNING"}:
+                synced = _parse_time(row["last_synced_at"])
+                candidates = [candidate for candidate in (
+                    agent_boundary, synced + timedelta(seconds=15) if synced else None,
+                    suspect_at,
+                ) if candidate]
+                fresh_until = min(candidates) if candidates else None
+                fresh = bool(fresh_until and now < fresh_until)
+            elif row["raw_status"] == "PAUSED":
+                fresh_until = agent_boundary
+                fresh = bool(fresh_until and now < fresh_until)
+    reason = None
+    if row["raw_status"] is None:
+        reason = "状态待确认（上游未返回状态）"
+    elif uncertain_status or suspect or proof_failed:
+        reason = "状态待确认"
+    values = {
+        "coreai_run_id": row["coreai_run_id"], "local_agent_id": agent["id"],
+        "agent_name": agent["display_name"], "agent_role": agent["role"],
+        "lifecycle_status": agent["status"],
+        "agent_current_state_complete": agent_complete,
+        "raw_status": row["raw_status"],
+        "presentation_group": classification["presentation_group"],
+        "signal_state": signal_state, "trigger_type": row["trigger_type"],
+        "fresh": fresh, "suspect": suspect,
+        "suspect_reason": reason, "started_at": row["started_at"],
+        "effective_started_at": _utc_iso(effective), "completed_at": row["completed_at"],
+        "terminal_observed_at": row["terminal_observed_at"],
+        "receipt_expires_at": row["receipt_expires_at"],
+        "elapsed_seconds": _elapsed_seconds(now, effective),
+        "last_synced_at": row["last_synced_at"],
+        "fresh_until": _utc_iso(fresh_until) if fresh_until else None,
+        "suspect_at": _utc_iso(suspect_at) if suspect_at else None,
+        "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"],
+        "total_tokens": (
+            row["input_tokens"] + row["output_tokens"]
+            if row["input_tokens"] is not None else None
+        ),
+        "token_state": _token_state(row), "association": association,
+    }
+    return _serialize_signal(values)
+
+
+def _encode_history_cursor(effective_started_at, coreai_run_id):
+    payload = json.dumps(
+        [1, effective_started_at, coreai_run_id], separators=(",", ":")
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_history_cursor(value):
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        raw = base64.b64decode(padded, altchars=b"-_", validate=True)
+        payload = json.loads(raw)
+        if (
+            not isinstance(payload, list) or len(payload) != 3
+            or not isinstance(payload[0], int) or isinstance(payload[0], bool)
+            or payload[0] != 1
+            or not isinstance(payload[1], str) or _parse_time(payload[1]) is None
+            or not isinstance(payload[2], str) or not payload[2].strip()
+        ):
+            raise ValueError
+        return _utc_iso(_parse_time(payload[1])), payload[2]
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        raise WorkbenchError(
+            422, "INVALID_CURSOR", "历史游标无效", {"before": "游标格式无效"}
+        ) from None
+
+
+def list_projected_agent_runs(
+    conn, local_agent_id, range_key, limit, before, now, timezone
+) -> dict:
+    if range_key not in WORKBENCH_RANGES:
+        raise WorkbenchError(
+            422, "INVALID_RANGE", "不支持的时间范围",
+            {"range": "仅支持 today、7d、30d 或 all"},
+        )
+    bounded_limit = max(1, min(100, int(limit)))
+    cursor = _decode_history_cursor(before) if before is not None else None
+    range_start, range_end = _range_bounds(range_key, now, timezone)
+    conn.execute("BEGIN")
+    try:
+        agent_row = conn.execute(
+            "SELECT a.*,s.* FROM seo_ops_agents a "
+            "JOIN seo_ops_agent_sync_state s ON s.seo_ops_agent_id=a.id "
+            "WHERE a.id=?", (local_agent_id,),
+        ).fetchone()
+        if agent_row is None:
+            raise WorkbenchError(404, "AGENT_NOT_FOUND", "未找到 Agent")
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM seo_ops_agent_runs WHERE seo_ops_agent_id=?",
+            (local_agent_id,),
+        ).fetchall()]
+        rows = [row for row in rows if _in_workbench_range(row, range_start, range_end)]
+        rows.sort(
+            key=lambda row: (_effective_start(row), row["coreai_run_id"]), reverse=True
+        )
+        if cursor:
+            cursor_time = _parse_time(cursor[0])
+            rows = [
+                row for row in rows
+                if (_effective_start(row), row["coreai_run_id"])
+                < (cursor_time, cursor[1])
+            ]
+        has_more = len(rows) > bounded_limit
+        page = rows[:bounded_limit]
+        items = []
+        agent = dict(agent_row)
+        for row in page:
+            association, local_running = _run_association(conn, row)
+            items.append(_projected_run_summary(
+                row, association, local_running, now, agent["suspect_after_seconds"]
+            ))
+        next_before = None
+        if has_more and items:
+            last = items[-1]
+            next_before = _encode_history_cursor(
+                last["effective_started_at"], last["coreai_run_id"]
+            )
+        return {
+            "items": items,
+            "next_before": next_before,
+            "range": range_key,
+            "timezone": timezone,
+            "range_start": _utc_iso(range_start) if range_start else None,
+            "range_end": _utc_iso(range_end),
+        }
+    finally:
+        conn.rollback()
 
 
 @dataclass(frozen=True)
@@ -294,6 +1280,31 @@ def get_agent_workbench_coreai():
 
 def get_agent_workbench_coreai_factory():
     return get_agent_workbench_coreai
+
+
+@router.get("")
+def get_workbench_snapshot(
+    range_key: str = Query("30d", alias="range"),
+    conn=Depends(get_db),
+):
+    settings = agent_workbench_settings()
+    return build_workbench_snapshot(
+        conn, range_key, utc_now(), str(settings.timezone), settings.history_limit
+    )
+
+
+@router.get("/agents/{local_agent_id}/runs")
+def get_projected_agent_runs(
+    local_agent_id: str,
+    range_key: str = Query("30d", alias="range"),
+    limit: int = 20,
+    before: str | None = None,
+    conn=Depends(get_db),
+):
+    settings = agent_workbench_settings()
+    return list_projected_agent_runs(
+        conn, local_agent_id, range_key, limit, before, utc_now(), str(settings.timezone)
+    )
 
 
 @router.post("/agents", status_code=201)
