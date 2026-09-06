@@ -257,21 +257,56 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
 }
 
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Object.values(value as Record<string, unknown>).every(item => typeof item === 'string')
+  )
+}
+
 export class ApiError extends Error {
   readonly status: number
+  readonly code: string | null
+  readonly fields: Record<string, string>
 
-  constructor(status: number, message: string) {
+  constructor(
+    message: string,
+    status: number,
+    code: string | null = null,
+    fields: Record<string, string> = {},
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
+    this.fields = fields
   }
+}
+
+function errorFromResponse(status: number, statusText: string, body: unknown): ApiError {
+  const detail = body && typeof body === 'object' && 'detail' in body
+    ? (body as { detail?: unknown }).detail
+    : null
+  if (typeof detail === 'string') return new ApiError(detail, status)
+  if (detail && typeof detail === 'object') {
+    const value = detail as { message?: unknown; code?: unknown; fields?: unknown }
+    return new ApiError(
+      typeof value.message === 'string' ? value.message : errorDetail(body, status, statusText),
+      status,
+      typeof value.code === 'string' ? value.code : null,
+      isStringRecord(value.fields) ? value.fields : {},
+    )
+  }
+  return new ApiError(errorDetail(body, status, statusText), status)
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...init })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new ApiError(res.status, errorDetail(body, res.status, res.statusText))
+    throw errorFromResponse(res.status, res.statusText, body)
   }
   if (res.status === 204) return undefined as T
   return res.json()
@@ -282,7 +317,7 @@ async function requestOptional<T>(path: string, init?: RequestInit): Promise<T |
   if (res.status === 404) return null
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new ApiError(res.status, errorDetail(body, res.status, res.statusText))
+    throw errorFromResponse(res.status, res.statusText, body)
   }
   return res.json()
 }
@@ -774,12 +809,276 @@ export type PerformanceDashboard = {
   }>
 }
 
+export type WorkbenchRange = 'today' | '7d' | '30d' | 'all'
+export type WorkbenchLifecycleStatus = 'active' | 'disabled' | 'retired'
+export type WorkbenchPresentationGroup =
+  | 'queued'
+  | 'active'
+  | 'waiting'
+  | 'success'
+  | 'failure'
+  | 'cancelled'
+  | 'skipped'
+  | 'unknown'
+export type WorkbenchTokenState = 'known' | 'pending' | 'unavailable' | 'unconfirmed'
+
+export type CurrentCount = {
+  value: number | null
+  quality: 'exact' | 'lower_bound' | 'unknown'
+  last_observed_value: number | null
+  last_observed_at: string | null
+}
+
+export type RangeMetrics = {
+  run_count: number
+  terminal_runs: number
+  successful_runs: number
+  success_rate: number | null
+  known_input_tokens: number
+  known_output_tokens: number
+  known_total_tokens: number
+  token_known_runs: number
+  token_eligible_runs: number
+}
+
+export type CoverageSummary = {
+  mirrored_run_count: number
+  remote_total_runs: number | null
+  history_complete: boolean
+  range_complete: boolean
+  coverage_start_at: string | null
+  coverage_as_of: string | null
+}
+
+export type WorkbenchWarning = {
+  code: string
+  message: string
+  local_agent_id: string | null
+  coreai_run_id: string | null
+}
+
+export type LocalAssociation = {
+  kind: 'run' | 'task_execution' | 'merchant_seo_artifact'
+  source_local_id: number
+  merchant_id: number | null
+  merchant_name: string | null
+  local_href: string | null
+  local_label: string
+}
+
+export type WorkbenchSignal = {
+  coreai_run_id: string
+  local_agent_id: string
+  agent_name: string
+  agent_role: string
+  lifecycle_status: WorkbenchLifecycleStatus
+  agent_current_state_complete: boolean
+  raw_status: string | null
+  presentation_group: WorkbenchPresentationGroup
+  signal_state: 'queued' | 'active' | 'waiting' | 'uncertain' | 'archiving' | 'completed'
+  trigger_type: string | null
+  fresh: boolean
+  suspect: boolean
+  suspect_reason: string | null
+  started_at: string | null
+  effective_started_at: string
+  completed_at: string | null
+  terminal_observed_at: string | null
+  receipt_expires_at: string | null
+  elapsed_seconds: number
+  last_synced_at: string | null
+  fresh_until: string | null
+  suspect_at: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  token_state: WorkbenchTokenState
+  association: LocalAssociation | null
+}
+
+export type ProjectedRunSummary = {
+  coreai_run_id: string
+  raw_status: string | null
+  presentation_group: WorkbenchPresentationGroup
+  trigger_type: string | null
+  started_at: string | null
+  effective_started_at: string
+  completed_at: string | null
+  terminal_observed_at: string | null
+  receipt_expires_at: string | null
+  elapsed_seconds: number
+  duration_seconds: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  token_state: WorkbenchTokenState
+  last_synced_at: string | null
+  suspect: boolean
+  suspect_reason: string | null
+  archiving: boolean
+  archive_delayed: boolean
+  warning_codes: string[]
+  association: LocalAssociation | null
+  error_summary: string | null
+}
+
+export type AgentRegistryRecord = {
+  id: string
+  agent_key: string
+  coreai_agent_id: string
+  display_name: string
+  role: string
+  sort_order: number
+  lifecycle_status: WorkbenchLifecycleStatus
+  coreai_metadata: {
+    name: string | null
+    model: string | null
+    timeout_hint_seconds: number | null
+    last_verified_at: string | null
+    verification_error: string | null
+  }
+  suspect_after_seconds: number
+  sync_pending: boolean
+}
+
+export type WorkbenchAgent = AgentRegistryRecord & {
+  sync: {
+    health: 'fresh' | 'stale' | 'unavailable'
+    last_discovery_attempt_at: string | null
+    last_discovery_success_at: string | null
+    discovery_error: string | null
+    current_state_checked_at: string | null
+    current_state_error: string | null
+    next_discovery_at: string | null
+    last_fast_poll_attempt_at: string | null
+    last_fast_poll_success_at: string | null
+    fast_poll_error: string | null
+  }
+  current_state_complete: boolean
+  current_counts: {
+    running: CurrentCount
+    queued: CurrentCount
+    waiting: CurrentCount
+  }
+  range_metrics: RangeMetrics
+  coverage: CoverageSummary
+  last_terminal_run: ProjectedRunSummary | null
+  warnings: WorkbenchWarning[]
+}
+
+export type AgentWorkbenchSnapshot = {
+  snapshot_at: string
+  last_complete_discovery_at: string | null
+  sync_health: 'fresh' | 'partial' | 'stale' | 'unavailable' | 'not_configured'
+  stale: boolean
+  current_state_complete: boolean | null
+  current_state_checked_at: string | null
+  current_state_incomplete_statuses: Array<'PENDING' | 'RUNNING' | 'PAUSED' | 'UNKNOWN'>
+  fresh_until: string | null
+  has_active_runs: boolean | null
+  has_queued_runs: boolean | null
+  has_waiting_runs: boolean | null
+  current_counts: {
+    running: CurrentCount
+    queued: CurrentCount
+    waiting: CurrentCount
+    legacy_nonterminal: CurrentCount
+  }
+  refresh_after_ms: number
+  range: WorkbenchRange
+  timezone: string
+  range_start: string | null
+  range_end: string
+  metrics_complete_for_range: boolean
+  coverage: CoverageSummary
+  summary: RangeMetrics
+  signals: WorkbenchSignal[]
+  agents: WorkbenchAgent[]
+  sync_warnings: WorkbenchWarning[]
+}
+
+export type AgentRunHistory = {
+  items: ProjectedRunSummary[]
+  next_before: string | null
+  range: WorkbenchRange
+  timezone: string
+  range_start: string | null
+  range_end: string
+}
+
+export type RegisterAgentRequest = {
+  coreai_agent_id: string
+  agent_key: string
+  display_name: string
+  role: string
+  sort_order: number
+  suspect_after_seconds: number
+}
+
+export type UpdateAgentRequest = {
+  display_name?: string
+  role?: string
+  sort_order?: number
+  suspect_after_seconds?: number
+  lifecycle_status?: 'active' | 'disabled'
+}
+
+export type ReplaceAgentRequest = {
+  coreai_agent_id: string
+  display_name?: string
+  role?: string
+  sort_order?: number
+  suspect_after_seconds?: number
+}
+
+export type AgentMutationResponse = {
+  agent: AgentRegistryRecord
+  sync_pending: boolean
+}
+
 export const api = {
   me: () => request<Operator>('/api/auth/me'),
   login: (username: string, password: string) =>
     request<Operator>('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<void>('/api/auth/logout', { method: 'POST' }),
   getPerformanceDashboard: () => request<PerformanceDashboard>('/api/dashboard/performance'),
+  getAgentWorkbench: (range: WorkbenchRange, signal: AbortSignal) => {
+    const params = new URLSearchParams({ range })
+    return request<AgentWorkbenchSnapshot>(`/api/agent-workbench?${params.toString()}`, { signal })
+  },
+  getAgentRunHistory: (
+    localAgentId: string,
+    range: WorkbenchRange,
+    limit: number,
+    before: string | null,
+    signal: AbortSignal,
+  ) => {
+    const params = new URLSearchParams({ range, limit: String(limit) })
+    if (before !== null) params.set('before', before)
+    return request<AgentRunHistory>(
+      `/api/agent-workbench/agents/${encodeURIComponent(localAgentId)}/runs?${params.toString()}`,
+      { signal },
+    )
+  },
+  registerAgent: (body: RegisterAgentRequest) =>
+    request<AgentMutationResponse>('/api/agent-workbench/agents', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateAgent: (localAgentId: string, body: UpdateAgentRequest) =>
+    request<AgentMutationResponse>(`/api/agent-workbench/agents/${encodeURIComponent(localAgentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  retireAgent: (localAgentId: string) =>
+    request<AgentMutationResponse>(`/api/agent-workbench/agents/${encodeURIComponent(localAgentId)}/retire`, {
+      method: 'POST',
+    }),
+  replaceAgent: (localAgentId: string, body: ReplaceAgentRequest) =>
+    request<AgentMutationResponse>(`/api/agent-workbench/agents/${encodeURIComponent(localAgentId)}/replace`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   listMerchants: (status?: 'active' | 'archived') =>
     request<MerchantStats[]>(`/api/merchants${status ? `?status=${status}` : ''}`),
   createMerchant: (body: { name: string; notes?: string; primary_location?: string; website_url?: string }) =>
