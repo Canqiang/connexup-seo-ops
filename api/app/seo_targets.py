@@ -20,6 +20,10 @@ from pydantic import (
     field_validator,
 )
 
+from .agent_workbench import (
+    _log_started_run_projection_failure,
+    best_effort_record_started_run,
+)
 from .auth import require_operator
 from .audit_snapshots import parse_audit_report
 from .config import coreai_settings
@@ -30,6 +34,29 @@ from .fbr_gbp import FbrConfigurationError, FbrPayloadError, FbrUnavailableError
 from .keyword_identity import _keyword_identity
 from .local_falcon import LocalFalconClient, normalize_local_falcon_report
 from .merchants import fetch_active_merchant, fetch_merchant, now_iso
+
+
+def _record_started_artifact_after_commit(
+    coreai_agent_id: str,
+    coreai_run_id: str,
+    raw_status: str | None,
+    source_local_id: int,
+) -> None:
+    try:
+        best_effort_record_started_run(
+            coreai_agent_id,
+            coreai_run_id,
+            raw_status,
+            "merchant_seo_artifact",
+            source_local_id,
+        )
+    except Exception:
+        _log_started_run_projection_failure(
+            coreai_agent_id,
+            coreai_run_id,
+            "merchant_seo_artifact",
+            source_local_id,
+        )
 
 
 router = APIRouter(prefix="/api", tags=["seo-targets"])
@@ -1813,6 +1840,12 @@ def _start_keyword_skill_cycle(
         conn.rollback()
         raise HTTPException(status_code=409, detail="keyword refresh claim is no longer active")
     conn.commit()
+    _record_started_artifact_after_commit(
+        workflow.agent_id,
+        triggered["run_id"],
+        triggered.get("status"),
+        artifact_id,
+    )
     return cycle_id
 
 
@@ -2134,8 +2167,8 @@ def _insert_running_artifact(
     agent_id: str,
     run_id: str,
     request: dict,
-) -> None:
-    conn.execute(
+) -> int:
+    cursor = conn.execute(
         "INSERT INTO merchant_seo_artifacts"
         " (merchant_id, cycle_id, artifact_type, schema_version, status, source_agent_id,"
         " coreai_run_id, request_json, created_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)",
@@ -2150,6 +2183,7 @@ def _insert_running_artifact(
             now_iso(),
         ),
     )
+    return int(cursor.lastrowid)
 
 
 def _insert_failed_artifact(
@@ -2451,6 +2485,7 @@ def poll_seo_targets_once(client: CoreAiClient, agents: SeoAgentIds) -> None:
                 )
                 conn.commit()
                 continue
+            accepted_projection = None
             try:
                 triggered = client.trigger(next_agent, json.dumps(next_request, ensure_ascii=False))
             except CoreAiError as exc:
@@ -2465,7 +2500,7 @@ def poll_seo_targets_once(client: CoreAiClient, agents: SeoAgentIds) -> None:
                     error=str(exc),
                 )
             else:
-                _insert_running_artifact(
+                inserted_artifact_id = _insert_running_artifact(
                     conn,
                     merchant_id=row["merchant_id"],
                     cycle_id=row["cycle_id"],
@@ -2475,7 +2510,20 @@ def poll_seo_targets_once(client: CoreAiClient, agents: SeoAgentIds) -> None:
                     run_id=triggered["run_id"],
                     request=next_request,
                 )
+                accepted_projection = (
+                    next_agent,
+                    triggered["run_id"],
+                    triggered.get("status"),
+                    inserted_artifact_id,
+                )
             conn.commit()
+            if accepted_projection is not None:
+                _record_started_artifact_after_commit(
+                    accepted_projection[0],
+                    accepted_projection[1],
+                    accepted_projection[2],
+                    accepted_projection[3],
+                )
     finally:
         conn.close()
 

@@ -10,6 +10,10 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from .agent_workbench import (
+    _log_started_run_projection_failure,
+    best_effort_record_started_run,
+)
 from .auth import require_operator
 from .config import coreai_settings
 from .coreai import CoreAiClient, CoreAiError, validate_run_detail
@@ -22,6 +26,26 @@ from .merchants import (
 )
 
 router = APIRouter(prefix="/api", tags=["runs"])
+
+
+def _record_started_run_after_commit(
+    coreai_agent_id: str,
+    coreai_run_id: str,
+    raw_status: str | None,
+    source_local_id: int,
+) -> None:
+    try:
+        best_effort_record_started_run(
+            coreai_agent_id,
+            coreai_run_id,
+            raw_status,
+            "run",
+            source_local_id,
+        )
+    except Exception:
+        _log_started_run_projection_failure(
+            coreai_agent_id, coreai_run_id, "run", source_local_id
+        )
 
 RUN_LIST_COLUMNS = (
     "id, merchant_id, coreai_run_id, dispatch_state, status, trigger_kind, error,"
@@ -734,7 +758,12 @@ def start_run(
     except Exception:
         conn.rollback()
         raise
-    return conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    result = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if result["coreai_run_id"] == provider_run_id:
+        _record_started_run_after_commit(
+            agent_id, provider_run_id, res.get("status"), run_id
+        )
+    return result
 
 
 def _recover_stale_run_dispatches(conn: sqlite3.Connection) -> int:

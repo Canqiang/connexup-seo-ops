@@ -1,9 +1,11 @@
 import asyncio
 import base64
 import json
+import logging
 import math
 import os
 import re
+import sqlite3
 import threading
 import unicodedata
 import uuid
@@ -26,6 +28,7 @@ from .db import connect, get_db
 
 
 router = APIRouter(prefix="/api/agent-workbench", tags=["agent-workbench"])
+logger = logging.getLogger(__name__)
 
 TOKEN_USAGE_INPUT_FIELD = "input"
 TOKEN_USAGE_OUTPUT_FIELD = "output"
@@ -2411,6 +2414,306 @@ def _find_local_binding_tx(conn, coreai_run_id: str) -> LocalRunBinding | None:
     return LocalRunBinding(matches[0][0], matches[0][1])
 
 
+def _log_started_run_projection_failure(
+    coreai_agent_id,
+    coreai_run_id,
+    source_kind,
+    source_local_id,
+) -> None:
+    sensitive = _sync_sensitive_values()
+    logger.warning(
+        "WORKBENCH_RUN_PROJECTION_FAILED: "
+        "Agent Workbench 本地 Run 投影失败 "
+        "coreai_agent_id=%s coreai_run_id=%s source_kind=%s "
+        "source_local_id=%s",
+        sanitize_operator_text(coreai_agent_id, sensitive),
+        sanitize_operator_text(coreai_run_id, sensitive),
+        sanitize_operator_text(source_kind, sensitive),
+        source_local_id if isinstance(source_local_id, int) else "invalid",
+    )
+
+
+def best_effort_record_started_run(
+    coreai_agent_id: str,
+    coreai_run_id: str,
+    raw_status: str | None,
+    source_kind: LocalSourceKind,
+    source_local_id: int,
+    observed_at: datetime | None = None,
+) -> None:
+    observed_at = observed_at or utc_now()
+    normalized_status = (
+        raw_status
+        if isinstance(raw_status, str) and raw_status.strip()
+        else None
+    )
+    stamp = _utc_iso(observed_at)
+    marker = _utc_iso(observed_at + timedelta(microseconds=1))
+    conn = None
+    try:
+        conn = connect()
+        conn.execute("BEGIN IMMEDIATE")
+        agent = conn.execute(
+            "SELECT a.id,a.status,s.next_discovery_at FROM seo_ops_agents a "
+            "JOIN seo_ops_agent_sync_state s ON s.seo_ops_agent_id=a.id "
+            "WHERE a.coreai_agent_id=?",
+            (coreai_agent_id,),
+        ).fetchone()
+        if agent is None:
+            conn.rollback()
+            _log_started_run_projection_failure(
+                coreai_agent_id,
+                coreai_run_id,
+                source_kind,
+                source_local_id,
+            )
+            return None
+        source_queries = {
+            "run": "SELECT merchant_id,coreai_run_id FROM runs WHERE id=?",
+            "task_execution": (
+                "SELECT t.merchant_id,e.coreai_run_id FROM task_executions e "
+                "JOIN tasks t ON t.id=e.task_id WHERE e.id=?"
+            ),
+            "merchant_seo_artifact": (
+                "SELECT merchant_id,coreai_run_id FROM merchant_seo_artifacts "
+                "WHERE id=?"
+            ),
+        }
+        query = source_queries.get(source_kind)
+        if query is None:
+            conn.rollback()
+            _log_started_run_projection_failure(
+                coreai_agent_id,
+                coreai_run_id,
+                source_kind,
+                source_local_id,
+            )
+            return None
+        source = conn.execute(query, (source_local_id,)).fetchone()
+        if source is None or source["coreai_run_id"] != coreai_run_id:
+            conn.rollback()
+            _log_started_run_projection_failure(
+                coreai_agent_id,
+                coreai_run_id,
+                source_kind,
+                source_local_id,
+            )
+            return None
+        existing = conn.execute(
+            "SELECT seo_ops_agent_id,source_kind,source_local_id,raw_status "
+            "FROM seo_ops_agent_runs WHERE coreai_run_id=?",
+            (coreai_run_id,),
+        ).fetchone()
+        barrier_status = normalized_status
+        if existing is not None:
+            same_owner = existing["seo_ops_agent_id"] == agent["id"]
+            already_associated = (
+                existing["source_kind"] == source_kind
+                and existing["source_local_id"] == source_local_id
+            )
+            unassociated = (
+                existing["source_kind"] is None
+                and existing["source_local_id"] is None
+            )
+            if already_associated and same_owner:
+                conn.rollback()
+                return None
+            if not same_owner or not unassociated:
+                conn.rollback()
+                _log_started_run_projection_failure(
+                    coreai_agent_id,
+                    coreai_run_id,
+                    source_kind,
+                    source_local_id,
+                )
+                return None
+            updated = conn.execute(
+                "UPDATE seo_ops_agent_runs SET source_kind=?,source_local_id=?,"
+                "merchant_id=? WHERE coreai_run_id=? AND seo_ops_agent_id=? "
+                "AND source_kind IS NULL AND source_local_id IS NULL",
+                (
+                    source_kind,
+                    source_local_id,
+                    source["merchant_id"],
+                    coreai_run_id,
+                    agent["id"],
+                ),
+            )
+            if updated.rowcount != 1:
+                raise sqlite3.IntegrityError("projection association changed")
+            if barrier_status is None:
+                barrier_status = existing["raw_status"]
+        else:
+            conn.execute(
+                "INSERT INTO seo_ops_agent_runs (coreai_run_id,seo_ops_agent_id,"
+                "raw_status,source_kind,source_local_id,merchant_id,first_seen_at,"
+                "terminal_observed_at,data_warning_codes_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    coreai_run_id,
+                    agent["id"],
+                    normalized_status,
+                    source_kind,
+                    source_local_id,
+                    source["merchant_id"],
+                    stamp,
+                    (
+                        stamp
+                        if normalized_status in KNOWN_TERMINAL
+                        else None
+                    ),
+                    (
+                        '["LOCAL_TRIGGER_STATUS_MISSING"]'
+                        if normalized_status is None
+                        else "[]"
+                    ),
+                ),
+            )
+        if barrier_status is None:
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET "
+                "local_event_epoch=local_event_epoch+1,"
+                "history_event_epoch=history_event_epoch+1,"
+                "finite_range_proven_start_at=CASE "
+                "WHEN finite_range_proven_start_at IS NULL THEN NULL "
+                "WHEN finite_range_proven_start_at<? THEN ? "
+                "ELSE finite_range_proven_start_at END,"
+                "pending_set_quality='unknown',running_set_quality='unknown',"
+                "paused_set_quality='unknown',"
+                "unresolved_unknown_status_count="
+                "unresolved_unknown_status_count+1,current_state_complete=0,"
+                "current_state_error='LOCAL_RUN_UNCONFIRMED: 本地 Run 等待列表确认',"
+                "next_discovery_at=?,next_fast_poll_at=NULL,"
+                "projection_revision=projection_revision+1 "
+                "WHERE seo_ops_agent_id=?",
+                (marker, marker, stamp, agent["id"]),
+            )
+        elif barrier_status == "PENDING":
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET "
+                "local_event_epoch=local_event_epoch+1,"
+                "history_event_epoch=history_event_epoch+1,"
+                "finite_range_proven_start_at=CASE "
+                "WHEN finite_range_proven_start_at IS NULL THEN NULL "
+                "WHEN finite_range_proven_start_at<? THEN ? "
+                "ELSE finite_range_proven_start_at END,"
+                "pending_set_quality='unknown',current_state_complete=0,"
+                "current_state_error='LOCAL_RUN_UNCONFIRMED: 本地 Run 等待列表确认',"
+                "next_fast_poll_at=?,projection_revision=projection_revision+1 "
+                "WHERE seo_ops_agent_id=?",
+                (marker, marker, stamp, agent["id"]),
+            )
+        elif barrier_status == "PAUSED":
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET "
+                "local_event_epoch=local_event_epoch+1,"
+                "history_event_epoch=history_event_epoch+1,"
+                "finite_range_proven_start_at=CASE "
+                "WHEN finite_range_proven_start_at IS NULL THEN NULL "
+                "WHEN finite_range_proven_start_at<? THEN ? "
+                "ELSE finite_range_proven_start_at END,"
+                "paused_set_quality='unknown',current_state_complete=0,"
+                "current_state_error='LOCAL_RUN_UNCONFIRMED: 本地 Run 等待列表确认',"
+                "next_discovery_at=?,next_fast_poll_at=NULL,"
+                "projection_revision=projection_revision+1 "
+                "WHERE seo_ops_agent_id=?",
+                (marker, marker, stamp, agent["id"]),
+            )
+        elif barrier_status in KNOWN_TERMINAL:
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET "
+                "local_event_epoch=local_event_epoch+1,"
+                "history_event_epoch=history_event_epoch+1,"
+                "finite_range_proven_start_at=CASE "
+                "WHEN finite_range_proven_start_at IS NULL THEN NULL "
+                "WHEN finite_range_proven_start_at<? THEN ? "
+                "ELSE finite_range_proven_start_at END,"
+                "pending_set_quality='unknown',running_set_quality='unknown',"
+                "paused_set_quality='unknown',current_state_complete=0,"
+                "current_state_error='LOCAL_RUN_UNCONFIRMED: 本地 Run 等待列表确认',"
+                "next_discovery_at=?,next_fast_poll_at=NULL,"
+                "projection_revision=projection_revision+1 "
+                "WHERE seo_ops_agent_id=?",
+                (marker, marker, stamp, agent["id"]),
+            )
+        elif barrier_status == "RUNNING":
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET "
+                "local_event_epoch=local_event_epoch+1,"
+                "history_event_epoch=history_event_epoch+1,"
+                "finite_range_proven_start_at=CASE "
+                "WHEN finite_range_proven_start_at IS NULL THEN NULL "
+                "WHEN finite_range_proven_start_at<? THEN ? "
+                "ELSE finite_range_proven_start_at END,"
+                "running_set_quality='unknown',current_state_complete=0,"
+                "current_state_error='LOCAL_RUN_UNCONFIRMED: 本地 Run 等待列表确认',"
+                "next_fast_poll_at=?,projection_revision=projection_revision+1 "
+                "WHERE seo_ops_agent_id=?",
+                (marker, marker, stamp, agent["id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET "
+                "local_event_epoch=local_event_epoch+1,"
+                "history_event_epoch=history_event_epoch+1,"
+                "finite_range_proven_start_at=CASE "
+                "WHEN finite_range_proven_start_at IS NULL THEN NULL "
+                "WHEN finite_range_proven_start_at<? THEN ? "
+                "ELSE finite_range_proven_start_at END,"
+                "pending_set_quality='unknown',running_set_quality='unknown',"
+                "paused_set_quality='unknown',"
+                "unresolved_unknown_status_count="
+                "unresolved_unknown_status_count+1,current_state_complete=0,"
+                "current_state_error='LOCAL_RUN_UNCONFIRMED: 本地 Run 等待列表确认',"
+                "next_discovery_at=?,next_fast_poll_at=NULL,"
+                "projection_revision=projection_revision+1 "
+                "WHERE seo_ops_agent_id=?",
+                (marker, marker, stamp, agent["id"]),
+            )
+        inactive_schedule = agent["status"] in {"disabled", "retired"}
+        if inactive_schedule:
+            lifecycle_seconds = (
+                DISABLED_DISCOVERY_SECONDS
+                if agent["status"] == "disabled"
+                else RETIRED_DISCOVERY_SECONDS
+            )
+            candidate_due = observed_at + timedelta(seconds=lifecycle_seconds)
+            existing_due = _parse_time(agent["next_discovery_at"])
+            archival_due = _utc_iso(
+                min(existing_due, candidate_due) if existing_due else candidate_due
+            )
+            conn.execute(
+                "UPDATE seo_ops_agent_sync_state SET next_discovery_at=?,"
+                "next_fast_poll_at=NULL "
+                "WHERE seo_ops_agent_id=?",
+                (archival_due, agent["id"]),
+            )
+        conn.commit()
+    except sqlite3.Error:
+        if conn is not None:
+            conn.rollback()
+        _log_started_run_projection_failure(
+            coreai_agent_id,
+            coreai_run_id,
+            source_kind,
+            source_local_id,
+        )
+        return None
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        _log_started_run_projection_failure(
+            coreai_agent_id,
+            coreai_run_id,
+            source_kind,
+            source_local_id,
+        )
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def _merge_warning_codes(existing, incoming=(), *, discard=()):
     values = set(json.loads(existing or "[]"))
     values.difference_update(discard)
@@ -2509,13 +2812,37 @@ def _apply_sync_run_tx(
         )
         warning_json = _merge_warning_codes(
             existing["data_warning_codes_json"],
-            ("TERMINAL_STATUS_CONFLICT",) if conflict else (),
+            (*warnings, *(("TERMINAL_STATUS_CONFLICT",) if conflict else ())),
+            discard=("LOCAL_TRIGGER_STATUS_MISSING", "STATUS_NOT_IN_BOUNDED_LIST"),
         )
-        conn.execute(
-            "UPDATE seo_ops_agent_runs SET last_poll_attempt_at=?,last_synced_at=?,"
-            "last_poll_error=NULL,data_warning_codes_json=? WHERE coreai_run_id=?",
-            (stamp, stamp, warning_json, run.coreai_run_id),
-        )
+        if conflict:
+            conn.execute(
+                "UPDATE seo_ops_agent_runs SET last_poll_attempt_at=?,"
+                "last_synced_at=?,last_poll_error=NULL,data_warning_codes_json=? "
+                "WHERE coreai_run_id=?",
+                (stamp, stamp, warning_json, run.coreai_run_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE seo_ops_agent_runs SET trigger_type=?,started_at=?,"
+                "completed_at=?,input_tokens=?,output_tokens=?,trace_id=?,"
+                "error_summary=?,last_poll_attempt_at=?,last_synced_at=?,"
+                "last_poll_error=NULL,data_warning_codes_json=? "
+                "WHERE coreai_run_id=?",
+                (
+                    run.trigger_type,
+                    run.started_at,
+                    run.completed_at,
+                    run.input_tokens,
+                    run.output_tokens,
+                    run.trace_id,
+                    run.error_summary,
+                    stamp,
+                    stamp,
+                    warning_json,
+                    run.coreai_run_id,
+                ),
+            )
         return
     if incoming_status in KNOWN_TERMINAL and terminal_observed_at is None:
         expiry = receipt_expiry(
