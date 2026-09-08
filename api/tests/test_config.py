@@ -121,6 +121,7 @@ def test_configured_agent_slots_explicit_mapping_never_falls_back_to_environment
     from app.config import configured_agent_slots
 
     for env_name in (
+        "COREAI_ORCHESTRATOR_AGENT_ID",
         "COREAI_AGENT_ID",
         "COREAI_EXECUTION_AGENT_ID",
         "COREAI_KEYWORD_AGENT_ID",
@@ -184,3 +185,62 @@ def test_coreai_settings_reads_env_and_strips_trailing_slash(monkeypatch):
     assert s.keyword_skill_agent_id == "keyword-skill-agent"
     assert s.keyword_seed_skill_id == "seed-skill"
     assert s.keyword_ranking_skill_id == "ranking-skill"
+
+
+@pytest.mark.parametrize(
+    "explicit,legacy,expected",
+    [
+        (" orchestrator ", "legacy", "orchestrator"),
+        ("orchestrator", "", "orchestrator"),
+        ("  ", " legacy ", "legacy"),
+        ("", "", None),
+    ],
+)
+def test_planning_identity_resolution(monkeypatch, explicit, legacy, expected):
+    from app.config import coreai_settings
+
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-only")
+    monkeypatch.setenv("COREAI_ORCHESTRATOR_AGENT_ID", explicit)
+    monkeypatch.setenv("COREAI_AGENT_ID", legacy)
+    settings = coreai_settings()
+    assert (settings.agent_id if settings else None) == expected
+
+
+@pytest.mark.parametrize("missing", ["COREAI_BASE_URL", "COREAI_API_KEY"])
+def test_orchestrator_still_requires_connection(monkeypatch, missing):
+    from app.config import coreai_settings
+
+    monkeypatch.setenv("COREAI_BASE_URL", "https://core.example")
+    monkeypatch.setenv("COREAI_API_KEY", "test-only")
+    monkeypatch.setenv("COREAI_ORCHESTRATOR_AGENT_ID", "orchestrator")
+    monkeypatch.delenv(missing, raising=False)
+    assert coreai_settings() is None
+
+
+@pytest.mark.parametrize(
+    "legacy,expected",
+    [
+        ("", [("orchestrator", "planner")]),
+        (" planner ", [("orchestrator", "planner")]),
+        ("old", [("orchestrator", "planner"), ("diagnosis-plan", "old")]),
+    ],
+)
+def test_orchestrator_bootstrap_identity(legacy, expected):
+    from app.config import configured_agent_slots
+
+    slots = configured_agent_slots(
+        {"COREAI_ORCHESTRATOR_AGENT_ID": " planner ", "COREAI_AGENT_ID": legacy}
+    )
+    assert [(s.agent_key, s.coreai_agent_id) for s in slots] == expected
+
+
+def test_blank_orchestrator_preserves_legacy_registration():
+    from app.config import configured_agent_slots
+
+    slots = configured_agent_slots(
+        {"COREAI_ORCHESTRATOR_AGENT_ID": " ", "COREAI_AGENT_ID": "legacy"}
+    )
+    assert [(s.agent_key, s.coreai_agent_id) for s in slots] == [
+        ("diagnosis-plan", "legacy")
+    ]

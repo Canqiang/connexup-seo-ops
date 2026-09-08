@@ -60,6 +60,13 @@ class BootstrapAgentSlot:
 
 BOOTSTRAP_AGENT_SLOTS = (
     (
+        "COREAI_ORCHESTRATOR_AGENT_ID",
+        "orchestrator",
+        "运营编排 Agent",
+        "根据商户证据提出可审核运营计划",
+        5,
+    ),
+    (
         "COREAI_AGENT_ID",
         "diagnosis-plan",
         "诊断与计划 Agent",
@@ -109,8 +116,11 @@ def configured_agent_slots(
 ) -> tuple[BootstrapAgentSlot, ...]:
     source = os.environ if values is None else values
     slots = []
+    orchestrator_id = source.get("COREAI_ORCHESTRATOR_AGENT_ID", "").strip()
     for env_name, agent_key, display_name, role, sort_order in BOOTSTRAP_AGENT_SLOTS:
         coreai_agent_id = source.get(env_name, "").strip()
+        if agent_key == "diagnosis-plan" and orchestrator_id == coreai_agent_id:
+            continue
         if coreai_agent_id:
             slots.append(
                 BootstrapAgentSlot(
@@ -143,7 +153,10 @@ class CoreAiSettings:
 def coreai_settings() -> CoreAiSettings | None:
     base_url = os.environ.get("COREAI_BASE_URL", "").strip()
     api_key = os.environ.get("COREAI_API_KEY", "").strip()
-    agent_id = os.environ.get("COREAI_AGENT_ID", "").strip()
+    agent_id = (
+        os.environ.get("COREAI_ORCHESTRATOR_AGENT_ID", "").strip()
+        or os.environ.get("COREAI_AGENT_ID", "").strip()
+    )
     preparation_llm_call_id = (
         os.environ.get("COREAI_PREPARATION_LLM_CALL_ID", "").strip() or None
     )

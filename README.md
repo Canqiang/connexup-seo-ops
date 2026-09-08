@@ -15,7 +15,9 @@
 - 逻辑 Plan 使用 `OPEN`、`REJECTED`、`CLOSED`；其不可变 revision 使用 `DRAFT`、`APPROVED`、`REJECTED`、`SUPERSEDED`。批准新 revision 不会静默改写已开始或已完成的 Task 历史。
 - Task 间依赖只表达“所有上游必须为 `DONE`”。队列展示服务端计算的 `READY` / `BLOCKED` 和一个首要阻塞原因，详情保留完整上下游链路；客户端不能直接写 readiness 或完成状态。
 - Phase 1 正式启用的模板是 `PREPARE_ONLY`：`PENDING -> PREPARING -> AWAITING_APPROVAL -> DONE`。`EXECUTING`（发布中）和 `VERIFYING`（验证中）目前只作兼容展示，外部发布与真实回读验证属于后续阶段。
-- 诊断/Plan Agent 通过 `COREAI_AGENT_ID` 配置；内容准备通过 `COREAI_PREPARATION_LLM_CALL_ID` 调用 Core AI 已发布的 LLM Call 定义。SEO Ops 不修改 Core AI 仓库中的 Agent 或 LLM Call 定义。
+- 诊断/Plan 入口优先使用 `COREAI_ORCHESTRATOR_AGENT_ID` 指定的 Core AI Agent；未配置或为空白时兼容 `COREAI_AGENT_ID`。手动和定时入口使用同一解析规则。内容准备仍通过 `COREAI_PREPARATION_LLM_CALL_ID` 调用 Core AI 已发布的 LLM Call 定义。SEO Ops 不修改 Core AI 仓库中的 Agent 或 LLM Call 定义。
+- 当前 Orchestrator 接入仅用于提出 `PREPARE_ONLY` 计划草稿，不代表已支持自主分派、修改任务或公开发布。原有无工具/Skill/子 Agent 等安全预检保持不变，不符合要求的 Agent 会被拒绝；计划仍须人工审批。只配置 ID 不等于远端 Agent 已通过真实验证。
+- Agent 工作台会播种显式配置的 Orchestrator；新旧配置指向同一外部 ID 时不会重复播种。已有注册名称、角色和 Run 历史不会被自动改写，因此已注册的同 ID Agent 可能仍显示原名称；两项配置指向不同 ID 时可分别保留注册。
 - Preparation LLM Call 是无工具内容准备：不加载 Agent Tool、Skill、Sub-agent、Memory、Sandbox 或 Dataset，也不接收附件。它只能生成草稿、审计和操作建议，不能发布或修改任何外部系统。
 - 每次准备都会创建独立 Attempt。只有符合本地严格结构且声明未外写的 `SUCCEEDED` 结果可供审批；审批和退回精确绑定 Task version、execution id 与 result checksum。
 - 网络超时或服务端错误会记为 `UNKNOWN`，不会被当成成功。操作人确认后才能创建新的准备 Attempt，并会看到可能重复产生模型成本的提示；这个阶段仍没有外部业务写入。

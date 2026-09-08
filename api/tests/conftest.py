@@ -6,6 +6,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
+@pytest.fixture(autouse=True)
+def isolate_orchestrator_configuration(monkeypatch):
+    monkeypatch.delenv("COREAI_ORCHESTRATOR_AGENT_ID", raising=False)
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     for var in (
