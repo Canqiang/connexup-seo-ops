@@ -11,6 +11,7 @@ import {
   isAbortError,
 } from '../api'
 import { formatTime } from '../format'
+import TaskAssignment from '../components/TaskAssignment'
 import { CATEGORY_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS, blockerSummary } from '../labels'
 
 const EXECUTION_STATUS_LABELS: Record<TaskExecution['status'], string> = {
@@ -46,6 +47,7 @@ const EXECUTION_STATUS_CLASSES: Record<TaskExecution['status'], string> = {
 }
 
 const EVENT_LABELS: Record<string, string> = {
+  TASK_ASSIGNED: '负责人已变更',
   TASK_MATERIALIZED: '由批准的 Plan 物化',
   TASK_METADATA_UPDATED: '内部元数据已更新',
   TASK_CANCELLED: '任务已取消并保留历史',
@@ -940,6 +942,15 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
         </div>
 
         <aside className="task-detail-rail">
+          <TaskAssignment
+            key={task.id}
+            taskId={task.id}
+            version={task.version}
+            assignment={task.assignment ?? null}
+            disabled={!merchantActive || busy || !['PENDING', 'NEEDS_ATTENTION'].includes(task.status)
+              || task.executions.some(execution => ['PENDING', 'DISPATCHING', 'RUNNING', 'UNKNOWN'].includes(execution.status))}
+            onSaved={poll}
+          />
           <section className="panel task-definition" aria-labelledby="task-definition-title">
             <div className="panel-head compact"><div><h2 id="task-definition-title">任务定义</h2><p>执行定义不可在正式 Task 上原地修改。</p></div></div>
             <dl className="brief-list compact-brief">
@@ -977,7 +988,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
           <section className="panel task-metadata" aria-labelledby="task-metadata-title">
             <div className="panel-head compact"><div><h2 id="task-metadata-title">内部元数据</h2><p>不改变执行定义或审批对象。</p></div></div>
             <div className="task-metadata-fields">
-              <label>负责人<input aria-label="负责人" maxLength={100} value={assignee} onChange={event => { assigneeDraftRef.current = event.target.value; setAssignee(event.target.value) }} disabled={!merchantActive || busy} /></label>
+              <label>历史负责人文字（仅备注，不用于分派）<input aria-label="负责人" maxLength={100} value={assignee} onChange={event => { assigneeDraftRef.current = event.target.value; setAssignee(event.target.value) }} disabled={!merchantActive || busy} /></label>
               <div className="task-label-field">
                 <span>内部标签</span>
                 <div className="task-label-editor" role="group" aria-label="内部标签编辑器">

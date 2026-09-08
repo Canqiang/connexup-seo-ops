@@ -27,6 +27,9 @@ from .db import get_db
 from .execution_result import normalize_execution_output
 from .merchants import fetch_active_merchant, fetch_merchant, now_iso
 from .task_events import append_task_event
+from .task_assignment import (
+    AssignmentBody, assignment_view, assignment_options, assignment_lock_reason, set_assignment,
+)
 from .task_plan_contract import (
     TaskPlanValidationError,
     validate_aware_rfc3339_string,
@@ -59,6 +62,7 @@ TaskSourceKind = Literal["AGENT", "OPERATOR", "MIGRATION"]
 TaskReadiness = Literal["READY", "BLOCKED"]
 PreparationTrust = Literal["REVIEWABLE", "UNKNOWN_NO_TOOL", "RETRYABLE", "UNTRUSTED"]
 TaskBlockerCode = Literal[
+    "ASSIGNEE_EXECUTION_UNAVAILABLE",
     "MERCHANT_ARCHIVED",
     "REVISION_INACTIVE",
     "SCHEDULED_FOR_FUTURE",
@@ -312,13 +316,18 @@ def fetch_task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row:
 
 def _blocker(conn: sqlite3.Connection, task: sqlite3.Row) -> dict[str, object] | None:
     try:
-        return task_blocker(conn, task)
+        blocker = task_blocker(conn, task)
+        owner = assignment_view(conn, task["id"])
+        if blocker is None and owner is not None and owner["assignee_type"] == "AGENT":
+            return {"code": "ASSIGNEE_EXECUTION_UNAVAILABLE"}
+        return blocker
     except TaskWorkflowDataError as exc:
         raise HTTPException(status_code=409, detail="stored task workflow is invalid") from exc
 
 
 def task_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     value = dict(row)
+    value["assignment"] = assignment_view(conn, row["id"])
     blocker = _blocker(conn, row)
     value["parameters"] = _json_value(value.pop("parameters_json"), dict, "parameters")
     value["labels"] = _json_value(value.pop("labels_json"), list, "labels")
@@ -914,6 +923,30 @@ def patch_task(
     return task_dict(conn, fetch_task(conn, task_id))
 
 
+@router.get("/tasks/{task_id}/assignment")
+def get_task_assignment(task_id: int, operator: str = Depends(require_operator), conn=Depends(get_db)):
+    task = fetch_task(conn, task_id)
+    reason = assignment_lock_reason(conn, task)
+    return {"assignment": assignment_view(conn, task_id), "version": task["version"],
+            "options": assignment_options(conn, operator), "can_change": reason is None,
+            "lock_reason": reason}
+
+
+@router.put("/tasks/{task_id}/assignment")
+def put_task_assignment(task_id: int, body: AssignmentBody,
+                        operator: str = Depends(require_operator), conn=Depends(get_db)):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        task = fetch_task(conn, task_id)
+        fetch_active_merchant(conn, task["merchant_id"])
+        set_assignment(conn, task, body, operator)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return task_dict(conn, fetch_task(conn, task_id))
+
+
 @router.post("/tasks/{task_id}/cancel")
 def cancel_task(
     task_id: int,
@@ -1018,6 +1051,8 @@ def retry_preparation(
 
 
 def _blocker_message(blocker: dict[str, object]) -> str:
+    if blocker["code"] == "ASSIGNEE_EXECUTION_UNAVAILABLE":
+        return "已分配 Agent；执行绑定尚未接入，不能改用默认内容准备通道"
     if blocker["code"] == "UPSTREAM_NOT_DONE":
         return "task is blocked by an upstream task"
     if blocker["code"] == "SCHEDULED_FOR_FUTURE":

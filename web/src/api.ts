@@ -44,12 +44,14 @@ export type TaskPreparationTrust =
   | 'UNTRUSTED'
 
 export type TaskBlockerCode =
+  | 'ASSIGNEE_EXECUTION_UNAVAILABLE'
   | 'MERCHANT_ARCHIVED'
   | 'REVISION_INACTIVE'
   | 'SCHEDULED_FOR_FUTURE'
   | 'UPSTREAM_NOT_DONE'
 
 export type TaskBlocker =
+  | { code: 'ASSIGNEE_EXECUTION_UNAVAILABLE' }
   | { code: 'MERCHANT_ARCHIVED' }
   | { code: 'REVISION_INACTIVE' }
   | { code: 'SCHEDULED_FOR_FUTURE'; scheduled_start: string }
@@ -99,7 +101,30 @@ export type TaskPlanContext = {
   approved_revision: number | null
 }
 
+export type TaskAssignmentIdentity = {
+  assignee_type: 'HUMAN' | 'AGENT'
+  assignee_id: string
+  display_name: string
+  agent_status?: 'active' | 'disabled' | 'retired' | null
+}
+
+export type TaskAssignmentState = {
+  assignment: TaskAssignmentIdentity | null
+  version: number
+  options: TaskAssignmentIdentity[]
+  can_change: boolean
+  lock_reason: string | null
+}
+
+export type TaskAssignmentUpdate = {
+  expected_version: number
+  assignee_type: 'HUMAN' | 'AGENT' | null
+  assignee_id: string | null
+  reason: string
+}
+
 export type TaskSummary = {
+  assignment?: TaskAssignmentIdentity | null
   id: number
   merchant_id: number
   merchant_name: string
@@ -1141,6 +1166,10 @@ export const api = {
   createTask: (merchantId: number, body: OperatorTaskCreate, signal?: AbortSignal) =>
     request<TaskSummary>(`/api/merchants/${merchantId}/tasks`, { method: 'POST', body: JSON.stringify(body), signal }),
   getTask: (id: number, signal?: AbortSignal) => request<TaskDetail>(`/api/tasks/${id}`, { signal }),
+  getTaskAssignment: (id: number, signal?: AbortSignal) =>
+    request<TaskAssignmentState>(`/api/tasks/${id}/assignment`, { signal }),
+  setTaskAssignment: (id: number, body: TaskAssignmentUpdate, signal?: AbortSignal) =>
+    request<TaskSummary>(`/api/tasks/${id}/assignment`, { method: 'PUT', body: JSON.stringify(body), signal }),
   getTaskExecution: (id: number, signal?: AbortSignal) => requestOptional<TaskExecution>(`/api/tasks/${id}/execution`, { signal }),
   patchTaskMetadata: (id: number, body: TaskMetadataUpdate, signal?: AbortSignal) =>
     request<TaskSummary>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body), signal }),

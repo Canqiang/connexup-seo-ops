@@ -3056,6 +3056,13 @@ pre {
 .task-detail-primary,
 .task-detail-rail { min-width: 0; display: grid; gap: 16px; }
 .task-detail-rail .panel { margin: 0; }
+.task-assignment-body { padding: 14px; display: grid; gap: 12px; }
+.task-assignment-body p { margin: 0; color: var(--ink-2); font-size: 12px; }
+.task-assignment-body [role="alert"] { color: var(--bad); }
+.task-assignment-body label { display: grid; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.task-assignment-body select, .task-assignment-body textarea { width: 100%; min-width: 0; }
+.task-assignment-body textarea { resize: vertical; }
+.task-assignment-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
 /* The lifecycle rail is the one deliberate visual anchor on this page. */
 .task-lifecycle-ledger {
