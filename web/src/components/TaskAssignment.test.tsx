@@ -4,6 +4,13 @@ import { afterEach, expect, it, vi } from 'vitest'
 import TaskAssignment from './TaskAssignment'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+it.each([true, false])('shows dedicated Agent binding state without implying automatic execution (%s)', (bound) => {
+  render(<TaskAssignment taskId={7} version={2} assignment={{ assignee_type: 'AGENT', assignee_id: 'local-agent', display_name: '内容 Agent' }} agentBound={bound} disabled={false} onSaved={() => {}} />)
+  screen.getByText('责任分配不会自动开始执行。')
+  if (bound) screen.getByText('已配置专用 Agent；开始前会校验配置，准备结果仍需 AM 审批，不会自动发布。')
+  else screen.getByText('专用 Agent 未配置执行绑定或已停用，不能使用默认内容准备通道。')
+})
 const options = [
   { assignee_type: 'HUMAN', assignee_id: 'test', display_name: 'AM · test' },
   { assignee_type: 'AGENT', assignee_id: 'agent-local', display_name: '内容 Agent' },

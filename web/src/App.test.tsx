@@ -3818,6 +3818,98 @@ describe('desktop operator shell', () => {
     })
   })
 
+  it.each([
+    ['TASK_PREPARATION_APPROVED', 41],
+    ['TASK_PREPARATION_RETURNED', 41],
+    ['TASK_PREPARATION_APPROVED', 99],
+  ] as const)('binds read-only result history to review event %s / execution %s', async (eventType, reviewedExecutionId) => {
+    window.history.pushState({}, '', '/tasks/12')
+    const reviewed = taskExecution({ reviewed_at: '2026-09-03T02:03:00Z', preparation_trust: 'UNTRUSTED' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: eventType.endsWith('APPROVED') ? 'DONE' : 'PENDING',
+        execution_status: 'SUCCEEDED', executions: [reviewed], events: [{id: 92, entity_type:'TASK', entity_id:12,
+          event_type:eventType, actor_type:'OPERATOR', actor_id:'test', payload:{execution_id:reviewedExecutionId}, created_at:reviewed.reviewed_at}] }))
+      return response([])
+    }))
+    render(<App />)
+    await screen.findByRole('article', { name: 'Attempt 1' })
+    if (reviewedExecutionId !== 41) {
+      expect(screen.queryByText('历史准备结果（只读）')).toBeNull()
+      screen.getByText('无法确认是否外写')
+      expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+      return
+    }
+    screen.getByText('历史准备结果（只读）')
+    if (eventType.endsWith('APPROVED')) {
+      const lifecycle = screen.getByRole('region', { name: '生命周期轨迹' })
+      expect(within(lifecycle).queryByText('READY')).toBeNull()
+      expect(lifecycle.textContent).not.toContain('可执行')
+    }
+    screen.getByText('Prepared a reviewable draft.')
+    expect(screen.queryByText('无法确认是否外写')).toBeNull()
+    expect(screen.queryByText('服务端已校验：无外部业务写入')).toBeNull()
+    expect(screen.queryByRole('button', { name: '批准准备结果' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '退回重新准备' })).toBeNull()
+  })
+
+  it('does not retain a running notice after an asynchronous preparation completes', async () => {
+    window.history.pushState({}, '', '/tasks/12')
+    const running = taskExecution({ status: 'RUNNING', coreai_run_id: 'agent-run', result: null,
+      result_checksum: null, evidence: [], finished_at: null, preparation_trust: 'UNTRUSTED' })
+    let current = taskDetail()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active' })
+      if (input === '/api/tasks/12/execute') {
+        current = taskDetail({ status: 'PREPARING', version: 4, execution_status: 'RUNNING', executions: [running] })
+        return response(running, 201)
+      }
+      if (input === '/api/tasks/12') return response(current)
+      return response([])
+    }))
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '开始内容准备' }))
+    await screen.findByText('运行中', { exact: true })
+    current = taskDetail({ status: 'AWAITING_APPROVAL', version: 5, execution_status: 'SUCCEEDED',
+      executions: [taskExecution({ coreai_run_id: 'agent-run', preparation_trust: 'UNTRUSTED' })] })
+    fireEvent.click(screen.getByRole('button', { name: '刷新任务状态' }))
+    await screen.findByText('准备完成', { exact: true })
+    expect(screen.queryByText(/Attempt 当前状态：运行中/)).toBeNull()
+  })
+
+  it.each([true, false])('requires a bound run for dedicated Agent review (%s)', async (bound) => {
+    window.history.pushState({}, '', '/tasks/12')
+    const execution = taskExecution({
+      coreai_run_id: bound ? 'dedicated-run' : null,
+      request: {
+        definition_checksum: 'c'.repeat(64), executor_kind: 'COREAI_AGENT_PREPARATION_V1',
+        stage: 'PREPARATION', task_id: 12, workflow_version: 1,
+        local_agent_id: 'local-agent', coreai_agent_id: 'remote-agent', agent_name: '专用准备 Agent',
+        config_sha256: 'a'.repeat(64), operator: 'test', merchant_lifecycle: [1, 'b'.repeat(64)],
+        agent_snapshot: { id: 'remote-agent', type: 'AGENT', status: 'PUBLISHED', tools: [], skill_ids: [],
+          subagent_ids: [], dataset_config: [], sandbox_config: null, enable_memory: false },
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: string) => {
+      if (input === '/api/auth/me') return response({ username: 'test', role: 'operator' })
+      if (input === '/api/merchants/1') return response({ id: 1, name: 'Only Bear', status: 'active' })
+      if (input === '/api/tasks/12') return response(taskDetail({ status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED', executions: [execution] }))
+      return response([])
+    }))
+    render(<App />)
+    await screen.findByRole('article', { name: 'Attempt 1' })
+    const approval = screen.queryByRole('button', { name: '批准准备结果' }) as HTMLButtonElement | null
+    if (bound) {
+      expect(approval?.disabled).toBe(false)
+      screen.getByText('dedicated-run')
+      screen.getByText('专用准备 Agent')
+    } else {
+      expect(!approval || approval.disabled).toBe(true)
+    }
+  })
+
   it('binds return to the current Task version, execution id, checksum, and a non-empty reason', async () => {
     window.history.pushState({}, '', '/tasks/12')
     const calls: Array<{ input: string; init?: RequestInit }> = []

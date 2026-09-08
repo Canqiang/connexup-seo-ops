@@ -125,6 +125,7 @@ export type TaskAssignmentUpdate = {
 
 export type TaskSummary = {
   assignment?: TaskAssignmentIdentity | null
+  agent_preparation_bound?: boolean
   id: number
   merchant_id: number
   merchant_name: string

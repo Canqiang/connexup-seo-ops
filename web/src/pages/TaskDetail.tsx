@@ -52,6 +52,7 @@ const EVENT_LABELS: Record<string, string> = {
   TASK_METADATA_UPDATED: '内部元数据已更新',
   TASK_CANCELLED: '任务已取消并保留历史',
   TASK_PREPARATION_CLAIMED: '内容准备已认领',
+  TASK_PREPARATION_STARTED: '专用 Agent 已启动',
   TASK_PREPARATION_SUCCEEDED: '内容准备已返回可审结果',
   TASK_PREPARATION_FAILED: '内容准备失败',
   TASK_PREPARATION_UNKNOWN: '内容准备结果不确定',
@@ -164,6 +165,34 @@ function isLowerHexChecksum(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 }
 
+function preparationIdentity(execution: TaskExecution): boolean {
+  const request = execution.request
+  if (!isRecord(request)) return false
+  if (request.executor_kind === 'COREAI_LLM_CALL') {
+    return execution.coreai_run_id === null
+      && Object.keys(request).sort().join('|') === PREPARATION_REQUEST_KEYS.join('|')
+      && typeof request.llm_call_id === 'string' && Boolean(request.llm_call_id.trim())
+  }
+  const keys = ['executor_kind', 'task_id', 'workflow_version', 'definition_checksum', 'stage',
+    'local_agent_id', 'coreai_agent_id', 'agent_name', 'config_sha256', 'agent_snapshot', 'operator', 'merchant_lifecycle'].sort()
+  const nonempty = (value: unknown) => typeof value === 'string' && Boolean(value.trim())
+  const snapshot = request.agent_snapshot
+  return request.executor_kind === 'COREAI_AGENT_PREPARATION_V1'
+    && nonempty(execution.coreai_run_id)
+    && Object.keys(request).sort().join('|') === keys.join('|')
+    && nonempty(request.local_agent_id) && nonempty(request.coreai_agent_id)
+    && nonempty(request.agent_name) && nonempty(request.operator)
+    && isLowerHexChecksum(request.config_sha256)
+    && Array.isArray(request.merchant_lifecycle) && request.merchant_lifecycle.length === 2
+    && Number.isInteger(request.merchant_lifecycle[0]) && request.merchant_lifecycle[0] > 0
+    && isLowerHexChecksum(request.merchant_lifecycle[1])
+    && isRecord(snapshot) && snapshot.id === request.coreai_agent_id
+    && snapshot.type === 'AGENT' && snapshot.status === 'PUBLISHED'
+    && snapshot.enable_memory === false && snapshot.sandbox_config === null
+    && ['tools', 'skill_ids', 'subagent_ids', 'dataset_config'].every(key =>
+      snapshot[key] === null || (Array.isArray(snapshot[key]) && snapshot[key].length === 0))
+}
+
 function isVerifiedPreparationResult(value: unknown): value is VerifiedTaskResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const result = value as Record<string, unknown>
@@ -196,15 +225,11 @@ function trustedPreparation(task: TaskDetailRecord, execution: TaskExecution | n
     || execution.task_id !== task.id
     || execution.reviewed_at !== null
     || execution.legacy_result
-    || execution.coreai_run_id !== null
     || execution.provider_resource_id !== null
     || execution.approval_id !== null
     || execution.artifact_id !== null
     || !isRecord(execution.request)
-    || Object.keys(execution.request).sort().join('|') !== PREPARATION_REQUEST_KEYS.join('|')
-    || execution.request.executor_kind !== 'COREAI_LLM_CALL'
-    || typeof execution.request.llm_call_id !== 'string'
-    || !execution.request.llm_call_id.trim()
+    || !preparationIdentity(execution)
     || execution.request.definition_checksum !== task.definition_checksum
     || !isLowerHexChecksum(execution.request.definition_checksum)
     || execution.request.stage !== 'PREPARATION'
@@ -218,6 +243,7 @@ function trustedPreparation(task: TaskDetailRecord, execution: TaskExecution | n
   }
 
   if (execution.status === 'UNKNOWN'
+    && execution.request.executor_kind === 'COREAI_LLM_CALL'
     && task.status === 'NEEDS_ATTENTION'
     && execution.result === null
     && execution.result_checksum === null
@@ -247,9 +273,27 @@ function trustedPreparation(task: TaskDetailRecord, execution: TaskExecution | n
   return { kind: 'reviewable', result }
 }
 
-function executionResultView(execution: TaskExecution, trust: TrustedPreparation) {
+function reviewedPreparation(task: TaskDetailRecord, execution: TaskExecution): boolean {
+  const result = execution.result
+  if (!execution.reviewed_at || Number.isNaN(Date.parse(execution.reviewed_at))
+    || execution.task_id !== task.id || task.task_type !== 'PREPARE_ONLY'
+    || execution.stage !== 'PREPARATION' || execution.status !== 'SUCCEEDED'
+    || execution.legacy_result || execution.provider_resource_id !== null
+    || execution.approval_id !== null || execution.artifact_id !== null
+    || !preparationIdentity(execution) || !isVerifiedPreparationResult(result)
+    || !isLowerHexChecksum(execution.result_checksum)
+    || !Array.isArray(execution.evidence)
+    || execution.evidence.length !== result.evidence.length
+    || !execution.evidence.every((item, index) => item === result.evidence[index])) return false
+  return task.events.some(event => event.entity_type === 'TASK' && event.entity_id === task.id
+    && event.actor_type === 'OPERATOR' && event.payload.execution_id === execution.id
+    && ['TASK_PREPARATION_APPROVED', 'TASK_PREPARATION_RETURNED'].includes(event.event_type))
+}
+
+function executionResultView(task: TaskDetailRecord, execution: TaskExecution, trust: TrustedPreparation) {
+  const history = reviewedPreparation(task, execution)
   if (execution.result === null && (trust.kind !== 'untrusted' || execution.status !== 'SUCCEEDED')) return null
-  if (trust.kind === 'untrusted') {
+  if (trust.kind === 'untrusted' && !history) {
     const rawResult = execution.result as unknown
     const reportedWrite = Boolean(rawResult
       && typeof rawResult === 'object'
@@ -272,17 +316,19 @@ function executionResultView(execution: TaskExecution, trust: TrustedPreparation
       </section>
     )
   }
-  if (trust.kind !== 'reviewable') return null
-  const result = trust.result
+  if (trust.kind !== 'reviewable' && !history) return null
+  const result = trust.kind === 'reviewable' ? trust.result : execution.result as VerifiedTaskResult
   return (
     <section className="task-result" aria-label={`Attempt ${execution.attempt} 结果`}>
-      <h3>准备结果</h3>
+      <h3>{history ? '历史准备结果（只读）' : '准备结果'}</h3>
       <p className="task-result-summary">{result.summary}</p>
       <div className="task-result-columns">
         <div><h4>Artifact refs</h4>{result.artifact_refs.length > 0 ? <ul>{result.artifact_refs.map((ref, index) => <li key={`${index}:${ref}`}><code>{ref}</code></li>)}</ul> : <p>无</p>}</div>
         <div><h4>Evidence</h4>{result.evidence.length > 0 ? <ul>{result.evidence.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}</ul> : <p>无</p>}</div>
       </div>
-      <p className="task-no-write-mark">服务端已校验：无外部业务写入</p>
+      {history
+        ? <p>已记录人工处理；仅展示保存的结果，不代表重新验证外部数据，也不能重复审批。</p>
+        : <p className="task-no-write-mark">服务端已校验：无外部业务写入</p>}
     </section>
   )
 }
@@ -646,12 +692,9 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
       const execution = await api.executeTask(taskId, { expected_version: task.version }, controller.signal)
       if (!actionIsCurrent(controller)) return
       if (execution.task_id !== taskId) throw new Error('执行响应与当前任务不一致')
+      // The attempt card is refreshed by polling. A persistent notice derived
+      // from this one-off response would contradict later terminal states.
       await reread(controller)
-      if (!actionIsCurrent(controller)) return
-      if (execution.status === 'SUCCEEDED') setNotice('内容准备已完成，等待人工审批。')
-      else if (execution.status === 'UNKNOWN') setNotice('本次内容准备结果不确定，需要人工判断后再重试。')
-      else if (execution.status === 'FAILED') setNotice('本次内容准备失败，需要人工处理。')
-      else setNotice(`内容准备 Attempt 当前状态：${executionStatusLabel(execution)}。`)
     } catch (nextError) {
       failAction(controller, nextError)
     } finally {
@@ -827,9 +870,11 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
             <header>
               <div>
                 <h2>生命周期轨迹</h2>
-                <p>服务端模板决定状态；{blockerSummary(task.blocker)}。</p>
+                <p>服务端模板决定状态；{task.status === 'PENDING' ? blockerSummary(task.blocker) : TASK_STATUS_LABELS[task.status]}。</p>
               </div>
-              <span className={`badge ${task.readiness === 'READY' ? 'ready' : 'failed'}`}>{task.readiness === 'READY' ? 'READY' : 'BLOCKED'}</span>
+              <span className={`badge ${task.status === 'PENDING' ? (task.readiness === 'READY' ? 'ready' : 'failed') : TASK_STATUS_CLASSES[task.status]}`}>
+                {task.status === 'PENDING' ? task.readiness : task.status}
+              </span>
             </header>
             <ol>
               {lifecycleSteps.map((step, index) => (
@@ -868,6 +913,10 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
                       <span className={`badge ${EXECUTION_STATUS_CLASSES[execution.status]}`}>{executionStatusLabel(execution)}</span>
                     </header>
                     <dl>
+                      {execution.request.executor_kind === 'COREAI_AGENT_PREPARATION_V1' && <>
+                        <div><dt>执行 Agent</dt><dd>{String(execution.request.agent_name)}</dd></div>
+                        <div><dt>远端 run ID</dt><dd>{execution.coreai_run_id ?? '尚未确认'}</dd></div>
+                      </>}
                       <div><dt>开始</dt><dd>{formatTime(execution.created_at)}</dd></div>
                       <div><dt>结束</dt><dd>{execution.finished_at ? formatTime(execution.finished_at) : '—'}</dd></div>
                       <div><dt>请求 checksum</dt><dd title={execution.request_checksum}>{execution.request_checksum.slice(0, 12)}…</dd></div>
@@ -893,7 +942,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
                         <pre>{execution.legacy_result.output_text}</pre>
                       </section>
                     )}
-                    {executionResultView(execution, trust)}
+                    {executionResultView(task, execution, trust)}
                     {execution.review_note && <p className="task-review-note"><strong>退回原因：</strong>{execution.review_note}</p>}
                     {execution === latest && canReview && (
                       <div className="task-review-zone">
@@ -947,6 +996,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
             taskId={task.id}
             version={task.version}
             assignment={task.assignment ?? null}
+            agentBound={task.agent_preparation_bound === true}
             disabled={!merchantActive || busy || !['PENDING', 'NEEDS_ATTENTION'].includes(task.status)
               || task.executions.some(execution => ['PENDING', 'DISPATCHING', 'RUNNING', 'UNKNOWN'].includes(execution.status))}
             onSaved={poll}

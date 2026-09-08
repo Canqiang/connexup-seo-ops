@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from .audit_snapshots import persist_audit_snapshot
-from .config import coreai_settings
+from .config import coreai_settings, coreai_connection_settings
 from .coreai import CoreAiClient, CoreAiError, TERMINAL_STATUSES, validate_run_detail
 from .db import connect
 from .local_falcon import LocalFalconClient
@@ -409,7 +409,7 @@ def poll_runs_once(client) -> None:
 
 
 def _recover_stale_task_dispatches(conn) -> None:
-    from .tasks import _validated_llm_call_request
+    from .tasks import _validated_preparation_request
 
     now = datetime.now(timezone.utc)
     candidates = conn.execute(
@@ -421,7 +421,7 @@ def _recover_stale_task_dispatches(conn) -> None:
             dispatch_started_at = datetime.fromisoformat(
                 candidate["dispatch_started_at"]
             )
-            request = _validated_llm_call_request(candidate)
+            request = _validated_preparation_request(candidate)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             logger.warning(
                 "stale task dispatch %s has an invalid recovery envelope; left untouched",
@@ -449,7 +449,7 @@ def _recover_stale_task_dispatches(conn) -> None:
                 conn.rollback()
                 continue
             current_started_at = datetime.fromisoformat(current["dispatch_started_at"])
-            current_request = _validated_llm_call_request(current)
+            current_request = _validated_preparation_request(current)
             if (
                 current_started_at.tzinfo is None
                 or now - current_started_at < TASK_LLM_DISPATCH_STALE_AFTER
@@ -468,6 +468,9 @@ def _recover_stale_task_dispatches(conn) -> None:
                 or current_request["task_id"] != task["id"]
                 or current_request["workflow_version"] != task["workflow_version"]
                 or current_request["definition_checksum"] != task["definition_checksum"]
+                or (current_request["executor_kind"] == "COREAI_AGENT_PREPARATION_V1"
+                    and current_request["merchant_lifecycle"] != list(
+                        _merchant_lifecycle_token(conn, int(task["merchant_id"]))[1:]))
             ):
                 conn.rollback()
                 logger.warning(
@@ -478,12 +481,17 @@ def _recover_stale_task_dispatches(conn) -> None:
 
             assert_transition(task["task_type"], task["status"], "NEEDS_ATTENTION")
             finished_at = now_iso()
+            stale_error = (
+                "Agent dispatch exceeded the 15-minute recovery ceiling; outcome unknown"
+                if current_request["executor_kind"] == "COREAI_AGENT_PREPARATION_V1"
+                else TASK_LLM_DISPATCH_STALE_ERROR
+            )
             execution_update = conn.execute(
                 "UPDATE task_executions SET status = 'UNKNOWN', error = ?, finished_at = ? "
                 "WHERE id = ? AND status = 'DISPATCHING' AND coreai_run_id IS NULL "
                 "AND dispatch_token = ? AND dispatch_started_at = ?",
                 (
-                    TASK_LLM_DISPATCH_STALE_ERROR,
+                    stale_error,
                     finished_at,
                     current["id"],
                     current["dispatch_token"],
@@ -507,7 +515,7 @@ def _recover_stale_task_dispatches(conn) -> None:
                 actor_id=None,
                 payload={
                     "ambiguous": True,
-                    "error": TASK_LLM_DISPATCH_STALE_ERROR,
+                    "error": stale_error,
                     "execution_id": current["id"],
                     "reason": "stale_dispatch_timeout",
                 },
@@ -650,6 +658,11 @@ def poll_task_executions_once(client) -> None:
             "AND status = 'RUNNING' AND coreai_run_id IS NOT NULL ORDER BY id"
         ).fetchall()
         for execution in executions:
+            from .task_agent_protocol import is_agent_request
+            if is_agent_request(execution):
+                from .task_agent_preparation import poll_agent_preparation
+                poll_agent_preparation(conn, execution, client)
+                continue
             claim = _task_execution_claim(conn, execution)
             if claim is None:
                 continue
@@ -866,14 +879,18 @@ def sync_due_fbr_profiles_once(
 
 async def scheduler_loop() -> None:
     settings = coreai_settings()
+    connection = coreai_connection_settings()
+    task_client = None
     if settings is None:
         logger.info(
-            "core-ai not configured; network jobs disabled, "
-            "DB stale-dispatch recovery remains active"
+            "planning Agent not configured; diagnosis jobs disabled; "
+            "Task polling uses connection settings when available"
         )
         client = None
         local_falcon = None
         seo_poll_agents = None
+        if connection is not None:
+            task_client = CoreAiClient(connection.base_url, connection.api_key)
     else:
         client = CoreAiClient(settings.base_url, settings.api_key)
         local_falcon = (
@@ -888,6 +905,8 @@ async def scheduler_loop() -> None:
             await asyncio.to_thread(recover_stale_run_dispatches_once)
             await asyncio.to_thread(recover_stale_seo_dispatches_once)
             await asyncio.to_thread(recover_stale_task_dispatches_once)
+            if task_client is not None:
+                await asyncio.to_thread(poll_task_executions_once, task_client)
             if client is not None:
                 await asyncio.to_thread(poll_runs_once, client)
                 await asyncio.to_thread(poll_task_executions_once, client)

@@ -5,6 +5,7 @@ type Props = {
   taskId: number
   version: number
   assignment: TaskAssignmentIdentity | null
+  agentBound?: boolean
   disabled: boolean
   onSaved: () => void
 }
@@ -13,7 +14,7 @@ function identityKey(value: TaskAssignmentIdentity | null): string {
   return value ? `${value.assignee_type}:${value.assignee_id}` : ''
 }
 
-export default function TaskAssignment({ taskId, version, assignment, disabled, onSaved }: Props) {
+export default function TaskAssignment({ taskId, version, assignment, agentBound = false, disabled, onSaved }: Props) {
   const [editing, setEditing] = useState(false)
   const [state, setState] = useState<TaskAssignmentState | null>(null)
   const [selected, setSelected] = useState('')
@@ -104,7 +105,9 @@ export default function TaskAssignment({ taskId, version, assignment, disabled, 
     </div>
     <div className="task-assignment-body">
       <strong>{assignment?.display_name ?? '未分配'}</strong>
-      {assignment?.assignee_type === 'AGENT' && <p>Agent 执行绑定尚未接入，默认内容准备通道已暂停。</p>}
+      {assignment?.assignee_type === 'AGENT' && <p>{agentBound
+        ? '已配置专用 Agent；开始前会校验配置，准备结果仍需 AM 审批，不会自动发布。'
+        : '专用 Agent 未配置执行绑定或已停用，不能使用默认内容准备通道。'}</p>}
       {assignment?.agent_status && assignment.agent_status !== 'active' && <p>该 Agent 已停用或退役，请重新分配。</p>}
       {disabled && <p>任务正在处理或已结束，当前不能转交。</p>}
       {editing && <>

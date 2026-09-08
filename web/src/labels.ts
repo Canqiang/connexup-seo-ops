@@ -40,7 +40,7 @@ export const CATEGORY_LABELS: Record<string, string> = {
 
 export function blockerSummary(blocker: TaskBlocker | null): string {
   if (!blocker) return '可执行'
-  if (blocker.code === 'ASSIGNEE_EXECUTION_UNAVAILABLE') return '已分配 Agent，等待执行能力接入'
+  if (blocker.code === 'ASSIGNEE_EXECUTION_UNAVAILABLE') return '专用 Agent 执行绑定未配置或已停用'
   if (blocker.code === 'UPSTREAM_NOT_DONE') {
     return blocker.task_title ? `被「${blocker.task_title}」阻塞` : '等待上游任务完成'
   }

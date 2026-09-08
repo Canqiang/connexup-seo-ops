@@ -211,8 +211,17 @@ def _json_value(raw: object, expected: type, field: str) -> Any:
     return value
 
 
-def get_execution_coreai() -> tuple[CoreAiClient, str]:
+def get_execution_coreai(task_id: int, conn=Depends(get_db)) -> tuple[CoreAiClient, str]:
     global _execution_client
+    owner = assignment_view(conn, task_id)
+    if owner is not None and owner["assignee_type"] == "AGENT":
+        from .config import coreai_connection_settings
+        connection = coreai_connection_settings()
+        if connection is None:
+            raise HTTPException(503, "core-ai not configured")
+        if _execution_client is None:
+            _execution_client = CoreAiClient(connection.base_url, connection.api_key)
+        return _execution_client, ""
     settings = coreai_settings()
     if settings is None:
         raise HTTPException(status_code=503, detail="core-ai not configured")
@@ -319,14 +328,18 @@ def _blocker(conn: sqlite3.Connection, task: sqlite3.Row) -> dict[str, object] |
         blocker = task_blocker(conn, task)
         owner = assignment_view(conn, task["id"])
         if blocker is None and owner is not None and owner["assignee_type"] == "AGENT":
-            return {"code": "ASSIGNEE_EXECUTION_UNAVAILABLE"}
+            from .task_agent_protocol import binding_for_task
+            if binding_for_task(conn, task["id"]) is None:
+                return {"code": "ASSIGNEE_EXECUTION_UNAVAILABLE"}
         return blocker
     except TaskWorkflowDataError as exc:
         raise HTTPException(status_code=409, detail="stored task workflow is invalid") from exc
 
 
 def task_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    from .task_agent_protocol import binding_for_task
     value = dict(row)
+    value["agent_preparation_bound"] = binding_for_task(conn, row["id"]) is not None
     value["assignment"] = assignment_view(conn, row["id"])
     blocker = _blocker(conn, row)
     value["parameters"] = _json_value(value.pop("parameters_json"), dict, "parameters")
@@ -558,6 +571,13 @@ def _validated_task_llm_call_request(
     return request
 
 
+def _validated_preparation_request(execution: sqlite3.Row) -> dict[str, Any]:
+    from .task_agent_protocol import is_agent_request, validate_agent_request
+    if is_agent_request(execution):
+        return validate_agent_request(execution)
+    return _validated_llm_call_request(execution)
+
+
 def _validated_reviewable_preparation(
     task: sqlite3.Row, execution: sqlite3.Row | None
 ) -> tuple[sqlite3.Row, str]:
@@ -570,12 +590,15 @@ def _validated_reviewable_preparation(
         "legacy-task-execution-"
     ):
         raise invalid
+    from .task_agent_protocol import is_agent_request, validate_agent_request, valid_id
+    agent_request = is_agent_request(execution)
     if (
         execution["task_id"] != task["id"]
         or execution["stage"] != "PREPARATION"
         or execution["status"] != "SUCCEEDED"
         or execution["reviewed_at"] is not None
-        or execution["coreai_run_id"] is not None
+        or (not agent_request and execution["coreai_run_id"] is not None)
+        or (agent_request and not valid_id(execution["coreai_run_id"]))
         or execution["provider_resource_id"] is not None
         or execution["approval_id"] is not None
         or execution["artifact_id"] is not None
@@ -583,7 +606,10 @@ def _validated_reviewable_preparation(
         raise invalid
 
     try:
-        _validated_task_llm_call_request(task, execution)
+        if agent_request:
+            validate_agent_request(execution, task)
+        else:
+            _validated_task_llm_call_request(task, execution)
 
         normalized_result_json = normalize_execution_output(execution["result_json"])
         if execution["result_json"] != normalized_result_json:
@@ -1052,7 +1078,7 @@ def retry_preparation(
 
 def _blocker_message(blocker: dict[str, object]) -> str:
     if blocker["code"] == "ASSIGNEE_EXECUTION_UNAVAILABLE":
-        return "已分配 Agent；执行绑定尚未接入，不能改用默认内容准备通道"
+        return "已分配 Agent；专用执行绑定未配置或已停用，不能改用默认内容准备通道"
     if blocker["code"] == "UPSTREAM_NOT_DONE":
         return "task is blocked by an upstream task"
     if blocker["code"] == "SCHEDULED_FOR_FUTURE":
@@ -1131,6 +1157,10 @@ def execute_task(
     conn=Depends(get_db),
 ):
     client, llm_call_id = coreai
+    owner = assignment_view(conn, task_id)
+    if owner is not None and owner["assignee_type"] == "AGENT":
+        from .task_agent_preparation import start_agent_preparation
+        return start_agent_preparation(conn, task_id, body.expected_version, operator, client)
     conn.execute("BEGIN IMMEDIATE")
     try:
         task = fetch_task(conn, task_id)
