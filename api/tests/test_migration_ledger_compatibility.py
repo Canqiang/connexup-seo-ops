@@ -353,6 +353,7 @@ def test_legacy_task_first_name_ledger_is_atomically_adopted(tmp_path, monkeypat
         ("0003_performance_lifecycle_baseline",),
         ("0004_run_dispatch_contract",),
         ("0005_task_assignments",),
+        ("0006_performance_immutability",),
     ]
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     conn.close()
@@ -467,6 +468,10 @@ def test_performance_first_canonical_ledger_is_preserved(tmp_path, monkeypatch):
             ).fetchone()[0],
         ),
         ("0005_task_assignments", "1459a380cc9be4c3679252e6f4f32142007d5ef6f3c7f49a13b0081735bb32cd"),
+        (
+            "0006_performance_immutability",
+            "4d23fc4c17703eff45e3ff923fc7a14f401bd0d560bbb5834f0f05d8d3b7cd55",
+        ),
     ]
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     conn.close()

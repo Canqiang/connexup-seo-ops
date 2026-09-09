@@ -215,6 +215,7 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
 
 

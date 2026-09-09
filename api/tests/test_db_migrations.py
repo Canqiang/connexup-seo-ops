@@ -589,6 +589,7 @@ def test_versioned_migration_is_atomic_checksum_locked_and_repeatable(tmp_path, 
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert integrity_results(database) == ("ok", [])
 
@@ -606,6 +607,7 @@ def test_migrated_database_fresh_process_cold_start_skips_legacy_fbr_ddl(tmp_pat
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert exact_database_fingerprint(database) == first
     assert integrity_results(database) == ("ok", [])
@@ -624,6 +626,7 @@ def test_fresh_database_init_db_twice_bootstraps_then_migrates_once(tmp_path, mo
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert exact_database_fingerprint(database) == first
     assert integrity_results(database) == ("ok", [])
@@ -732,6 +735,7 @@ def test_deployed_sql_only_0001_with_gap_merchant_runs_forward_0003(tmp_path):
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
 
     baseline = conn.execute(
@@ -758,6 +762,7 @@ def test_deployed_sql_only_0001_with_gap_merchant_runs_forward_0003(tmp_path):
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     conn.close()
 
@@ -865,6 +870,7 @@ def test_0003_accepts_valid_fbr_relink_after_an_unbound_gap(tmp_path):
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     projection = conn.execute(
         "SELECT binding_event_id,fbr_merchant_id FROM merchant_fbr_links "
@@ -876,6 +882,7 @@ def test_0003_accepts_valid_fbr_relink_after_an_unbound_gap(tmp_path):
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     conn.close()
 
@@ -941,6 +948,7 @@ def test_0003_missing_status_baseline_rolls_back_hook_and_ledger(
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert not table_exists_at_path(database, "merchant_fbr_links_legacy")
     assert performance_table_counts(database)["merchant_status_events"] == 2
@@ -1149,6 +1157,7 @@ def test_two_connections_reread_migration_ledger_after_acquiring_write_lock(tmp_
             "0003_performance_lifecycle_baseline",
             "0004_run_dispatch_contract",
             "0005_task_assignments",
+            "0006_performance_immutability",
         ],
     ]
     assert migration_versions(database) == [
@@ -1156,6 +1165,7 @@ def test_two_connections_reread_migration_ledger_after_acquiring_write_lock(tmp_
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert integrity_results(database) == ("ok", [])
 
@@ -1195,6 +1205,7 @@ def test_two_fresh_init_db_calls_share_locked_legacy_fbr_bootstrap(
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert performance_table_counts(database)["merchant_fbr_binding_events"] == 0
     assert integrity_results(database) == ("ok", [])
@@ -1250,6 +1261,7 @@ def test_two_legacy_init_db_calls_serialize_column_bridge(tmp_path, monkeypatch)
         "0003_performance_lifecycle_baseline",
         "0004_run_dispatch_contract",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert integrity_results(database) == ("ok", [])
 
@@ -1620,6 +1632,7 @@ def test_init_db_threads_python_registry_through_pre_and_post_checks(
         "0004_run_dispatch_contract",
         "0004_test_task_registry",
         "0005_task_assignments",
+        "0006_performance_immutability",
     ]
     assert table_exists_at_path(database, "task_workflow_registry_marker")
 

@@ -402,6 +402,7 @@ def test_performance_first_legacy_tasks_restore_delete_guard_and_preserve_logica
             "0003_performance_lifecycle_baseline",
             "0004_run_dispatch_contract",
             "0005_task_assignments",
+            "0006_performance_immutability",
         ]
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []

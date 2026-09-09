@@ -53,3 +53,16 @@ def client(tmp_path, monkeypatch):
         )
         assert response.status_code == 200
         yield c
+
+
+@pytest.fixture()
+def conn(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEO_OPS_DB", str(tmp_path / "performance.db"))
+    from app.db import connect, init_db
+
+    init_db()
+    connection = connect()
+    try:
+        yield connection
+    finally:
+        connection.close()
