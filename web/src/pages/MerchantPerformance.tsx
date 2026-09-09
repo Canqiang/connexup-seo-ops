@@ -88,21 +88,33 @@ function storeDateIso(timeZone: string, instant: Date): string {
   return `${get('year')}-${get('month')}-${get('day')}`
 }
 
+function addDaysIso(iso: string, delta: number): string {
+  const date = parseISODate(iso)
+  date.setUTCDate(date.getUTCDate() + delta)
+  return formatISODate(date)
+}
+
 /**
- * "Today" for preset/default-period math, resolved in the bound locations'
- * own timezone(s) rather than the browser's -- an account manager whose
- * browser sits in a different timezone from the store must not get a
- * default period or preset that is off by a calendar day near local
- * midnight. Mirrors the backend's own `resolve_default_end`: locations
- * share one timezone in this pilot; if they ever differ, the earliest
- * local date wins, matching that resolver's `min(candidates)` across
- * scopes. ISO date strings sort lexicographically the same as
- * chronologically, so a plain string sort finds it.
+ * The reference date for preset/default-period math, resolved in the bound
+ * locations' own timezone(s) rather than the browser's -- an account
+ * manager whose browser sits in a different timezone from the store must
+ * not get a default period or preset that is off by a calendar day near
+ * local midnight.
+ *
+ * Exactly mirrors the backend's own `resolve_default_end`
+ * (`api/app/performance_identity.py`): for each timezone, take store-local
+ * *yesterday* (`local_today - 1 day`) -- never today, which is still in
+ * progress and would only guarantee an empty trailing cell -- then, when
+ * several locations are selected, the earliest (`min`) of those per-scope
+ * yesterdays. Locations share one timezone in this pilot, so the tie-break
+ * is usually moot; ISO date strings sort lexicographically the same as
+ * chronologically, so a plain string sort after subtracting the day finds
+ * that minimum.
  */
-function referenceTodayIso(timeZones: string[]): string {
-  if (timeZones.length === 0) return storeDateIso('UTC', new Date())
+function referenceDateIso(timeZones: string[]): string {
   const now = new Date()
-  return timeZones.map(tz => storeDateIso(tz, now)).sort()[0]
+  const zones = timeZones.length === 0 ? ['UTC'] : timeZones
+  return zones.map(tz => addDaysIso(storeDateIso(tz, now), -1)).sort()[0]
 }
 
 function lastNDays(n: number, reference: Date): { start: string; end: string } {
@@ -412,12 +424,13 @@ function MerchantPerformancePage({ merchantId }: { merchantId: number }) {
   }, [validMerchantId, loadLocations])
 
   // Resolved in the bound locations' own timezone(s), not the browser's --
-  // `todayIso` is a primitive, so it is stable across renders (by value) for
-  // use as a dependency below, unlike a freshly-constructed Date each render.
+  // `referenceIso` is a primitive, so it is stable across renders (by
+  // value) for use as a dependency below, unlike a freshly-constructed
+  // Date each render.
   const timeZones = locationsData
     ? locationsData.locations.map(loc => loc.timezone_name).filter((tz): tz is string => tz !== null)
     : []
-  const todayIso = referenceTodayIso(timeZones)
+  const referenceIso = referenceDateIso(timeZones)
 
   // `searchParams` is a stable reference from react-router (memoized on the
   // location's search string), so it is safe to depend on directly here.
@@ -426,13 +439,13 @@ function MerchantPerformancePage({ merchantId }: { merchantId: number }) {
     const allIds = locationsData.locations.map(loc => loc.location_id)
     const selected = parseLocationParam(searchParams.get('locations'))
     setDraftLocationIds(new Set(selected ?? allIds))
-    const period = currentPeriodFromParams(searchParams, parseISODate(todayIso))
+    const period = currentPeriodFromParams(searchParams, parseISODate(referenceIso))
     setDraftFrom(period.start)
     setDraftTo(period.end)
     setDraftCmp(parseComparisonMode(searchParams.get('cmp')))
     setDraftCmpFrom(searchParams.get('cmpFrom') ?? period.start)
     setDraftCmpTo(searchParams.get('cmpTo') ?? period.end)
-  }, [locationsState, locationsData, searchParams, todayIso])
+  }, [locationsState, locationsData, searchParams, referenceIso])
 
   useEffect(() => {
     const timer = window.setTimeout(syncDraftFromParams, 0)
@@ -452,7 +465,7 @@ function MerchantPerformancePage({ merchantId }: { merchantId: number }) {
     queryControllerRef.current = controller
     setPerfState('loading')
     setPerfError(null)
-    const body = buildQueryBody(searchParams, parseISODate(todayIso))
+    const body = buildQueryBody(searchParams, parseISODate(referenceIso))
     api.queryMerchantPerformance(merchantId, body, controller.signal)
       .then(data => {
         if (!mountedRef.current || queryEpochRef.current !== epoch) return
@@ -465,7 +478,7 @@ function MerchantPerformancePage({ merchantId }: { merchantId: number }) {
         setPerfError(classifyPerformanceError(err))
         setPerfState('error')
       })
-  }, [merchantId, validMerchantId, locationsState, blockedByGate, searchParams, todayIso])
+  }, [merchantId, validMerchantId, locationsState, blockedByGate, searchParams, referenceIso])
 
   useEffect(() => {
     const timer = window.setTimeout(runQuery, 0)
@@ -555,11 +568,11 @@ function MerchantPerformancePage({ merchantId }: { merchantId: number }) {
             </fieldset>
 
             <div className="performance-period-presets" role="group" aria-label="期间预设">
-              <button type="button" onClick={() => applyPreset(lastNDays(7, parseISODate(todayIso)))}>最近 7 天</button>
-              <button type="button" onClick={() => applyPreset(lastNDays(28, parseISODate(todayIso)))}>最近 28 天</button>
-              <button type="button" onClick={() => applyPreset(lastNDays(90, parseISODate(todayIso)))}>最近 90 天</button>
-              <button type="button" onClick={() => applyPreset(thisMonth(parseISODate(todayIso)))}>本月</button>
-              <button type="button" onClick={() => applyPreset(lastMonth(parseISODate(todayIso)))}>上月</button>
+              <button type="button" onClick={() => applyPreset(lastNDays(7, parseISODate(referenceIso)))}>最近 7 天</button>
+              <button type="button" onClick={() => applyPreset(lastNDays(28, parseISODate(referenceIso)))}>最近 28 天</button>
+              <button type="button" onClick={() => applyPreset(lastNDays(90, parseISODate(referenceIso)))}>最近 90 天</button>
+              <button type="button" onClick={() => applyPreset(thisMonth(parseISODate(referenceIso)))}>本月</button>
+              <button type="button" onClick={() => applyPreset(lastMonth(parseISODate(referenceIso)))}>上月</button>
               <button type="button" onClick={() => { /* custom: edit the date fields directly */ }}>自定义</button>
             </div>
 

@@ -56,11 +56,13 @@ function renderPage(search = '') {
   )
 }
 
+const ORIGINAL_TZ = process.env.TZ
+
 beforeEach(() => {
   vi.spyOn(api, 'getPerformanceLocations').mockResolvedValue(LOCATIONS as never)
   vi.spyOn(api, 'queryMerchantPerformance').mockResolvedValue(BODY as never)
 })
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); process.env.TZ = ORIGINAL_TZ })
 
 describe('MerchantPerformance', () => {
   it('renders totals, the comparison and the delta from the server response', async () => {
@@ -80,10 +82,23 @@ describe('MerchantPerformance', () => {
   })
 
   it('sends the period from the query string, and computes a clicked preset in the store timezone -- not the test runner clock', async () => {
-    // 2026-10-01T02:00:00Z is 2026-10-01 in the test runner's Asia/Shanghai
-    // clock (UTC+8) but still 2026-09-30 in the store's America/New_York
-    // timezone (UTC-4, EDT) -- the two clocks disagree on both the day AND
-    // the month. If "上月" used the browser/test clock it would compute
+    // Pin the process's own ambient timezone rather than trusting whatever
+    // machine runs this suite: nothing in this repo pins TZ (no `TZ` in
+    // package.json scripts, no vitest setup file, no CI workflow), so a
+    // runner already sitting in an Americas zone (offset <= -3h -- which
+    // includes all four store timezones this feature supports:
+    // America/New_York, Chicago, Denver, Los_Angeles) would coincidentally
+    // compute the same local date as the store timezone below even with the
+    // pre-fix, ambient-clock bug, making the test pass either way. Asia/
+    // Shanghai (UTC+8) is an offset >= -2h -- the bucket (all of Asia,
+    // Europe, Africa, Oceania) where an ambient-clock computation provably
+    // disagrees with the store's at the instant below, so this pin
+    // guarantees the two diverge regardless of the host machine's real zone.
+    process.env.TZ = 'Asia/Shanghai'
+    // 2026-10-01T02:00:00Z is 2026-10-01 in that pinned Asia/Shanghai clock
+    // (UTC+8) but still 2026-09-30 in the store's America/New_York timezone
+    // (UTC-4, EDT) -- the two clocks disagree on both the day AND the
+    // month. If "上月" used the ambient/test clock it would compute
     // September (2026-09-01..2026-09-30); computed correctly in the store's
     // timezone it must compute August (2026-08-01..2026-08-31).
     vi.useFakeTimers({ shouldAdvanceTime: true })
