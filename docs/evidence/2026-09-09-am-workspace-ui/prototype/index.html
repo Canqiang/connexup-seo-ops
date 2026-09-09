@@ -721,6 +721,156 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 .coverage span { grid-column: 1; grid-row: 2; color: var(--fg-2); }
 .coverage .stamp { grid-column: 2; grid-row: 1 / span 2; align-self: start; color: var(--success); }
 .coverage .stamp-warn { color: var(--accent-hover); }
+
+/* ---------- v4 additions ---------- */
+.search { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.search .input { width: 280px; }
+.restore-note { font-size: var(--text-sm); color: var(--fg-2); margin-bottom: 12px; }
+.risk-cell .stamp { display: inline-flex; }
+.overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.summary { display: flex; flex-direction: column; gap: 4px; }
+.summary .eyebrow { margin-bottom: 2px; }
+.summary b { font-size: var(--text-lg); font-weight: 600; line-height: 1.4; }
+.summary .line { font-size: var(--text-sm); color: var(--fg-2); }
+.summary .line.gap { color: var(--accent-hover); }
+.summary a.go { margin-top: auto; padding-top: 8px; font-size: var(--text-sm); }
+.plan-card .scope { margin-top: 10px; }
+.plan-tasks li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.plan-tasks li:first-child { border-top: 0; }
+.approvals li { padding: 6px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.approvals li:first-child { border-top: 0; }
+.approvals time { font-family: var(--font-mono); color: var(--fg-2); margin-right: 8px; }
+
+/* audit center */
+.audit-status { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.7fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.audit-status h4 { font-size: var(--text-sm); font-weight: 600; color: var(--fg-2); margin-bottom: 4px; }
+.audit-status p { font-size: var(--text-base); }
+.audit-ops { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.audit-ops .hint { font-size: var(--text-sm); color: var(--fg-2); align-self: center; }
+.audit-layout2 { display: grid; grid-template-columns: minmax(0, 1fr) 272px; gap: 16px; align-items: start; }
+.row-fail td { background: var(--bad-soft); }
+.row-fail td:first-child { border-left: 3px solid var(--danger); padding-left: 9px; }
+.table-compact .row-fail td { color: var(--fg); }
+.baseline { margin-left: 6px; }
+.cycle dt { font-size: var(--text-sm); color: var(--fg-2); }
+.cycle dd { margin-bottom: 8px; }
+.cycle dd:last-of-type { margin-bottom: 0; }
+
+/* audit compare */
+.cmp-head { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.cmp-side { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--paper-soft); }
+.cmp-side h4 { font-size: var(--text-lg); font-weight: 600; margin-bottom: 6px; }
+.selector { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; font-size: var(--text-sm); color: var(--fg-2); }
+.selector .filter { height: 30px; }
+.selector .opt { padding: 0 8px; }
+.delta-up { color: var(--success); font-weight: 600; }
+.delta-down { color: var(--danger); font-weight: 600; }
+.delta-flat { color: var(--fg-2); }
+.issue-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+.issue-group { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; }
+.issue-group h4 { font-size: var(--text-base); font-weight: 600; display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.issue-group h4 .count { font-family: var(--font-mono); color: var(--fg-2); font-weight: 400; }
+.issue-group li { padding: 8px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 8px; }
+.issue-group li:first-child { border-top: 0; }
+.issue-group li b { display: block; color: var(--fg); font-weight: 500; }
+.issue-group li span { color: var(--fg-2); }
+
+/* performance */
+.filters-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filters-bar .push { margin-left: auto; }
+.filters-bar .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius-md); overflow: hidden; height: 32px; }
+.filters-bar .seg span { padding: 0 10px; display: flex; align-items: center; font-size: 13px; color: var(--fg-2); border-left: 1px solid var(--line-strong); }
+.filters-bar .seg span:first-child { border-left: 0; }
+.filters-bar .seg span[aria-current="true"] { background: var(--surface-warm); color: var(--fg); font-weight: 600; }
+.dropdown-demo { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.dd { border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--elev-raised); padding: 6px; font-size: 13px; max-width: 320px; }
+.dd .eyebrow { padding: 4px 10px 6px; }
+.dd li { padding: 6px 10px; border-radius: var(--radius-sm); }
+.dd li[aria-selected="true"] { background: var(--surface-warm); font-weight: 600; }
+.dd .dates { display: flex; gap: 8px; padding: 6px 10px 4px; border-top: 1px solid var(--border); margin-top: 4px; }
+.dd .dates .input { height: 30px; font-size: 12px; }
+.kpis4 { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.kpi .foot { display: block; font-size: 11px; color: var(--fg-2); margin-top: 4px; }
+.kpi .delta { display: block; }
+.kpi.na { border-style: dashed; }
+.kpi.na b { color: var(--muted); font-size: var(--text-lg); }
+.chart { width: 100%; height: auto; display: block; }
+.chart .weekend { fill: var(--surface-warm); }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .axis { font: 10px var(--font-mono); fill: var(--fg-2); }
+.chart .cur { fill: none; stroke: var(--brand); stroke-width: 2; stroke-linejoin: round; }
+.chart .cmp { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.chart .backfill { fill: none; stroke: var(--brand); stroke-width: 2; stroke-dasharray: 2 4; }
+.chart .dot { fill: var(--brand); }
+.chart .dot-hollow { fill: var(--surface); stroke: var(--brand); stroke-width: 1.5; }
+.chart .gap { fill: var(--bad-soft); }
+.chart .mark { stroke: var(--accent-hover); stroke-width: 1.5; }
+.chart .mark-label { font: 600 10px var(--font-mono); fill: var(--accent-hover); }
+.chart .lbl { font: 10px var(--font-mono); fill: var(--fg-2); }
+.chart-legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: var(--text-sm); color: var(--fg-2); margin-top: 8px; }
+.chart-legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--brand); vertical-align: middle; margin-right: 6px; }
+.chart-legend i.cmp { border-top: 2px dashed var(--muted); }
+.chart-legend i.bf { border-top: 2px dotted var(--brand); }
+.chart-legend i.wk { width: 12px; height: 12px; border: 0; background: var(--surface-warm); }
+.chart-legend i.mk { width: 12px; height: 12px; border: 0; background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-hover); }
+.channels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.channels .table td, .channels .table th { padding: 7px 8px; font-size: var(--text-sm); }
+.kw-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+.scan-list li { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.scan-list li:first-child { border-top: 0; padding-top: 0; }
+.scan-list time { font-family: var(--font-mono); color: var(--fg-2); }
+.dotgrid { display: grid; grid-template-columns: repeat(9, 12px); gap: 2px; }
+.dotgrid i { width: 12px; height: 12px; border-radius: 2px; display: block; }
+.dotgrid .r1 { background: var(--success); }
+.dotgrid .r2 { background: color-mix(in oklch, var(--success) 55%, var(--ok-soft)); }
+.dotgrid .r3 { background: var(--accent); }
+.dotgrid .r4 { background: color-mix(in oklch, var(--danger) 70%, var(--bad-soft)); }
+.dotgrid .r5 { background: var(--danger); }
+.dotgrid-wrap { display: flex; gap: 14px; align-items: flex-start; margin-top: 12px; }
+.dot-legend { font-size: 11px; color: var(--fg-2); display: grid; gap: 3px; }
+.dot-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.exec-tl li { display: grid; grid-template-columns: 22px 52px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); align-items: baseline; }
+.exec-tl li:first-child { border-top: 0; padding-top: 0; }
+.exec-tl .n { font: 600 10px/1 var(--font-mono); color: var(--accent-hover); background: var(--accent-soft); padding: 3px 0; text-align: center; border-radius: 2px; }
+.exec-tl time { font-family: var(--font-mono); color: var(--fg-2); }
+.two-histories { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.ef-grid { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
+.ef-grid .table th, .ef-grid .table td { padding: 7px 6px; font-size: var(--text-sm); }
+.ef-grid .table .stamp { white-space: nowrap; }
+.history-note li { padding: 8px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 12px; }
+.history-note li:first-child { border-top: 0; padding-top: 0; }
+.history-note b { color: var(--fg); font-weight: 600; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pair > div { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--paper-soft); font-size: var(--text-sm); color: var(--fg-2); }
+.pair b { display: block; color: var(--fg); font-weight: 600; font-size: var(--text-base); }
+.pair .num { display: block; font-size: var(--text-2xl); font-weight: 600; color: var(--fg); line-height: 1.2; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.section-block + .section-block { margin-top: 16px; }
+
+/* six states */
+.states { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.state { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px; font-size: var(--text-sm); display: flex; flex-direction: column; gap: 8px; background: var(--paper-soft); }
+.state h5 { font-size: var(--text-sm); font-weight: 600; }
+.state .demo { padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); display: grid; gap: 6px; }
+.state .demo .notice { padding: 6px 8px; font-size: 11px; }
+.state .btn { height: 30px; padding: 0 10px; font-size: var(--text-sm); }
+.state .btn-busy { background: var(--surface-warm); border-color: var(--surface-warm); color: var(--fg-2); cursor: progress; }
+.state p { color: var(--fg-2); }
+.conflict { padding: 6px 8px; border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--accent-hover); font-size: 11px; border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--accent-soft)); }
+
+/* memory fact form */
+.fact-form { margin-top: 16px; }
+.fact-form .form { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.fact-form .field.wide { grid-column: 1 / -1; }
+.fact-form .submit-foot { grid-column: 1 / -1; }
+
+/* team links */
+.member-cell a, .skills a { color: var(--fg); }
+.member-cell a:hover, .skills a:hover { color: var(--brand-ink); }
+
+/* reports v4 */
+.reports-layout { display: grid; grid-template-columns: minmax(0, 1fr) 272px; gap: 16px; align-items: start; }
+.rank-note { margin-top: 6px; font-size: var(--text-sm); }
+.rank-note .gray { color: var(--fg-2); display: block; }
 </style>
 </head>
 <body>
@@ -729,10 +879,10 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 
 <!-- ===================================================== 说明 ===================================================== -->
 <header class="sheet-intro" data-od-id="sheet-intro">
-  <p class="eyebrow">SEO OPS · AM WORKSPACE · STATIC PROTOTYPE · V3 · 2026-09-09</p>
+  <p class="eyebrow">SEO OPS · AM WORKSPACE · STATIC PROTOTYPE · V4 · 2026-09-09</p>
   <h1>AM 工作台界面原型</h1>
   <p>这是 SEO Ops 内部 AM（Account Manager）用的操作系统。AM 同时服务多家餐厅商户，带领一个「人机混合团队」：AI Agent 负责诊断、关键词、内容、发布、报告，AM 自己也是团队成员之一，可以派单、接手、审核、人工执行。</p>
-  <p>本页是静态原型集：10 个界面按顺序排列，所有状态并排展示，不依赖点击。桌面 1280px 起，只使用 seo-ops 的 tokens，不引入外部字体、图标或脚本库。</p>
+  <p>本页是静态原型集：15 个界面按顺序排列，所有状态并排展示。每个按钮和链接都带 data-target / data-effect，悬停 title 写明「→ 目标 · 打开方式 · 是否改变状态」；页内锚点指向真实对象。桌面 1280px 起，只使用 seo-ops 的 tokens，图表为内联 SVG。</p>
   <div class="card principles" data-od-id="core-principles">
     <h3>三条原则</h3>
     <ol>
@@ -742,16 +892,21 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
     </ol>
   </div>
   <nav class="sheet-toc" aria-label="原型目录">
-    <a href="#am-home"><code>01</code>工作台首页</a>
-    <a href="#am-merchant-space"><code>02</code>商户空间</a>
-    <a href="#am-gbp-work-order"><code>03</code>GBP 内容工作单</a>
-    <a href="#am-exceptions"><code>04</code>异常恢复</a>
-    <a href="#am-task-detail-human"><code>05</code>Task 详情 · HUMAN 执行</a>
-    <a href="#am-dispatch-drawer"><code>06</code>对话派单抽屉</a>
-    <a href="#am-team"><code>07</code>团队</a>
-    <a href="#am-memory"><code>08</code>商户资料与记忆</a>
-    <a href="#am-model-cost"><code>09</code>模型与成本</a>
-    <a href="#am-reports"><code>10</code>数据与报告</a>
+    <a href="#am-home" data-target="#am-home" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态"><code>01</code>工作台首页</a>
+    <a href="#am-merchant-list" data-target="#am-merchant-list" data-effect="open" title="→ 商户列表 · 当前页打开 · 不改变状态"><code>02</code>商户列表</a>
+    <a href="#am-task-list" data-target="#am-task-list" data-effect="open" title="→ 任务与计划 · 当前页打开 · 不改变状态"><code>03</code>任务与计划</a>
+    <a href="#am-merchant-space" data-target="#am-merchant-space" data-effect="open" title="→ 商户空间 · George Merchant · 当前页打开 · 不改变状态"><code>04</code>商户空间</a>
+    <a href="#am-audit-center" data-target="#am-audit-center" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态"><code>05</code>Audit 中心</a>
+    <a href="#am-audit-compare" data-target="#am-audit-compare" data-effect="open" title="→ Audit 对比 #28 vs #26 · 当前页打开 · 不改变状态"><code>06</code>Audit 对比</a>
+    <a href="#am-performance" data-target="#am-performance" data-effect="open" title="→ Performance · George 8 月 · 当前页打开 · 不改变状态"><code>07</code>Performance</a>
+    <a href="#am-gbp-work-order" data-target="#am-gbp-work-order" data-effect="open" title="→ 工作单 WO-1204 · 当前页打开 · 不改变状态"><code>08</code>GBP 内容工作单</a>
+    <a href="#am-exceptions" data-target="#am-exceptions" data-effect="open" title="→ 异常恢复 · 当前页打开 · 不改变状态"><code>09</code>异常恢复</a>
+    <a href="#am-task-detail-human" data-target="#am-task-detail-human" data-effect="open" title="→ 任务 T-1205 · 当前页打开 · 不改变状态"><code>10</code>Task 详情 · HUMAN 执行</a>
+    <a href="#am-dispatch-drawer" data-target="#am-dispatch-drawer" data-effect="open" title="→ 团队对话抽屉 · 当前页打开 · 不改变状态"><code>11</code>对话派单抽屉</a>
+    <a href="#am-team" data-target="#am-team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态"><code>12</code>团队</a>
+    <a href="#am-memory" data-target="#am-memory" data-effect="open" title="→ 商户资料与记忆 · 当前页打开 · 不改变状态"><code>13</code>商户资料与记忆</a>
+    <a href="#am-model-cost" data-target="#am-model-cost" data-effect="open" title="→ 模型与成本 · 当前页打开 · 不改变状态"><code>14</code>模型与成本</a>
+    <a href="#am-reports" data-target="#am-reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态"><code>15</code>数据与报告</a>
   </nav>
 </header>
 
@@ -775,34 +930,32 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
   <div>
     <h3>按钮 · 每张卡一个主操作，其余收进「更多 ▾」；不可逆的主操作用 danger 色</h3>
     <div class="kit-row">
-      <button class="btn" type="button">查看</button>
-      <button class="btn btn-primary" type="button">审阅草稿</button>
-      <button class="btn btn-quiet" type="button">更多 ▾</button>
-      <button class="btn btn-danger-solid" type="button">批准这一版</button>
-      <button class="btn btn-danger" type="button">取消任务</button>
-      <button class="btn" type="button" disabled>已提交</button>
+      <button class="btn" type="button" data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">查看</button>
+      <button class="btn btn-primary" type="button" data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">审阅草稿</button>
+      <button class="btn btn-quiet" type="button" data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">更多 ▾</button>
+      <button class="btn btn-danger-solid" type="button" data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">批准这一版</button>
+      <button class="btn btn-danger" type="button" data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">取消任务</button>
+      <button class="btn" type="button" disabled data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">已提交</button>
     </div>
   </div>
   <div>
     <h3>提示条</h3>
     <div class="kit-notices">
-      <div class="notice notice-error" role="alert">GSC 授权已过期，只读同步无法继续。<span class="push"></span><button class="btn btn-sm" type="button">重新授权</button></div>
+      <div class="notice notice-error" role="alert">GSC 授权已过期，只读同步无法继续。<span class="push"></span><button class="btn btn-sm" type="button" data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">重新授权</button></div>
       <div class="notice notice-success" role="status">帖子已发布，读回对账通过，post_id 已写入发布记录。</div>
-      <div class="notice notice-warning">远端结果未确认，不会自动重发。<span class="push"></span><button class="btn btn-sm" type="button">开始核验</button></div>
+      <div class="notice notice-warning">远端结果未确认，不会自动重发。<span class="push"></span><button class="btn btn-sm" type="button" data-target="#shared-components" data-effect="none" title="→ 样式示例 · 无 · 不改变状态">开始核验</button></div>
     </div>
   </div>
   <div>
-    <h3>头像 · 两字母首字母圆块，人用蓝、Agent 用灰</h3>
-    <div class="kit-row">
-      <span class="avatar avatar-human" title="xander">XA</span>
-      <span class="avatar" title="Orchestrator">OR</span>
-      <span class="avatar" title="内容 Agent">CN</span>
-      <span class="avatar" title="审计 Agent">AU</span>
-      <span class="avatar" title="关键词 Agent">KW</span>
-      <span class="avatar" title="发布 Agent">PB</span>
-      <span class="avatar" title="报告 Agent">RP</span>
-    </div>
-    <p class="cell-sub" style="margin-top: 10px;">确认对话框在第 03、05 区块里按实际场景展示。</p>
+    <h3>交互契约 · data-target / data-effect / title</h3>
+    <dl class="params params-tight">
+      <dt><code>open</code></dt><dd>打开对象（当前页或路由）</dd>
+      <dt><code>submit</code></dt><dd>改变状态，通常先弹确认框</dd>
+      <dt><code>expand</code></dt><dd>就地展开，不离开页面</dd>
+      <dt><code>external</code></dt><dd>新标签打开外部页面</dd>
+      <dt><code>none</code></dt><dd>样式示例，不绑定动作</dd>
+    </dl>
+    <p class="cell-sub" style="margin-top: 8px;">悬停任一按钮可见 title，例如「→ 工作单 WO-1204 第②步 v2 · 当前页打开 · 不改变状态」。</p>
   </div>
 </div>
 
@@ -815,18 +968,18 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home" aria-current="page">工作台</a>
-        <a href="#am-merchant-space">商户</a>
-        <a href="#am-gbp-work-order">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" aria-current="page" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">AM WORKSPACE · INBOX</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
         <div class="page-head">
@@ -843,18 +996,18 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <p class="desc">超出 Plan 授权范围、增加预算，或需要内容审批的事。<span class="group-sort">排序：风险 → 截止 → 阻塞的下游数</span></p>
               </div>
 
-              <article class="card todo" data-od-id="decision-onlybear-verify">
+              <article class="card todo" id="decision-gbp-post-anchor" data-od-id="decision-onlybear-verify">
                 <div class="todo-head"><span class="stamp">Only Bear · Williamsburg</span><span class="stamp stamp-bad">待核验</span><span class="rule"><code>R5</code>系统已读回 3 次，最后一次 09-09 11:23，未找到精确匹配</span></div>
                 <h4>上次发布结果未知，需要你核验 · Only Bear</h4>
                 <p class="impact"><b>影响：</b>远端可能已发布也可能没有。核验前该门店的发布类任务全部暂停，不会自动重发。</p>
                 <div class="meta-line"><span>风险 <span class="risk-high">高</span></span><span>截止 <b>今天 18:00</b></span><span>阻塞下游 <b>1</b></span></div>
                 <div class="todo-foot">
-                  <button class="btn btn-primary" type="button">开始核验</button>
-                  <button class="btn btn-quiet" type="button">更多 ▾</button>
+                  <a class="btn btn-primary" href="#exc-e3" data-target="/publications/PB-0909-onlybear/verify" data-effect="open" title="→ 发布核验 PB-0909（异常 E3 卡）· 当前页打开 · 不改变状态">开始核验</a>
+                  <button class="btn btn-quiet" type="button" data-target="#decision-onlybear-verify" data-effect="expand" title="→ 更多操作菜单 · 就地展开 · 不改变状态">更多 ▾</button>
                   <span class="note push">不会自动重发</span>
                 </div>
                 <details class="basis">
-                  <summary>展开依据 ›</summary>
+                  <summary data-target="#decision-onlybear-verify" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">展开依据 ›</summary>
                   <dl class="why">
                     <dt>发生了什么</dt><dd>发布 Agent 收到超时，未取得 post_id。系统已读回门店帖子列表，未找到精确匹配。</dd>
                     <dt>读回记录</dt><dd>11:02 发布超时 → 11:03 读回 #1 未匹配 → 11:08 #2 未匹配 → 11:23 #3 未匹配 · 重读用尽，升级到这里</dd>
@@ -869,12 +1022,12 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <p class="impact"><b>影响：</b>不审阅，帖子停在草稿，9 月「GBP 内容 4 篇」少 1 篇；发布与远端核验两步都在等它。</p>
                 <div class="meta-line"><span>风险 <span class="risk-mid">中</span></span><span>截止 <b>09-10 12:00</b></span><span>阻塞下游 <b>2</b></span></div>
                 <div class="todo-foot">
-                  <a class="btn btn-primary" href="#am-gbp-work-order">审阅草稿</a>
-                  <button class="btn btn-quiet" type="button">更多 ▾</button>
-                  <a class="push" href="#am-gbp-work-order" style="font-size: var(--text-sm);">查看工作单 ›</a>
+                  <a class="btn btn-primary" href="#am-gbp-work-order" data-target="/work-orders/WO-1204?step=review&amp;version=2" data-effect="open" title="→ 工作单 WO-1204 第②步 v2 · 当前页打开 · 不改变状态">审阅草稿</a>
+                  <button class="btn btn-quiet" type="button" data-target="#decision-gbp-post" data-effect="expand" title="→ 更多操作菜单 · 就地展开 · 不改变状态">更多 ▾</button>
+                  <a class="push" href="#am-gbp-work-order" data-target="/work-orders/WO-1204" style="font-size: var(--text-sm);" data-effect="open" title="→ 工作单 WO-1204 · 当前页打开 · 不改变状态">查看工作单 ›</a>
                 </div>
                 <details class="basis">
-                  <summary>展开依据 ›</summary>
+                  <summary data-target="#decision-gbp-post" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">展开依据 ›</summary>
                   <dl class="why">
                     <dt>为什么要人</dt><dd>Plan #12 允许 GBP 帖子发布，但公开内容需逐条审批；审核是工作单 WO-1204 的第 ② 步，分派给你。</dd>
                     <dt>版本</dt><dd>v1 于 09-08 被你退回（图片来源未授权）；v2 于 09-09 10:12 换用 FBR 菜品图 #17 后完成。</dd>
@@ -889,12 +1042,12 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <p class="impact"><b>影响：</b>不批准，扫描和它之后的监测集重算都不会创建；brunch 簇本周没有完整基线。</p>
                 <div class="meta-line"><span>风险 <span class="risk-mid">中</span></span><span>截止 <b>09-11</b></span><span>阻塞下游 <b>1</b></span></div>
                 <div class="todo-foot">
-                  <button class="btn btn-primary" type="button">整体批准这 2 项</button>
-                  <button class="btn btn-quiet" type="button">更多 ▾</button>
+                  <a class="btn btn-primary" href="#am-dispatch-drawer" data-target="/change-requests/CR-0908-scan/approve" data-effect="submit" title="→ 变更申请 CR-0908（派单抽屉）· 弹确认框 · 改变状态（创建 2 项任务）">整体批准这 2 项</a>
+                  <button class="btn btn-quiet" type="button" data-target="#decision-change-request" data-effect="expand" title="→ 更多操作菜单 · 就地展开 · 不改变状态">更多 ▾</button>
                   <span class="note push">关联任务整体批准，避免只创建前半段</span>
                 </div>
                 <details class="basis">
-                  <summary>展开依据 ›</summary>
+                  <summary data-target="#decision-change-request" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">展开依据 ›</summary>
                   <dl class="why">
                     <dt>申请内容</dt><dd>新增 Local Falcon 扫描 120 credits（簇 #3 全部 12 词 + 品牌词 · 7×7），扫描后重算关键词监测集。</dd>
                     <dt>为什么范围外</dt><dd>本周期额度 100 credits 已用 40（昨天自动执行的 5 词基线扫描），再加 120 超出 60，Orchestrator 不能自动创建。</dd>
@@ -916,8 +1069,8 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <p class="impact"><b>影响：</b>未确认前，含价格的 GBP 更新帖草稿只能等待；本版帖子 v2 不受影响。</p>
                 <div class="meta-line"><span>George Merchant</span><span>截止 <b class="due-today">今天 18:00</b></span><span>阻塞下游 <b>1</b></span><span>T-1205</span></div>
                 <div class="todo-foot">
-                  <a class="btn" href="#am-task-detail-human">去处理</a>
-                  <button class="btn btn-quiet" type="button">更多 ▾</button>
+                  <a class="btn" href="#am-task-detail-human" data-target="/tasks/T-1205" data-effect="open" title="→ 任务 T-1205 价格确认 · 当前页打开 · 不改变状态">去处理</a>
+                  <button class="btn btn-quiet" type="button" data-target="#assign-brunch-price" data-effect="expand" title="→ 更多操作菜单 · 就地展开 · 不改变状态">更多 ▾</button>
                 </div>
               </article>
               <article class="card todo" data-od-id="assign-weekly-report">
@@ -926,8 +1079,8 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <p class="impact"><b>影响：</b>未审阅前只能导出带「草稿 · 未审核」标识的 PDF，不能正式交付。</p>
                 <div class="meta-line"><span>可可小卤</span><span>截止 <b>周五 09-11 12:00</b></span><span>阻塞下游 <b>0</b></span><span>R-3721 · 冻结快照 #221</span></div>
                 <div class="todo-foot">
-                  <a class="btn" href="#am-reports">去处理</a>
-                  <button class="btn btn-quiet" type="button">更多 ▾</button>
+                  <a class="btn" href="#am-reports" data-target="/reports/R-3721/review" data-effect="open" title="→ 周报 R-3721 审阅 · 当前页打开 · 不改变状态">去处理</a>
+                  <button class="btn btn-quiet" type="button" data-target="#assign-weekly-report" data-effect="expand" title="→ 更多操作菜单 · 就地展开 · 不改变状态">更多 ▾</button>
                 </div>
               </article>
             </section>
@@ -940,7 +1093,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
               </div>
               <div class="notice notice-warning" data-od-id="watch-coco-gsc">
                 <span>可可小卤 · GSC 授权已过期 · 责任人 xander · 动作 重新授权 · 影响 3 个同步任务（内部草稿不受影响）</span>
-                <span class="push"></span><a class="btn btn-sm" href="#am-merchant-space">重新授权</a>
+                <span class="push"></span><a class="btn btn-sm" href="#am-merchant-list" data-target="/merchants/3/integrations/gsc/reauth" data-effect="external" title="→ Google Search Console 授权页 · 新标签打开 · 改变状态（授权）">重新授权</a>
               </div>
             </section>
 
@@ -951,7 +1104,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <p class="desc">不需要任何动作的记录，包括授权范围内自动执行完成的事。默认折叠，展开后最新在上。</p>
               </div>
               <details class="card fyi" open>
-                <summary>4 条记录 <span class="count">· 今天 2 条 · 昨天 2 条</span></summary>
+                <summary data-target="#home-fyi" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">4 条记录 <span class="count">· 今天 2 条 · 昨天 2 条</span></summary>
                 <ul class="fyi-list">
                   <li><span>Maya 已核对 3 家门店营业时间，无需修改</span><span class="merchant">George · 可可小卤 · Only Bear</span><time>10:42</time></li>
                   <li><span>关键词版本 v3 已激活</span><span class="merchant">George Merchant</span><time>09:58</time></li>
@@ -965,7 +1118,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 
           <aside class="rail">
             <details class="card team-collapsed" data-od-id="home-team">
-              <summary><span>团队 · 5 个 Agent 工作中 1</span><span class="toggle"></span></summary>
+              <summary data-target="#home-team" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态"><span>团队 · 5 个 Agent 工作中 1</span><span class="toggle"></span></summary>
               <ul class="team-mini">
                 <li><span class="name"><span class="avatar" aria-hidden="true">OR</span>Orchestrator</span><span class="stamp">待命</span></li>
                 <li><span class="name"><span class="avatar" aria-hidden="true">CN</span>内容 Agent</span><span class="stamp">待命</span></li>
@@ -993,30 +1146,220 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
   </div>
 </section>
 
-<!-- ===================================================== 02 am-merchant-space ===================================================== -->
+<!-- ===================================================== 02 am-merchant-list ===================================================== -->
+<section class="sheet-section" id="am-merchant-list" data-od-id="am-merchant-list">
+  <p class="eyebrow">02 · AM-MERCHANT-LIST · LIGHTWEIGHT</p>
+  <h2>商户列表</h2>
+  <p class="sheet-note">左侧导航「商户」的落点。轻量列表：搜索、状态筛选、5 家商户，每行名称进入商户空间；返回时恢复搜索、筛选、分页与滚动位置。</p>
+  <div class="app" data-od-id="am-merchant-list-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" aria-current="page" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">MERCHANTS · 5</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
+      </header>
+      <main class="main">
+        <div class="page-head">
+          <p class="eyebrow">MERCHANTS · MINE · 5</p>
+          <h1>商户</h1>
+          <p class="sub">你负责的 5 家商户。待你处理 = 需要我决定 + 分派给我。</p>
+        </div>
+        <p class="restore-note">返回时恢复搜索、筛选、分页与滚动位置</p>
+        <div class="search" data-od-id="merchant-search">
+          <label for="m-search" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">搜索商户</label>
+          <input class="input" id="m-search" type="search" placeholder="搜索商户名称或门店…" />
+          <span class="filter"><span>状态</span>全部 <i>▾</i></span>
+          <span class="filter"><span>风险</span>全部 <i>▾</i></span>
+          <span class="filter"><span>负责 AM</span>xander <i>▾</i></span>
+          <button class="btn" type="button" data-target="/merchants?q=&status=all&risk=all&am=xander" data-effect="open" title="→ 商户列表（带筛选参数） · 当前页打开 · 不改变状态">应用筛选</button>
+        </div>
+        <section class="card" data-od-id="merchant-table">
+          <table class="table table-compact">
+            <thead><tr><th>名称</th><th>门店数</th><th>负责 AM</th><th>当前 Plan</th><th>待你处理</th><th>风险</th></tr></thead>
+            <tbody>
+              <tr data-od-id="merchant-row-george">
+                <td><a href="#am-merchant-space" data-target="/merchants/7" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">George Merchant</a><span class="cell-sub">2020 Broadway · New York</span></td>
+                <td>1</td><td>xander</td>
+                <td>Plan #12 · 2026-Q4 第 2 周<span class="cell-sub">7 项 · 4 完成</span></td>
+                <td><b>2</b><span class="cell-sub">审阅草稿 · 价格确认</span></td>
+                <td class="risk-cell"><span class="stamp stamp-warn">GSC 未授权</span></td>
+              </tr>
+              <tr data-od-id="merchant-row-coco">
+                <td><a href="#am-merchant-space" data-target="/merchants/3" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">可可小卤</a><span class="cell-sub">Flushing · 2 家门店</span></td>
+                <td>2</td><td>xander</td>
+                <td>Plan #9 · 2026-Q3 第 10 周<span class="cell-sub">9 项 · 5 完成 · 3 阻塞</span></td>
+                <td><b>1</b><span class="cell-sub">周报审阅</span></td>
+                <td class="risk-cell"><span class="stamp stamp-bad">GSC 授权过期</span></td>
+              </tr>
+              <tr data-od-id="merchant-row-onlybear">
+                <td><a href="#am-merchant-space" data-target="/merchants/5" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">Only Bear</a><span class="cell-sub">Williamsburg</span></td>
+                <td>1</td><td>xander</td>
+                <td>Plan #14 · 待批准<span class="cell-sub">Q4 草稿 7 项</span></td>
+                <td><b>1</b><span class="cell-sub">发布结果核验</span></td>
+                <td class="risk-cell"><span class="stamp stamp-bad">发布结果未知</span></td>
+              </tr>
+              <tr data-od-id="merchant-row-baohouse">
+                <td><a href="#am-merchant-space" data-target="/merchants/4" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">Bao House</a><span class="cell-sub">Jersey City</span></td>
+                <td>1</td><td>xander</td>
+                <td>Plan #11 · 2026-Q3 第 11 周<span class="cell-sub">6 项 · 6 完成</span></td>
+                <td>0</td>
+                <td class="risk-cell"><span class="stamp stamp-ok">无</span></td>
+              </tr>
+              <tr data-od-id="merchant-row-luckynoodle">
+                <td><a href="#am-merchant-space" data-target="/merchants/6" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">Lucky Noodle</a><span class="cell-sub">Flushing</span></td>
+                <td>1</td><td>xander</td>
+                <td>Plan #10 · 2026-Q3 第 12 周<span class="cell-sub">8 项 · 7 完成</span></td>
+                <td>0</td>
+                <td class="risk-cell"><span class="stamp stamp-ok">无</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="table-foot"><span>5 / 5 · 第 1 页</span><span>待你处理合计 4 · 与工作台「需要我决定 3 + 分派给我 2」的差异：价格确认与审阅草稿同属 George，按商户去重</span></div>
+        </section>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 03 am-task-list ===================================================== -->
+<section class="sheet-section" id="am-task-list" data-od-id="am-task-list">
+  <p class="eyebrow">03 · AM-TASK-LIST · TASKS &amp; PLANS</p>
+  <h2>任务与计划</h2>
+  <p class="sheet-note">左侧导航「任务与计划」的落点。筛选条 + 8 行任务表（含工作单归属），每行进入对应的工作单或任务详情；「查看 Plan」打开本区块内的 Plan #12 详情卡。</p>
+  <div class="app" data-od-id="am-task-list-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" aria-current="page" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">TASKS &amp; PLANS · 8 OPEN</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
+      </header>
+      <main class="main">
+        <div class="page-head">
+          <p class="eyebrow">TASKS · ALL MERCHANTS</p>
+          <h1>任务与计划</h1>
+          <p class="sub">所有商户的任务，按截止排序。工作单是任务的容器，一个工作单内的步骤各自是任务。</p>
+        </div>
+        <div class="search" data-od-id="task-filters">
+          <span class="filter"><span>商户</span>全部 <i>▾</i></span>
+          <span class="filter"><span>Plan</span>全部 <i>▾</i></span>
+          <span class="filter"><span>执行者</span>全部 <i>▾</i></span>
+          <span class="filter"><span>状态</span>未完成 <i>▾</i></span>
+          <button class="btn" type="button" data-target="/tasks?merchant=all&plan=all&executor=all&status=open" data-effect="open" title="→ 任务列表（带筛选参数） · 当前页打开 · 不改变状态">应用筛选</button>
+          <button class="btn btn-quiet push" type="button" data-target="#plan-12-card" data-effect="open" title="→ Plan #12 详情卡 · 当前页打开 · 不改变状态">查看 Plan</button>
+        </div>
+        <section class="card" data-od-id="task-table">
+          <table class="table table-compact">
+            <thead><tr><th>任务</th><th>商户</th><th>工作单归属</th><th>执行者</th><th>状态</th><th>截止</th></tr></thead>
+            <tbody>
+              <tr data-od-id="task-row-t1205"><td><a href="#am-task-detail-human" data-target="/tasks/T-1205" data-effect="open" title="→ 任务 T-1205 · 当前页打开 · 不改变状态">确认 Weekday Brunch Set 的价格与有效期</a><span class="cell-sub">T-1205 · HUMAN_INPUT</span></td><td>George Merchant</td><td>—</td><td>xander</td><td><span class="stamp stamp-info">执行中</span></td><td class="mono due-today">今天 18:00</td></tr>
+              <tr data-od-id="task-row-t1198"><td><a href="#am-exceptions" data-target="/tasks/T-1198" data-effect="open" title="→ 任务 T-1198 · 当前页打开 · 不改变状态">核验上次发布结果</a><span class="cell-sub">T-1198 · PUBLISH_VERIFY · 读回 3 次未匹配</span></td><td>Only Bear</td><td>WO-1180</td><td>xander</td><td><span class="stamp stamp-bad">需要处理</span></td><td class="mono due-today">今天 18:00</td></tr>
+              <tr data-od-id="task-row-wo1204"><td><a href="#am-gbp-work-order" data-target="/work-orders/WO-1204?step=review&amp;version=2" data-effect="open" title="→ 工作单 WO-1204 第②步 v2 · 当前页打开 · 不改变状态">审核帖子 v2 · brunch 主题</a><span class="cell-sub">WO-1204 第 ② 步 · REVIEW</span></td><td>George Merchant</td><td>WO-1204</td><td>xander</td><td><span class="stamp stamp-warn">审核中</span></td><td class="mono">09-10 12:00</td></tr>
+              <tr data-od-id="task-row-r3721"><td><a href="#am-reports" data-target="/reports/R-3721/review" data-effect="open" title="→ 报告 R-3721 审阅 · 当前页打开 · 不改变状态">审阅第 37 周周报草稿</a><span class="cell-sub">R-3721 · REPORT_REVIEW</span></td><td>可可小卤</td><td>—</td><td>xander</td><td><span class="stamp stamp-warn">待审阅</span></td><td class="mono">09-11 12:00</td></tr>
+              <tr data-od-id="task-row-t0931"><td><a href="#am-task-detail-human" data-target="/tasks/T-0931" data-effect="open" title="→ 任务 T-0931 · 当前页打开 · 不改变状态">向可可小卤索要官网后台权限</a><span class="cell-sub">T-0931 · HUMAN_INPUT · 阻塞 2 个任务</span></td><td>可可小卤</td><td>—</td><td>xander</td><td><span class="stamp stamp-info">执行中</span></td><td class="mono">09-11</td></tr>
+              <tr data-od-id="task-row-t1203"><td><a href="#am-merchant-space" data-target="/tasks/T-1203" data-effect="open" title="→ 任务 T-1203 · 当前页打开 · 不改变状态">GSC 只读同步</a><span class="cell-sub">T-1203 · SYNC_READONLY · GSC 未授权</span></td><td>George Merchant</td><td>—</td><td>审计 Agent</td><td><span class="stamp stamp-bad">阻塞</span></td><td class="mono">—</td></tr>
+              <tr data-od-id="task-row-wo1204-publish"><td><a href="#am-gbp-work-order" data-target="/work-orders/WO-1204?step=publish" data-effect="open" title="→ 工作单 WO-1204 第③步 · 当前页打开 · 不改变状态">发布帖子 v2</a><span class="cell-sub">WO-1204 第 ③ 步 · GBP_PUBLISH · 等第 ② 步</span></td><td>George Merchant</td><td>WO-1204</td><td>发布 Agent</td><td><span class="stamp">待前置</span></td><td class="mono">—</td></tr>
+              <tr data-od-id="task-row-t1206"><td><a href="#am-performance" data-target="/tasks/T-1206" data-effect="open" title="→ 任务 T-1206 · 当前页打开 · 不改变状态">Local Falcon 扫描 40 credits · 5 词基线</a><span class="cell-sub">T-1206 · PAID_SCAN · 额度内自动执行</span></td><td>George Merchant</td><td>—</td><td>关键词 Agent</td><td><span class="stamp stamp-ok">完成</span></td><td class="mono">09-08</td></tr>
+            </tbody>
+          </table>
+          <div class="table-foot"><span>8 / 23 · 显示未完成 + 今天完成的</span><span>状态来自任务事件流 · 最近更新 11:30</span></div>
+        </section>
+
+        <section class="card plan-card" id="plan-12-card" style="margin-top: 16px;" data-od-id="plan-12-card">
+          <div class="card-head">
+            <div><p class="eyebrow">PLAN #12 · GEORGE MERCHANT · ACTIVE</p><h3 class="card-title">Plan #12</h3></div>
+            <span class="stamp stamp-ok">生效中 · 至 2026-12-31</span>
+          </div>
+          <p class="plan-goal">目标：提升 brunch 相关本地可见度</p>
+          <div class="scope">
+            <div>
+              <h5><span class="stamp stamp-ok">允许</span>Orchestrator 自动创建并派发</h5>
+              <ul><li>GBP 帖子发布（逐条审批）</li><li>只读同步</li><li>关键词重算</li></ul>
+            </div>
+            <div>
+              <h5><span class="stamp stamp-bad">不允许</span>需要你单独批准</h5>
+              <ul><li>修改营业时间</li><li>付费扫描超过 100 credits</li></ul>
+            </div>
+          </div>
+          <div class="two-col" style="margin-top: 14px;">
+            <div>
+              <p class="eyebrow" style="margin-bottom: 6px;">TASKS · 7</p>
+              <ul class="plan-tasks">
+                <li><span>诊断复核 · Audit #28</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span>营业时间核对</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span>关键词监测集重算 v3</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span>Local Falcon 扫描 40 credits</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span>GBP 内容工作单 WO-1204（第 ② 步审核）</span><span class="stamp stamp-warn">待审批</span></li>
+                <li><span>确认 Weekday Brunch Set 价格 T-1205</span><span class="stamp stamp-info">执行中</span></li>
+                <li><span>GSC 只读同步 T-1203</span><span class="stamp stamp-bad">阻塞</span></li>
+              </ul>
+            </div>
+            <div>
+              <p class="eyebrow" style="margin-bottom: 6px;">BUDGET</p>
+              <dl class="params params-tight">
+                <dt>付费扫描</dt><dd>额度 100 credits · 已用 40 · 变更申请 120 等你批准</dd>
+                <dt>模型成本</dt><dd>按团队本月额度 $40 计 · 合计 $16.70</dd>
+              </dl>
+              <p class="eyebrow" style="margin: 12px 0 6px;">APPROVALS · 2</p>
+              <ul class="approvals">
+                <li><time>09-01 10:20</time>xander 批准 Plan #12 v1 · 7 项 · 无外部写入</li>
+                <li><time>09-06 15:05</time>xander 批准修订 v1.1 · 加入允许项「关键词重算」</li>
+              </ul>
+            </div>
+          </div>
+          <div class="btn-row" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);">
+            <button class="btn" type="button" data-target="/plans/12/revisions/new" data-effect="open" title="→ Plan #12 提出修订 · 当前页打开 · 不改变状态">提出修订</button>
+            <a class="btn btn-quiet" href="#am-merchant-space" data-target="/merchants/7" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">打开商户空间</a>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 04 am-merchant-space ===================================================== -->
 <section class="sheet-section" id="am-merchant-space" data-od-id="am-merchant-space">
-  <p class="eyebrow">02 · AM-MERCHANT-SPACE · DESKTOP 1280+</p>
+  <p class="eyebrow">04 · AM-MERCHANT-SPACE · OVERVIEW</p>
   <h2>商户空间</h2>
-  <p class="sheet-note">一家商户的全部上下文：服务周期、当前 Plan 的授权边界（允许 / 不允许两列）、付费扫描额度与进度、本周节奏、未解决 blocker，以及任务预览。范围外变更申请不会出现在任务表里，批准后才创建。</p>
+  <p class="sheet-note">六个 tab：概览｜计划与任务｜Performance｜Audit｜资料与记忆｜报告。概览只放四张摘要卡，每张卡一个「→ 查看」进入对应 tab；「计划与任务」预览表保留。</p>
   <div class="app" data-od-id="am-merchant-space-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space" aria-current="page">商户</a>
-        <a href="#am-gbp-work-order">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" aria-current="page" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">MERCHANT · GEORGE MERCHANT</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
-        <p class="crumb"><a href="#am-home">← 商户列表</a></p>
+        <p class="crumb"><a href="#am-merchant-list" data-target="#am-merchant-list" data-effect="open" title="→ 商户列表 · 当前页打开 · 不改变状态">← 商户列表</a></p>
         <header class="merchant-head" data-od-id="merchant-header">
           <div>
             <p class="eyebrow">MERCHANT · RESTAURANT · NEW YORK</p>
@@ -1029,87 +1372,57 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
             </dl>
           </div>
           <div class="btn-row">
-            <a class="btn" href="#am-dispatch-drawer">团队对话</a>
-            <a class="btn btn-quiet" href="#am-memory">编辑资料</a>
+            <a class="btn" href="#am-dispatch-drawer" data-target="/merchants/7/chat" data-effect="expand" title="→ 团队对话抽屉 · 就地展开 · 不改变状态">团队对话</a>
+            <a class="btn btn-quiet" href="#am-memory" data-target="/merchants/7/memory" data-effect="open" title="→ 商户资料与记忆 · George · 当前页打开 · 不改变状态">编辑资料</a>
           </div>
         </header>
         <nav class="tabs" aria-label="商户空间">
-          <a href="#am-merchant-space" aria-current="page">概览</a>
-          <a href="#am-merchant-space">计划与任务</a>
-          <a href="#am-memory">商户资料与记忆</a>
-          <a href="#am-reports">数据与诊断</a>
-          <a href="#am-reports">成果与报告</a>
+          <a href="#am-merchant-space" data-target="/merchants/7" aria-current="page" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">概览</a>
+          <a href="#am-task-list" data-target="/tasks?merchant=7&amp;plan=12" data-effect="open" title="→ 任务列表（带筛选参数） · 当前页打开 · 不改变状态">计划与任务</a>
+          <a href="#am-performance" data-target="/merchants/7/performance" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance</a>
+          <a href="#am-audit-center" data-target="/merchants/7/audits" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">Audit</a>
+          <a href="#am-memory" data-target="/merchants/7/memory" data-effect="open" title="→ 商户资料与记忆 · George · 当前页打开 · 不改变状态">资料与记忆</a>
+          <a href="#am-reports" data-target="/reports?merchant=7" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">报告</a>
         </nav>
 
-        <div class="two-col">
-          <section class="card" data-od-id="merchant-current-plan">
-            <div class="card-head">
-              <div><p class="eyebrow">CURRENT PLAN · #12 · ACTIVE</p><h3 class="card-title">当前 Plan</h3></div>
-              <a href="#am-merchant-space">查看 Plan ›</a>
-            </div>
-            <p class="plan-goal">目标：提升 brunch 相关本地可见度</p>
-            <div class="scope">
-              <div>
-                <h5><span class="stamp stamp-ok">允许</span>Orchestrator 自动创建并派发</h5>
-                <ul><li>GBP 帖子发布（逐条审批）</li><li>只读同步</li><li>关键词重算</li></ul>
-              </div>
-              <div>
-                <h5><span class="stamp stamp-bad">不允许</span>需要你单独批准</h5>
-                <ul><li>修改营业时间</li><li>付费扫描超过 100 credits</li></ul>
-              </div>
-            </div>
-            <dl class="params params-tight" style="margin-top: 14px;">
-              <dt>有效期</dt><dd>至 2026-12-31</dd>
-              <dt>批准</dt><dd>xander · 2026-09-01</dd>
-              <dt>付费扫描额度</dt><dd>100 credits · 本周期已用 40 · 变更申请 120 等你批准</dd>
-            </dl>
-            <div class="progress">
-              <div class="progress-head"><span>进度 · 8 项任务</span><span>4 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
-              <div class="bar-track" style="--max: 8;" role="img" aria-label="8 项任务：4 完成，2 进行中，1 待审批，1 阻塞">
-                <i class="seg-done" style="--v: 4;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
-              </div>
-              <div class="legend">
-                <span><i class="seg-done"></i><b>4</b>完成</span>
-                <span><i class="seg-doing"></i><b>2</b>进行中</span>
-                <span><i class="seg-wait"></i><b>1</b>待审批</span>
-                <span><i class="seg-block"></i><b>1</b>阻塞</span>
-              </div>
-            </div>
+        <div class="overview-grid" data-od-id="merchant-overview">
+          <section class="card summary" data-od-id="summary-audit">
+            <p class="eyebrow">AUDIT</p>
+            <b>最近一次有效 Audit · 09-07</b>
+            <span class="line">覆盖 6/7 · 未解决 P1 1 项 P2 2 项</span>
+            <a class="go" href="#am-audit-center" data-target="/merchants/7/audits" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">→ 查看</a>
           </section>
-          <div>
-            <section class="card" data-od-id="merchant-week">
-              <p class="eyebrow">THIS WEEK · W37</p>
-              <h3 class="card-title" style="margin-bottom: 10px;">本周节奏</h3>
-              <ul class="week">
-                <li><span class="day">周一 09-07</span><span>诊断复核 · Audit #28</span><span class="stamp stamp-ok">完成</span></li>
-                <li><span class="day">周二 09-08</span><span>关键词监测集重算 v3</span><span class="stamp stamp-ok">完成</span></li>
-                <li><span class="day today">周三 今天</span><span>审核帖子 v2 · 价格确认</span><span class="stamp stamp-warn">等你</span></li>
-                <li><span class="day">周二 09-08</span><span>Local Falcon 扫描 40 credits · 额度内自动执行</span><span class="stamp stamp-ok">完成</span></li>
-                <li><span class="day">周四 09-10</span><span>Local Falcon 扫描 120 credits · 变更申请</span><span class="stamp">等你批准</span></li>
-                <li><span class="day">周五 09-11</span><span>周报草稿</span><span class="stamp">未开始</span></li>
-              </ul>
-            </section>
-            <section class="card" data-od-id="merchant-blockers">
-              <p class="eyebrow">OPEN BLOCKERS · 2</p>
-              <h3 class="card-title" style="margin-bottom: 10px;">未解决 blocker</h3>
-              <ul class="blockers">
-                <li><b>GSC 未授权</b><span>阻塞：GSC 只读同步 · 自 09-02 · 责任人 xander · 动作：请商户在 Search Console 添加授权</span></li>
-                <li><b>价格未确认</b><span>阻塞：含价格的 GBP 更新帖 · 分派给 xander · 今天 18:00</span></li>
-              </ul>
-            </section>
-          </div>
+          <section class="card summary" data-od-id="summary-performance">
+            <p class="eyebrow">PERFORMANCE</p>
+            <b>当前期间 Performance · 最近 28 天</b>
+            <span class="line">曝光 +8% · 电话点击 −12%</span>
+            <span class="line gap">数据缺口：GSC 未授权</span>
+            <a class="go" href="#am-performance" data-target="/merchants/7/performance?range=last_28d" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">→ 查看</a>
+          </section>
+          <section class="card summary" data-od-id="summary-next-audit">
+            <p class="eyebrow">NEXT AUDIT</p>
+            <b>下次诊断 · 10-01 完整 Audit</b>
+            <span class="line">进行中：无</span>
+            <a class="go" href="#audit-cycle-card" data-target="/merchants/7/audits/schedule" data-effect="open" title="→ 周期配置 · 当前页打开 · 不改变状态">→ 周期设置</a>
+          </section>
+          <section class="card summary" data-od-id="summary-report">
+            <p class="eyebrow">REPORT</p>
+            <b>最近一期报告 · 8 月月报 v1</b>
+            <span class="line">已交付 09-03 · 邮件</span>
+            <a class="go" href="#am-reports" data-target="/reports/R-3608" data-effect="open" title="→ 报告 R-3608 · 当前页打开 · 不改变状态">→ 查看</a>
+          </section>
         </div>
 
-        <section class="card" style="margin-top: 16px;" data-od-id="merchant-tasks-preview">
+        <section class="card" data-od-id="merchant-tasks-preview">
           <div class="card-head">
             <div><p class="eyebrow">PLAN #12 · TASKS</p><h3 class="card-title">计划与任务</h3></div>
-            <a href="#am-merchant-space">查看全部 8 项 ›</a>
+            <a href="#am-task-list" data-target="/tasks?merchant=7&amp;plan=12" data-effect="open" title="→ 任务列表（带筛选参数） · 当前页打开 · 不改变状态">查看全部 7 项 ›</a>
           </div>
           <table class="table">
             <thead><tr><th>任务</th><th>类型</th><th>执行者</th><th>状态</th><th>就绪性</th><th>截止</th></tr></thead>
             <tbody>
               <tr>
-                <td><a href="#am-gbp-work-order">GBP 内容工作单 · brunch 主题</a><span class="cell-sub">WO-1204 · 第 ② 步 审核 · 帖子 v2</span></td>
+                <td><a href="#am-gbp-work-order" data-target="/work-orders/WO-1204?step=review&amp;version=2" data-effect="open" title="→ 工作单 WO-1204 第②步 v2 · 当前页打开 · 不改变状态">GBP 内容工作单 · brunch 主题</a><span class="cell-sub">WO-1204 · 第 ② 步 审核 · 帖子 v2</span></td>
                 <td><code>GBP_POST</code></td>
                 <td>xander<span class="cell-sub">草稿：内容 Agent · 发布：发布 Agent</span></td>
                 <td><span class="stamp stamp-warn">审核中</span></td>
@@ -1117,7 +1430,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <td class="mono">09-10 12:00</td>
               </tr>
               <tr>
-                <td><a href="#am-task-detail-human">确认 Weekday Brunch Set 的价格与有效期</a><span class="cell-sub">T-1205 · 人工执行</span></td>
+                <td><a href="#am-task-detail-human" data-target="/tasks/T-1205" data-effect="open" title="→ 任务 T-1205 · 当前页打开 · 不改变状态">确认 Weekday Brunch Set 的价格与有效期</a><span class="cell-sub">T-1205 · 人工执行</span></td>
                 <td><code>HUMAN_INPUT</code></td>
                 <td>xander</td>
                 <td><span class="stamp stamp-info">执行中</span></td>
@@ -1125,15 +1438,15 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <td class="mono due-today">今天 18:00</td>
               </tr>
               <tr>
-                <td>商户资料与记忆核对<span class="cell-sub">T-1207 · 8 条已确认事实 · 3 条候选</span></td>
-                <td><code>PROFILE_CHECK</code></td>
-                <td>审计 Agent</td>
-                <td><span class="stamp stamp-info">进行中</span></td>
+                <td><a href="#am-performance" data-target="/tasks/T-1206" data-effect="open" title="→ 任务 T-1206 · 当前页打开 · 不改变状态">Local Falcon 扫描 40 credits · 5 词基线</a><span class="cell-sub">T-1206 · 额度内自动执行 · 09-08</span></td>
+                <td><code>PAID_SCAN</code></td>
+                <td>关键词 Agent</td>
+                <td><span class="stamp stamp-ok">完成</span></td>
                 <td><span class="stamp stamp-ok">就绪</span></td>
-                <td class="mono">09-11</td>
+                <td class="mono">09-08</td>
               </tr>
               <tr>
-                <td>GSC 只读同步<span class="cell-sub">T-1203 · 自 09-02 阻塞</span></td>
+                <td><a href="#am-task-list" data-target="/tasks/T-1203" data-effect="open" title="→ 任务 T-1203 · 当前页打开 · 不改变状态">GSC 只读同步</a><span class="cell-sub">T-1203 · 自 09-02 阻塞</span></td>
                 <td><code>SYNC_READONLY</code></td>
                 <td>审计 Agent</td>
                 <td><span class="stamp stamp-bad">阻塞</span><span class="cell-sub">GSC 未授权</span></td>
@@ -1141,7 +1454,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <td class="mono">—</td>
               </tr>
               <tr>
-                <td>关键词监测集重算 v3<span class="cell-sub">T-1202 · 20 词 · 已激活</span></td>
+                <td><a href="#am-task-list" data-target="/tasks/T-1202" data-effect="open" title="→ 任务 T-1202 · 当前页打开 · 不改变状态">关键词监测集重算 v3</a><span class="cell-sub">T-1202 · 20 词 · 已激活</span></td>
                 <td><code>KEYWORD_RECALC</code></td>
                 <td>关键词 Agent</td>
                 <td><span class="stamp stamp-ok">完成</span></td>
@@ -1150,8 +1463,527 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
               </tr>
             </tbody>
           </table>
-          <div class="table-foot"><span>显示 5 / 8 项 · 已完成的「诊断复核」「营业时间核对」「Local Falcon 扫描 40 credits」未列出</span><span>范围外变更申请 2 项（扫描 120 credits + 重算）批准后才创建</span></div>
+          <div class="table-foot"><span>显示 5 / 7 项 · 已完成的「诊断复核」「营业时间核对」未列出</span><span>范围外变更申请 2 项（扫描 120 credits + 重算）批准后才创建</span></div>
         </section>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 05 am-audit-center ===================================================== -->
+<section class="sheet-section" id="am-audit-center" data-od-id="am-audit-center">
+  <p class="eyebrow">05 · AM-AUDIT-CENTER · MERCHANT AUDIT TAB</p>
+  <h2>Audit 中心</h2>
+  <p class="sheet-note">商户空间「Audit」tab。顶部是当前诊断状态与三个分开的操作；中间是 8 次诊断历史（失败一行用 error 色，不显示 0 分）；右侧是周期配置。</p>
+  <div class="app" data-od-id="am-audit-center-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" aria-current="page" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">MERCHANT · GEORGE MERCHANT · AUDIT</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
+      </header>
+      <main class="main">
+        <p class="crumb"><a href="#am-merchant-list" data-target="#am-merchant-list" data-effect="open" title="→ 商户列表 · 当前页打开 · 不改变状态">← 商户列表</a> · <a href="#am-merchant-space" data-target="#am-merchant-space" data-effect="open" title="→ 商户空间 · George Merchant · 当前页打开 · 不改变状态">George Merchant</a></p>
+        <div class="page-head">
+          <p class="eyebrow">AUDIT · CYCLE TASK + HISTORY</p>
+          <h1>Audit · George Merchant</h1>
+          <p class="sub">Audit 是周期任务 + 历史诊断：周期规则决定什么时候建任务，每次执行都是一项独立 Task，结果单独保留。打开历史报告不会重新调用 Agent。</p>
+        </div>
+        <nav class="tabs" aria-label="商户空间">
+          <a href="#am-merchant-space" data-target="/merchants/7" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">概览</a>
+          <a href="#am-task-list" data-target="/tasks?merchant=7&amp;plan=12" data-effect="open" title="→ 任务列表（带筛选参数） · 当前页打开 · 不改变状态">计划与任务</a>
+          <a href="#am-performance" data-target="/merchants/7/performance" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance</a>
+          <a href="#am-audit-center" data-target="/merchants/7/audits" aria-current="page" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">Audit</a>
+          <a href="#am-memory" data-target="/merchants/7/memory" data-effect="open" title="→ 商户资料与记忆 · George · 当前页打开 · 不改变状态">资料与记忆</a>
+          <a href="#am-reports" data-target="/reports?merchant=7" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">报告</a>
+        </nav>
+
+        <section class="card" data-od-id="audit-status-card">
+          <div class="audit-status">
+            <div>
+              <h4>最近有效报告</h4>
+              <p><b>Audit #28 · 完整诊断</b> · 执行 09-07 09:00 · 数据截至 09-06 · 覆盖 6/7（GSC 未授权）· 总分 <b>47</b></p>
+            </div>
+            <div>
+              <h4>进行中</h4>
+              <p>无</p>
+            </div>
+            <div>
+              <h4>下次执行</h4>
+              <p>10-01 06:00 完整诊断（周期规则 R-A1）</p>
+            </div>
+          </div>
+          <div class="audit-ops">
+            <a class="btn btn-primary" href="#am-audit-compare" data-target="/audits/28" data-effect="open" title="→ Audit #28 · 当前页打开 · 不改变状态">查看最近诊断</a>
+            <button class="btn" type="button" data-target="/merchants/7/audits/run" data-effect="submit" title="→ 立即诊断（新建 Audit Task） · 弹确认框 · 改变状态">立即诊断</button>
+            <span class="hint">同范围已有运行中的诊断时，会提示查看当前任务，不重复执行</span>
+            <a class="btn btn-quiet push" href="#audit-cycle-card" data-target="/merchants/7/audits/schedule" data-effect="open" title="→ 周期配置 · 当前页打开 · 不改变状态">周期设置</a>
+          </div>
+          <div class="notice notice-warning" style="margin-top: 12px;" data-od-id="audit-running-notice">
+            <span>「立即诊断」在同范围已有运行中的 Audit 时：Audit #29 正在执行（T-1201），查看当前任务</span>
+            <span class="push"></span>
+            <a class="btn btn-sm" href="#am-task-list" data-target="/tasks/T-1201" data-effect="open" title="→ 任务 T-1201 · 当前页打开 · 不改变状态">查看当前任务</a>
+          </div>
+        </section>
+
+        <div class="audit-layout2" style="margin-top: 16px;">
+          <section class="card" data-od-id="audit-history">
+            <div class="card-head">
+              <div><p class="eyebrow">HISTORY · 8 RUNS · NEWEST FIRST</p><h3 class="card-title">诊断历史</h3></div>
+              <span class="cell-sub">打开历史报告不会重新调用 Agent</span>
+            </div>
+            <table class="table table-compact">
+              <thead><tr><th>执行时间</th><th>诊断类型</th><th>触发</th><th>数据期间与截至</th><th>覆盖度</th><th>结果状态</th><th>得分</th><th>主要变化</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr data-od-id="audit-row-28"><td><b>#28</b><span class="cell-sub mono">09-07 09:00</span></td><td>完整 Audit</td><td>周期<span class="cell-sub">T-1188</span></td><td>08-08 至 09-06<span class="cell-sub">截至 09-06</span></td><td>6/7</td><td><span class="stamp stamp-warn">部分覆盖</span></td><td class="mono"><b>47</b></td><td>帖子活跃度 20 → 20，评价回复 61 → 55</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-audit-compare" data-target="/audits/28" data-effect="open" title="→ Audit #28 · 当前页打开 · 不改变状态">查看</a><a class="btn btn-sm btn-quiet" href="#am-audit-compare" data-target="/audits/compare?a=28&amp;b=26" data-effect="open" title="→ Audit 对比 #28 vs #26 · 当前页打开 · 不改变状态">对比</a></div></td></tr>
+                <tr data-od-id="audit-row-27"><td><b>#27</b><span class="cell-sub mono">09-03 14:10</span></td><td>专项复查</td><td>手动<span class="cell-sub">T-1171</span></td><td>08-20 至 09-02<span class="cell-sub">截至 09-02</span></td><td>2/7<span class="cell-sub">只查帖子与评价</span></td><td><span class="stamp stamp-ok">完整</span></td><td class="mono">专项 · 不计总分</td><td>复查项：P1 帖子、P3 回复率</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-audit-compare" data-target="/audits/27" data-effect="open" title="→ Audit #27 · 当前页打开 · 不改变状态">查看</a><span class="btn btn-sm btn-quiet" aria-disabled="true" data-target="/audits/compare?a=27" data-effect="none" title="→ 专项复查不参与总分对比 · 无 · 不改变状态">对比</span></div></td></tr>
+                <tr data-od-id="audit-row-26"><td><b>#26</b><span class="cell-sub mono">08-31 06:00</span></td><td>完整 Audit</td><td>周期<span class="cell-sub">T-1150</span></td><td>08-01 至 08-30<span class="cell-sub">截至 08-30</span></td><td>6/7</td><td><span class="stamp stamp-warn">部分覆盖</span></td><td class="mono"><b>52</b></td><td>本地排名 39 → 36，评价回复 58 → 61</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-audit-compare" data-target="/audits/26" data-effect="open" title="→ Audit #26 · 当前页打开 · 不改变状态">查看</a><a class="btn btn-sm btn-quiet" href="#am-audit-compare" data-target="/audits/compare?a=26&amp;b=24" data-effect="open" title="→ Audit 对比 #26 vs #24 · 当前页打开 · 不改变状态">对比</a></div></td></tr>
+                <tr class="row-fail" data-od-id="audit-row-25"><td><b>#25</b><span class="cell-sub mono">08-24 06:00</span></td><td>完整 Audit</td><td>周期<span class="cell-sub">T-1133</span></td><td>07-25 至 08-23<span class="cell-sub">输入已固定</span></td><td>—</td><td><span class="stamp stamp-bad">执行失败</span><span class="cell-sub">审计 Agent 超时，输入已固定，未产生结果</span></td><td class="mono">— · 保留上一次有效结果 #24</td><td>—</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-task-list" data-target="/tasks/T-1133" data-effect="open" title="→ 任务 T-1133 · 当前页打开 · 不改变状态">查看</a></div></td></tr>
+                <tr data-od-id="audit-row-24"><td><b>#24</b><span class="cell-sub mono">08-17 06:00</span></td><td>完整 Audit</td><td>周期<span class="cell-sub">T-1116</span></td><td>07-18 至 08-16<span class="cell-sub">截至 08-16</span></td><td>6/7</td><td><span class="stamp stamp-warn">部分覆盖</span></td><td class="mono"><b>52</b></td><td>营业时间与官网不一致 → 已修复</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-audit-compare" data-target="/audits/24" data-effect="open" title="→ Audit #24 · 当前页打开 · 不改变状态">查看</a><a class="btn btn-sm btn-quiet" href="#am-audit-compare" data-target="/audits/compare?a=24&amp;b=23" data-effect="open" title="→ Audit 对比 #24 vs #23 · 当前页打开 · 不改变状态">对比</a></div></td></tr>
+                <tr data-od-id="audit-row-23"><td><b>#23</b><span class="cell-sub mono">08-10 06:00</span></td><td>完整 Audit</td><td>周期<span class="cell-sub">T-1105</span></td><td>07-11 至 08-09<span class="cell-sub">截至 08-09</span></td><td>6/7</td><td><span class="stamp stamp-warn">部分覆盖</span></td><td class="mono"><b>50</b></td><td>本地排名 36 → 39</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-audit-compare" data-target="/audits/23" data-effect="open" title="→ Audit #23 · 当前页打开 · 不改变状态">查看</a><a class="btn btn-sm btn-quiet" href="#am-audit-compare" data-target="/audits/compare?a=23&amp;b=21" data-effect="open" title="→ Audit 对比 #23 vs #21 · 当前页打开 · 不改变状态">对比</a></div></td></tr>
+                <tr data-od-id="audit-row-22"><td><b>#22</b><span class="cell-sub mono">08-03 15:30</span></td><td>专项复查</td><td>手动<span class="cell-sub">T-1090</span></td><td>07-20 至 08-02<span class="cell-sub">截至 08-02</span></td><td>2/7<span class="cell-sub">营业时间、NAP</span></td><td><span class="stamp stamp-ok">完整</span></td><td class="mono">专项 · 不计总分</td><td>复查项：营业时间、NAP</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-audit-compare" data-target="/audits/22" data-effect="open" title="→ Audit #22 · 当前页打开 · 不改变状态">查看</a><span class="btn btn-sm btn-quiet" aria-disabled="true" data-target="/audits/compare?a=22" data-effect="none" title="→ 专项复查不参与总分对比 · 无 · 不改变状态">对比</span></div></td></tr>
+                <tr data-od-id="audit-row-21"><td><b>#21</b><span class="cell-sub mono">07-27 10:00</span></td><td>首次入驻诊断</td><td>手动<span class="cell-sub">初始化 Plan</span></td><td>06-27 至 07-26<span class="cell-sub">截至 07-26</span></td><td>5/7<span class="cell-sub">无排名扫描、无 GSC</span></td><td><span class="stamp stamp-warn">部分覆盖</span></td><td class="mono"><b>44</b><span class="stamp baseline">基线</span></td><td>首次入驻，无对比</td><td><div class="btn-row"><a class="btn btn-sm" href="#am-audit-compare" data-target="/audits/21" data-effect="open" title="→ Audit #21 · 当前页打开 · 不改变状态">查看</a></div></td></tr>
+              </tbody>
+            </table>
+            <div class="table-foot"><span>总分 = 已评分 6 个维度等权平均（284 ÷ 6 = 47.3）；N/A 不计入；0 分 = 已检查，完全缺失 · 专项复查不计总分 · 失败不显示 0 分</span><span>规则版本 v2 自 #23 起；#21、#22 为 v1</span></div>
+          </section>
+
+          <aside>
+            <section class="card cycle" id="audit-cycle-card" data-od-id="audit-cycle-card">
+              <p class="eyebrow">CYCLE · R-A1</p>
+              <h3 class="card-title" style="margin-bottom: 10px;">周期配置</h3>
+              <dl>
+                <dt>频率</dt><dd>每月完整诊断（1 日 06:00）+ 每周重点复查（周一）</dd>
+                <dt>时区</dt><dd>America/New_York</dd>
+                <dt>检查范围</dt><dd>7 个维度（GSC 未授权时跳过官网技术）</dd>
+                <dt>预算</dt><dd>每次 ≤ $1.50 · 本月已用 $2.40</dd>
+                <dt>数据新鲜度</dt><dd>GBP 数据延迟 ≤ 3 天，否则标部分覆盖</dd>
+                <dt>暂停条件</dt><dd>商户凭证失效 / 商户归档 / 连续 2 次执行失败</dd>
+                <dt>归属</dt><dd>服务 Plan #12</dd>
+              </dl>
+              <div class="btn-row" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+                <button class="btn" type="button" data-target="/merchants/7/audits/schedule/edit" data-effect="open" title="→ 修改周期 · 当前页打开 · 不改变状态">修改周期</button>
+              </div>
+              <p class="cell-sub" style="margin-top: 8px;">修改后从下一次执行生效，不改历史</p>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 06 am-audit-compare ===================================================== -->
+<section class="sheet-section" id="am-audit-compare" data-od-id="am-audit-compare">
+  <p class="eyebrow">06 · AM-AUDIT-COMPARE · #28 VS #26</p>
+  <h2>Audit 对比详情</h2>
+  <p class="sheet-note">两次完整诊断的对比：维度用 ± 数字与方向词表达变化；问题按新增 / 持续 / 已核验解决 / 再次出现四组，每条带优先级、关联 Plan/Task 与证据。</p>
+  <div class="app" data-od-id="am-audit-compare-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" aria-current="page" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">MERCHANT · GEORGE MERCHANT · AUDIT · COMPARE</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
+      </header>
+      <main class="main">
+        <p class="crumb"><a href="#am-merchant-list" data-target="#am-merchant-list" data-effect="open" title="→ 商户列表 · 当前页打开 · 不改变状态">← 商户列表</a> · <a href="#am-merchant-space" data-target="#am-merchant-space" data-effect="open" title="→ 商户空间 · George Merchant · 当前页打开 · 不改变状态">George Merchant</a> · <a href="#am-audit-center" data-target="#am-audit-center" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">Audit</a></p>
+        <div class="page-head">
+          <p class="eyebrow">AUDIT COMPARE · #28 VS #26 · RULES V2</p>
+          <h1>Audit #28 与 #26 对比 · George Merchant</h1>
+        </div>
+        <div class="selector" data-od-id="compare-selector">
+          <span>与：</span>
+          <span class="filter" aria-current="true"><span>上一次</span>#26 <i>▾</i></span>
+          <a class="filter opt" href="#am-audit-compare" data-target="/audits/compare?a=28&amp;b=21" data-effect="open" title="→ Audit 对比 #28 vs #21 · 当前页打开 · 不改变状态">首次基线（#21）</a>
+          <a class="filter opt" href="#am-audit-center" data-target="/audits/compare?a=28&amp;pick=1" data-effect="open" title="→ Audit 对比 · 当前页打开 · 不改变状态">指定一次</a>
+          <span class="stamp stamp-ok" style="margin-left: 8px;">评分规则 v2 · 检查范围一致 · 可直接比较</span>
+        </div>
+
+        <div class="cmp-head" data-od-id="compare-heads">
+          <div class="cmp-side">
+            <p class="eyebrow">BASE · #26</p>
+            <h4>Audit #26 · 总分 52</h4>
+            <dl class="params params-tight">
+              <dt>执行时间</dt><dd class="mono">08-31 06:00</dd>
+              <dt>数据期间</dt><dd>08-01 至 08-30 · 截至 08-30</dd>
+              <dt>覆盖度</dt><dd>6/7 · GSC 未授权</dd>
+              <dt>评分规则</dt><dd>v2</dd>
+            </dl>
+          </div>
+          <div class="cmp-side">
+            <p class="eyebrow">CURRENT · #28</p>
+            <h4>Audit #28 · 总分 47</h4>
+            <dl class="params params-tight">
+              <dt>执行时间</dt><dd class="mono">09-07 09:00</dd>
+              <dt>数据期间</dt><dd>08-08 至 09-06 · 截至 09-06</dd>
+              <dt>覆盖度</dt><dd>6/7 · GSC 未授权</dd>
+              <dt>评分规则</dt><dd>v2</dd>
+            </dl>
+          </div>
+        </div>
+
+        <section class="card" style="margin-top: 16px;" data-od-id="compare-dimensions">
+          <div class="card-head">
+            <div><p class="eyebrow">DIMENSIONS · 7</p><h3 class="card-title">维度对比</h3></div>
+            <span class="cell-sub">总分 = 已评分 6 个维度等权平均：#26 312 ÷ 6 = 52.0，#28 284 ÷ 6 = 47.3</span>
+          </div>
+          <table class="table table-compact">
+            <thead><tr><th>维度</th><th>#26</th><th>#28</th><th>变化</th></tr></thead>
+            <tbody>
+              <tr><td>GBP 资料完整度</td><td class="mono">98</td><td class="mono">78</td><td><span class="delta-down">−20 · 下降</span><span class="cell-sub">菜单照片超过 90 天未更新，2 个属性缺失</span></td></tr>
+              <tr><td>NAP 一致性</td><td class="mono">97</td><td class="mono">90</td><td><span class="delta-down">−7 · 下降</span><span class="cell-sub">一处引用电话不一致</span></td></tr>
+              <tr><td>评价与回复</td><td class="mono">61</td><td class="mono">55</td><td><span class="delta-down">−6 · 下降</span><span class="cell-sub">回复率 62% → 38%</span></td></tr>
+              <tr><td>本地排名</td><td class="mono">36</td><td class="mono">41</td><td><span class="delta-up">+5 · 上升</span><span class="cell-sub">监测集 ARP 7.3 → 6.8</span></td></tr>
+              <tr><td>帖子活跃度</td><td class="mono">20</td><td class="mono">20</td><td><span class="delta-flat">0 · 持平</span><span class="cell-sub">仍无更新帖，WO-1204 审核中</span></td></tr>
+              <tr><td>结构化数据</td><td class="mono">0</td><td class="mono">0</td><td><span class="delta-flat">0 · 持平（均为 0 分）</span><span class="cell-sub">已检查，完全缺失</span></td></tr>
+              <tr><td>官网技术</td><td class="mono">N/A</td><td class="mono">N/A</td><td><span class="delta-flat">— · 均未覆盖</span><span class="cell-sub">GSC 未授权，未检查</span></td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <div class="issue-groups" data-od-id="compare-issues">
+          <section class="issue-group card" data-od-id="issues-new">
+            <h4>新增问题 <span class="count">（1）</span></h4>
+            <ul>
+              <li><span class="stamp stamp-warn">P2</span><span><b>菜单照片超过 90 天未更新</b>未转任务 · <a href="#am-audit-compare" data-target="/audits/28/evidence/media-list-0906" data-effect="open" title="→ Audit #28 证据 media-list-0906 · 当前页打开 · 不改变状态">证据：GBP 媒体列表 09-06</a></span></li>
+            </ul>
+          </section>
+          <section class="issue-group card" data-od-id="issues-persist">
+            <h4>持续存在 <span class="count">（2）</span></h4>
+            <ul>
+              <li><span class="stamp stamp-bad">P1</span><span><b>GBP 超过 60 天无更新帖</b>已关联 <a href="#am-gbp-work-order" data-target="/work-orders/WO-1204?step=review&amp;version=2" data-effect="open" title="→ 工作单 WO-1204 第②步 v2 · 当前页打开 · 不改变状态">WO-1204（审核中）</a> · 不重新派单 · <a href="#am-audit-compare" data-target="/audits/28/evidence/posts-0906" data-effect="open" title="→ Audit #28 证据 posts-0906 · 当前页打开 · 不改变状态">证据：GBP 帖子列表 09-06</a></span></li>
+              <li><span class="stamp stamp-warn">P2</span><span><b>结构化数据缺失</b>依赖官网后台权限 · <a href="#am-task-list" data-target="/tasks/T-1190" data-effect="open" title="→ 任务 T-1190 · 当前页打开 · 不改变状态">T-1190 受阻</a> · <a href="#am-audit-compare" data-target="/audits/28/evidence/schema-0906" data-effect="open" title="→ Audit #28 证据 schema-0906 · 当前页打开 · 不改变状态">证据：官网抓取 09-06</a></span></li>
+            </ul>
+          </section>
+          <section class="issue-group card" data-od-id="issues-resolved">
+            <h4>已核验解决 <span class="count">（1）</span></h4>
+            <ul>
+              <li><span class="stamp stamp-ok">P3</span><span><b>营业时间与官网不一致</b><a href="#am-task-list" data-target="/tasks/T-1160" data-effect="open" title="→ 任务 T-1160 · 当前页打开 · 不改变状态">T-1160 已完成 08-29</a> · 新证据：<a href="#am-audit-compare" data-target="/audits/28/evidence/hours-readback-0906" data-effect="open" title="→ Audit #28 证据 hours-readback-0906 · 当前页打开 · 不改变状态">GBP 读回 09-06 一致 ✓</a></span></li>
+            </ul>
+          </section>
+          <section class="issue-group card" data-od-id="issues-recurred">
+            <h4>再次出现 <span class="count">（1）</span></h4>
+            <ul>
+              <li><span class="stamp stamp-warn">P3</span><span><b>评价回复率低于 50%</b>08-31 曾解决（62%）· 09-06 又降到 38% · 关联既有任务 <a href="#am-task-list" data-target="/tasks/T-1175" data-effect="open" title="→ 任务 T-1175 · 当前页打开 · 不改变状态">T-1175</a>（回复属外部写入，需单独授权）· <a href="#am-audit-compare" data-target="/audits/28/evidence/reviews-0906" data-effect="open" title="→ Audit #28 证据 reviews-0906 · 当前页打开 · 不改变状态">证据：评价列表 09-06</a></span></li>
+            </ul>
+          </section>
+        </div>
+
+        <section class="card" style="margin-top: 16px;" data-od-id="compare-foot">
+          <p class="lead">同一问题反复出现时关联已有任务，不每次重新派单；Task 已完成不等于问题已解决，需要新证据确认。</p>
+          <div class="btn-row" style="margin-top: 12px;">
+            <button class="btn btn-primary" type="button" data-target="/audits/28/propose-plan" data-effect="submit" title="→ 把 Audit #28 交给 Orchestrator 提计划 · 弹确认框 · 改变状态">交给 Orchestrator 提计划</button>
+            <button class="btn" type="button" data-target="/audits/compare/export?a=28&amp;b=26&amp;format=pdf" data-effect="submit" title="→ 导出对比 PDF · 弹确认框 · 改变状态">导出对比</button>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 07 am-performance ===================================================== -->
+<section class="sheet-section" id="am-performance" data-od-id="am-performance">
+  <p class="eyebrow">07 · AM-PERFORMANCE · MERCHANT PERFORMANCE TAB · AUGUST</p>
+  <h2>Performance</h2>
+  <p class="sheet-note">商户空间「Performance」tab。统一筛选栏（门店 / 期间 / 比较期 / 粒度 / 数据状态）；四张指标卡分开显示；趋势为内联 SVG 折线，当前期实线、比较期虚线、周末浅灰、缺失三天断线；关键词与排名按实际扫描时间展示；底部说明两种历史。</p>
+  <div class="app" data-od-id="am-performance-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" aria-current="page" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">MERCHANT · GEORGE MERCHANT · PERFORMANCE · 2026-08</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
+      </header>
+      <main class="main">
+        <p class="crumb"><a href="#am-merchant-list" data-target="#am-merchant-list" data-effect="open" title="→ 商户列表 · 当前页打开 · 不改变状态">← 商户列表</a> · <a href="#am-merchant-space" data-target="#am-merchant-space" data-effect="open" title="→ 商户空间 · George Merchant · 当前页打开 · 不改变状态">George Merchant</a></p>
+        <div class="page-head">
+          <p class="eyebrow">PERFORMANCE · 2020 BROADWAY · 08-01 TO 08-31 VS 07-01 TO 07-31</p>
+          <h1>Performance · George Merchant</h1>
+        </div>
+        <nav class="tabs" aria-label="商户空间">
+          <a href="#am-merchant-space" data-target="/merchants/7" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">概览</a>
+          <a href="#am-task-list" data-target="/tasks?merchant=7&amp;plan=12" data-effect="open" title="→ 任务列表（带筛选参数） · 当前页打开 · 不改变状态">计划与任务</a>
+          <a href="#am-performance" data-target="/merchants/7/performance" aria-current="page" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance</a>
+          <a href="#am-audit-center" data-target="/merchants/7/audits" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">Audit</a>
+          <a href="#am-memory" data-target="/merchants/7/memory" data-effect="open" title="→ 商户资料与记忆 · George · 当前页打开 · 不改变状态">资料与记忆</a>
+          <a href="#am-reports" data-target="/reports?merchant=7" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">报告</a>
+        </nav>
+
+        <section class="card" data-od-id="perf-filters">
+          <div class="filters-bar">
+            <span class="filter"><span>门店范围</span>2020 Broadway <i>▾</i></span>
+            <span class="filter" aria-current="true"><span>统计期间</span>自定义 08-01 至 08-31 <i>▾</i></span>
+            <span class="filter"><span>比较期间</span>上一等长期间 07-01 至 07-31 <i>▾</i></span>
+            <span class="seg" role="group" aria-label="粒度"><span aria-current="true">日</span><span>周</span><span>月</span></span>
+            <span class="stamp stamp-warn">部分数据 · GSC 未授权</span>
+            <button class="btn" type="button" data-target="/merchants/7/performance?locations=2020-broadway&amp;from=2026-08-01&amp;to=2026-08-31&amp;cmp=prev_equal&amp;granularity=day" data-effect="open" title="→ /merchants/7/performance?locations=2020-broadway&amp;from=2026-08-01&amp;to=2026-08-31&amp;cmp=prev_equal&amp;granularity=day · 当前页打开 · 不改变状态">应用筛选</button>
+            <span class="push"></span>
+            <button class="btn btn-primary" type="button" data-target="/merchants/7/performance/analyze?from=2026-08-01&amp;to=2026-08-31" data-effect="submit" title="→ 分析 8 月表现（调用 Orchestrator） · 弹确认框 · 改变状态">分析这段表现</button>
+            <button class="btn" type="button" data-target="/reports/new?merchant=7&amp;from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 新建报告（带期间参数） · 当前页打开 · 不改变状态">生成报告</button>
+            <button class="btn" type="button" data-target="/merchants/7/sync" data-effect="submit" title="→ 同步数据（GBP / 评价） · 弹确认框 · 改变状态">同步数据</button>
+          </div>
+          <p class="cell-sub" style="margin-top: 8px;">选择期间只查询已有数据，不会生成报告、调用 LLM 或购买扫描。</p>
+          <div class="dropdown-demo" data-od-id="perf-dropdowns">
+            <div class="dd" role="listbox" aria-label="统计期间 · 展开态">
+              <p class="eyebrow">统计期间 · 展开态</p>
+              <ul>
+                <li>最近 7 天</li><li>最近 28 天</li><li>最近 90 天</li><li>本周</li><li>上周</li><li>本月</li><li>上月</li><li>服务周期（2026-Q4）</li>
+                <li aria-selected="true">自定义起止日期</li>
+              </ul>
+              <div class="dates">
+                <input class="input mono" type="text" value="2026-08-01" aria-label="起始日期" />
+                <input class="input mono" type="text" value="2026-08-31" aria-label="结束日期" />
+              </div>
+            </div>
+            <div class="dd" role="listbox" aria-label="比较期间 · 展开态">
+              <p class="eyebrow">比较期间 · 展开态</p>
+              <ul>
+                <li aria-selected="true">上一等长期间 · 07-01 至 07-31</li>
+                <li>上一自然周期 · 7 月</li>
+                <li>去年同期 · 2025-08</li>
+                <li>指定期间</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="section-block" data-od-id="perf-summary" style="margin-top: 16px;">
+          <p class="eyebrow" style="margin-bottom: 8px;">A · SUMMARY · 08-01 TO 08-31 VS 07-01 TO 07-31</p>
+          <div class="kpis4">
+            <div class="kpi card" data-od-id="kpi-impressions"><span class="label">GBP 曝光</span><b>12,480</b><span class="delta">vs 11,560 · <span class="up">+8.0%</span></span></div>
+            <div class="kpi card" data-od-id="kpi-web-clicks"><span class="label">官网点击</span><b>402</b><span class="delta">vs 371 · <span class="up">+8.4%</span></span></div>
+            <div class="kpi card" data-od-id="kpi-calls"><span class="label">电话按钮点击</span><b>96</b><span class="delta">vs 109 · <span class="down">−11.9%</span></span><span class="foot">电话按钮点击 ≠ 接通或到店</span></div>
+            <div class="kpi card" data-od-id="kpi-directions"><span class="label">路线请求</span><b>188</b><span class="delta">vs 174 · <span class="up">+8.0%</span></span></div>
+            <div class="kpi card na" data-od-id="kpi-gsc"><span class="label">GSC 点击 / 展示</span><b>未授权 · 无数据</b><span class="delta">不显示 0</span><span class="foot"><a href="#am-home" data-target="/merchants/7/integrations/gsc/reauth" data-effect="external" title="→ Google Search Console 授权页 · 新标签打开 · 不改变状态">去授权</a></span></div>
+          </div>
+        </section>
+
+        <section class="card section-block" data-od-id="perf-trend">
+          <div class="card-head">
+            <div><p class="eyebrow">B · TREND · GBP 曝光 · DAILY</p><h3 class="card-title">趋势</h3></div>
+            <span class="cell-sub">横轴 31 天 · 当前期实线 · 比较期虚线（按第 n 天对齐）· 周末浅灰</span>
+          </div>
+          <svg class="chart" viewBox="0 0 920 236" role="img" aria-label="GBP 曝光 08-01 至 08-31 日趋势，比较期 07-01 至 07-31；08-12 至 08-14 为补数">
+<rect class="weekend" x="29.7" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="58.3" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="230.3" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="259.0" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="431.0" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="459.7" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="631.7" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="660.3" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="832.3" y="14" width="28.7" height="164"/>
+<rect class="weekend" x="861.0" y="14" width="28.7" height="164"/>
+<rect class="gap" x="345.0" y="14" width="86.0" height="164"/>
+<line class="grid" x1="44" y1="178.0" x2="904" y2="178.0"/>
+<text class="axis" x="38" y="181.5" text-anchor="end">0</text>
+<line class="grid" x1="44" y1="123.3" x2="904" y2="123.3"/>
+<text class="axis" x="38" y="126.8" text-anchor="end">200</text>
+<line class="grid" x1="44" y1="68.7" x2="904" y2="68.7"/>
+<text class="axis" x="38" y="72.2" text-anchor="end">400</text>
+<line class="grid" x1="44" y1="14.0" x2="904" y2="14.0"/>
+<text class="axis" x="38" y="17.5" text-anchor="end">600</text>
+<text class="axis" x="44.0" y="192" text-anchor="middle">08-01</text>
+<text class="axis" x="158.7" y="192" text-anchor="middle">08-05</text>
+<text class="axis" x="302.0" y="192" text-anchor="middle">08-10</text>
+<text class="axis" x="445.3" y="192" text-anchor="middle">08-15</text>
+<text class="axis" x="588.7" y="192" text-anchor="middle">08-20</text>
+<text class="axis" x="732.0" y="192" text-anchor="middle">08-25</text>
+<text class="axis" x="904.0" y="192" text-anchor="middle">08-31</text>
+<polyline class="cmp" points="44.0,69.8 72.7,73.6 101.3,67.3 130.0,92.2 158.7,93.8 187.3,68.9 216.0,72.2 244.7,65.9 273.3,75.2 302.0,70.3 330.7,92.4 359.3,87.5 388.0,71.7 416.7,66.8 445.3,73.9 474.0,69.5 502.7,74.7 531.3,88.1 560.0,91.9 588.7,67.8 617.3,73.3 646.0,70.0 674.7,75.5 703.3,69.2 732.0,91.4 760.7,87.8 789.3,72.8 818.0,67.6 846.7,74.1 875.3,70.6 904.0,72.5"/>
+<polyline class="cur" points="44.0,84.5 72.7,90.0 101.3,41.9 130.0,51.4 158.7,44.9 187.3,53.4 216.0,42.7 244.7,86.7 273.3,90.8 302.0,40.5 330.7,49.0"/>
+<polyline class="cur" points="445.3,93.0 474.0,84.0 502.7,45.4 531.3,50.9 560.0,41.3 588.7,49.8 617.3,46.5 646.0,92.4 674.7,84.8 703.3,48.4 732.0,42.4 760.7,53.1 789.3,45.7 818.0,43.2 846.7,91.1 875.3,87.3 904.0,56.1"/>
+<polyline class="backfill" points="330.7,49.0 359.3,126.1 388.0,123.3 416.7,126.1 445.3,93.0"/>
+<circle class="dot" cx="44.0" cy="84.5" r="2.5"/>
+<circle class="dot-hollow" cx="359.3" cy="126.1" r="3.5"/>
+<circle class="dot-hollow" cx="388.0" cy="123.3" r="3.5"/>
+<circle class="dot-hollow" cx="416.7" cy="126.1" r="3.5"/>
+<circle class="dot" cx="904.0" cy="56.1" r="2.5"/>
+<line class="mark" x1="158.7" y1="24" x2="158.7" y2="178"/>
+<text class="mark-label" x="158.7" y="21" text-anchor="middle">1</text>
+<line class="mark" x1="359.3" y1="24" x2="359.3" y2="178"/>
+<text class="mark-label" x="359.3" y="21" text-anchor="middle">2</text>
+<line class="mark" x1="531.3" y1="24" x2="531.3" y2="178"/>
+<text class="mark-label" x="531.3" y="21" text-anchor="middle">3</text>
+<line class="mark" x1="732.0" y1="24" x2="732.0" y2="178"/>
+<text class="mark-label" x="732.0" y="21" text-anchor="middle">4</text>
+<line class="mark" x1="846.7" y1="24" x2="846.7" y2="178"/>
+<text class="mark-label" x="846.7" y="21" text-anchor="middle">5</text>
+<line class="mark" x1="904.0" y1="24" x2="904.0" y2="178"/>
+<text class="mark-label" x="904.0" y="21" text-anchor="middle">6</text>
+<text class="lbl" x="388.0" y="206" text-anchor="middle">缺失 08-12 至 08-14 · 同步失败 · 09-03 补齐（虚点为补数）</text>
+<text class="lbl" x="48.0" y="76.5">342</text>
+<text class="lbl" x="900.0" y="48.1" text-anchor="end">446</text>
+</svg>
+          <div class="chart-legend">
+            <span><i></i>当前期 08-01 至 08-31 · 合计 12,480</span>
+            <span><i class="cmp"></i>比较期 07-01 至 07-31 · 合计 11,560</span>
+            <span><i class="bf"></i>补数 08-12 至 08-14 · 合计 580 · 09-03 补齐</span>
+            <span><i class="wk"></i>周末</span>
+            <span><i class="mk"></i>本期执行 1–6（见 E）</span>
+          </div>
+        </section>
+
+        <section class="section-block" data-od-id="perf-channels">
+          <p class="eyebrow" style="margin-bottom: 8px;">C · CHANNELS</p>
+          <div class="channels">
+            <section class="card" data-od-id="channel-gbp">
+              <h3 class="card-title" style="margin-bottom: 8px;">GBP</h3>
+              <table class="table">
+                <tbody>
+                  <tr><td>搜索曝光</td><td class="mono" style="text-align:right;">7,910</td></tr>
+                  <tr><td>地图曝光</td><td class="mono" style="text-align:right;">4,570</td></tr>
+                  <tr><td>官网点击</td><td class="mono" style="text-align:right;">402</td></tr>
+                  <tr><td>电话按钮点击</td><td class="mono" style="text-align:right;">96</td></tr>
+                  <tr><td>路线请求</td><td class="mono" style="text-align:right;">188</td></tr>
+                </tbody>
+              </table>
+            </section>
+            <section class="card" data-od-id="channel-gsc">
+              <h3 class="card-title" style="margin-bottom: 8px;">GSC</h3>
+              <div class="empty">未授权 · 无数据<br /><span class="cell-sub">授权后按 PT 日期口径回填，区分最终与未完整数据</span></div>
+            </section>
+            <section class="card" data-od-id="channel-reviews">
+              <h3 class="card-title" style="margin-bottom: 8px;">评价</h3>
+              <table class="table">
+                <tbody>
+                  <tr><td>平均评分</td><td class="mono" style="text-align:right;">4.6</td></tr>
+                  <tr><td>新增评价</td><td class="mono" style="text-align:right;">9 条</td></tr>
+                  <tr><td>回复率</td><td class="mono" style="text-align:right; color: var(--danger); font-weight: 600;">38%</td></tr>
+                  <tr><td>未回复（近 30 天）</td><td class="mono" style="text-align:right;">5 条</td></tr>
+                </tbody>
+              </table>
+            </section>
+          </div>
+        </section>
+
+        <section class="card section-block" data-od-id="perf-keywords">
+          <div class="card-head">
+            <div><p class="eyebrow">D · KEYWORDS &amp; RANK · LOCAL FALCON</p><h3 class="card-title">关键词与排名</h3></div>
+            <span class="cell-sub">监测集 v2 → v3 变化时保留当时的监测集，不用今天的 Top 20 替换历史再算增长</span>
+          </div>
+          <div class="kw-layout">
+            <div>
+              <p class="cell-sub" style="margin-bottom: 6px;">当期监测集 v3（20 词，08-31 冻结）· 显示 5 / 20</p>
+              <table class="table table-compact">
+                <thead><tr><th>关键词</th><th>评分</th><th>ARP</th><th>ATRP</th><th>SoLV</th><th>最近扫描日期</th></tr></thead>
+                <tbody>
+                  <tr><td><a href="#am-performance" data-target="/merchants/7/keywords/brunch-near-me?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 关键词「brunch near me」· 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">brunch near me</a></td><td class="mono">88</td><td class="mono">7.0</td><td class="mono">4.8</td><td class="mono">48%</td><td class="mono">08-25</td></tr>
+                  <tr><td><a href="#am-performance" data-target="/merchants/7/keywords/weekday-brunch-upper-west-side?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 关键词「weekday brunch upper west side」· 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">weekday brunch upper west side</a></td><td class="mono">76</td><td class="mono">5.8</td><td class="mono">4.2</td><td class="mono">58%</td><td class="mono">08-25</td></tr>
+                  <tr><td><a href="#am-performance" data-target="/merchants/7/keywords/brunch-broadway-nyc?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 关键词「brunch broadway nyc」· 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">brunch broadway nyc</a></td><td class="mono">71</td><td class="mono">9.1</td><td class="mono">6.4</td><td class="mono">33%</td><td class="mono">08-25</td></tr>
+                  <tr><td><a href="#am-performance" data-target="/merchants/7/keywords/hong-kong-style-breakfast-nyc?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 关键词「hong kong style breakfast nyc」· 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">hong kong style breakfast nyc</a></td><td class="mono">64</td><td class="mono">11.6</td><td class="mono">8.2</td><td class="mono">21%</td><td class="mono">08-25</td></tr>
+                  <tr><td><a href="#am-performance" data-target="/merchants/7/keywords/smoked-salmon-bagel-upper-west-side?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 关键词「smoked salmon bagel upper west side」· 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">smoked salmon bagel upper west side</a></td><td class="mono">59</td><td class="mono">6.4</td><td class="mono">4.9</td><td class="mono">51%</td><td class="mono">08-25</td></tr>
+                </tbody>
+              </table>
+              <p class="cell-sub" style="margin-top: 8px;">关键词行带 from/to 参数，返回后仍是 George 的 8 月</p>
+            </div>
+            <div>
+              <p class="cell-sub" style="margin-bottom: 6px;">历史扫描 · 4 次 · 网格 9×9 · 半径 2 mi · 20 词</p>
+              <ul class="scan-list">
+                <li><time>08-25</time><span>ARP 7.3 · ATRP 5.1 · SoLV 45% · <a href="#am-performance" data-target="/scans/LF-0825?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 扫描 LF-0825 点阵图 · 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">点阵图</a></span></li>
+                <li><time>08-18</time><span>ARP 7.9 · ATRP 5.5 · SoLV 41% · <a href="#am-performance" data-target="/scans/LF-0818?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 扫描 LF-0818 点阵图 · 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">点阵图</a></span></li>
+                <li><time>08-11</time><span>ARP 8.4 · ATRP 5.8 · SoLV 38% · <a href="#am-performance" data-target="/scans/LF-0811?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 扫描 LF-0811 点阵图 · 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">点阵图</a></span></li>
+                <li><time>08-04</time><span>ARP 8.9 · ATRP 6.1 · SoLV 34% · <a href="#am-performance" data-target="/scans/LF-0804?from=2026-08-01&amp;to=2026-08-31" data-effect="open" title="→ 扫描 LF-0804 点阵图 · 返回后仍是 George 的 8 月 · 当前页打开 · 不改变状态">点阵图</a></span></li>
+              </ul>
+              <p class="cell-sub" style="margin-top: 8px;">Local Falcon 按实际扫描时间展示，没扫描的日期不补成曲线；点阵图比较需要关键词、中心点、网格、半径一致</p>
+              <div class="dotgrid-wrap">
+                <div class="dotgrid" role="img" aria-label="9×9 网格排名点阵，中心最好，边缘最差"><i class="r4"></i><i class="r5"></i><i class="r5"></i><i class="r5"></i><i class="r5"></i><i class="r4"></i><i class="r5"></i><i class="r4"></i><i class="r5"></i><i class="r4"></i><i class="r4"></i><i class="r4"></i><i class="r3"></i><i class="r3"></i><i class="r3"></i><i class="r3"></i><i class="r4"></i><i class="r4"></i><i class="r5"></i><i class="r3"></i><i class="r2"></i><i class="r3"></i><i class="r2"></i><i class="r2"></i><i class="r2"></i><i class="r3"></i><i class="r5"></i><i class="r4"></i><i class="r4"></i><i class="r2"></i><i class="r1"></i><i class="r2"></i><i class="r1"></i><i class="r3"></i><i class="r4"></i><i class="r5"></i><i class="r5"></i><i class="r3"></i><i class="r2"></i><i class="r1"></i><i class="r1"></i><i class="r1"></i><i class="r2"></i><i class="r3"></i><i class="r4"></i><i class="r4"></i><i class="r3"></i><i class="r2"></i><i class="r2"></i><i class="r1"></i><i class="r1"></i><i class="r3"></i><i class="r4"></i><i class="r5"></i><i class="r4"></i><i class="r3"></i><i class="r2"></i><i class="r2"></i><i class="r2"></i><i class="r2"></i><i class="r2"></i><i class="r4"></i><i class="r4"></i><i class="r5"></i><i class="r3"></i><i class="r3"></i><i class="r3"></i><i class="r4"></i><i class="r3"></i><i class="r3"></i><i class="r3"></i><i class="r4"></i><i class="r4"></i><i class="r5"></i><i class="r5"></i><i class="r4"></i><i class="r5"></i><i class="r4"></i><i class="r5"></i><i class="r4"></i><i class="r4"></i></div>
+                <div class="dot-legend">
+                  <span><b>08-25 · brunch near me · 9×9</b></span>
+                  <span><i class="r1" style="background: var(--success);"></i>1–3</span>
+                  <span><i style="background: color-mix(in oklch, var(--success) 55%, var(--ok-soft));"></i>4–7</span>
+                  <span><i style="background: var(--accent);"></i>8–12</span>
+                  <span><i style="background: color-mix(in oklch, var(--danger) 70%, var(--bad-soft));"></i>13–20</span>
+                  <span><i style="background: var(--danger);"></i>20+</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="ef-grid section-block">
+          <section class="card" data-od-id="perf-executions">
+            <div class="card-head">
+              <div><p class="eyebrow">E · EXECUTIONS · THIS PERIOD</p><h3 class="card-title">本期执行</h3></div>
+              <span class="cell-sub">编号对应趋势图上的标记</span>
+            </div>
+            <ol class="exec-tl">
+              <li><span class="n">1</span><time>08-05</time><span>发布帖子 · 活动类（非更新帖）· WO-1150</span></li>
+              <li><span class="n">2</span><time>08-12</time><span>同步失败 · GBP Performance · 08-12 至 08-14 缺失，09-03 补齐</span></li>
+              <li><span class="n">3</span><time>08-18</time><span>修复营业时间 · T-1160 执行</span></li>
+              <li><span class="n">4</span><time>08-25</time><span>扫描 · Local Falcon 9×9 · 20 词</span></li>
+              <li><span class="n">5</span><time>08-29</time><span>T-1160 完成 · 营业时间与官网一致</span></li>
+              <li><span class="n">6</span><time>08-31</time><span>Audit #26 · 总分 52</span></li>
+            </ol>
+          </section>
+          <section class="card" data-od-id="perf-data-quality">
+            <div class="card-head">
+              <div><p class="eyebrow">F · DATA QUALITY</p><h3 class="card-title">数据质量</h3></div>
+            </div>
+            <table class="table table-compact">
+              <thead><tr><th>来源</th><th>覆盖期间</th><th>最后成功同步</th><th>日期口径</th><th>状态</th></tr></thead>
+              <tbody>
+                <tr><td>GBP Performance</td><td>08-01 至 08-31（缺 3 天）<span class="cell-sub">08-12 至 08-14 为 09-03 补数</span></td><td class="mono">09-01 06:10</td><td>门店本地日</td><td><span class="stamp stamp-warn">部分</span></td></tr>
+                <tr><td>GSC</td><td>—</td><td class="mono">—</td><td>PT 日期，区分最终与未完整数据</td><td><span class="stamp stamp-bad">未授权</span></td></tr>
+                <tr><td>评价</td><td>08-01 至 08-31</td><td class="mono">09-01 06:12</td><td>门店本地日</td><td><span class="stamp stamp-ok">完整</span></td></tr>
+                <tr><td>Local Falcon</td><td>4 次扫描</td><td class="mono">08-25</td><td>扫描时刻</td><td><span class="stamp stamp-ok">完整</span></td></tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+
+        <div class="two-histories section-block" data-od-id="perf-two-histories">
+          <section class="card">
+            <div class="card-head">
+              <div><p class="eyebrow">G · TWO HISTORIES</p><h3 class="card-title">两种历史</h3></div>
+            </div>
+            <ul class="history-note">
+              <li><b>现在查看过去某月的 Performance</b><span>使用当前已获得的有效历史数据，标明补数或修正（本页 8 月数据于 09-03 补齐 08-12 至 08-14 → 已更新）</span></li>
+              <li><b>打开当时交付的 8 月月报</b><span>保持当时冻结的数据、文字和文件，不随补数改变；需要更新交付物时生成修订版 v2 并保留 v1</span></li>
+            </ul>
+          </section>
+          <section class="card" data-od-id="perf-history-pair">
+            <p class="eyebrow" style="margin-bottom: 8px;">SAME MONTH · TWO NUMBERS</p>
+            <div class="pair">
+              <div><b>8 月月报 v1</b>冻结 09-01<span class="num">11,900</span>曝光 · 当时缺 3 天</div>
+              <div><b>当前 8 月 Performance</b>补齐 09-03<span class="num">12,480</span>曝光 · 已补齐</div>
+            </div>
+            <p class="cell-sub" style="margin-top: 8px;">两者不同是正常的 · 差 580 = 补齐的 08-12 至 08-14</p>
+            <div class="btn-row" style="margin-top: 10px;">
+              <a class="btn btn-sm" href="#am-reports" data-target="/reports/R-3608" data-effect="open" title="→ 报告 R-3608 · 当前页打开 · 不改变状态">打开月报 v1</a>
+              <button class="btn btn-sm btn-quiet" type="button" data-target="/reports/R-3608/revisions/new" data-effect="open" title="→ R-3608 生成修订版 v2 · 当前页打开 · 不改变状态">生成修订版 v2</button>
+            </div>
+          </section>
+        </div>
       </main>
     </div>
   </div>
@@ -1159,28 +1991,28 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 
 <!-- ===================================================== 03 am-gbp-work-order ===================================================== -->
 <section class="sheet-section" id="am-gbp-work-order" data-od-id="am-gbp-work-order">
-  <p class="eyebrow">03 · AM-GBP-WORK-ORDER · REVIEW IS A HUMAN TASK</p>
+  <p class="eyebrow">08 · AM-GBP-WORK-ORDER · REVIEW IS A HUMAN TASK</p>
   <h2>GBP 内容工作单</h2>
   <p class="sheet-note">竖向流水线：草稿 → 审核 → 发布 → 远端核验。每步保留自己的负责人；侧栏只有一张「当前」卡，不再重复列全部负责人。第 ② 步只有一个主操作，其余收进「更多 ▾」；批准绑定具体产物。</p>
   <div class="app" data-od-id="am-gbp-work-order-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space">商户</a>
-        <a href="#am-gbp-work-order" aria-current="page">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" aria-current="page" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">WORK ORDER · WO-1204 · PLAN #12</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
-        <p class="crumb"><a href="#am-merchant-space">← George Merchant</a> · 计划与任务</p>
+        <p class="crumb"><a href="#am-merchant-space" data-target="#am-merchant-space" data-effect="open" title="→ 商户空间 · George Merchant · 当前页打开 · 不改变状态">← George Merchant</a> · <a href="#am-task-list" data-target="#am-task-list" data-effect="open" title="→ 任务与计划 · 当前页打开 · 不改变状态">计划与任务</a></p>
         <header class="task-head" data-od-id="wo-header">
           <p class="eyebrow">WORK ORDER · WO-1204 · GBP_POST</p>
           <h1>GBP 内容工作单 · brunch 主题 · George Merchant <span class="stamp stamp-warn">审核中 · 分派给你</span></h1>
@@ -1217,7 +2049,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                           <p class="eyebrow">完整正文 · POST V2 · 不截断</p>
                           <p>周中也值得一顿像样的早午餐。Weekday Brunch Set 工作日 10:00–14:00 供应，一份主餐搭配现磨咖啡和当季小食，上西区 Broadway 街角就能坐下慢慢吃。带上同事或者一个人来都合适，到店直接点即可。</p>
                           <p>周末不想排队？工作日来，位置更宽松，厨房出餐也更快。</p>
-                          <div class="review-cta"><span class="post-cta">了解更多</span><span>→</span><a href="https://georgemerchant.example/menu">https://georgemerchant.example/menu</a></div>
+                          <div class="review-cta"><span class="post-cta">了解更多</span><span>→</span><a href="https://georgemerchant.example/menu" data-target="https://georgemerchant.example/menu" data-effect="external" title="→ 商户菜单页（CTA 目标）· 新标签打开 · 不改变状态" rel="noopener">https://georgemerchant.example/menu</a></div>
                         </div>
                         <div>
                           <div class="review-img" role="img" aria-label="商户照片，来源 FBR 菜品图 #17，已授权"><div><b>商户照片</b>来源：FBR 菜品图 #17 · 已授权<br />1200×900 · 4:3</div></div>
@@ -1232,15 +2064,15 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                       <p class="review-dep">本版不含价格。价格确认任务 T-1205 已解除对本版的阻塞；含价格的更新帖会另建工作单</p>
                       <p class="review-bind"><b>本次批准绑定：</b>正文 b4de70ec… · 图片 sha256 91af… · CTA 了解更多 → https://georgemerchant.example/menu · 门店 2020 Broadway · 发布时间窗 09-09 至 09-16</p>
                       <div class="review-actions">
-                        <button class="btn btn-danger-solid" type="button">批准这一版</button>
-                        <button class="btn" type="button">退回并说明</button>
-                        <button class="btn btn-quiet" type="button">更多 ▾</button>
-                        <div class="menu-static push" role="menu" aria-label="更多操作（展开示意）" data-od-id="wo-more-menu">
+                        <button class="btn btn-danger-solid" type="button" data-target="/work-orders/WO-1204/approvals?version=2" data-effect="submit" title="→ 创建批准 #A-91（绑定 v2 产物）· 弹确认框 · 改变状态">批准这一版</button>
+                        <button class="btn" type="button" data-target="/work-orders/WO-1204/returns?version=2" data-effect="submit" title="→ 退回 v2 并填写说明 · 弹表单 · 改变状态">退回并说明</button>
+                        <button class="btn btn-quiet" type="button" data-target="#wo-more-menu" data-effect="expand" title="→ 更多操作菜单 · 就地展开 · 不改变状态">更多 ▾</button>
+                        <div class="menu-static push" id="wo-more-menu" role="menu" aria-label="更多操作（展开示意）" data-od-id="wo-more-menu">
                           <p class="eyebrow">更多 ▾ 展开后</p>
-                          <button type="button" role="menuitem">暂时受阻</button>
-                          <button type="button" role="menuitem">请求协助</button>
-                          <button type="button" role="menuitem">转交给…</button>
-                          <button type="button" role="menuitem" class="is-danger">取消任务</button>
+                          <button type="button" role="menuitem" data-target="/tasks/WO-1204-review/block" data-effect="submit" title="→ 任务 WO-1204-review 标记暂时受阻 · 弹确认框 · 改变状态">暂时受阻</button>
+                          <button type="button" role="menuitem" data-target="/tasks/WO-1204-review/assist" data-effect="submit" title="→ 任务 WO-1204-review 请求协助 · 弹确认框 · 改变状态">请求协助</button>
+                          <button type="button" role="menuitem" data-target="/tasks/WO-1204-review/handoff" data-effect="submit" title="→ 任务 WO-1204-review 转交 · 弹确认框 · 改变状态">转交给…</button>
+                          <button type="button" role="menuitem" class="is-danger" data-target="/tasks/WO-1204-review/cancel" data-effect="submit" title="→ 取消任务 WO-1204-review · 弹确认框 · 改变状态">取消任务</button>
                         </div>
                       </div>
                     </div>
@@ -1251,7 +2083,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                   <span class="step-num" aria-hidden="true">3</span>
                   <div>
                     <details class="step-fold">
-                      <summary>
+                      <summary data-target="#wo-step-publish" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">
                         <div class="step-head">
                           <div class="step-title">发布 <span class="stamp">待前置</span></div>
                           <span class="due">等第 ② 步</span>
@@ -1267,7 +2099,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                   <span class="step-num" aria-hidden="true">4</span>
                   <div>
                     <details class="step-fold">
-                      <summary>
+                      <summary data-target="#wo-step-verify" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">
                         <div class="step-head">
                           <div class="step-title">远端核验 <span class="stamp">待前置</span></div>
                           <span class="due">等第 ③ 步</span>
@@ -1281,8 +2113,45 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
               </ol>
             </section>
 
+
+            <section class="card block" data-od-id="wo-six-states">
+              <h3><span class="eyebrow">STATES</span>「批准这一版」的六种情况<span class="cell-sub push">服务端按 checksum 校验；按钮态只是提示</span></h3>
+              <div class="states">
+                <article class="state" data-od-id="state-ok">
+                  <h5>正常</h5>
+                  <div class="demo"><div class="notice notice-success">已保存批准 #A-91 · 发布 Task 已入队</div><button class="btn btn-sm" type="button" data-target="/work-orders/WO-1204?step=publish" data-effect="open" title="→ 工作单 WO-1204 第③步 · 当前页打开 · 不改变状态">查看第 ③ 步</button></div>
+                  <p>不写「发布成功」：发布由第 ③ 步执行，第 ④ 步核验后才算完成。</p>
+                </article>
+                <article class="state" data-od-id="state-busy">
+                  <h5>处理中</h5>
+                  <div class="demo"><button class="btn btn-busy" type="button" disabled data-target="/work-orders/WO-1204/approvals?version=2" data-effect="none" aria-busy="true" title="→ 创建批准（绑定 v2 产物） · 无 · 不改变状态">正在校验…</button></div>
+                  <p>按钮已锁定，可离开后从工作单回来查看。</p>
+                </article>
+                <article class="state" data-od-id="state-fail">
+                  <h5>失败</h5>
+                  <div class="demo"><div class="notice notice-error" role="alert">服务端拒绝：批准有效期字段缺失</div><button class="btn btn-sm" type="button" data-target="/work-orders/WO-1204/approvals?version=2" data-effect="submit" title="→ 创建批准（绑定 v2 产物） · 弹确认框 · 改变状态">重试</button></div>
+                  <p>表单值保留；补齐字段后重试，不重新载入页面。</p>
+                </article>
+                <article class="state" data-od-id="state-unknown">
+                  <h5>结果未知</h5>
+                  <div class="demo"><div class="notice notice-warning">请求超时，正在读回批准状态…</div></div>
+                  <p>不会自动重新提交；读回有结果后再更新按钮。</p>
+                </article>
+                <article class="state" data-od-id="state-stale">
+                  <h5>状态过期</h5>
+                  <div class="demo"><div class="conflict" role="alert">内容已变化：帖子 v3 已替换 v2，请重新审阅</div><button class="btn btn-sm" type="button" data-target="/work-orders/WO-1204?step=review&amp;version=3" data-effect="open" title="→ 工作单 WO-1204 第②步 v3 · 当前页打开 · 不改变状态">重新载入</button></div>
+                  <p>服务端按 checksum 校验，不只靠按钮置灰。</p>
+                </article>
+                <article class="state" data-od-id="state-back">
+                  <h5>返回 / 关闭</h5>
+                  <div class="demo"><a class="btn btn-sm btn-quiet" href="#decision-gbp-post-anchor" data-target="/inbox#decision-gbp-post" data-effect="open" title="→ 工作台「需要我决定」第 1 项 · 当前页打开 · 不改变状态">关闭并返回</a></div>
+                  <p>关闭后回到工作台『需要我决定』第 1 项，焦点回到『审阅草稿』按钮。</p>
+                </article>
+              </div>
+            </section>
+
             <details class="card fold" data-od-id="wo-basis">
-              <summary>依据 <span class="count">· 3 条证据 · 默认折叠</span></summary>
+              <summary data-target="#wo-basis" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">依据 <span class="count">· 3 条证据 · 默认折叠</span></summary>
               <div class="fold-body">
                 <p class="lead" style="margin-top: 12px;">Audit 发现 GBP 近 60 天没有更新帖，本地包展示位下滑；关键词簇 #3「brunch」是 Plan 目标里最缺内容支撑的一簇。</p>
                 <ul class="evidence" style="margin-top: 12px;">
@@ -1294,7 +2163,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
             </details>
 
             <details class="card fold" data-od-id="wo-history">
-              <summary>历史 <span class="count">· 7 条事件 · 技术 trace · 默认折叠</span></summary>
+              <summary data-target="#wo-history" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">历史 <span class="count">· 7 条事件 · 技术 trace · 默认折叠</span></summary>
               <div class="fold-body">
                 <ol class="timeline" style="margin-top: 12px;">
                   <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>创建工作单 · Plan #12 范围内（R1）· 对话派单「下周推广早餐」· 第 ① 步派给内容 Agent</span></li>
@@ -1306,7 +2175,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                   <li><time>09-09 10:13</time><span class="actor">系统</span><span>工作台「需要我决定」新增：审阅草稿 · brunch 帖子 v2</span></li>
                 </ol>
                 <details class="trace" data-od-id="wo-trace">
-                  <summary>技术 trace <span class="count">· 4 次调用 · $0.71</span></summary>
+                  <summary data-target="#wo-trace" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">技术 trace <span class="count">· 4 次调用 · $0.71</span></summary>
                   <pre>state      step=2 · task_state=AWAITING_APPROVAL · readiness=READY · approval=none
 run 1      draft v1 · 内容 Agent · 2 次调用 · $0.42 · skill gbp-post-writer（专用）
 review 1   v1 rejected · xander · reason="图片来源未授权" → memory.candidates
@@ -1348,7 +2217,7 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
           <p class="eyebrow">WORK ORDER · WO-1204 · PUBLISH</p>
           <h4 id="dlg-approve-title">批准帖子 v2 并发布？</h4>
         </div>
-        <button class="close" type="button" aria-label="关闭">×</button>
+        <button class="close" type="button" aria-label="关闭" data-target="#wo-approve-dialog" data-effect="none" title="→ 关闭 · 无 · 不改变状态">×</button>
       </div>
       <div class="dialog-body">
         <p>批准后发布 Agent 会把帖子 v2 写入 Google 门店 2020 Broadway。发布后不能退回草稿，修改或撤下需要新建补偿任务。确认？</p>
@@ -1360,35 +2229,35 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
         </dl>
       </div>
       <div class="dialog-foot">
-        <button class="btn btn-quiet" type="button">取消</button>
-        <button class="btn btn-danger-solid" type="button">批准这一版</button>
+        <button class="btn btn-quiet" type="button" data-target="#wo-approve-dialog" data-effect="none" title="→ 关闭对话框 · 无 · 不改变状态">取消</button>
+        <button class="btn btn-danger-solid" type="button" data-target="/work-orders/WO-1204/approvals?version=2" data-effect="submit" title="→ 创建批准 #A-91（绑定 v2 产物）· 提交 · 改变状态">批准这一版</button>
       </div>
     </div>
-    <p class="sheet-note">点击「批准这一版」后弹出。批准的是具体产物：绑定行里的任何一项变化，批准都会失效（见第 04 区块 E2）。</p>
+    <p class="sheet-note">点击「批准这一版」后弹出。批准的是具体产物：绑定行里的任何一项变化，批准都会失效（见第 09 区块 E2）。</p>
   </div>
 </section>
 
 <!-- ===================================================== 04 am-exceptions ===================================================== -->
 <section class="sheet-section" id="am-exceptions" data-od-id="am-exceptions">
-  <p class="eyebrow">04 · AM-EXCEPTIONS · RECOVERY STATES</p>
+  <p class="eyebrow">09 · AM-EXCEPTIONS · RECOVERY STATES</p>
   <h2>异常恢复 · 四组状态</h2>
   <p class="sheet-note">每张异常卡回答四件事：谁处理、系统已尝试什么、下一步是什么、什么时候升级。默认只限制受影响的任务。</p>
   <div class="app" data-od-id="am-exceptions-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space">商户</a>
-        <a href="#am-gbp-work-order" aria-current="page">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" aria-current="page" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">EXCEPTIONS · RECOVERY · 4 STATES</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
         <div class="page-head">
@@ -1398,7 +2267,7 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
         </div>
         <div class="exc-grid">
 
-          <article class="card exc" data-od-id="exc-e1">
+          <article class="card exc" id="exc-e1" data-od-id="exc-e1">
             <div class="exc-head">
               <div><p class="eyebrow">E1 · RETURN → REVISE → RE-REVIEW</p><h3>退回 → 修改 → 新审核</h3></div>
               <span class="stamp stamp-warn">审核 v2 进行中</span>
@@ -1413,12 +2282,12 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
             <dl class="exc-foot">
               <div><dt>谁处理</dt><dd>内容 Agent 已重做 · 你再审</dd></div>
               <div><dt>系统已尝试</dt><dd>自动建草稿 v2 与审核 v2，退回理由已进候选经验</dd></div>
-              <div><dt>下一步</dt><dd>审阅草稿 v2<div class="btn-row"><a class="btn btn-primary" href="#am-gbp-work-order">审阅草稿 v2</a></div></dd></div>
+              <div><dt>下一步</dt><dd>审阅草稿 v2<div class="btn-row"><a class="btn btn-primary" href="#am-gbp-work-order" data-target="/work-orders/WO-1204?step=review&amp;version=2" data-effect="open" title="→ 工作单 WO-1204 第②步 v2 · 当前页打开 · 不改变状态">审阅草稿 v2</a></div></dd></div>
               <div><dt>升级</dt><dd>同一工作单退回 ≥ 3 次进需要处理</dd></div>
             </dl>
           </article>
 
-          <article class="card exc" data-od-id="exc-e2">
+          <article class="card exc" id="exc-e2" data-od-id="exc-e2">
             <div class="exc-head">
               <div><p class="eyebrow">E2 · ARTIFACT CHANGED → APPROVAL VOID</p><h3>批准后产物变化 → 批准失效</h3></div>
               <span class="stamp stamp-warn">待重新审核</span>
@@ -1433,12 +2302,12 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
             <dl class="exc-foot">
               <div><dt>谁处理</dt><dd>xander 重新审核</dd></div>
               <div><dt>系统已尝试</dt><dd>停止发布、失效原批准 #A-88、建审核 v3</dd></div>
-              <div><dt>下一步</dt><dd>审阅 v3<div class="btn-row"><button class="btn btn-primary" type="button">审阅 v3</button></div></dd></div>
+              <div><dt>下一步</dt><dd>审阅 v3<div class="btn-row"><button class="btn btn-primary" type="button" data-target="/work-orders/WO-1204?step=review&amp;version=3" data-effect="open" title="→ 工作单 WO-1204 第②步 v3 · 当前页打开 · 不改变状态">审阅 v3</button></div></dd></div>
               <div><dt>升级</dt><dd>48 小时无人处理进需要处理</dd></div>
             </dl>
           </article>
 
-          <article class="card exc" data-od-id="exc-e3">
+          <article class="card exc" id="exc-e3" data-od-id="exc-e3">
             <div class="exc-head">
               <div><p class="eyebrow">E3 · PUBLISH TIMEOUT → AUTO VERIFY → HUMAN</p><h3>发布超时 → 自动核验 → 人工介入</h3></div>
               <span class="stamp stamp-bad">需要处理 · 不会自动重发</span>
@@ -1454,12 +2323,12 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
             <dl class="exc-foot">
               <div><dt>谁处理</dt><dd>xander 核验</dd></div>
               <div><dt>系统已尝试</dt><dd>读回 3 次</dd></div>
-              <div><dt>下一步</dt><dd>开始核验 · 查看读回列表<div class="btn-row"><button class="btn btn-primary" type="button">开始核验</button><button class="btn btn-quiet" type="button">查看读回列表</button></div></dd></div>
+              <div><dt>下一步</dt><dd>开始核验 · 查看读回列表<div class="btn-row"><button class="btn btn-primary" type="button" data-target="/publications/PB-0909-onlybear/verify" data-effect="open" title="→ 发布核验 PB-0909 · 当前页打开 · 不改变状态">开始核验</button><button class="btn btn-quiet" type="button" data-target="/publications/PB-0909-onlybear/readbacks" data-effect="open" title="→ 读回列表 PB-0909 · 当前页打开 · 不改变状态">查看读回列表</button></div></dd></div>
               <div><dt>升级</dt><dd>重读用尽即进需要我决定（已升级）</dd></div>
             </dl>
           </article>
 
-          <article class="card exc" data-od-id="exc-e4">
+          <article class="card exc" id="exc-e4" data-od-id="exc-e4">
             <div class="exc-head">
               <div><p class="eyebrow">E4 · INPUT CANCELLED → REPLAN</p><h3>输入任务取消 → 下游重新规划</h3></div>
               <span class="stamp stamp-ok">Orchestrator 已处理</span>
@@ -1499,28 +2368,28 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
 
 <!-- ===================================================== 04 am-task-detail-human ===================================================== -->
 <section class="sheet-section" id="am-task-detail-human" data-od-id="am-task-detail-human">
-  <p class="eyebrow">05 · AM-TASK-DETAIL-HUMAN · HUMAN EXECUTOR</p>
+  <p class="eyebrow">10 · AM-TASK-DETAIL-HUMAN · HUMAN EXECUTOR</p>
   <h2>Task 详情 · HUMAN 执行</h2>
   <p class="sheet-note">执行者是人的工作单：首屏是「做什么」和「提交结果」表单，四个次操作都不会关闭任务（取消除外）；依据与历史放在后面折叠。</p>
   <div class="app" data-od-id="am-task-detail-human-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space">商户</a>
-        <a href="#am-gbp-work-order" aria-current="page">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" aria-current="page" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">TASK · T-1205 · PLAN #12</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
-        <p class="crumb"><a href="#am-merchant-space">← George Merchant</a> · 计划与任务</p>
+        <p class="crumb"><a href="#am-merchant-space" data-target="#am-merchant-space" data-effect="open" title="→ 商户空间 · George Merchant · 当前页打开 · 不改变状态">← George Merchant</a> · <a href="#am-task-list" data-target="#am-task-list" data-effect="open" title="→ 任务与计划 · 当前页打开 · 不改变状态">计划与任务</a></p>
         <header class="task-head" data-od-id="human-task-header">
           <p class="eyebrow">TASK · T-1205 · HUMAN_INPUT</p>
           <h1>确认 Weekday Brunch Set 的价格与有效期 <span class="stamp stamp-info">EXECUTING · 分派给你</span></h1>
@@ -1571,18 +2440,18 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
                   <div class="dropzone" data-od-id="human-task-dropzone"><b>拖入截图或聊天记录</b>尚未上传 · PNG / JPG / PDF · 单个文件 ≤ 10 MB</div>
                 </div>
                 <div class="submit-foot">
-                  <button class="btn btn-primary" type="submit">提交确认结果</button>
-                  <button class="btn btn-quiet" type="button">暂时受阻</button>
-                  <button class="btn btn-quiet" type="button">请求协助</button>
-                  <button class="btn btn-quiet" type="button">转交给…</button>
-                  <button class="btn btn-quiet push" type="button">取消任务</button>
+                  <button class="btn btn-primary" type="submit" data-target="/tasks/T-1205/result" data-effect="submit" title="→ 提交任务 T-1205 结果 · 弹确认框 · 改变状态">提交确认结果</button>
+                  <button class="btn btn-quiet" type="button" data-target="/tasks/T-1205/block" data-effect="submit" title="→ 任务 T-1205 标记暂时受阻 · 弹确认框 · 改变状态">暂时受阻</button>
+                  <button class="btn btn-quiet" type="button" data-target="/tasks/T-1205/assist" data-effect="submit" title="→ 任务 T-1205 请求协助 · 弹确认框 · 改变状态">请求协助</button>
+                  <button class="btn btn-quiet" type="button" data-target="/tasks/T-1205/handoff" data-effect="submit" title="→ 任务 T-1205 转交 · 弹确认框 · 改变状态">转交给…</button>
+                  <button class="btn btn-quiet push" type="button" data-target="/tasks/T-1205/cancel" data-effect="submit" title="→ 取消任务 T-1205 · 弹确认框 · 改变状态">取消任务</button>
                 </div>
                 <p class="actions-note">受阻和协助请求会交给 Orchestrator 接续处理，不会关闭任务</p>
               </form>
             </section>
 
             <details class="card fold" data-od-id="human-task-why">
-              <summary>为什么 <span class="count">· 1 条证据 · 默认折叠</span></summary>
+              <summary data-target="#human-task-why" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">为什么 <span class="count">· 1 条证据 · 默认折叠</span></summary>
               <div class="fold-body">
                 <p class="lead" style="margin-top: 12px;">内容 Agent 不能把候选价格当经营事实。帖子和后续菜单更新都会引用这个价格，一旦发布就是对外承诺，只有人能替商户确认。</p>
                 <ul class="evidence" style="margin-top: 12px;">
@@ -1592,7 +2461,7 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
             </details>
 
             <details class="card fold" data-od-id="human-task-history">
-              <summary>历史 <span class="count">· 4 条事件 · 默认折叠</span></summary>
+              <summary data-target="#human-task-history" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">历史 <span class="count">· 4 条事件 · 默认折叠</span></summary>
               <div class="fold-body">
                 <ol class="timeline" style="margin-top: 12px;">
                   <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>创建任务 · Plan #12 范围内 · 对话派单「下周推广早餐」</span></li>
@@ -1601,7 +2470,7 @@ bind       approval will pin: body checksum · media sha256 · cta · location �
                   <li><time>09-09 09:15</time><span class="actor">系统</span><span>提醒：距截止不足 9 小时</span></li>
                 </ol>
                 <details class="trace" data-od-id="human-task-trace">
-                  <summary>技术 trace <span class="count">· 0 次调用</span></summary>
+                  <summary data-target="#human-task-trace" data-effect="expand" title="→ 就地展开 · 就地展开 · 不改变状态">技术 trace <span class="count">· 0 次调用</span></summary>
                   <pre>state      task_state=EXECUTING · readiness=READY · executor=human:xander
 inputs     merchant.profile.menu（候选价格 $24 · 08-30 抓取）
 outputs    待提交：price · valid_from · valid_to · source · evidence[]</pre>
@@ -1648,13 +2517,13 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           <p class="eyebrow">TASK · T-1205 · CANCEL</p>
           <h4 id="dlg-cancel-title">取消这个任务？</h4>
         </div>
-        <button class="close" type="button" aria-label="关闭">×</button>
+        <button class="close" type="button" aria-label="关闭" data-target="#human-cancel-dialog" data-effect="none" title="→ 关闭 · 无 · 不改变状态">×</button>
       </div>
       <div class="dialog-body">
-        <p>取消后任务关闭，不再分派给任何人；依赖它的「含价格的 GBP 更新帖」会一直等待，需要重新派单。取消后无法恢复，确认取消？</p>
+        <p>取消后任务关闭，不再分派给任何人。依赖它的『含价格的 GBP 更新帖』会进入等待依赖，由 Orchestrator 重新规划（解除依赖、替换输入来源或取消下游）。取消后无法恢复，确认取消？</p>
         <dl class="params params-tight">
           <dt>任务</dt><dd>确认 Weekday Brunch Set 的价格与有效期</dd>
-          <dt>受影响</dt><dd>含价格的 GBP 更新帖 · 将保持等待</dd>
+          <dt>受影响</dt><dd>含价格的 GBP 更新帖 · 进入等待依赖 · Orchestrator 重新规划（见第 09 区块 E4）</dd>
         </dl>
         <div class="field">
           <label for="dlg-cancel-reason">原因<span class="req">*</span></label>
@@ -1663,8 +2532,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
         <div class="error-text" role="alert">请填写原因后再确认。</div>
       </div>
       <div class="dialog-foot">
-        <button class="btn btn-quiet" type="button">返回</button>
-        <button class="btn btn-danger-solid" type="button">取消任务</button>
+        <button class="btn btn-quiet" type="button" data-target="#human-cancel-dialog" data-effect="none" title="→ 关闭对话框 · 无 · 不改变状态">返回</button>
+        <button class="btn btn-danger-solid" type="button" data-target="/tasks/T-1205/cancel" data-effect="submit" title="→ 取消任务 T-1205 · 弹确认框 · 改变状态">取消任务</button>
       </div>
     </div>
     <p class="sheet-note">点击「取消任务」后弹出。取消需要填原因；「暂时受阻」「请求协助」不弹窗，直接交给 Orchestrator 接续。</p>
@@ -1673,28 +2542,28 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
 
 <!-- ===================================================== 05 am-dispatch-drawer ===================================================== -->
 <section class="sheet-section" id="am-dispatch-drawer" data-od-id="am-dispatch-drawer">
-  <p class="eyebrow">06 · AM-DISPATCH-DRAWER · OVERLAY ON MERCHANT SPACE</p>
+  <p class="eyebrow">11 · AM-DISPATCH-DRAWER · OVERLAY ON MERCHANT SPACE</p>
   <h2>对话派单抽屉</h2>
   <p class="sheet-note">在商户空间里用一句话派单。Orchestrator 的回复分两部分：R1 范围内的直接创建并派发；R4 超出额度的关联成一组，算清额度差后整体批准。抽屉 480px，叠在商户空间之上。</p>
   <div class="app" style="min-height: 1200px;" data-od-id="am-dispatch-drawer-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space" aria-current="page">商户</a>
-        <a href="#am-gbp-work-order">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" aria-current="page" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">MERCHANT · GEORGE MERCHANT</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main" aria-hidden="true" inert>
-        <p class="crumb"><a href="#am-home">← 商户列表</a></p>
+        <p class="crumb"><a href="#am-merchant-list" tabindex="-1" data-target="#am-merchant-list" data-effect="open" title="→ 商户列表 · 当前页打开 · 不改变状态">← 商户列表</a></p>
         <header class="merchant-head">
           <div>
             <p class="eyebrow">MERCHANT · RESTAURANT · NEW YORK</p>
@@ -1712,68 +2581,31 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           </div>
         </header>
         <nav class="tabs" aria-label="商户空间">
-          <a href="#am-dispatch-drawer" aria-current="page" tabindex="-1">概览</a>
-          <a href="#am-dispatch-drawer" tabindex="-1">计划与任务</a>
-          <a href="#am-dispatch-drawer" tabindex="-1">商户资料与记忆</a>
-          <a href="#am-dispatch-drawer" tabindex="-1">数据与诊断</a>
-          <a href="#am-dispatch-drawer" tabindex="-1">成果与报告</a>
+          <a href="#am-dispatch-drawer" data-target="/merchants/7" aria-current="page" tabindex="-1" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">概览</a>
+          <a href="#am-dispatch-drawer" data-target="/tasks?merchant=7&amp;plan=12" tabindex="-1" data-effect="open" title="→ 任务列表（带筛选参数） · 当前页打开 · 不改变状态">计划与任务</a>
+          <a href="#am-dispatch-drawer" data-target="/merchants/7/performance" tabindex="-1" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance</a>
+          <a href="#am-dispatch-drawer" data-target="/merchants/7/audits" tabindex="-1" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">Audit</a>
+          <a href="#am-dispatch-drawer" data-target="/merchants/7/memory" tabindex="-1" data-effect="open" title="→ 商户资料与记忆 · George · 当前页打开 · 不改变状态">资料与记忆</a>
+          <a href="#am-dispatch-drawer" data-target="/reports?merchant=7" tabindex="-1" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">报告</a>
         </nav>
-        <div class="two-col">
-          <section class="card">
-            <div class="card-head">
-              <div><p class="eyebrow">CURRENT PLAN · #12 · ACTIVE</p><h3 class="card-title">当前 Plan</h3></div>
-            </div>
-            <p class="plan-goal">目标：提升 brunch 相关本地可见度</p>
-            <div class="scope">
-              <div>
-                <h5><span class="stamp stamp-ok">允许</span>Orchestrator 自动创建并派发</h5>
-                <ul><li>GBP 帖子发布（逐条审批）</li><li>只读同步</li><li>关键词重算</li></ul>
-              </div>
-              <div>
-                <h5><span class="stamp stamp-bad">不允许</span>需要你单独批准</h5>
-                <ul><li>修改营业时间</li><li>付费扫描超过 100 credits</li></ul>
-              </div>
-            </div>
-            <dl class="params params-tight" style="margin-top: 14px;">
-              <dt>有效期</dt><dd>至 2026-12-31</dd>
-              <dt>批准</dt><dd>xander · 2026-09-01</dd>
-              <dt>付费扫描额度</dt><dd>100 credits · 本周期已用 40</dd>
-            </dl>
-            <div class="progress">
-              <div class="progress-head"><span>进度 · 8 项任务</span><span>4 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
-              <div class="bar-track" style="--max: 8;">
-                <i class="seg-done" style="--v: 4;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
-              </div>
-              <div class="legend">
-                <span><i class="seg-done"></i><b>4</b>完成</span>
-                <span><i class="seg-doing"></i><b>2</b>进行中</span>
-                <span><i class="seg-wait"></i><b>1</b>待审批</span>
-                <span><i class="seg-block"></i><b>1</b>阻塞</span>
-              </div>
-            </div>
-          </section>
-          <div>
-            <section class="card">
-              <p class="eyebrow">THIS WEEK · W37</p>
-              <h3 class="card-title" style="margin-bottom: 10px;">本周节奏</h3>
-              <ul class="week">
-                <li><span class="day">周一 09-07</span><span>诊断复核 · Audit #28</span><span class="stamp stamp-ok">完成</span></li>
-                <li><span class="day">周二 09-08</span><span>关键词监测集重算 v3</span><span class="stamp stamp-ok">完成</span></li>
-                <li><span class="day today">周三 今天</span><span>审核帖子 v2 · 价格确认</span><span class="stamp stamp-warn">等你</span></li>
-                <li><span class="day">周四 09-10</span><span>Local Falcon 扫描 120 credits · 变更申请</span><span class="stamp">等你批准</span></li>
-                <li><span class="day">周五 09-11</span><span>周报草稿</span><span class="stamp">未开始</span></li>
-              </ul>
-            </section>
-            <section class="card">
-              <p class="eyebrow">OPEN BLOCKERS · 2</p>
-              <h3 class="card-title" style="margin-bottom: 10px;">未解决 blocker</h3>
-              <ul class="blockers">
-                <li><b>GSC 未授权</b><span>阻塞：GSC 只读同步 · 自 09-02</span></li>
-                <li><b>价格未确认</b><span>阻塞：含价格的 GBP 更新帖 · 分派给 xander</span></li>
-              </ul>
-            </section>
-          </div>
+        <div class="overview-grid">
+          <section class="card summary"><p class="eyebrow">AUDIT</p><b>最近一次有效 Audit · 09-07</b><span class="line">覆盖 6/7 · 未解决 P1 1 项 P2 2 项</span><span class="line">→ 查看</span></section>
+          <section class="card summary"><p class="eyebrow">PERFORMANCE</p><b>当前期间 Performance · 最近 28 天</b><span class="line">曝光 +8% · 电话点击 −12%</span><span class="line gap">数据缺口：GSC 未授权</span></section>
+          <section class="card summary"><p class="eyebrow">NEXT AUDIT</p><b>下次诊断 · 10-01 完整 Audit</b><span class="line">进行中：无</span><span class="line">→ 周期设置</span></section>
+          <section class="card summary"><p class="eyebrow">REPORT</p><b>最近一期报告 · 8 月月报 v1</b><span class="line">已交付 09-03 · 邮件</span><span class="line">→ 查看</span></section>
         </div>
+        <section class="card">
+          <div class="card-head"><div><p class="eyebrow">PLAN #12 · TASKS</p><h3 class="card-title">计划与任务</h3></div><span class="cell-sub">查看全部 7 项 ›</span></div>
+          <table class="table">
+            <thead><tr><th>任务</th><th>类型</th><th>执行者</th><th>状态</th><th>截止</th></tr></thead>
+            <tbody>
+              <tr><td>GBP 内容工作单 · brunch 主题<span class="cell-sub">WO-1204 · 第 ② 步 审核</span></td><td><code>GBP_POST</code></td><td>xander</td><td><span class="stamp stamp-warn">审核中</span></td><td class="mono">09-10 12:00</td></tr>
+              <tr><td>确认 Weekday Brunch Set 的价格与有效期<span class="cell-sub">T-1205</span></td><td><code>HUMAN_INPUT</code></td><td>xander</td><td><span class="stamp stamp-info">执行中</span></td><td class="mono due-today">今天 18:00</td></tr>
+              <tr><td>Local Falcon 扫描 40 credits<span class="cell-sub">T-1206</span></td><td><code>PAID_SCAN</code></td><td>关键词 Agent</td><td><span class="stamp stamp-ok">完成</span></td><td class="mono">09-08</td></tr>
+              <tr><td>GSC 只读同步<span class="cell-sub">T-1203</span></td><td><code>SYNC_READONLY</code></td><td>审计 Agent</td><td><span class="stamp stamp-bad">阻塞</span></td><td class="mono">—</td></tr>
+            </tbody>
+          </table>
+        </section>
       </main>
     </div>
 
@@ -1785,7 +2617,7 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
             <p class="eyebrow">TEAM CHAT · DISPATCH</p>
             <h3 id="drawer-title">团队对话 · George Merchant</h3>
           </div>
-          <button class="close" type="button" aria-label="关闭">×</button>
+          <button class="close" type="button" aria-label="关闭" data-target="#dispatch-drawer" data-effect="none" title="→ 关闭 · 无 · 不改变状态">×</button>
         </div>
         <span class="stamp stamp-info">范围：George Merchant · 2020 Broadway</span>
       </div>
@@ -1843,8 +2675,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   </dl>
                 </article>
                 <div class="group-foot">
-                  <button class="btn btn-primary" type="button">整体批准这 2 项</button>
-                  <button class="btn btn-quiet" type="button">退回</button>
+                  <button class="btn btn-primary" type="button" data-target="/change-requests/CR-0908-scan/approve" data-effect="submit" title="→ 变更申请 CR-0908 · 弹确认框 · 改变状态（创建 2 项任务）">整体批准这 2 项</button>
+                  <button class="btn btn-quiet" type="button" data-target="/change-requests/CR-0908-scan/return" data-effect="submit" title="→ 变更申请 CR-0908-scan 退回 · 弹确认框 · 改变状态">退回</button>
                   <span class="note">关联任务整体批准，避免只创建前半段</span>
                 </div>
               </div>
@@ -1869,15 +2701,15 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
         <div class="row">
           <label for="chat-input" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">跟团队说点什么</label>
           <input class="input" id="chat-input" type="text" placeholder="跟团队说点什么…" />
-          <button class="btn" type="button">发送</button>
+          <button class="btn" type="button" data-target="/merchants/7/chat/messages" data-effect="submit" title="→ 发送消息给团队 · 弹确认框 · 改变状态">发送</button>
         </div>
         <div class="mentions">
           <span>@</span>
-          <button class="chip" type="button">Orchestrator</button>
-          <button class="chip" type="button">内容 Agent</button>
-          <button class="chip" type="button">审计 Agent</button>
-          <button class="chip" type="button">关键词 Agent</button>
-          <button class="chip chip-human" type="button">交给我</button>
+          <button class="chip" type="button" data-target="#chat-input" data-effect="none" title="→ 在输入框插入 @Orchestrator · 无 · 不改变状态">Orchestrator</button>
+          <button class="chip" type="button" data-target="#chat-input" data-effect="none" title="→ 在输入框插入 @内容 Agent · 无 · 不改变状态">内容 Agent</button>
+          <button class="chip" type="button" data-target="#chat-input" data-effect="none" title="→ 在输入框插入 @审计 Agent · 无 · 不改变状态">审计 Agent</button>
+          <button class="chip" type="button" data-target="#chat-input" data-effect="none" title="→ 在输入框插入 @关键词 Agent · 无 · 不改变状态">关键词 Agent</button>
+          <button class="chip chip-human" type="button" data-target="#chat-input" data-effect="none" title="→ 把这条派给自己（插入 @交给我） · 无 · 不改变状态">交给我</button>
         </div>
       </div>
     </aside>
@@ -1886,25 +2718,25 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
 
 <!-- ===================================================== 06 am-team ===================================================== -->
 <section class="sheet-section" id="am-team" data-od-id="am-team">
-  <p class="eyebrow">07 · AM-TEAM · DESKTOP 1280+</p>
+  <p class="eyebrow">12 · AM-TEAM · DESKTOP 1280+</p>
   <h2>团队</h2>
-  <p class="sheet-note">人和 AI 并列在一张表里：职责、允许的任务类型、当前工作量与运行健康。右侧是能力目录，标明每个 Skill 的引用方式。子页「模型与成本」见第 09 区块。</p>
+  <p class="sheet-note">人和 AI 并列在一张表里：职责、允许的任务类型、当前工作量与运行健康。右侧是能力目录，标明每个 Skill 的引用方式。子页「模型与成本」见第 14 区块。成员名与 Skill 名可点击，目标是真实路由，本页不新增区块。</p>
   <div class="app" data-od-id="am-team-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space">商户</a>
-        <a href="#am-gbp-work-order">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team" aria-current="page">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" aria-current="page" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">TEAM · HUMAN + AI AGENTS</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
         <div class="page-head">
@@ -1913,8 +2745,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           <p class="sub">人和 AI 的职责、工作量与运行健康。active 只表示注册状态，不代表远端可用或本次已调用。</p>
         </div>
         <nav class="tabs" aria-label="团队" style="margin-top: 0;">
-          <a href="#am-team" aria-current="page">成员</a>
-          <a href="#am-model-cost">模型与成本</a>
+          <a href="#am-team" aria-current="page" data-target="#am-team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">成员</a>
+          <a href="#am-model-cost" data-target="#am-model-cost" data-effect="open" title="→ 模型与成本 · 当前页打开 · 不改变状态">模型与成本</a>
         </nav>
         <div class="team-layout">
           <section class="card" data-od-id="team-table">
@@ -1923,8 +2755,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                 <tr><th>成员</th><th>类型</th><th>职责</th><th>允许的任务类型</th><th>当前工作量</th><th>健康</th><th>最近一次执行</th></tr>
               </thead>
               <tbody>
-                <tr data-od-id="team-row-xander">
-                  <td><div class="member-cell"><span class="avatar avatar-human" aria-hidden="true">XA</span><b>xander</b></div></td>
+                <tr id="member-xander" data-od-id="team-row-xander">
+                  <td><div class="member-cell"><span class="avatar avatar-human" aria-hidden="true">XA</span><b><a href="#member-xander" data-target="/team/members/xander" data-effect="open" title="→ 成员 xander · 当前页打开 · 不改变状态">xander</a></b></div></td>
                   <td><span class="stamp stamp-human">HUMAN</span><span class="cell-sub">AM</span></td>
                   <td>商户关系、审核、人工执行与派单</td>
                   <td><code>HUMAN_INPUT</code><span class="cell-sub">REVIEW · MANUAL_PUBLISH</span></td>
@@ -1932,8 +2764,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td><span class="stamp stamp-ok">正常</span></td>
                   <td><span class="mono">09-09 09:58</span><span class="cell-sub">批准关键词版本 v3 · George</span></td>
                 </tr>
-                <tr data-od-id="team-row-orchestrator">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">OR</span><b>Orchestrator</b></div></td>
+                <tr id="member-orchestrator" data-od-id="team-row-orchestrator">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">OR</span><b><a href="#member-orchestrator" data-target="/team/members/orchestrator" data-effect="open" title="→ 成员 Orchestrator · 当前页打开 · 不改变状态">Orchestrator</a></b></div></td>
                   <td><span class="stamp">AI_AGENT</span><span class="cell-sub">编排</span></td>
                   <td>理解对话、在授权范围内创建并派发、把范围外的事交给 AM</td>
                   <td><code>PLAN_DRAFT</code><span class="cell-sub">DISPATCH · ESCALATE</span></td>
@@ -1941,8 +2773,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td><span class="stamp stamp-ok">正常</span></td>
                   <td><span class="mono">09-09 09:40</span><span class="cell-sub">WO-1204 依赖调整</span></td>
                 </tr>
-                <tr data-od-id="team-row-content">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">CN</span><b>内容 Agent</b></div></td>
+                <tr id="member-content" data-od-id="team-row-content">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">CN</span><b><a href="#member-content" data-target="/team/members/content" data-effect="open" title="→ 成员 内容 Agent · 当前页打开 · 不改变状态">内容 Agent</a></b></div></td>
                   <td><span class="stamp">AI_AGENT</span><span class="cell-sub">内容</span></td>
                   <td>GBP 帖子、菜单文案；不得引用未确认的经营事实</td>
                   <td><code>GBP_POST</code><span class="cell-sub">MENU_COPY</span></td>
@@ -1950,17 +2782,17 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td><span class="stamp stamp-ok">正常</span></td>
                   <td><span class="mono">09-09 10:12</span><span class="cell-sub">帖子 v2 · WO-1204 · George</span></td>
                 </tr>
-                <tr data-od-id="team-row-audit">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">AU</span><b>审计 Agent</b></div></td>
+                <tr id="member-audit" data-od-id="team-row-audit">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">AU</span><b><a href="#member-audit" data-target="/team/members/audit" data-effect="open" title="→ 成员 审计 Agent · 当前页打开 · 不改变状态">审计 Agent</a></b></div></td>
                   <td><span class="stamp">AI_AGENT</span><span class="cell-sub">诊断与审计</span></td>
                   <td>诊断 Run、资料核对、只读同步</td>
                   <td><code>AUDIT_RUN</code><span class="cell-sub">PROFILE_CHECK · SYNC_READONLY</span></td>
                   <td class="workload"><span>进行中 1</span><span>等待 1</span></td>
                   <td><span class="stamp stamp-warn">绑定漂移</span><span class="cell-sub">SYNC_READONLY 绑定的凭证与配置不一致</span></td>
-                  <td><span class="mono">09-09 11:05</span><span class="cell-sub">资料与记忆核对 · George</span></td>
+                  <td><span class="mono">09-09 11:05</span><span class="cell-sub">GBP 快照同步 · 可可小卤</span></td>
                 </tr>
-                <tr data-od-id="team-row-keyword">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">KW</span><b>关键词 Agent</b></div></td>
+                <tr id="member-keyword" data-od-id="team-row-keyword">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">KW</span><b><a href="#member-keyword" data-target="/team/members/keyword" data-effect="open" title="→ 成员 关键词 Agent · 当前页打开 · 不改变状态">关键词 Agent</a></b></div></td>
                   <td><span class="stamp">AI_AGENT</span><span class="cell-sub">关键词</span></td>
                   <td>关键词簇、监测集重算、付费扫描</td>
                   <td><code>KEYWORD_RECALC</code><span class="cell-sub">PAID_SCAN</span></td>
@@ -1968,8 +2800,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td><span class="stamp stamp-ok">正常</span></td>
                   <td><span class="mono">09-08 13:40</span><span class="cell-sub">Local Falcon 扫描 40 credits · George</span></td>
                 </tr>
-                <tr data-od-id="team-row-publish">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">PB</span><b>发布 Agent</b></div></td>
+                <tr id="member-publish" data-od-id="team-row-publish">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">PB</span><b><a href="#member-publish" data-target="/team/members/publish" data-effect="open" title="→ 成员 发布 Agent · 当前页打开 · 不改变状态">发布 Agent</a></b></div></td>
                   <td><span class="stamp">AI_AGENT</span><span class="cell-sub">发布</span></td>
                   <td>GBP 发布、读回对账、写入发布记录；远端未确认不重发</td>
                   <td><code>GBP_PUBLISH</code><span class="cell-sub">READBACK</span></td>
@@ -1977,8 +2809,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td><span class="stamp">未验证</span><span class="cell-sub">Only Bear 读回 3 次未匹配</span></td>
                   <td><span class="mono">09-09 11:02</span><span class="cell-sub">帖子发布 · Only Bear · 超时无 post_id</span></td>
                 </tr>
-                <tr class="row-off" data-od-id="team-row-report">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">RP</span><div><b>报告 Agent</b><br /><span class="stamp">未启用</span></div></div></td>
+                <tr class="row-off" id="member-report" data-od-id="team-row-report">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">RP</span><div><b><a href="#member-report" data-target="/team/members/report" data-effect="open" title="→ 成员 报告 Agent · 当前页打开 · 不改变状态">报告 Agent</a></b><br /><span class="stamp">未启用</span></div></div></td>
                   <td><span class="stamp">AI_AGENT</span><span class="cell-sub">报告</span></td>
                   <td>周报与月报草稿（尚未接入）</td>
                   <td><code>WEEKLY_REPORT</code><span class="cell-sub">MONTHLY_REPORT</span></td>
@@ -1997,18 +2829,18 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                 <div><p class="eyebrow">CAPABILITIES · 3 SKILLS</p><h3 class="card-title">能力目录</h3></div>
               </div>
               <ul class="skills">
-                <li data-od-id="skill-gbp-post-writer">
-                  <div class="row"><code>gbp-post-writer</code><span class="stamp stamp-info">专用</span></div>
+                <li id="skill-gbp-post-writer" data-od-id="skill-gbp-post-writer">
+                  <div class="row"><code><a href="#skill-gbp-post-writer" data-target="/team/skills/gbp-post-writer" data-effect="open" title="→ Skill gbp-post-writer · 当前页打开 · 不改变状态">gbp-post-writer</a></code><span class="stamp stamp-info">专用</span></div>
                   <p>生成 GBP 帖子正文与 CTA；价格等经营事实必须来自已确认的商户资料。</p>
                   <div class="refs"><span>引用：</span>内容 Agent</div>
                 </li>
-                <li data-od-id="skill-local-audit-runner">
-                  <div class="row"><code>local-audit-runner</code><span class="stamp stamp-warn">共享，禁止覆盖</span></div>
+                <li id="skill-local-audit-runner" data-od-id="skill-local-audit-runner">
+                  <div class="row"><code><a href="#skill-local-audit-runner" data-target="/team/skills/local-audit-runner" data-effect="open" title="→ Skill local-audit-runner · 当前页打开 · 不改变状态">local-audit-runner</a></code><span class="stamp stamp-warn">共享，禁止覆盖</span></div>
                   <p>跑诊断 Run，产出 Audit 发现与证据引用；Plan 草稿以它为依据。</p>
                   <div class="refs"><span>引用：</span>审计 Agent · Orchestrator</div>
                 </li>
-                <li data-od-id="skill-keyword-cluster-recalc">
-                  <div class="row"><code>keyword-cluster-recalc</code><span class="stamp stamp-info">专用</span></div>
+                <li id="skill-keyword-cluster-recalc" data-od-id="skill-keyword-cluster-recalc">
+                  <div class="row"><code><a href="#skill-keyword-cluster-recalc" data-target="/team/skills/keyword-cluster-recalc" data-effect="open" title="→ Skill keyword-cluster-recalc · 当前页打开 · 不改变状态">keyword-cluster-recalc</a></code><span class="stamp stamp-info">专用</span></div>
                   <p>按商户监测集重算关键词簇并生成新版本，激活需要人批准。</p>
                   <div class="refs"><span>引用：</span>关键词 Agent</div>
                 </li>
@@ -2023,28 +2855,28 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
 
 <!-- ===================================================== 08 am-memory ===================================================== -->
 <section class="sheet-section" id="am-memory" data-od-id="am-memory">
-  <p class="eyebrow">08 · AM-MEMORY · FACTS · RULES · CANDIDATES</p>
+  <p class="eyebrow">13 · AM-MEMORY · FACTS · RULES · CANDIDATES</p>
   <h2>商户资料与记忆</h2>
   <p class="sheet-note">商户空间的「商户资料与记忆」tab。三栏：经营事实只从商户资料读；业务规则与偏好由 AM 确认并注明作用范围；候选经验只作提示。Core AI 原生记忆在隔离验证前不注入。</p>
   <div class="app" data-od-id="am-memory-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space" aria-current="page">商户</a>
-        <a href="#am-gbp-work-order">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" aria-current="page" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">MERCHANT · GEORGE MERCHANT · MEMORY</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
-        <p class="crumb"><a href="#am-home">← 商户列表</a></p>
+        <p class="crumb"><a href="#am-merchant-list" data-target="#am-merchant-list" data-effect="open" title="→ 商户列表 · 当前页打开 · 不改变状态">← 商户列表</a> · <a href="#am-merchant-space" data-target="#am-merchant-space" data-effect="open" title="→ 商户空间 · George Merchant · 当前页打开 · 不改变状态">George Merchant</a></p>
         <header class="merchant-head" data-od-id="memory-header">
           <div>
             <p class="eyebrow">MERCHANT · RESTAURANT · NEW YORK</p>
@@ -2058,31 +2890,32 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
             </dl>
           </div>
           <div class="btn-row">
-            <button class="btn" type="button">录入事实</button>
+            <a class="btn" href="#memory-fact-form" data-target="#memory-fact-form" data-effect="open" title="→ 事实表单 · 当前页打开 · 不改变状态">录入事实</a>
           </div>
         </header>
         <nav class="tabs" aria-label="商户空间">
-          <a href="#am-merchant-space">概览</a>
-          <a href="#am-merchant-space">计划与任务</a>
-          <a href="#am-memory" aria-current="page">商户资料与记忆</a>
-          <a href="#am-reports">数据与诊断</a>
-          <a href="#am-reports">成果与报告</a>
+          <a href="#am-merchant-space" data-target="/merchants/7" data-effect="open" title="→ 商户空间 · 当前页打开 · 不改变状态">概览</a>
+          <a href="#am-task-list" data-target="/tasks?merchant=7&amp;plan=12" data-effect="open" title="→ 任务列表（带筛选参数） · 当前页打开 · 不改变状态">计划与任务</a>
+          <a href="#am-performance" data-target="/merchants/7/performance" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance</a>
+          <a href="#am-audit-center" data-target="/merchants/7/audits" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">Audit</a>
+          <a href="#am-memory" data-target="/merchants/7/memory" aria-current="page" data-effect="open" title="→ 商户资料与记忆 · George · 当前页打开 · 不改变状态">资料与记忆</a>
+          <a href="#am-reports" data-target="/reports?merchant=7" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">报告</a>
         </nav>
         <p class="notice notice-success" style="margin-bottom: 16px;" data-od-id="memory-principle">经营事实只从商户资料读，记忆不得覆盖；规则与偏好需 AM 确认并注明作用范围；候选经验只作提示，未确认不进入发布前事实检查。</p>
 
         <div class="memory">
-          <section class="card" data-od-id="memory-facts">
+          <section class="card" id="memory-facts" data-od-id="memory-facts">
             <div class="card-head">
               <div><p class="eyebrow">BUSINESS FACTS · 6 · READ-ONLY</p><h3 class="card-title">经营事实</h3></div>
-              <span class="cell-sub">发布前检查只用这一栏</span>
+              <span class="cell-sub">来源：商户资料 · 发布前事实检查只用这一栏</span>
             </div>
             <ul class="facts">
-              <li data-od-id="fact-hours"><b>营业时间：周一至周日 10:00–22:00</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
-              <li data-od-id="fact-address"><b>地址：2020 Broadway, New York, NY 10023</b><span class="meta"><span>来源：GBP 快照</span><span>确认人：系统</span><span>09-02</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
-              <li data-od-id="fact-signature"><b>招牌菜：Weekday Brunch Set、Smoked Salmon Bagel</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#am-memory">纠正</a></li>
-              <li data-od-id="fact-category"><b>主类目：Restaurant · 次类目：Brunch restaurant</b><span class="meta"><span>来源：GBP 快照</span><span>确认人：系统</span><span>09-02</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
-              <li data-od-id="fact-brunch-window"><b>Weekday Brunch Set 供应时段：工作日 10:00–14:00</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#am-memory">纠正</a></li>
-              <li data-od-id="fact-holidays"><b>节假日营业：感恩节、圣诞节闭店</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#am-memory">纠正</a></li>
+              <li data-od-id="fact-hours"><b>营业时间：周一至周日 10:00–22:00</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>长期</span></span><a class="fix" href="#memory-fact-form" data-target="#memory-fact-form" data-effect="open" title="→ 事实表单（本页）· 当前页打开 · 不改变状态">纠正</a></li>
+              <li data-od-id="fact-address"><b>地址：2020 Broadway, New York, NY 10023</b><span class="meta"><span>来源：GBP 快照</span><span>确认人：系统</span><span>09-02</span><span>长期</span></span><a class="fix" href="#memory-fact-form" data-target="#memory-fact-form" data-effect="open" title="→ 事实表单（本页）· 当前页打开 · 不改变状态">纠正</a></li>
+              <li data-od-id="fact-signature"><b>招牌菜：Weekday Brunch Set、Smoked Salmon Bagel</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#memory-fact-form" data-target="#memory-fact-form" data-effect="open" title="→ 事实表单（本页）· 当前页打开 · 不改变状态">纠正</a></li>
+              <li data-od-id="fact-category"><b>主类目：Restaurant · 次类目：Brunch restaurant</b><span class="meta"><span>来源：GBP 快照</span><span>确认人：系统</span><span>09-02</span><span>长期</span></span><a class="fix" href="#memory-fact-form" data-target="#memory-fact-form" data-effect="open" title="→ 事实表单（本页）· 当前页打开 · 不改变状态">纠正</a></li>
+              <li data-od-id="fact-brunch-window"><b>Weekday Brunch Set 供应时段：工作日 10:00–14:00</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#memory-fact-form" data-target="#memory-fact-form" data-effect="open" title="→ 事实表单（本页）· 当前页打开 · 不改变状态">纠正</a></li>
+              <li data-od-id="fact-holidays"><b>节假日营业：感恩节、圣诞节闭店</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#memory-fact-form" data-target="#memory-fact-form" data-effect="open" title="→ 事实表单（本页）· 当前页打开 · 不改变状态">纠正</a></li>
             </ul>
             <p class="cell-sub" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);">价格：Weekday Brunch Set 价格与有效期尚未确认（T-1205 执行中），未确认前不出现在任何产物里。</p>
           </section>
@@ -2107,17 +2940,17 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
               <article class="cand" data-od-id="cand-image-context">
                 <div class="cand-head"><p>配图优先用带餐桌环境的菜品图，纯白底图被退回过 2 次</p><span class="stamp stamp-warn">候选</span></div>
                 <div class="meta"><span>来源：Core AI 自动提取 · 09-07</span><span>适用范围：项目级</span></div>
-                <div class="btn-row"><button class="btn" type="button">确认为规则</button><button class="btn btn-quiet" type="button">拒绝</button><button class="btn btn-quiet" type="button">仅本次适用</button></div>
+                <div class="btn-row"><button class="btn" type="button" data-target="/merchants/7/memory/candidates/image-context/confirm" data-effect="submit" title="→ 确认为规则（image-context） · 弹确认框 · 改变状态">确认为规则</button><button class="btn btn-quiet" type="button" data-target="/merchants/7/memory/candidates/image-context/reject" data-effect="submit" title="→ 拒绝候选（image-context） · 弹确认框 · 改变状态">拒绝</button><button class="btn btn-quiet" type="button" data-target="/merchants/7/memory/candidates/image-context/once" data-effect="submit" title="→ 仅本次适用（image-context） · 弹确认框 · 改变状态">仅本次适用</button></div>
               </article>
               <article class="cand" data-od-id="cand-image-source">
                 <div class="cand-head"><p>配图来源必须可证明已授权，未授权来源直接退回</p><span class="stamp stamp-warn">候选</span></div>
                 <div class="meta"><span>来源：AM 退回 · 09-08</span><span>适用范围：本商户</span></div>
-                <div class="btn-row"><button class="btn" type="button">确认为规则</button><button class="btn btn-quiet" type="button">拒绝</button><button class="btn btn-quiet" type="button">仅本次适用</button></div>
+                <div class="btn-row"><button class="btn" type="button" data-target="/merchants/7/memory/candidates/image-source/confirm" data-effect="submit" title="→ 确认为规则（image-source） · 弹确认框 · 改变状态">确认为规则</button><button class="btn btn-quiet" type="button" data-target="/merchants/7/memory/candidates/image-source/reject" data-effect="submit" title="→ 拒绝候选（image-source） · 弹确认框 · 改变状态">拒绝</button><button class="btn btn-quiet" type="button" data-target="/merchants/7/memory/candidates/image-source/once" data-effect="submit" title="→ 仅本次适用（image-source） · 弹确认框 · 改变状态">仅本次适用</button></div>
               </article>
               <article class="cand" data-od-id="cand-wednesday">
                 <div class="cand-head"><p>周三发帖效果更好</p><span class="stamp stamp-info">策略假设 · 待数据验证 · 验证周期 4 周</span></div>
                 <div class="meta"><span>来源：Core AI 自动提取 · 09-07</span><span>适用范围：本门店</span></div>
-                <div class="btn-row"><button class="btn" type="button">设为验证中</button><button class="btn btn-quiet" type="button">拒绝</button></div>
+                <div class="btn-row"><button class="btn" type="button" data-target="/merchants/7/memory/candidates/wednesday/validate" data-effect="submit" title="→ 设为验证中（wednesday） · 弹确认框 · 改变状态">设为验证中</button><button class="btn btn-quiet" type="button" data-target="/merchants/7/memory/candidates/wednesday/reject" data-effect="submit" title="→ 拒绝候选（wednesday） · 弹确认框 · 改变状态">拒绝</button></div>
                 <p class="note">确认偏好适用，不等于证明策略有效</p>
               </article>
             </section>
@@ -2132,11 +2965,45 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
               </dl>
               <p class="why-disabled" style="margin-top: 10px;">未证明按商户隔离前，任何调用都不注入记忆</p>
               <div class="btn-row">
-                <button class="btn" type="button">查看验证清单</button>
+                <button class="btn" type="button" data-target="/core-ai/memory/isolation-checklist" data-effect="open" title="→ Core AI 记忆隔离验证清单 · 当前页打开 · 不改变状态">查看验证清单</button>
               </div>
             </section>
           </div>
         </div>
+
+        <section class="card fact-form" id="memory-fact-form" data-od-id="memory-fact-form">
+          <div class="card-head">
+            <div><p class="eyebrow">FACT FORM · REVISION</p><h3 class="card-title">事实表单</h3></div>
+            <span class="cell-sub">「纠正」落到这里：保存为新修订，旧修订保留</span>
+          </div>
+          <form class="form" action="#memory-fact-form" onsubmit="return false;">
+            <div class="field wide">
+              <label for="ff-fact">事实<span class="req">*</span></label>
+              <input class="input" id="ff-fact" type="text" value="营业时间：周一至周日 10:00–22:00" />
+            </div>
+            <div class="field">
+              <label for="ff-source">来源<span class="req">*</span></label>
+              <input class="input" id="ff-source" type="text" placeholder="商户确认 / GBP 快照 / AM 录入" />
+            </div>
+            <div class="field">
+              <label for="ff-scope">作用范围<span class="req">*</span></label>
+              <input class="input" id="ff-scope" type="text" placeholder="本门店 / 本商户 / 项目级" />
+            </div>
+            <div class="field">
+              <label for="ff-from">有效期起</label>
+              <input class="input mono" id="ff-from" type="text" placeholder="YYYY-MM-DD" />
+            </div>
+            <div class="field">
+              <label for="ff-to">有效期止</label>
+              <input class="input mono" id="ff-to" type="text" placeholder="留空表示长期" />
+            </div>
+            <div class="submit-foot">
+              <button class="btn btn-primary" type="submit" data-target="/merchants/7/facts/hours/revisions" data-effect="submit" title="→ 保存事实 hours 新修订 · 弹确认框 · 改变状态">保存为新修订</button>
+              <button class="btn btn-quiet" type="button" data-target="#memory-facts" data-effect="open" title="→ 经营事实列表 · 当前页打开 · 不改变状态">取消</button>
+              <span class="cell-sub push">当前修订 r2 · 2026-09-01 · xander</span>
+            </div>
+          </form>
+        </section>
 
         <div class="metrics" data-od-id="memory-metrics">
           <span><b>重复错误 -40%</b></span>
@@ -2151,25 +3018,25 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
 
 <!-- ===================================================== 09 am-model-cost ===================================================== -->
 <section class="sheet-section" id="am-model-cost" data-od-id="am-model-cost">
-  <p class="eyebrow">09 · AM-MODEL-COST · BY WORK STAGE</p>
+  <p class="eyebrow">14 · AM-MODEL-COST · BY WORK STAGE</p>
   <h2>模型与成本</h2>
   <p class="sheet-note">团队页的子页。按工作阶段而不是按角色列模型档位：同一个 Agent 在不同阶段用不同档位。右侧是三态成本（已消耗 / 已预留 / 未结算）与升级规则。</p>
   <div class="app" data-od-id="am-model-cost-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space">商户</a>
-        <a href="#am-gbp-work-order">任务与计划</a>
-        <a href="#am-reports">数据与报告</a>
-        <a href="#am-team" aria-current="page">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" aria-current="page" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
         <p class="eyebrow">TEAM · MODELS &amp; COST · SEPTEMBER</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
         <div class="page-head">
@@ -2178,8 +3045,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           <p class="sub">本月额度 $40 · 合计 $16.70（已消耗 + 已预留 + 未结算）· 数据截至今天 11:30</p>
         </div>
         <nav class="tabs" aria-label="团队" style="margin-top: 0;">
-          <a href="#am-team">成员</a>
-          <a href="#am-model-cost" aria-current="page">模型与成本</a>
+          <a href="#am-team" data-target="#am-team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">成员</a>
+          <a href="#am-model-cost" aria-current="page" data-target="#am-model-cost" data-effect="open" title="→ 模型与成本 · 当前页打开 · 不改变状态">模型与成本</a>
         </nav>
         <div class="cost-layout">
           <section class="card" data-od-id="cost-table">
@@ -2224,27 +3091,27 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
   </div>
 </section>
 
-<!-- ===================================================== 10 am-reports ===================================================== -->
+<!-- ===================================================== 15 am-reports ===================================================== -->
 <section class="sheet-section" id="am-reports" data-od-id="am-reports">
-  <p class="eyebrow">10 · AM-REPORTS · DASHBOARD · AUDIT · FROZEN</p>
+  <p class="eyebrow">15 · AM-REPORTS · FROZEN REPORTS</p>
   <h2>数据与报告</h2>
-  <p class="sheet-note">三个 tab 并排静态展示：表现看板（筛选 + 指标 + 趋势）、分析与 Audit（沿用 Audit 报告卡）、冻结报告（生成、审阅、导出、交付分开留痕）。旁边一张「旧报告覆盖清单」标出还没承接的项目。</p>
+  <p class="sheet-note">只保留「冻结报告」列表与「旧报告覆盖清单」；表现看板由 Performance 承接，分析与 Audit 由 Audit 中心 / Audit 对比承接。第 37 周周报行带期间口径：09-08 的扫描不计入 09-01 至 09-07。</p>
   <div class="app" data-od-id="am-reports-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
-        <a href="#am-home">工作台</a>
-        <a href="#am-merchant-space">商户</a>
-        <a href="#am-gbp-work-order">任务与计划</a>
-        <a href="#am-reports" aria-current="page">数据与报告</a>
-        <a href="#am-team">团队</a>
+        <a href="#am-home" data-target="/inbox" data-effect="open" title="→ 工作台首页 · 当前页打开 · 不改变状态">工作台</a>
+        <a href="#am-merchant-list" data-target="/merchants" data-effect="open" title="→ /merchants · 当前页打开 · 不改变状态">商户</a>
+        <a href="#am-task-list" data-target="/tasks" data-effect="open" title="→ /tasks · 当前页打开 · 不改变状态">任务与计划</a>
+        <a href="#am-reports" data-target="/reports" aria-current="page" data-effect="open" title="→ 数据与报告 · 当前页打开 · 不改变状态">数据与报告</a>
+        <a href="#am-team" data-target="/team" data-effect="open" title="→ 团队 · 当前页打开 · 不改变状态">团队</a>
       </nav>
       <div class="nav-foot">5 家商户 · 6 位成员</div>
     </aside>
     <div>
       <header class="topbar">
-        <p class="eyebrow">DATA &amp; REPORTS</p>
-        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+        <p class="eyebrow">DATA &amp; REPORTS · FROZEN</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button" data-target="/logout" data-effect="submit" title="→ 退出登录 · 弹确认框 · 改变状态">退出</button></div>
       </header>
       <main class="main">
         <div class="page-head">
@@ -2252,105 +3119,7 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           <h1>数据与报告</h1>
           <p class="sub">生成报告不等于已发送；交付需要 AM 明确记录。</p>
         </div>
-
-        <!-- tab 1 -->
-        <div class="tab-state" data-od-id="reports-tab-dashboard">
-          <nav class="tabs" aria-label="数据与报告 · 表现看板">
-            <a href="#am-reports" aria-current="page">表现看板</a>
-            <a href="#am-reports">分析与 Audit</a>
-            <a href="#am-reports">冻结报告</a>
-          </nav>
-          <section class="card" data-od-id="dashboard-card">
-            <div class="filters" data-od-id="dashboard-filters">
-              <span class="filter"><span>商户</span>George Merchant <i>▾</i></span>
-              <span class="filter"><span>门店</span>2020 Broadway <i>▾</i></span>
-              <span class="filter"><span>期间</span>09-01 至 09-07 <i>▾</i></span>
-              <span class="filter"><span>比较期</span>上周 <i>▾</i></span>
-            </div>
-            <div class="kpis" data-od-id="dashboard-kpis">
-              <div class="kpi"><span class="label">GBP 曝光（搜索 + 地图）</span><b>3,240</b><span class="delta"><span class="up">+8%</span> vs 上周 3,000</span></div>
-              <div class="kpi"><span class="label">导航与来电请求</span><b>186</b><span class="delta"><span class="up">+3%</span> vs 上周 181</span></div>
-              <div class="kpi"><span class="label">「brunch near me」平均排名 · 7×7</span><b>8.9</b><span class="delta"><span class="up">↑ 0.5</span> vs 08-12 基线 9.4 · 09-08 扫描</span></div>
-            </div>
-            <div class="trend-ph" data-od-id="dashboard-trend">近 4 周趋势 · 占位<br />接入 GBP Performance 数据后显示；GSC 未授权，官网指标不显示</div>
-          </section>
-        </div>
-
-        <!-- tab 2 -->
-        <div class="tab-state" data-od-id="reports-tab-audit">
-          <nav class="tabs" aria-label="数据与报告 · 分析与 Audit">
-            <a href="#am-reports">表现看板</a>
-            <a href="#am-reports" aria-current="page">分析与 Audit</a>
-            <a href="#am-reports">冻结报告</a>
-          </nav>
-          <div class="audit-layout">
-            <section class="card" data-od-id="audit-report">
-              <div class="card-head">
-                <div><p class="eyebrow">AUDIT REPORT · #28 · GEORGE MERCHANT</p><h3 class="card-title">Audit 报告</h3></div>
-                <span class="cell-sub">7 个维度 · 5 个已评分 · 1 个 0 分 · 1 个 N/A</span>
-              </div>
-              <div class="audit">
-                <div>
-                  <dl class="params params-tight">
-                    <dt>商户</dt><dd>George Merchant · 2020 Broadway</dd>
-                    <dt>日期</dt><dd class="mono">2026-09-07</dd>
-                    <dt>执行</dt><dd>审计 Agent · local-audit-runner</dd>
-                  </dl>
-                  <p class="score" style="margin-top: 14px;">62<small> / 100</small></p>
-                  <p class="cell-sub">总分只计已评分维度（6 个），N/A 不计入</p>
-                  <div class="btn-row" style="margin-top: 16px; flex-direction: column; align-items: stretch;">
-                    <button class="btn btn-primary" type="button">交给 Orchestrator 提计划</button>
-                    <button class="btn" type="button">查看证据</button>
-                  </div>
-                </div>
-                <div>
-                  <p class="eyebrow" style="margin-bottom: 6px;">7 DIMENSIONS · SCORE / 100</p>
-                  <ul class="dims" style="--max: 100;" data-od-id="audit-dimensions">
-                    <li><span class="dim">GBP 资料完整度</span><span class="track"><span class="fill" style="--v: 78;"></span></span><span class="val">78</span></li>
-                    <li><span class="dim">NAP 一致性</span><span class="track"><span class="fill" style="--v: 90;"></span></span><span class="val">90</span></li>
-                    <li><span class="dim">评价与回复</span><span class="track"><span class="fill" style="--v: 55;"></span></span><span class="val">55</span></li>
-                    <li><span class="dim">本地排名</span><span class="track"><span class="fill" style="--v: 41;"></span></span><span class="val">41</span></li>
-                    <li><span class="dim">帖子活跃度</span><span class="track"><span class="fill" style="--v: 20;"></span></span><span class="val">20</span></li>
-                    <li class="zero"><span class="dim">结构化数据</span><span class="track"><span class="fill" style="--v: 0;"></span></span><span class="val">0 分</span></li>
-                    <li class="na"><span class="dim">官网技术</span><span class="track"></span><span class="val">N/A</span></li>
-                  </ul>
-                  <div class="dims-note"><span><b style="color: var(--danger);">0 分</b> = 已检查，完全缺失</span><span><b>N/A</b> = 未覆盖：GSC 未授权，未检查</span></div>
-                </div>
-                <div>
-                  <p class="eyebrow" style="margin-bottom: 6px;">TOP 3 ISSUES</p>
-                  <ul class="issues" data-od-id="audit-issues">
-                    <li><span class="stamp stamp-bad">P1</span><span><b>GBP 超过 60 天无更新帖</b><br /><span class="cell-sub">已转成 WO-1204 · 审核中</span></span></li>
-                    <li><span class="stamp stamp-warn">P2</span><span><b>结构化数据缺失（Restaurant / Menu schema）</b><br /><span class="cell-sub">依赖官网后台权限 · 未转任务</span></span></li>
-                    <li><span class="stamp stamp-warn">P3</span><span><b>评价回复率 38%，近 30 天 5 条未回复</b><br /><span class="cell-sub">未转任务 · 回复属外部写入，需单独授权</span></span></li>
-                  </ul>
-                </div>
-              </div>
-            </section>
-            <aside>
-              <section class="card" data-od-id="legacy-coverage">
-                <div class="card-head">
-                  <div><p class="eyebrow">LEGACY COVERAGE · 6</p><h3 class="card-title">旧报告覆盖清单</h3></div>
-                </div>
-                <ul class="coverage">
-                  <li><b>周报 PDF</b><span>→ 冻结报告</span><span class="stamp stamp-ok">已覆盖</span></li>
-                  <li><b>月报 PPTX</b><span>→ 冻结报告</span><span class="stamp stamp-ok">已覆盖</span></li>
-                  <li><b>Audit 总分与维度</b><span>→ 分析与 Audit</span><span class="stamp stamp-ok">已覆盖</span></li>
-                  <li><b>评价摘要与回复率</b><span>→ 分析与 Audit · P3 问题</span><span class="stamp stamp-ok">已覆盖</span></li>
-                  <li><b>排名网格截图（Local Falcon）</b><span>→ 表现看板 · 待接入扫描结果</span><span class="stamp stamp-warn">未覆盖</span></li>
-                  <li><b>竞品对比表</b><span>→ 无新页面承接</span><span class="stamp stamp-warn">未覆盖</span></li>
-                </ul>
-              </section>
-            </aside>
-          </div>
-        </div>
-
-        <!-- tab 3 -->
-        <div class="tab-state" data-od-id="reports-tab-frozen">
-          <nav class="tabs" aria-label="数据与报告 · 冻结报告">
-            <a href="#am-reports">表现看板</a>
-            <a href="#am-reports">分析与 Audit</a>
-            <a href="#am-reports" aria-current="page">冻结报告</a>
-          </nav>
+        <div class="reports-layout">
           <section class="card" data-od-id="period-reports">
             <div class="card-head">
               <div><p class="eyebrow">FROZEN REPORTS · 3</p><h3 class="card-title">冻结报告</h3></div>
@@ -2362,22 +3131,23 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
               </thead>
               <tbody>
                 <tr data-od-id="report-row-w37">
-                  <td><b>第 37 周周报</b><span class="cell-sub">R-3721 · 生成 09-08 06:00</span></td>
+                  <td><b>第 37 周周报</b><span class="cell-sub">R-3721 · 生成 09-08 06:00 · 期间 09-01 至 09-07</span>
+                    <div class="rank-note"><span>本期最近扫描 09-05 · ARP 6.8</span><span class="gray">最新补充观测：09-08 扫描 ARP 6.2（不计入所选期间）</span></div></td>
                   <td>可可小卤</td>
                   <td>数据截止 09-07<span class="cell-sub">冻结快照 #221</span></td>
                   <td><span class="stamp stamp-warn">待审阅</span><span class="cell-sub">分派给 xander · 09-11 12:00</span></td>
                   <td>导出草稿 PDF<span class="cell-sub">带『草稿 · 未审核』标识</span></td>
                   <td>—<span class="cell-sub">正式交付需审核</span></td>
-                  <td><div class="btn-row report-actions"><button class="btn" type="button">审阅</button><button class="btn btn-quiet" type="button">导出草稿 PDF</button><button class="btn btn-quiet" type="button" disabled>导出 PPTX</button><button class="btn btn-quiet" type="button" disabled>记录交付</button></div></td>
+                  <td><div class="btn-row report-actions"><a class="btn" href="#am-reports" data-target="/reports/R-3721/review" data-effect="open" title="→ 报告 R-3721 审阅 · 当前页打开 · 不改变状态">审阅</a><button class="btn btn-quiet" type="button" data-target="/reports/R-3721/export?format=pdf&amp;draft=1" data-effect="submit" title="→ 导出 R-3721 PDF（草稿标识） · 弹确认框 · 改变状态">导出草稿 PDF</button><button class="btn btn-quiet" type="button" disabled data-target="/reports/R-3721/export?format=pptx" data-effect="none" title="→ 导出 R-3721 PPTX · 无 · 不改变状态">导出 PPTX</button><button class="btn btn-quiet" type="button" disabled data-target="/reports/R-3721/deliveries" data-effect="none" title="→ 记录 R-3721 交付 · 无 · 不改变状态">记录交付</button></div></td>
                 </tr>
                 <tr data-od-id="report-row-aug">
-                  <td><b>8 月月报</b><span class="cell-sub">R-3608 · 生成 09-01 06:00</span></td>
+                  <td><b>8 月月报</b><span class="cell-sub">R-3608 · v1 · 生成 09-01 06:00 · 冻结曝光 11,900（当时缺 3 天）</span></td>
                   <td>George Merchant</td>
                   <td>数据截止 08-31<span class="cell-sub">冻结快照 #214</span></td>
                   <td><span class="stamp stamp-ok">已审阅</span><span class="cell-sub">xander · 09-02</span></td>
                   <td>PDF ✓ PPTX ✓<span class="cell-sub">09-02 · xander 下载</span></td>
                   <td><span class="stamp stamp-ok">已交付</span><span class="cell-sub">09-03 · 邮件 · xander 记录</span></td>
-                  <td><div class="btn-row report-actions"><button class="btn btn-quiet" type="button">审阅</button><button class="btn btn-quiet" type="button">导出 PDF</button><button class="btn btn-quiet" type="button">导出 PPTX</button><button class="btn btn-quiet" type="button">记录交付</button></div></td>
+                  <td><div class="btn-row report-actions"><a class="btn btn-quiet" href="#am-reports" data-target="/reports/R-3608" data-effect="open" title="→ 报告 R-3608 · 当前页打开 · 不改变状态">审阅</a><button class="btn btn-quiet" type="button" data-target="/reports/R-3608/export?format=pdf" data-effect="submit" title="→ 导出 R-3608 PDF · 弹确认框 · 改变状态">导出 PDF</button><button class="btn btn-quiet" type="button" data-target="/reports/R-3608/export?format=pptx" data-effect="submit" title="→ 导出 R-3608 PPTX · 弹确认框 · 改变状态">导出 PPTX</button><button class="btn btn-quiet" type="button" data-target="/reports/R-3608/deliveries" data-effect="submit" title="→ 记录 R-3608 交付 · 弹确认框 · 改变状态">记录交付</button></div></td>
                 </tr>
                 <tr data-od-id="report-row-custom">
                   <td><b>自定义 08-15 至 09-05</b><span class="cell-sub">R-3702 · 生成 09-06 09:12</span></td>
@@ -2386,12 +3156,30 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td class="mono">—</td>
                   <td>—<span class="cell-sub">补齐缺失数据或审阅时注明后可导出</span></td>
                   <td>—<span class="cell-sub">正式交付需审核</span></td>
-                  <td><div class="btn-row report-actions"><button class="btn" type="button">审阅</button><button class="btn btn-quiet" type="button" disabled>导出 PDF</button><button class="btn btn-quiet" type="button" disabled>导出 PPTX</button><button class="btn btn-quiet" type="button" disabled>记录交付</button></div></td>
+                  <td><div class="btn-row report-actions"><a class="btn" href="#am-reports" data-target="/reports/R-3702/review" data-effect="open" title="→ 报告 R-3702 审阅 · 当前页打开 · 不改变状态">审阅</a><button class="btn btn-quiet" type="button" disabled data-target="/reports/R-3702/export?format=pdf" data-effect="none" title="→ 导出 R-3702 PDF · 无 · 不改变状态">导出 PDF</button><button class="btn btn-quiet" type="button" disabled data-target="/reports/R-3702/export?format=pptx" data-effect="none" title="→ 导出 R-3702 PPTX · 无 · 不改变状态">导出 PPTX</button><button class="btn btn-quiet" type="button" disabled data-target="/reports/R-3702/deliveries" data-effect="none" title="→ 记录 R-3702 交付 · 无 · 不改变状态">记录交付</button></div></td>
                 </tr>
               </tbody>
             </table>
             <div class="table-foot"><span>导出文件带冻结快照编号；交付记录写明渠道、时间与记录人</span><span>报告 Agent 未启用，草稿由系统模板生成</span></div>
           </section>
+
+          <aside>
+            <section class="card" data-od-id="legacy-coverage">
+              <div class="card-head">
+                <div><p class="eyebrow">LEGACY COVERAGE · 8</p><h3 class="card-title">旧报告覆盖清单</h3></div>
+              </div>
+              <ul class="coverage">
+                <li><b>周报 PDF</b><span>→ 冻结报告</span><span class="stamp stamp-ok">已覆盖</span></li>
+                <li><b>月报 PPTX</b><span>→ 冻结报告</span><span class="stamp stamp-ok">已覆盖</span></li>
+                <li><b>Audit 总分与维度</b><span>→ <a href="#am-audit-center" data-target="/merchants/7/audits" data-effect="open" title="→ Audit 中心 · George · 当前页打开 · 不改变状态">Audit 中心</a></span><span class="stamp stamp-ok">已覆盖</span></li>
+                <li><b>Audit 历史对比</b><span>→ <a href="#am-audit-compare" data-target="/audits/compare?a=28&amp;b=26" data-effect="open" title="→ Audit 对比 #28 vs #26 · 当前页打开 · 不改变状态">Audit 对比</a></span><span class="stamp stamp-ok">已覆盖</span></li>
+                <li><b>曝光与点击趋势</b><span>→ <a href="#am-performance" data-target="/merchants/7/performance" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance · 趋势</a></span><span class="stamp stamp-ok">已覆盖</span></li>
+                <li><b>评价摘要与回复率</b><span>→ <a href="#am-performance" data-target="/merchants/7/performance#channels" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance · 渠道明细</a></span><span class="stamp stamp-ok">已覆盖</span></li>
+                <li><b>排名网格截图</b><span>→ <a href="#am-performance" data-target="/merchants/7/performance#keywords" data-effect="open" title="→ Performance · George · 当前页打开 · 不改变状态">Performance · 关键词与排名</a></span><span class="stamp stamp-ok">已覆盖</span></li>
+                <li><b>竞品对比表</b><span>→ 无新页面承接</span><span class="stamp stamp-warn">未覆盖</span></li>
+              </ul>
+            </section>
+          </aside>
         </div>
       </main>
     </div>

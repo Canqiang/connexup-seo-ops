@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Acceptance check for the AM workspace prototype v3 (business contract spec + prompt-v3.md)."""
+"""Acceptance check for the AM workspace prototype v4 (data workspace + interaction contract specs, prompt-v4.md)."""
 from __future__ import annotations
 import re, sys
 from pathlib import Path
 
 PROTO = Path(__file__).resolve().parent / "prototype"
 REQUIRED_SECTIONS = [
-    "am-home", "am-merchant-space", "am-gbp-work-order", "am-task-detail-human",
-    "am-dispatch-drawer", "am-team", "am-memory", "am-model-cost", "am-reports", "am-exceptions",
+    "am-home", "am-merchant-list", "am-task-list", "am-merchant-space",
+    "am-audit-center", "am-audit-compare", "am-performance",
+    "am-gbp-work-order", "am-exceptions", "am-task-detail-human",
+    "am-dispatch-drawer", "am-team", "am-memory", "am-model-cost", "am-reports",
 ]
 REQUIRED_COPY = [
     # navigation + home groups
@@ -30,7 +32,7 @@ REQUIRED_COPY = [
     # new sections
     "已确认事实", "Core AI 原生记忆", "确认为规则",
     "模型与成本", "升级条件", "预算规则", "角色与模型不永久绑定",
-    "Audit 报告", "记录交付", "冻结快照",
+    "记录交付", "冻结快照",
     # v3: principles, demo-data banner, rule ids and "why you"
     "Agent 主动推进，AM 按职责参与", "Plan 授权工作范围，内容审批授权具体产物", "系统用证据判断完成",
     "演示数据", "R3 · 公开内容需逐条审批", "R4 · Plan #12 付费扫描额度 100 credits", "本次 120",
@@ -45,10 +47,24 @@ REQUIRED_COPY = [
     # v3: model by stage, cost three states
     "工作阶段", "确定性程序", "已消耗", "已预留", "未结算", "缺事实、缺权限不允许升级",
     # v3: reports three layers, labelled draft export, coverage checklist
-    "表现看板", "分析与 Audit", "冻结报告", "草稿 · 未审核", "旧报告覆盖清单", "未覆盖",
+    "冻结报告", "草稿 · 未审核", "旧报告覆盖清单", "未覆盖",
+    # v4: cleanup
+    "由 Orchestrator 重新规划", "总分 47", "284 ÷ 6 = 47.3", "最新补充观测",
+    # v4: merchant tabs and overview
+    "资料与记忆", "最近一次有效 Audit", "下次诊断",
+    # v4: audit center
+    "Audit 是周期任务 + 历史诊断", "查看最近诊断", "立即诊断", "周期设置", "执行失败", "保留上一次有效结果",
+    "专项 · 不计总分", "首次入驻诊断", "Audit #29 正在执行", "修改后从下一次执行生效",
+    # v4: audit compare
+    "新增问题", "持续存在", "已核验解决", "再次出现", "可直接比较", "不每次重新派单",
+    # v4: performance
+    "选择期间只查询已有数据", "分析这段表现", "生成报告", "同步数据", "电话按钮点击 ≠ 接通或到店",
+    "缺失 08-12 至 08-14", "历史扫描", "没扫描的日期不补成曲线", "两者不同是正常的", "上一等长期间",
+    # v4: interaction contract
+    "返回时恢复搜索、筛选、分页与滚动位置", "六种情况", "已入队", "不会自动重新提交", "内容已变化", "重新载入",
 ]
 # Copy the v2 review explicitly removed; its presence means a flow fix regressed.
-FORBIDDEN_COPY = ["批准并发布", "标记为无法完成", "应用提案", "Local Falcon 扫描将消耗 40 credits", "批准扫描"]
+FORBIDDEN_COPY = ["批准并发布", "标记为无法完成", "应用提案", "Local Falcon 扫描将消耗 40 credits", "批准扫描", "会一直等待，需要重新派单"]
 EXTERNAL = re.compile(r"""(?:<link[^>]+href|<script[^>]+src|@import\s+(?:url\()?|url\()\s*["']?https?://""", re.I)
 
 def main() -> int:
@@ -72,10 +88,21 @@ def main() -> int:
             failures.append(f"forbidden copy present: {text}")
     for m in EXTERNAL.finditer(html):
         failures.append(f"external resource: {html[m.start():m.start()+80]!r}")
+    # Interaction contract (spec §12): every in-page anchor resolves, every button declares its target.
+    ids = set(re.findall(r"""\bid\s*=\s*["']([^"']+)["']""", html))
+    for href in re.findall(r"""href\s*=\s*["']#([^"']+)["']""", html):
+        if href and href not in ids:
+            failures.append(f"dangling anchor: #{href}")
+    buttons = re.findall(r"<button\b[^>]*>", html, re.I)
+    without_target = [b for b in buttons if "data-target" not in b]
+    if without_target:
+        failures.append(f"{len(without_target)} of {len(buttons)} <button> without data-target, e.g. {without_target[0][:100]!r}")
+    if not re.search(r"""data-effect\s*=\s*["'](open|submit|expand|external|none)["']""", html):
+        failures.append("no data-effect attributes found")
     if failures:
         print("FAIL"); [print(" -", f) for f in failures]; return 1
     print(f"PASS: {len(REQUIRED_SECTIONS)} sections, {len(REQUIRED_COPY)} copy strings, "
-          f"{len(FORBIDDEN_COPY)} forbidden strings absent, no external resources"); return 0
+          f"{len(FORBIDDEN_COPY)} forbidden strings absent, anchors resolve, buttons carry data-target, no external resources"); return 0
 
 if __name__ == "__main__":
     sys.exit(main())
