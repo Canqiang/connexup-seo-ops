@@ -1,0 +1,19 @@
+{
+  "metrics": [
+    {"metric_date": "2026-08-18", "metric": "BUSINESS_IMPRESSIONS_DESKTOP_MAPS", "value": 10},
+    {"metric_date": "2026-08-18", "metric": "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH", "value": 20},
+    {"metric_date": "2026-08-18", "metric": "BUSINESS_IMPRESSIONS_MOBILE_MAPS", "value": 30},
+    {"metric_date": "2026-08-18", "metric": "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", "value": 40},
+    {"metric_date": "2026-08-18", "metric": "WEBSITE_CLICKS", "value": 5},
+    {"metric_date": "2026-08-18", "metric": "CALL_CLICKS", "value": 0},
+    {"metric_date": "2026-08-18", "metric": "BUSINESS_DIRECTION_REQUESTS", "value": 3},
+    {"metric_date": "2026-08-18", "metric": "BUSINESS_FOOD_MENU_CLICKS", "value": 7},
+    {"metric_date": "2026-08-19", "metric": "BUSINESS_IMPRESSIONS_DESKTOP_MAPS", "value": 11},
+    {"metric_date": "2026-08-19", "metric": "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH", "value": 21},
+    {"metric_date": "2026-08-19", "metric": "BUSINESS_IMPRESSIONS_MOBILE_MAPS", "value": 31},
+    {"metric_date": "2026-08-19", "metric": "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", "value": 41},
+    {"metric_date": "2026-08-19", "metric": "WEBSITE_CLICKS", "value": 6},
+    {"metric_date": "2026-08-19", "metric": "BUSINESS_DIRECTION_REQUESTS", "value": 4},
+    {"metric_date": "2026-08-19", "metric": "BUSINESS_FOOD_MENU_CLICKS", "value": 8}
+  ]
+}
