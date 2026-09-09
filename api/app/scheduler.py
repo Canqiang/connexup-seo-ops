@@ -15,6 +15,7 @@ from .merchant_profiles import (
     sync_gbp_profile_once,
 )
 from .merchants import merchant_lifecycle_token, now_iso
+from .performance_sync import enqueue_daily_performance_jobs_once, process_metric_sync_batches_once
 from .runs import has_running_run, recover_stale_run_dispatches_once, start_run
 from .seo_targets import (
     SeoAgentIds,
@@ -946,6 +947,8 @@ async def fbr_scheduler_loop() -> None:
                         sync_due_fbr_profiles_once,
                         fbr_client,
                     )
+                    await asyncio.to_thread(enqueue_daily_performance_jobs_once)
+                    await asyncio.to_thread(process_metric_sync_batches_once, fbr_client)
         except Exception:
             logger.exception("hourly FBR scheduler tick failed")
         tick += 1

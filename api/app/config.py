@@ -182,3 +182,43 @@ def coreai_settings() -> CoreAiSettings | None:
         keyword_seed_skill_id=keyword_seed_skill_id,
         keyword_ranking_skill_id=keyword_ranking_skill_id,
     )
+
+
+@dataclass(frozen=True)
+class PerformanceSyncSettings:
+    enabled: bool
+    pilot_merchant_ids: frozenset[int]
+    lease_seconds: int
+    max_attempts: int
+    delay_days: int
+
+
+def performance_sync_settings() -> PerformanceSyncSettings:
+    raw_ids = os.environ.get("SEO_OPS_PERFORMANCE_PILOT_MERCHANT_IDS", "").strip()
+    ids: set[int] = set()
+    for token in (part.strip() for part in raw_ids.split(",")):
+        if not token:
+            continue
+        if not token.isdigit():
+            raise ValueError("invalid SEO_OPS_PERFORMANCE_PILOT_MERCHANT_IDS")
+        ids.add(int(token))
+
+    def _int(name: str, default: int) -> int:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            return default
+        if not value.isdigit() or int(value) <= 0:
+            raise ValueError(f"invalid {name}")
+        return int(value)
+
+    return PerformanceSyncSettings(
+        enabled=os.environ.get("SEO_OPS_PERFORMANCE_SYNC_ENABLED", "").strip().lower() == "true",
+        pilot_merchant_ids=frozenset(ids),
+        lease_seconds=_int("SEO_OPS_PERFORMANCE_LEASE_SECONDS", 120),
+        max_attempts=_int("SEO_OPS_PERFORMANCE_MAX_AUTO_ATTEMPTS", 5),
+        delay_days=_int("SEO_OPS_PERFORMANCE_DELAY_DAYS", 3),
+    )
+
+
+def performance_history_read_enabled() -> bool:
+    return os.environ.get("SEO_OPS_PERFORMANCE_HISTORY_READ_ENABLED", "").strip().lower() == "true"

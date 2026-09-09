@@ -200,3 +200,64 @@ def test_hourly_fbr_sync_loop_is_independent_of_core_ai_polling(monkeypatch):
         asyncio.run(scheduler.fbr_scheduler_loop())
 
     assert calls == [fbr_client]
+
+
+def test_fbr_loop_wires_the_performance_sync_helpers_each_tick(monkeypatch):
+    from app import scheduler
+
+    fbr_client = object()
+    enqueue_calls = []
+    process_calls = []
+
+    monkeypatch.setattr(scheduler, "get_fbr_client", lambda: fbr_client)
+    monkeypatch.setattr(scheduler, "sync_due_fbr_profiles_once", lambda client: None)
+    monkeypatch.setattr(
+        scheduler, "enqueue_daily_performance_jobs_once", lambda: enqueue_calls.append(True) or 0
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "process_metric_sync_batches_once",
+        lambda client: process_calls.append(client) or 0,
+    )
+
+    class OneTickComplete(Exception):
+        pass
+
+    async def stop_after_first_tick(_delay):
+        raise OneTickComplete
+
+    monkeypatch.setattr(scheduler.asyncio, "sleep", stop_after_first_tick)
+    with pytest.raises(OneTickComplete):
+        asyncio.run(scheduler.fbr_scheduler_loop())
+
+    assert enqueue_calls == [True]
+    assert process_calls == [fbr_client]
+
+
+def test_fbr_loop_performance_sync_helpers_are_inert_while_the_pilot_flag_is_off(monkeypatch):
+    """The scheduler wiring itself must not depend on the pilot flag: with it
+    off, the real helpers run every tick and must return 0 without ever
+    touching the database, so behaviour is unchanged until the pilot is
+    enabled."""
+    from app import performance_sync, scheduler
+
+    monkeypatch.delenv("SEO_OPS_PERFORMANCE_SYNC_ENABLED", raising=False)
+
+    fbr_client = object()
+    monkeypatch.setattr(scheduler, "get_fbr_client", lambda: fbr_client)
+    monkeypatch.setattr(scheduler, "sync_due_fbr_profiles_once", lambda client: None)
+
+    def _forbidden_connect():
+        raise AssertionError("performance sync must not touch the database while its flag is off")
+
+    monkeypatch.setattr(performance_sync, "connect", _forbidden_connect)
+
+    class OneTickComplete(Exception):
+        pass
+
+    async def stop_after_first_tick(_delay):
+        raise OneTickComplete
+
+    monkeypatch.setattr(scheduler.asyncio, "sleep", stop_after_first_tick)
+    with pytest.raises(OneTickComplete):
+        asyncio.run(scheduler.fbr_scheduler_loop())

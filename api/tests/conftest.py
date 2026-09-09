@@ -70,6 +70,13 @@ def conn(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def gold_payload():
+    return json.loads(
+        (Path(__file__).parent / "fixtures/performance/gbp_choice_brooklyn_gold.json").read_text("utf-8")
+    )
+
+
+@pytest.fixture()
 def merchant_with_gbp_profiles(conn):
     """Seed Choice Brooklyn (merchant 3) with its two real GBP location profiles."""
     conn.execute(
