@@ -1,0 +1,88 @@
+/* design-systems/seo-ops/tokens.css
+ * Derived from web/src/index.css (:root) on 2026-09-09. Values are verbatim
+ * except --accent-active and --focus-ring, which index.css does not define.
+ */
+
+:root {
+  /* A1 identity */
+  --bg: #f5f7f9;                /* --paper */
+  --surface: #ffffff;           /* --card */
+  --surface-warm: #e8eff5;      /* --paper-blue */
+  --fg: #19324a;                /* --ink */
+  --fg-2: #4f6578;              /* --ink-2 */
+  --muted: #8394a4;             /* --muted */
+  --meta: #205d7b;              /* --brand-ink */
+  --border: #d5dfe7;            /* --line */
+  --border-soft: var(--border); /* no lighter line in the existing palette */
+  --accent: #c8731a;            /* --accent, button.primary */
+  --accent-on: #ffffff;
+  --accent-hover: #9d5712;      /* button.primary:hover */
+  --accent-active: #7f4610;
+
+  /* A2 semantic */
+  --success: #26765b;           /* --ok */
+  --warn: #c8731a;              /* --accent doubles as warning (credit-warning) */
+  --danger: #b4372e;            /* --bad */
+
+  /* Typography */
+  --font-display: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-xs: 10px;              /* .section-code / .eyebrow */
+  --text-sm: 12px;
+  --text-base: 14px;            /* body */
+  --text-lg: 16px;
+  --text-xl: 18px;              /* dialog h4 */
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+  --text-4xl: 40px;
+  --leading-body: 1.65;         /* body */
+  --leading-tight: 1.2;
+  --tracking-display: 0;
+
+  /* Spacing on a 4px grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --section-y-desktop: 48px;
+  --section-y-tablet: 40px;
+  --section-y-phone: 32px;
+
+  /* Shape and elevation */
+  --radius-sm: 4px;
+  --radius-md: 8px;             /* button, .error */
+  --radius-lg: 8px;             /* cards stay square-ish; never larger */
+  --radius-pill: 9999px;
+  --elev-flat: none;
+  --elev-ring: 0 0 0 1px var(--border);
+  --elev-raised: 0 24px 70px rgb(25 50 74 / 22%);   /* .operation-confirm-dialog */
+  --focus-ring: 0 0 0 3px #e7f2f7;
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout */
+  --container-max: 1380px;      /* .task-detail-layout */
+  --container-gutter-desktop: 32px;
+  --container-gutter-tablet: 24px;
+  --container-gutter-phone: 16px;
+
+  /* C-layer extensions: original seo-ops names, kept so the prototype can
+     reference the same vocabulary the React app uses. */
+  --brand: #37799a;
+  --brand-ink: #205d7b;
+  --brand-soft: #e7f2f7;
+  --line-strong: #b9c9d6;
+  --accent-soft: #fff5e8;
+  --ok-soft: #e5f2ed;
+  --bad-soft: #f9e9e7;
+  --ai: #6b46a8;
+  --ai-soft: #f0e9f9;
+}

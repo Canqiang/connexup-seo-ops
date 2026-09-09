@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "od-design-system-project/v1",
+  "id": "seo-ops",
+  "name": "SEO Ops",
+  "category": "Productivity & SaaS",
+  "description": "Connexup SEO Ops internal operations console. Porcelain-grey canvas, white cards, ink-blue text, orange primary action, stamp-style statuses. Chinese UI, desktop 1180px and up.",
+  "source": {
+    "type": "local",
+    "path": "/Users/xander/git_repo/connexup-seo-ops/docs/design/open-design/seo-ops"
+  },
+  "files": {
+    "design": "DESIGN.md",
+    "tokens": "tokens.css"
+  }
+}
