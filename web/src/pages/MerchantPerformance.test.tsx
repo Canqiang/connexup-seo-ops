@@ -114,6 +114,24 @@ describe('MerchantPerformance', () => {
     expect(api.queryMerchantPerformance).toHaveBeenLastCalledWith(3, expect.objectContaining({
       current: { start: '2026-08-01', end: '2026-08-31' },
     }), expect.anything())
+
+    // "上月" only reads year and month, so it cannot tell the store-local
+    // *yesterday* rule (referenceDateIso) apart from a same-month "today"
+    // bug: at this pinned instant store-local today is 2026-09-30 and
+    // store-local yesterday is 2026-09-29 -- both September, so either
+    // reference computes the same "上月" (August) above. "最近 28 天" is
+    // day-sensitive and discriminates cleanly: the correct
+    // store-local-*yesterday* reference (2026-09-29) gives 2026-09-02
+    // through 2026-09-29, while a reference of store-local *today*
+    // (2026-09-30) -- the same bug this suite's ambient-clock case also
+    // guards, just one day later -- would give 2026-09-03 through
+    // 2026-09-30 instead.
+    fireEvent.click(screen.getByRole('button', { name: '最近 28 天' }))
+    fireEvent.click(screen.getByRole('button', { name: '应用筛选' }))
+    await waitFor(() => expect(api.queryMerchantPerformance).toHaveBeenCalledTimes(3))
+    expect(api.queryMerchantPerformance).toHaveBeenLastCalledWith(3, expect.objectContaining({
+      current: { start: '2026-09-02', end: '2026-09-29' },
+    }), expect.anything())
   })
 
   it('blocks the query and offers a timezone form when the store timezone is unset', async () => {
