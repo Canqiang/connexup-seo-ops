@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -66,3 +67,24 @@ def conn(tmp_path, monkeypatch):
         yield connection
     finally:
         connection.close()
+
+
+@pytest.fixture()
+def merchant_with_gbp_profiles(conn):
+    """Seed Choice Brooklyn (merchant 3) with its two real GBP location profiles."""
+    conn.execute(
+        "INSERT INTO merchants (id, name, status, created_at) VALUES"
+        " (3,'Choice Brooklyn','active','2026-09-01T00:00:00.000000Z')"
+    )
+    for location_id, title, place_id in (
+        ("1860638126797610816", "Clinton Hill", "ChIJaYcllU0N7ocR4lWiLngfEYg"),
+        ("24300588970198995", "Upper West Side", "ChIJH8iZh-5ZwokRPLzzADeSnYE"),
+    ):
+        conn.execute(
+            "INSERT INTO merchant_gbp_profiles (merchant_id, fbr_merchant_id, gbp_location_id,"
+            " source_title, location_json, normalized_json, synced_at) VALUES"
+            " (3,'fbr-3',?,?,'{}',?,'2026-09-03T00:00:00.000000Z')",
+            (location_id, title, json.dumps({"title": title, "place_id": place_id})),
+        )
+    conn.commit()
+    return 3
