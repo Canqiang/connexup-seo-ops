@@ -1,0 +1,18 @@
+{
+  "projectId": "seo-ops-am-workspace",
+  "projectName": "seo-ops AM 工作台",
+  "designSystemId": "user:seo-ops",
+  "skill": "frontend-design",
+  "agent": "claude",
+  "requestId": "02db74d2-63ae-4f53-aa7a-76d53a89d621",
+  "runId": "8314a60f-2b5a-4316-8c34-ee2f96bb09d7",
+  "conversationId": "ccee0859-d894-44dd-abf5-27bd5cb2c7b1",
+  "status": "succeeded",
+  "previewUrl": "http://127.0.0.1:60061/api/projects/seo-ops-am-workspace/raw/index.html",
+  "studioUrl": "http://127.0.0.1:60071/projects/seo-ops-am-workspace/conversations/ccee0859-d894-44dd-abf5-27bd5cb2c7b1",
+  "startedAt": "2026-09-09T07:09:58Z",
+  "terminalAt": "2026-09-09T07:34:23Z",
+  "files": ["index.html"],
+  "spec": "docs/superpowers/specs/2026-09-09-agent-driven-local-seo-am-os-design.md#13",
+  "note": "previewUrl/studioUrl ports belong to the current OpenDesign daemon session; call get_run again after an OpenDesign restart."
+}

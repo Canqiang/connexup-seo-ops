@@ -1,0 +1,1542 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1280" />
+<title>SEO Ops · AM 工作台界面原型</title>
+<style>
+/* design-systems/seo-ops/tokens.css
+ * Derived from web/src/index.css (:root) on 2026-09-09. Values are verbatim
+ * except --accent-active and --focus-ring, which index.css does not define.
+ */
+
+:root {
+  /* A1 identity */
+  --bg: #f5f7f9;                /* --paper */
+  --surface: #ffffff;           /* --card */
+  --surface-warm: #e8eff5;      /* --paper-blue */
+  --fg: #19324a;                /* --ink */
+  --fg-2: #4f6578;              /* --ink-2 */
+  --muted: #8394a4;             /* --muted */
+  --meta: #205d7b;              /* --brand-ink */
+  --border: #d5dfe7;            /* --line */
+  --border-soft: var(--border); /* no lighter line in the existing palette */
+  --accent: #c8731a;            /* --accent, button.primary */
+  --accent-on: #ffffff;
+  --accent-hover: #9d5712;      /* button.primary:hover */
+  --accent-active: #7f4610;
+
+  /* A2 semantic */
+  --success: #26765b;           /* --ok */
+  --warn: #c8731a;              /* --accent doubles as warning (credit-warning) */
+  --danger: #b4372e;            /* --bad */
+
+  /* Typography */
+  --font-display: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-xs: 10px;              /* .section-code / .eyebrow */
+  --text-sm: 12px;
+  --text-base: 14px;            /* body */
+  --text-lg: 16px;
+  --text-xl: 18px;              /* dialog h4 */
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+  --text-4xl: 40px;
+  --leading-body: 1.65;         /* body */
+  --leading-tight: 1.2;
+  --tracking-display: 0;
+
+  /* Spacing on a 4px grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --section-y-desktop: 48px;
+  --section-y-tablet: 40px;
+  --section-y-phone: 32px;
+
+  /* Shape and elevation */
+  --radius-sm: 4px;
+  --radius-md: 8px;             /* button, .error */
+  --radius-lg: 8px;             /* cards stay square-ish; never larger */
+  --radius-pill: 9999px;
+  --elev-flat: none;
+  --elev-ring: 0 0 0 1px var(--border);
+  --elev-raised: 0 24px 70px rgb(25 50 74 / 22%);   /* .operation-confirm-dialog */
+  --focus-ring: 0 0 0 3px #e7f2f7;
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout */
+  --container-max: 1380px;      /* .task-detail-layout */
+  --container-gutter-desktop: 32px;
+  --container-gutter-tablet: 24px;
+  --container-gutter-phone: 16px;
+
+  /* C-layer extensions: original seo-ops names, kept so the prototype can
+     reference the same vocabulary the React app uses. */
+  --brand: #37799a;
+  --brand-ink: #205d7b;
+  --brand-soft: #e7f2f7;
+  --line-strong: #b9c9d6;
+  --accent-soft: #fff5e8;
+  --ok-soft: #e5f2ed;
+  --bad-soft: #f9e9e7;
+  --ai: #6b46a8;
+  --ai-soft: #f0e9f9;
+}
+
+/* ---------- derived (no raw hex outside :root) ---------- */
+:root {
+  --paper-soft: color-mix(in oklch, var(--surface) 70%, var(--bg)); /* #fbfcfd equivalent: dialog footer, empty state */
+  --mask: color-mix(in srgb, var(--fg) 42%, transparent);
+  --danger-hover: color-mix(in oklch, var(--danger) 78%, var(--fg));
+}
+
+/* ---------- base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0; min-width: 1280px;
+  color: var(--fg); background: var(--bg);
+  font: 400 var(--text-base)/var(--leading-body) var(--font-body);
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+h1, h2, h3, h4, h5, p, dl, dd, dt, ul, ol, figure, pre { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+a { color: var(--brand); text-decoration: none; }
+a:hover { color: var(--brand-ink); text-decoration: underline; text-underline-offset: 3px; }
+button { font: inherit; color: inherit; }
+code { font-family: var(--font-mono); font-size: 0.93em; }
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.eyebrow {
+  font: 600 var(--text-xs)/1.5 var(--font-mono);
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--meta);
+}
+.mono { font-family: var(--font-mono); }
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ---------- prototype sheet chrome (outside the app frames) ---------- */
+.sheet { max-width: 1560px; margin: 0 auto; padding: 40px 24px 96px; }
+@media (max-width: 1329px) {
+  .sheet { padding-left: 0; padding-right: 0; }
+  .sheet-intro, .sheet-section > h2, .sheet-section > .eyebrow, .sheet-note { padding-left: 24px; padding-right: 24px; }
+  .kit { margin-left: 24px; margin-right: 24px; }
+  .app { border-left: 0; border-right: 0; border-radius: 0; }
+}
+.sheet-intro { max-width: 960px; }
+.sheet-intro h1 { font-size: var(--text-3xl); line-height: 1.3; font-weight: 600; margin: 8px 0 12px; }
+.sheet-intro p { color: var(--fg-2); max-width: 720px; }
+.sheet-intro p.eyebrow { max-width: none; color: var(--meta); }
+.sheet-intro p + p { margin-top: 8px; }
+.sheet-toc { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 16px; font-size: var(--text-sm); }
+.sheet-toc a { color: var(--brand-ink); }
+.sheet-toc code { font-weight: 600; letter-spacing: 0.04em; margin-right: 4px; }
+.sheet-section { margin-top: 64px; }
+.sheet-section > h2 { font-size: var(--text-2xl); line-height: 1.35; font-weight: 600; margin: 4px 0 4px; }
+.sheet-note { color: var(--fg-2); margin-bottom: 16px; max-width: 1040px; }
+.kit { margin-top: 28px; padding: 20px 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px 32px; }
+.kit h3 { font-size: var(--text-sm); font-weight: 600; color: var(--fg-2); margin-bottom: 10px; letter-spacing: 0.02em; }
+.kit-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.kit-notices { display: grid; gap: 8px; }
+.kit-dialog { grid-column: 1 / -1; padding-top: 4px; }
+
+/* ---------- app frame ---------- */
+.app {
+  position: relative; display: grid; grid-template-columns: 200px minmax(0, 1fr);
+  min-width: 1280px; background: var(--bg);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-md); overflow: hidden;
+}
+.sidenav {
+  background: var(--surface); border-right: 1px solid var(--border);
+  padding: 20px 16px 24px; display: flex; flex-direction: column; gap: 28px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+.brand-mark {
+  width: 36px; height: 36px; border-radius: var(--radius-sm); flex: none;
+  background: var(--fg); color: var(--surface); display: grid; place-items: center;
+  font: 700 11px/1 var(--font-mono); letter-spacing: 0.08em;
+}
+.brand-name { font-weight: 600; line-height: 1.3; }
+.brand-sub { font: 500 var(--text-xs)/1.4 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-2); }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav a, .nav span {
+  display: block; padding: 9px 12px; border-radius: 6px; color: var(--fg-2);
+  font-weight: 500; letter-spacing: 0.02em; line-height: 1.5;
+  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+.nav a:hover { background: var(--surface-warm); color: var(--fg); text-decoration: none; }
+.nav a[aria-current="page"] { background: var(--surface-warm); color: var(--fg); font-weight: 600; }
+.nav-foot { margin-top: auto; padding: 0 12px; font-size: var(--text-sm); color: var(--fg-2); }
+.topbar {
+  height: 52px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 32px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.operator { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--fg-2); }
+.operator b { color: var(--fg); font-weight: 600; }
+.linklike { background: none; border: 0; padding: 0; color: var(--brand); cursor: pointer; font-size: inherit; }
+.linklike:hover { color: var(--brand-ink); text-decoration: underline; text-underline-offset: 3px; }
+.main { padding: 24px 32px 40px; max-width: var(--container-max); min-width: 0; }
+.page-head { margin-bottom: 20px; }
+.page-head h1 { font-size: var(--text-2xl); line-height: 1.35; font-weight: 600; }
+.page-head .sub { color: var(--fg-2); margin-top: 2px; }
+.page-head .eyebrow { margin-bottom: 2px; }
+
+/* ---------- shared components ---------- */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 20px 22px; }
+.card + .card { margin-top: 12px; }
+.card-title { font-size: var(--text-lg); font-weight: 600; line-height: 1.45; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.card-head .eyebrow { margin-bottom: 2px; }
+
+.stamp {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 7px; border-radius: 2px;
+  font: 600 11px/1.5 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+  white-space: nowrap; vertical-align: middle; background: var(--surface-warm); color: var(--fg-2);
+}
+.stamp-info { background: var(--brand-soft); color: var(--brand-ink); }
+.stamp-ok { background: var(--ok-soft); color: var(--success); }
+.stamp-warn { background: var(--accent-soft); color: var(--accent-hover); }
+.stamp-bad { background: var(--bad-soft); color: var(--danger); }
+.stamp-ai { background: var(--ai-soft); color: var(--ai); }
+.stamp-human { background: var(--surface); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 36px; padding: 0 14px; border-radius: var(--radius-md);
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg-2);
+  font-weight: 500; font-size: var(--text-base); letter-spacing: 0.02em; white-space: nowrap;
+  cursor: pointer; text-decoration: none;
+  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
+}
+.btn:hover { background: var(--surface-warm); color: var(--fg); text-decoration: none; }
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on); }
+.btn-primary:active { background: var(--accent-active); border-color: var(--accent-active); }
+.btn-quiet { background: transparent; border-color: transparent; color: var(--fg-2); }
+.btn-quiet:hover { background: var(--surface-warm); color: var(--fg); }
+.btn-danger { background: var(--surface); border-color: var(--danger); color: var(--danger); }
+.btn-danger:hover { background: var(--bad-soft); color: var(--danger); border-color: var(--danger); }
+.btn-danger-solid { background: var(--danger); border-color: var(--danger); color: var(--accent-on); }
+.btn-danger-solid:hover { background: var(--danger-hover); border-color: var(--danger-hover); color: var(--accent-on); }
+.btn[disabled], .btn[aria-disabled="true"] { background: var(--muted); border-color: var(--muted); color: var(--surface); cursor: not-allowed; transform: none; }
+.btn-sm { height: 30px; padding: 0 10px; font-size: var(--text-sm); }
+.btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.push { margin-left: auto; }
+
+.notice { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--radius-md); }
+.notice-warning { background: var(--accent-soft); color: var(--accent-hover); }
+.notice-error { background: var(--bad-soft); color: var(--danger); }
+.notice-success { background: var(--ok-soft); color: var(--success); }
+.notice .btn { height: 30px; flex: none; }
+.notice + .notice { margin-top: 8px; }
+
+.params { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; }
+.params dt { color: var(--fg-2); }
+.params dd { color: var(--fg); }
+.params-tight { gap: 4px 16px; font-size: var(--text-sm); }
+
+.table { width: 100%; border-collapse: collapse; }
+.table th {
+  text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line-strong);
+  font: 600 var(--text-xs)/1.5 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-2); white-space: nowrap;
+}
+.table td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.table tbody tr:last-child td { border-bottom: 0; }
+.table tbody tr:hover td { background: var(--paper-soft); }
+.table td:first-child, .table th:first-child { padding-left: 0; }
+.table td:last-child, .table th:last-child { padding-right: 0; }
+.cell-sub { display: block; font-size: var(--text-sm); color: var(--fg-2); margin-top: 2px; }
+.table-foot { display: flex; justify-content: space-between; align-items: center; padding-top: 12px; margin-top: 4px; border-top: 1px solid var(--border); font-size: var(--text-sm); color: var(--fg-2); }
+
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  display: inline-grid; place-items: center;
+  font: 600 10px/1 var(--font-mono); letter-spacing: 0.04em;
+  background: var(--surface-warm); color: var(--fg-2);
+}
+.avatar-human { background: var(--brand-soft); color: var(--brand-ink); }
+.avatar-lg { width: 32px; height: 32px; font-size: 11px; }
+
+.empty { min-height: 116px; display: grid; place-items: center; background: var(--paper-soft); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--fg-2); font-size: 13px; }
+
+.dialog { width: 640px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-md); box-shadow: var(--elev-raised); }
+.dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 22px; border-bottom: 1px solid var(--border); }
+.dialog-head h4 { font-size: var(--text-xl); font-weight: 600; line-height: 1.4; margin-top: 4px; }
+.close { width: 34px; height: 34px; flex: none; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--fg-2); font-size: 20px; line-height: 1; display: grid; place-items: center; cursor: pointer; }
+.close:hover { background: var(--surface-warm); color: var(--fg); }
+.dialog-body { padding: 18px 22px; display: grid; gap: 14px; }
+.dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 18px 22px; border-top: 1px solid var(--border); background: var(--paper-soft); border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.error-text { background: var(--bad-soft); color: var(--danger); padding: 8px 12px; border-radius: var(--radius-md); font-size: var(--text-sm); }
+
+.form { display: grid; gap: 14px; }
+.field { display: grid; gap: 6px; }
+.field > label { font-size: var(--text-sm); font-weight: 600; color: var(--fg-2); }
+.field .req { color: var(--danger); margin-left: 2px; }
+.field .hint { font-size: var(--text-sm); color: var(--fg-2); }
+.input { height: 36px; width: 100%; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); color: var(--fg); font: inherit; }
+textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vertical; line-height: 1.6; }
+.input:hover { border-color: var(--brand); }
+.input:focus, .input:focus-visible { border-color: var(--brand); outline: none; box-shadow: var(--focus-ring); }
+.input::placeholder { color: var(--muted); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.prefix { position: relative; }
+.prefix .input { padding-left: 30px; }
+.prefix > span { position: absolute; left: 12px; top: 0; height: 36px; display: flex; align-items: center; color: var(--fg-2); font-family: var(--font-mono); pointer-events: none; }
+.dropzone { border: 1px dashed var(--line-strong); border-radius: var(--radius-md); padding: 18px; text-align: center; color: var(--fg-2); font-size: var(--text-sm); background: var(--paper-soft); }
+.dropzone b { display: block; color: var(--fg); font-weight: 500; font-size: var(--text-base); margin-bottom: 2px; }
+
+/* ---------- am-home ---------- */
+.home { display: grid; grid-template-columns: minmax(0, 1fr) 296px; gap: 24px; align-items: start; }
+.group { margin-bottom: 28px; }
+.group:last-child { margin-bottom: 0; }
+.group-head { margin-bottom: 10px; }
+.group-head h3 { font-size: var(--text-lg); font-weight: 600; line-height: 1.45; margin-top: 2px; }
+.group-head .desc { color: var(--fg-2); }
+.decision { display: grid; grid-template-columns: minmax(0, 1fr) 264px; gap: 0 24px; }
+.decision .stamp { margin-bottom: 8px; }
+.decision h4 { font-size: var(--text-lg); font-weight: 600; line-height: 1.45; margin-bottom: 10px; }
+.why { display: grid; grid-template-columns: 7.5em 1fr; gap: 4px 12px; font-size: var(--text-sm); }
+.why dt { color: var(--fg-2); }
+.preview { align-self: start; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--paper-soft); padding: 12px 14px; font-size: var(--text-sm); }
+.preview .eyebrow { margin-bottom: 6px; }
+.preview p { line-height: 1.7; }
+.preview .params { margin-top: 2px; }
+.preview-foot { margin-top: 8px; color: var(--fg-2); display: flex; gap: 8px; align-items: center; }
+.decision-foot { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.assign { display: flex; align-items: center; gap: 16px; }
+.assign-body { flex: 1; min-width: 0; }
+.assign h4 { font-size: var(--text-base); font-weight: 600; line-height: 1.5; }
+.assign .meta { font-size: var(--text-sm); color: var(--fg-2); margin-top: 2px; }
+.assign .stamp { margin-bottom: 6px; }
+.due { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg-2); }
+.due-today { color: var(--danger); font-weight: 600; }
+.fyi { padding: 0; }
+.fyi summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; padding: 12px 22px; font-weight: 600; }
+.fyi summary::-webkit-details-marker { display: none; }
+.fyi summary::before { content: ""; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid var(--fg-2); transition: transform var(--motion-fast) var(--ease-standard); }
+.fyi:not([open]) summary::before { transform: rotate(-90deg); }
+.fyi summary .count { font-weight: 400; color: var(--fg-2); }
+.fyi summary:hover { background: var(--paper-soft); }
+.fyi-list li { display: grid; grid-template-columns: minmax(0, 1fr) 200px 96px; gap: 16px; padding: 10px 22px; border-top: 1px solid var(--border); }
+.fyi-list .merchant { color: var(--fg-2); }
+.fyi-list time { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg-2); text-align: right; padding-top: 2px; }
+.rail .card + .card { margin-top: 12px; }
+.member { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 2px 10px; padding: 10px 0; border-top: 1px solid var(--border); align-items: center; }
+.members li:first-child .member, .members > li:first-child { border-top: 0; padding-top: 0; }
+.member-name { font-weight: 600; }
+.member-role { font-weight: 400; font-size: var(--text-sm); color: var(--fg-2); margin-left: 6px; }
+.member-now { grid-column: 2 / -1; font-size: var(--text-sm); color: var(--fg-2); }
+.pulse { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.pulse > div { display: flex; flex-direction: column-reverse; }
+.pulse b { display: block; font-size: var(--text-2xl); font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.pulse span { font-size: var(--text-sm); color: var(--fg-2); }
+.pulse .is-wait b { color: var(--accent-hover); }
+.pulse .is-block b { color: var(--danger); }
+
+/* ---------- am-merchant-space ---------- */
+.crumb { font-size: var(--text-sm); margin-bottom: 12px; }
+.merchant-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: start; }
+.merchant-head h1 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--text-2xl); font-weight: 600; line-height: 1.35; }
+.merchant-meta { display: flex; flex-wrap: wrap; gap: 6px 28px; margin-top: 8px; }
+.merchant-meta > div { display: flex; gap: 8px; }
+.merchant-meta dt { color: var(--fg-2); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-strong); margin: 20px 0 16px; }
+.tabs a { padding: 8px 14px 10px; color: var(--fg-2); font-weight: 500; letter-spacing: 0.02em; border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 6px 6px 0 0; }
+.tabs a:hover { color: var(--fg); background: var(--surface-warm); text-decoration: none; }
+.tabs a[aria-current="page"] { color: var(--fg); font-weight: 600; border-bottom-color: var(--fg); }
+.two-col { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.two-col > div > .card + .card, .side .card + .card, .detail .block + .block { margin-top: 16px; }
+.plan-goal { font-size: var(--text-lg); font-weight: 600; line-height: 1.45; }
+.scope { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
+.scope h5 { font-size: var(--text-sm); font-weight: 600; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; color: var(--fg-2); }
+.scope li { padding: 5px 0; border-top: 1px solid var(--border); }
+.progress { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.progress-head { display: flex; justify-content: space-between; font-size: var(--text-sm); color: var(--fg-2); }
+.bar-track { display: flex; height: 10px; border-radius: 2px; overflow: hidden; background: var(--surface-warm); margin: 8px 0 10px; }
+.bar-track i { display: block; height: 100%; width: calc(var(--v) / var(--max) * 100%); }
+.seg-done { background: var(--success); }
+.seg-doing { background: var(--brand); }
+.seg-wait { background: var(--accent); }
+.seg-block { background: var(--danger); }
+.legend { display: flex; gap: 18px; font-size: var(--text-sm); color: var(--fg-2); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.legend b { color: var(--fg); font-weight: 600; margin-right: 2px; }
+.week li { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); align-items: center; }
+.week li:first-child { border-top: 0; padding-top: 0; }
+.week .day { font-family: var(--font-mono); color: var(--fg-2); }
+.week .today { color: var(--fg); font-weight: 600; }
+.blockers li { padding: 8px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.blockers li:first-child { border-top: 0; padding-top: 0; }
+.blockers b { display: block; font-size: var(--text-base); font-weight: 600; }
+.blockers span { color: var(--fg-2); }
+
+/* ---------- task detail ---------- */
+.task-head { margin-bottom: 20px; }
+.task-head h1 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--text-2xl); line-height: 1.35; font-weight: 600; }
+.task-meta { display: flex; gap: 20px; margin-top: 4px; color: var(--fg-2); }
+.detail { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.block h3 { display: flex; align-items: baseline; gap: 10px; font-size: var(--text-lg); font-weight: 600; margin-bottom: 12px; }
+.block h3 .eyebrow { position: relative; top: -1px; }
+.lead { font-size: var(--text-base); }
+.lead + .params { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.evidence li { display: grid; grid-template-columns: 44px 1fr; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.evidence li:first-child { border-top: 0; }
+.evidence code { color: var(--brand-ink); font-weight: 600; }
+.post { position: relative; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; max-width: 600px; }
+.post-img { height: 200px; background: var(--surface-warm); display: grid; place-items: center; text-align: center; color: var(--fg-2); font-size: var(--text-sm); border-bottom: 1px solid var(--border); }
+.post-img span { display: block; font-family: var(--font-mono); letter-spacing: 0.04em; }
+.post-body { padding: 16px 18px; }
+.post-body p { line-height: 1.75; }
+.post-cta { display: inline-flex; margin-top: 12px; padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); font-size: var(--text-sm); font-weight: 500; color: var(--fg); }
+.post-foot { display: flex; justify-content: space-between; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--border); font-size: var(--text-sm); color: var(--fg-2); }
+.post .stamp-ai { position: absolute; top: 12px; right: 12px; }
+.post-note { margin-top: 10px; font-size: var(--text-sm); color: var(--fg-2); max-width: 600px; }
+.criteria li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); align-items: start; }
+.criteria li:first-child { border-top: 0; padding-top: 0; }
+.criteria .num { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg-2); padding-top: 3px; }
+.next-note { color: var(--fg-2); margin-bottom: 12px; }
+.owners li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
+.owners li:first-child { border-top: 0; padding-top: 0; }
+.owners b { display: block; font-weight: 600; line-height: 1.4; }
+.owners span { display: block; font-size: var(--text-sm); color: var(--fg-2); }
+.kv div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); }
+.kv div:first-child { border-top: 0; padding-top: 0; }
+.kv dt { color: var(--fg-2); flex: none; }
+.kv dd { text-align: right; }
+.side-note { margin-top: 12px; padding: 8px 12px; border-radius: var(--radius-md); background: var(--accent-soft); color: var(--accent-hover); font-size: var(--text-sm); }
+.timeline li { display: grid; grid-template-columns: 118px 112px minmax(0, 1fr); gap: 16px; padding: 10px 0; border-top: 1px solid var(--border); }
+.timeline li:first-child { border-top: 0; padding-top: 0; }
+.timeline time { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg-2); padding-top: 3px; }
+.timeline .actor { font-weight: 600; }
+.trace { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+.trace summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; list-style: none; }
+.trace summary::-webkit-details-marker { display: none; }
+.trace summary::before { content: ""; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid var(--fg-2); transform: rotate(-90deg); transition: transform var(--motion-fast) var(--ease-standard); }
+.trace[open] summary::before { transform: none; }
+.trace summary .count { font-weight: 400; color: var(--fg-2); }
+.trace pre { margin-top: 10px; padding: 12px 14px; background: var(--paper-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); font: 12px/1.7 var(--font-mono); color: var(--fg-2); white-space: pre-wrap; }
+.submit-foot { display: flex; gap: 8px; align-items: center; padding-top: 14px; border-top: 1px solid var(--border); margin-top: 4px; }
+
+/* ---------- dispatch drawer ---------- */
+.mask { position: absolute; inset: 0; background: var(--mask); }
+.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 480px; background: var(--surface); border-left: 1px solid var(--line-strong); box-shadow: var(--elev-raised); display: flex; flex-direction: column; }
+.drawer-head { padding: 14px 22px 12px; border-bottom: 1px solid var(--border); }
+.drawer-head .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.drawer-head h3 { font-size: var(--text-xl); font-weight: 600; line-height: 1.4; }
+.drawer-head .stamp { margin-top: 6px; }
+.chat { flex: 1; padding: 18px 22px; display: flex; flex-direction: column; gap: 18px; }
+.msg { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+.msg-head { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); margin-bottom: 4px; }
+.msg-head b { font-weight: 600; }
+.msg-head time { color: var(--fg-2); font-family: var(--font-mono); margin-left: auto; }
+.msg-me .msg-body { display: inline-block; background: var(--brand-soft); color: var(--fg); padding: 8px 12px; border-radius: var(--radius-md); }
+.msg-system { grid-template-columns: 1fr; justify-items: center; text-align: center; font-size: var(--text-sm); color: var(--fg-2); }
+.msg-system .stamp { margin-left: 8px; }
+.proposal { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; margin-top: 10px; background: var(--paper-soft); }
+.proposal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.proposal-head b { font-weight: 600; line-height: 1.5; }
+.proposal-head code { color: var(--brand-ink); }
+.proposal .params { margin: 8px 0 12px; font-size: var(--text-sm); }
+.composer { border-top: 1px solid var(--border); padding: 12px 22px 16px; background: var(--surface); }
+.composer .row { display: flex; gap: 8px; }
+.mentions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; align-items: center; font-size: var(--text-sm); color: var(--fg-2); }
+.chip { padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--fg-2); background: var(--surface); cursor: pointer; line-height: 1.5; }
+.chip:hover { background: var(--surface-warm); color: var(--fg); border-color: var(--line-strong); }
+.chip-human { border-color: var(--brand); color: var(--brand-ink); }
+.chip-human:hover { background: var(--brand-soft); color: var(--brand-ink); }
+
+/* ---------- team ---------- */
+.team-layout { display: grid; grid-template-columns: minmax(0, 1fr) 248px; gap: 16px; align-items: start; }
+.table-compact { font-size: 13px; }
+.table-compact th, .table-compact td { padding: 10px 8px; }
+.table-compact .cell-sub { font-size: 11px; }
+.table-compact code { font-size: 11px; }
+.table-compact .mono { font-size: 12px; }
+.member-cell b { white-space: nowrap; }
+.member-cell .stamp { display: inline-flex; margin-top: 4px; }
+.workload { white-space: nowrap; }
+.workload span { display: block; }
+.member-cell { display: flex; align-items: center; gap: 10px; }
+.member-cell b { font-weight: 600; }
+.row-off td { color: var(--fg-2); }
+.row-off .avatar { background: var(--paper-soft); box-shadow: inset 0 0 0 1px var(--border); }
+.skills li { padding: 12px 0; border-top: 1px solid var(--border); }
+.skills li:first-child { border-top: 0; padding-top: 0; }
+.skills .row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.skills code { font-weight: 600; color: var(--fg); }
+.skills p { font-size: var(--text-sm); color: var(--fg-2); margin-top: 2px; }
+.skills .refs { font-size: var(--text-sm); margin-top: 4px; }
+.skills .refs span { color: var(--fg-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<!-- ===================================================== 说明 ===================================================== -->
+<header class="sheet-intro" data-od-id="sheet-intro">
+  <p class="eyebrow">SEO OPS · AM WORKSPACE · STATIC PROTOTYPE · 2026-09-09</p>
+  <h1>AM 工作台界面原型</h1>
+  <p>这是 SEO Ops 内部 AM（Account Manager）用的操作系统。AM 同时服务多家餐厅商户，带领一个「人机混合团队」：AI Agent 负责诊断、关键词、内容、发布、报告，AM 自己也是团队成员之一，可以派单、接手、审核、人工执行。</p>
+  <p>系统由 Plan（有限授权）和 Task（工作单）驱动。Orchestrator Agent 在授权范围内自动推进低风险工作，需要人决定的事进 AM 的收件箱。界面上的每个状态都来自真实事件，不伪造进度。</p>
+  <p>本页是静态原型集：6 个界面按顺序排列，所有状态并排展示，不依赖点击。桌面 1280px 起，只使用 seo-ops 的 tokens，不引入外部字体、图标或脚本库。</p>
+  <nav class="sheet-toc" aria-label="原型目录">
+    <a href="#am-home"><code>01</code>工作台首页</a>
+    <a href="#am-merchant-space"><code>02</code>商户空间</a>
+    <a href="#am-task-detail"><code>03</code>Task 详情 · AGENT 执行</a>
+    <a href="#am-task-detail-human"><code>04</code>Task 详情 · HUMAN 执行</a>
+    <a href="#am-dispatch-drawer"><code>05</code>对话派单抽屉</a>
+    <a href="#am-team"><code>06</code>团队</a>
+  </nav>
+</header>
+
+<div class="card kit" data-od-id="shared-components">
+  <div>
+    <h3>戳记 · 状态用文字表达，颜色只做辅助</h3>
+    <div class="kit-row">
+      <span class="stamp stamp-info">工作中</span>
+      <span class="stamp">待命</span>
+      <span class="stamp stamp-bad">阻塞</span>
+      <span class="stamp stamp-warn">AWAITING_APPROVAL · 待审批</span>
+      <span class="stamp stamp-ok">完成</span>
+      <span class="stamp stamp-human">HUMAN 执行</span>
+      <span class="stamp stamp-ai">AI 生成</span>
+      <span class="stamp stamp-ok">READY</span>
+      <span class="stamp stamp-warn">WAITING_INPUT</span>
+      <span class="stamp stamp-info">WAITING_AUTHORIZATION</span>
+    </div>
+  </div>
+  <div>
+    <h3>按钮 · 一屏只有一个橙色主操作</h3>
+    <div class="kit-row">
+      <button class="btn" type="button">查看</button>
+      <button class="btn btn-primary" type="button">批准并发布</button>
+      <button class="btn btn-quiet" type="button">退回</button>
+      <button class="btn btn-danger" type="button">删除空白草稿</button>
+      <button class="btn" type="button" disabled>已提交</button>
+    </div>
+  </div>
+  <div>
+    <h3>提示条</h3>
+    <div class="kit-notices">
+      <div class="notice notice-error" role="alert">GSC 授权已过期，只读同步无法继续。<span class="push"></span><button class="btn btn-sm" type="button">重新授权</button></div>
+      <div class="notice notice-success" role="status">帖子已发布，读回对账通过，post_id 已写入发布记录。</div>
+      <div class="notice notice-warning">Local Falcon 扫描将消耗 40 credits，需要你批准。<span class="push"></span><button class="btn btn-sm" type="button">查看</button></div>
+    </div>
+  </div>
+  <div>
+    <h3>头像 · 两字母首字母圆块，人用蓝、Agent 用灰</h3>
+    <div class="kit-row">
+      <span class="avatar avatar-human" title="xander">XA</span>
+      <span class="avatar" title="Orchestrator">OR</span>
+      <span class="avatar" title="内容 Agent">CN</span>
+      <span class="avatar" title="审计 Agent">AU</span>
+      <span class="avatar" title="关键词 Agent">KW</span>
+      <span class="avatar" title="发布 Agent">PB</span>
+      <span class="avatar" title="报告 Agent">RP</span>
+    </div>
+  </div>
+  <div class="kit-dialog">
+    <h3>确认对话框 · 不可逆操作：先说后果，再问确认，主按钮用 danger 色</h3>
+    <div class="dialog" role="dialog" aria-labelledby="dlg-title" data-od-id="confirm-dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">TASK · T-1205 · HUMAN INPUT</p>
+          <h4 id="dlg-title">标记为无法完成？</h4>
+        </div>
+        <button class="close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="dialog-body">
+        <p>标记后这个任务会关闭，被它阻塞的「GBP 帖子草稿」不会自动恢复，需要重新派单。标记后无法撤销，确认标记？</p>
+        <dl class="params params-tight">
+          <dt>任务</dt><dd>确认 Weekday Brunch Set 的价格与有效期</dd>
+          <dt>执行者</dt><dd>xander（你）</dd>
+          <dt>受影响</dt><dd>T-1204 · GBP 帖子草稿 · 将保持 WAITING_INPUT</dd>
+        </dl>
+        <div class="field">
+          <label for="dlg-reason">原因<span class="req">*</span></label>
+          <textarea class="input" id="dlg-reason" placeholder="例如：商户本周联系不上，下周再试"></textarea>
+        </div>
+        <div class="error-text" role="alert">请填写原因后再确认。</div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn btn-quiet" type="button">取消</button>
+        <button class="btn btn-danger-solid" type="button">标记为无法完成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================================================== 01 am-home ===================================================== -->
+<section class="sheet-section" id="am-home" data-od-id="am-home">
+  <p class="eyebrow">01 · AM-HOME · DESKTOP 1280+</p>
+  <h2>工作台首页</h2>
+  <p class="sheet-note">收件箱按「需要我决定 / 分派给我 / 需要关注 / 仅知会」四级排列，越靠上越需要人。右侧 rail 是团队实时状态与今日节奏。</p>
+  <div class="app" data-od-id="am-home-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home" aria-current="page">工作台</a>
+        <a href="#am-merchant-space">商户</a>
+        <a href="#am-task-detail">任务与计划</a>
+        <span title="本原型未包含此页">数据与报告</span>
+        <a href="#am-team">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">AM WORKSPACE · INBOX</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+      </header>
+      <main class="main">
+        <div class="page-head">
+          <h1>工作台</h1>
+          <p class="sub">9 月 9 日 · 周三 · 你负责 5 家商户</p>
+        </div>
+        <div class="home">
+          <div class="inbox">
+
+            <section class="group" data-od-id="home-decide">
+              <div class="group-head">
+                <p class="eyebrow">NEEDS MY DECISION</p>
+                <h3>需要我决定（3 件 · 约 5 分钟）</h3>
+                <p class="desc">超出 Plan 授权范围、Orchestrator 停下来等你拍板的事。每张卡都带产物预览，看完就能决定。</p>
+              </div>
+              <article class="card decision" data-od-id="decision-gbp-post">
+                <div>
+                  <span class="stamp">George Merchant · 2020 Broadway</span>
+                  <h4>GBP 帖子草稿等你批准 · brunch 主题</h4>
+                  <dl class="why">
+                    <dt>要做什么</dt><dd>批准后发布 Agent 会把这篇帖子发到 2020 Broadway 的 GBP 档案，并读回对账。</dd>
+                    <dt>为什么</dt><dd>Plan #12 允许 GBP 帖子发布，但要求逐条审批；这是本周期第 2 篇。</dd>
+                    <dt>你不处理会怎样</dt><dd>帖子一直停在草稿，9 月「GBP 内容 4 篇」的里程碑少 1 篇。</dd>
+                  </dl>
+                </div>
+                <aside class="preview">
+                  <p class="eyebrow">产物预览 · POST BODY</p>
+                  <p>周中也值得一顿像样的早午餐。Weekday Brunch Set 工作日 10:00–14:00 供应，一份主餐搭配现磨咖啡和当季小食，上西区 Broadway……</p>
+                  <div class="preview-foot"><span class="stamp stamp-ai">AI 生成</span><span>前 80 字 · 正文不含价格</span></div>
+                </aside>
+                <div class="decision-foot">
+                  <button class="btn btn-primary" type="button">批准并发布</button>
+                  <button class="btn btn-quiet" type="button">退回</button>
+                  <a class="btn btn-quiet push" href="#am-task-detail">查看任务 ›</a>
+                </div>
+              </article>
+              <article class="card decision" data-od-id="decision-q4-plan">
+                <div>
+                  <span class="stamp">Only Bear · Williamsburg</span>
+                  <h4>Q4 周期 Plan 待批准 · 7 项任务 · 无外部写入</h4>
+                  <dl class="why">
+                    <dt>要做什么</dt><dd>批准后 Orchestrator 会按授权范围推进这 7 项任务；本 Plan 不含任何外部写入，不会改动商户线上资料。</dd>
+                    <dt>为什么</dt><dd>Plan 是有限授权。没有你的批准，Orchestrator 不会派发其中任何一项。</dd>
+                    <dt>你不处理会怎样</dt><dd>Only Bear 的 Q4 周期不会开始，昨晚的诊断结果只停留在草稿。</dd>
+                  </dl>
+                </div>
+                <aside class="preview">
+                  <p class="eyebrow">产物预览 · PLAN DRAFT</p>
+                  <p><b>目标：</b>修复 GBP 基础信息，建立 15 词监测集</p>
+                  <dl class="params params-tight">
+                    <dt>任务</dt><dd>只读同步 ×2 · 资料核对 ×3 · 诊断复核 ×1 · 关键词重算 ×1</dd>
+                    <dt>外部写入</dt><dd>无</dd>
+                    <dt>预算</dt><dd>0 credits</dd>
+                    <dt>有效期</dt><dd>至 2026-12-31</dd>
+                  </dl>
+                </aside>
+                <div class="decision-foot">
+                  <button class="btn btn-primary" type="button">批准 Plan</button>
+                  <button class="btn btn-quiet" type="button">退回</button>
+                  <a class="btn btn-quiet push" href="#am-merchant-space">查看任务 ›</a>
+                </div>
+              </article>
+              <article class="card decision" data-od-id="decision-falcon-scan">
+                <div>
+                  <span class="stamp">George Merchant · 2020 Broadway</span>
+                  <h4>Local Falcon 扫描将消耗 40 credits</h4>
+                  <dl class="why">
+                    <dt>要做什么</dt><dd>批准后关键词 Agent 对「brunch near me」等 5 个词跑一次 7×7 网格扫描，作为发布前基线。</dd>
+                    <dt>为什么</dt><dd>上次扫描是 8 月 12 日，已超过 4 周；没有新基线，帖子发布后的排名变化无法衡量。付费扫描需要你批准预算。</dd>
+                    <dt>你不处理会怎样</dt><dd>本周没有排名基线，下周报告只能引用 8 月的旧数据。</dd>
+                  </dl>
+                </div>
+                <aside class="preview">
+                  <p class="eyebrow">产物预览 · SCAN PARAMS</p>
+                  <dl class="params params-tight">
+                    <dt>网格</dt><dd>7×7 · 半径 2 km</dd>
+                    <dt>关键词</dt><dd>5 个 · 簇 #3</dd>
+                    <dt>预计消耗</dt><dd>40 credits</dd>
+                    <dt>账户余额</dt><dd>260 credits</dd>
+                    <dt>Plan 上限</dt><dd>单次 ≤ 100 credits</dd>
+                  </dl>
+                </aside>
+                <div class="decision-foot">
+                  <button class="btn btn-primary" type="button">批准扫描</button>
+                  <button class="btn btn-quiet" type="button">退回</button>
+                  <a class="btn btn-quiet push" href="#am-merchant-space">查看任务 ›</a>
+                </div>
+              </article>
+            </section>
+
+            <section class="group" data-od-id="home-assigned">
+              <div class="group-head">
+                <p class="eyebrow">ASSIGNED TO ME</p>
+                <h3>分派给我（2 件）</h3>
+                <p class="desc">Orchestrator 判定必须由人完成的任务，执行者是你。提交结果后，下游任务会自动续上。</p>
+              </div>
+              <article class="card assign" data-od-id="assign-brunch-price">
+                <div class="assign-body">
+                  <span class="stamp stamp-human">HUMAN 执行</span>
+                  <h4>确认 Weekday Brunch Set 的价格与有效期（George）</h4>
+                  <p class="meta">阻塞 1 个任务：GBP 帖子草稿 · 来源 Plan #12 · T-1205</p>
+                </div>
+                <div class="due">截止 <b class="due-today">今天 18:00</b></div>
+                <div class="btn-row">
+                  <a class="btn" href="#am-task-detail-human">去处理</a>
+                  <button class="btn btn-quiet" type="button">转交给…</button>
+                </div>
+              </article>
+              <article class="card assign" data-od-id="assign-coco-access">
+                <div class="assign-body">
+                  <span class="stamp stamp-human">HUMAN 执行</span>
+                  <h4>向可可小卤索要官网后台权限</h4>
+                  <p class="meta">阻塞 2 个任务：官网诊断、Schema 修复 · 来源 Plan #9 · T-0931</p>
+                </div>
+                <div class="due">截止 <b>本周五</b></div>
+                <div class="btn-row">
+                  <a class="btn" href="#am-task-detail-human">去处理</a>
+                  <button class="btn btn-quiet" type="button">转交给…</button>
+                </div>
+              </article>
+            </section>
+
+            <section class="group" data-od-id="home-watch">
+              <div class="group-head">
+                <p class="eyebrow">NEEDS ATTENTION</p>
+                <h3>需要关注（2 件）</h3>
+                <p class="desc">不需要你马上操作，但会拖住任务推进；处理入口在对应商户空间。</p>
+              </div>
+              <div class="notice notice-warning" data-od-id="watch-coco-gsc"><span>可可小卤 · GSC 授权已过期，3 个任务被阻塞</span><span class="push"></span><a class="btn btn-sm" href="#am-merchant-space">查看</a></div>
+              <div class="notice notice-warning" data-od-id="watch-onlybear-publish"><span>Only Bear · 上一次发布结果未知，等待对账</span><span class="push"></span><a class="btn btn-sm" href="#am-merchant-space">查看</a></div>
+            </section>
+
+            <section class="group" data-od-id="home-fyi">
+              <div class="group-head">
+                <p class="eyebrow">FYI</p>
+                <h3>仅知会（4 件）</h3>
+                <p class="desc">团队已经处理完的事，只记录，不需要回应。默认折叠，展开后最新在上。</p>
+              </div>
+              <details class="card fyi" open>
+                <summary>4 条记录 <span class="count">· 今天 3 条 · 昨天 1 条</span></summary>
+                <ul class="fyi-list">
+                  <li><span>Maya 已核对 3 家门店营业时间，无需修改</span><span class="merchant">George · 可可小卤 · Only Bear</span><time>10:42</time></li>
+                  <li><span>关键词版本 v3 已激活</span><span class="merchant">George Merchant</span><time>09:58</time></li>
+                  <li><span>周报草稿已生成，待你审核</span><span class="merchant">可可小卤</span><time>09:30</time></li>
+                  <li><span>诊断 Run 完成，Plan 草稿 7 项</span><span class="merchant">Only Bear</span><time>昨天 22:15</time></li>
+                </ul>
+              </details>
+            </section>
+
+          </div>
+
+          <aside class="rail">
+            <section class="card" data-od-id="home-team">
+              <div class="card-head">
+                <div><p class="eyebrow">TEAM · LIVE</p><h3 class="card-title">团队</h3></div>
+                <a href="#am-team">全部 ›</a>
+              </div>
+              <ul class="members">
+                <li class="member"><span class="avatar" aria-hidden="true">OR</span><span><span class="member-name">Orchestrator</span><span class="member-role">编排</span></span><span class="stamp">待命</span><span class="member-now">无进行中任务，等待下一条对话或事件</span></li>
+                <li class="member"><span class="avatar" aria-hidden="true">CN</span><span><span class="member-name">内容 Agent</span><span class="member-role">内容</span></span><span class="stamp stamp-info">工作中</span><span class="member-now">正在准备 George 的帖子</span></li>
+                <li class="member"><span class="avatar" aria-hidden="true">AU</span><span><span class="member-name">审计 Agent</span><span class="member-role">诊断与审计</span></span><span class="stamp">待命</span><span class="member-now">上次执行：Only Bear 诊断 Run · 昨天 22:15</span></li>
+                <li class="member"><span class="avatar" aria-hidden="true">KW</span><span><span class="member-name">关键词 Agent</span><span class="member-role">关键词</span></span><span class="stamp">待命</span><span class="member-now">Local Falcon 扫描等你批准后开始</span></li>
+                <li class="member"><span class="avatar" aria-hidden="true">PB</span><span><span class="member-name">发布 Agent</span><span class="member-role">发布</span></span><span class="stamp">待命</span><span class="member-now">发布队列 0 篇；Only Bear 上次读回待对账</span></li>
+                <li class="member"><span class="avatar avatar-human" aria-hidden="true">XA</span><span><span class="member-name">xander（你）</span><span class="member-role">AM</span></span><span class="stamp stamp-info">工作中</span><span class="member-now">2 件待处理</span></li>
+              </ul>
+            </section>
+            <section class="card" data-od-id="home-pulse">
+              <p class="eyebrow">TODAY · 09-09</p>
+              <h3 class="card-title" style="margin-bottom: 12px;">今日节奏</h3>
+              <dl class="pulse">
+                <div><dt><span>已完成</span></dt><dd><b>11</b></dd></div>
+                <div><dt><span>进行中</span></dt><dd><b>4</b></dd></div>
+                <div class="is-wait"><dt><span>等你</span></dt><dd><b>5</b></dd></div>
+                <div class="is-block"><dt><span>阻塞</span></dt><dd><b>3</b></dd></div>
+              </dl>
+              <p class="hint" style="margin-top: 10px; font-size: var(--text-sm); color: var(--fg-2);">口径：今天有事件变化的任务，跨 5 家商户。</p>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 02 am-merchant-space ===================================================== -->
+<section class="sheet-section" id="am-merchant-space" data-od-id="am-merchant-space">
+  <p class="eyebrow">02 · AM-MERCHANT-SPACE · DESKTOP 1280+</p>
+  <h2>商户空间</h2>
+  <p class="sheet-note">一家商户的全部上下文：服务周期、当前 Plan 的授权边界与进度、本周节奏、未解决 blocker，以及任务预览。概览 tab 选中。</p>
+  <div class="app" data-od-id="am-merchant-space-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home">工作台</a>
+        <a href="#am-merchant-space" aria-current="page">商户</a>
+        <a href="#am-task-detail">任务与计划</a>
+        <span title="本原型未包含此页">数据与报告</span>
+        <a href="#am-team">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">MERCHANT · GEORGE MERCHANT</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+      </header>
+      <main class="main">
+        <p class="crumb"><a href="#am-home">← 商户列表</a></p>
+        <header class="merchant-head" data-od-id="merchant-header">
+          <div>
+            <p class="eyebrow">MERCHANT · RESTAURANT · NEW YORK</p>
+            <h1>George Merchant <span class="stamp stamp-warn">GSC 未授权</span></h1>
+            <dl class="merchant-meta">
+              <div><dt>门店</dt><dd>2020 Broadway · New York</dd></div>
+              <div><dt>负责 AM</dt><dd>xander</dd></div>
+              <div><dt>服务周期</dt><dd>2026-Q4 · 第 2 周</dd></div>
+              <div><dt>里程碑</dt><dd>9 月：GBP 内容 4 篇 · 关键词监测集 20 词</dd></div>
+            </dl>
+          </div>
+          <div class="btn-row">
+            <a class="btn" href="#am-dispatch-drawer">团队对话</a>
+            <button class="btn btn-quiet" type="button">编辑资料</button>
+          </div>
+        </header>
+        <nav class="tabs" aria-label="商户空间">
+          <a href="#am-merchant-space" aria-current="page">概览</a>
+          <a href="#am-merchant-space">计划与任务</a>
+          <a href="#am-merchant-space">商户资料与记忆</a>
+          <a href="#am-merchant-space">数据与诊断</a>
+          <a href="#am-merchant-space">成果与报告</a>
+        </nav>
+
+        <div class="two-col">
+          <section class="card" data-od-id="merchant-current-plan">
+            <div class="card-head">
+              <div><p class="eyebrow">CURRENT PLAN · #12 · ACTIVE</p><h3 class="card-title">当前 Plan</h3></div>
+              <a href="#am-merchant-space">查看 Plan ›</a>
+            </div>
+            <p class="plan-goal">目标：提升 brunch 相关本地可见度</p>
+            <div class="scope">
+              <div>
+                <h5><span class="stamp stamp-ok">允许</span>授权范围内自动推进</h5>
+                <ul><li>GBP 帖子发布（逐条审批）</li><li>只读同步</li><li>关键词重算</li></ul>
+              </div>
+              <div>
+                <h5><span class="stamp stamp-bad">不允许</span>需要单独授权</h5>
+                <ul><li>修改营业时间</li><li>付费扫描超过 100 credits</li></ul>
+              </div>
+            </div>
+            <dl class="params params-tight" style="margin-top: 14px;">
+              <dt>有效期</dt><dd>至 2026-12-31</dd>
+              <dt>批准</dt><dd>xander · 2026-09-01</dd>
+            </dl>
+            <div class="progress">
+              <div class="progress-head"><span>进度 · 7 项任务</span><span>3 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
+              <div class="bar-track" style="--max: 7;" role="img" aria-label="7 项任务：3 完成，2 进行中，1 待审批，1 阻塞">
+                <i class="seg-done" style="--v: 3;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
+              </div>
+              <div class="legend">
+                <span><i class="seg-done"></i><b>3</b>完成</span>
+                <span><i class="seg-doing"></i><b>2</b>进行中</span>
+                <span><i class="seg-wait"></i><b>1</b>待审批</span>
+                <span><i class="seg-block"></i><b>1</b>阻塞</span>
+              </div>
+            </div>
+          </section>
+          <div>
+            <section class="card" data-od-id="merchant-week">
+              <p class="eyebrow">THIS WEEK · W37</p>
+              <h3 class="card-title" style="margin-bottom: 10px;">本周节奏</h3>
+              <ul class="week">
+                <li><span class="day">周一 09-07</span><span>诊断复核 · Audit #28</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span class="day">周二 09-08</span><span>关键词监测集重算 v3</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span class="day today">周三 今天</span><span>brunch 帖子审批 · 价格确认</span><span class="stamp stamp-warn">等你</span></li>
+                <li><span class="day">周四 09-10</span><span>Local Falcon 基线扫描</span><span class="stamp">待批准</span></li>
+                <li><span class="day">周五 09-11</span><span>周报草稿</span><span class="stamp">未开始</span></li>
+              </ul>
+            </section>
+            <section class="card" data-od-id="merchant-blockers">
+              <p class="eyebrow">OPEN BLOCKERS · 2</p>
+              <h3 class="card-title" style="margin-bottom: 10px;">未解决 blocker</h3>
+              <ul class="blockers">
+                <li><b>GSC 未授权</b><span>阻塞：GSC 只读同步 · 自 09-02 · 需要商户在 Search Console 添加授权</span></li>
+                <li><b>价格未确认</b><span>影响：GBP 帖子草稿的价格补充 · 分派给 xander · 今天 18:00</span></li>
+              </ul>
+            </section>
+          </div>
+        </div>
+
+        <section class="card" style="margin-top: 16px;" data-od-id="merchant-tasks-preview">
+          <div class="card-head">
+            <div><p class="eyebrow">PLAN #12 · TASKS</p><h3 class="card-title">计划与任务</h3></div>
+            <a href="#am-merchant-space">查看全部 7 项 ›</a>
+          </div>
+          <table class="table">
+            <thead><tr><th>任务</th><th>类型</th><th>执行者</th><th>状态</th><th>就绪性</th><th>截止</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><a href="#am-task-detail">为 2020 Broadway 发布一篇 brunch 主题帖子</a><span class="cell-sub">T-1204 · 发布前逐条审批</span></td>
+                <td><code>GBP_POST</code></td>
+                <td>内容 Agent<span class="cell-sub">发布阶段：发布 Agent</span></td>
+                <td><span class="stamp stamp-warn">待审批</span></td>
+                <td><span class="stamp stamp-info">WAITING_AUTHORIZATION</span></td>
+                <td class="mono">09-10 12:00</td>
+              </tr>
+              <tr>
+                <td><a href="#am-task-detail-human">确认 Weekday Brunch Set 的价格与有效期</a><span class="cell-sub">T-1205 · 人工执行</span></td>
+                <td><code>HUMAN_INPUT</code></td>
+                <td>xander</td>
+                <td><span class="stamp stamp-info">执行中</span></td>
+                <td><span class="stamp stamp-ok">READY</span></td>
+                <td class="mono due-today">今天 18:00</td>
+              </tr>
+              <tr>
+                <td>Local Falcon 基线扫描 · brunch 5 词<span class="cell-sub">T-1206 · 40 credits</span></td>
+                <td><code>PAID_SCAN</code></td>
+                <td>关键词 Agent</td>
+                <td><span class="stamp stamp-info">进行中</span><span class="cell-sub">等待你批准预算</span></td>
+                <td><span class="stamp stamp-info">WAITING_AUTHORIZATION</span></td>
+                <td class="mono">09-11</td>
+              </tr>
+              <tr>
+                <td>GSC 只读同步<span class="cell-sub">T-1203 · 自 09-02 阻塞</span></td>
+                <td><code>SYNC_READONLY</code></td>
+                <td>审计 Agent</td>
+                <td><span class="stamp stamp-bad">阻塞</span><span class="cell-sub">GSC 未授权</span></td>
+                <td><span class="stamp stamp-warn">WAITING_INPUT</span></td>
+                <td class="mono">—</td>
+              </tr>
+              <tr>
+                <td>关键词监测集重算 v3<span class="cell-sub">T-1202 · 20 词 · 已激活</span></td>
+                <td><code>KEYWORD_RECALC</code></td>
+                <td>关键词 Agent</td>
+                <td><span class="stamp stamp-ok">完成</span></td>
+                <td><span class="stamp stamp-ok">READY</span></td>
+                <td class="mono">09-08</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="table-foot"><span>显示 5 / 7 项 · 已完成的「诊断复核」「营业时间核对」未列出</span><span>状态来自任务事件流，最近更新 09:58</span></div>
+        </section>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 03 am-task-detail (AGENT) ===================================================== -->
+<section class="sheet-section" id="am-task-detail" data-od-id="am-task-detail">
+  <p class="eyebrow">03 · AM-TASK-DETAIL · AGENT EXECUTOR</p>
+  <h2>Task 详情 · AGENT 执行</h2>
+  <p class="sheet-note">一张工作单的完整读法：做什么 → 为什么 → 当前成果 → 验收标准 → 下一步。侧区是负责人、时间、依赖与成本；底部是真实事件历史，技术 trace 折叠。</p>
+  <div class="app" data-od-id="am-task-detail-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home">工作台</a>
+        <a href="#am-merchant-space">商户</a>
+        <a href="#am-task-detail" aria-current="page">任务与计划</a>
+        <span title="本原型未包含此页">数据与报告</span>
+        <a href="#am-team">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">TASK · T-1204 · PLAN #12</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+      </header>
+      <main class="main">
+        <p class="crumb"><a href="#am-merchant-space">← George Merchant</a> · 计划与任务</p>
+        <header class="task-head" data-od-id="task-header">
+          <p class="eyebrow">TASK · T-1204 · GBP_POST</p>
+          <h1>为 2020 Broadway 发布一篇 brunch 主题帖子 <span class="stamp stamp-warn">AWAITING_APPROVAL · 待审批</span></h1>
+          <div class="task-meta"><span>来源：Plan #12</span><span>商户：George Merchant · 2020 Broadway</span><span>执行者：内容 Agent（准备）→ 发布 Agent（发布）</span></div>
+        </header>
+
+        <div class="detail">
+          <div>
+            <section class="card block" data-od-id="task-what">
+              <h3><span class="eyebrow">WHAT</span>做什么</h3>
+              <p class="lead">在 2020 Broadway 的 GBP 档案发布 1 篇 brunch 主题帖子，发布前由 xander 逐条审批。</p>
+              <dl class="params">
+                <dt>门店</dt><dd>2020 Broadway · New York</dd>
+                <dt>主题</dt><dd>Weekday brunch · 工作日早午餐套餐</dd>
+              </dl>
+            </section>
+
+            <section class="card block" data-od-id="task-why">
+              <h3><span class="eyebrow">WHY</span>为什么</h3>
+              <p class="lead">Audit 发现 GBP 近 60 天没有更新帖，本地包展示位下滑；关键词簇 #3「brunch」是 Plan 目标里最缺内容支撑的一簇。</p>
+              <ul class="evidence" style="margin-top: 12px;">
+                <li><code>E-1</code><span>Audit #28 · 2026-09-07 · GBP 最近一篇更新帖发布于 2026-07-06，超过 60 天。</span></li>
+                <li><code>E-2</code><span>关键词 v3 · 簇 #3「brunch」· 12 词 · 当前没有任何帖子或页面覆盖。</span></li>
+                <li><code>E-3</code><span>Local Falcon 2026-08-12 · 「brunch near me」7×7 平均排名 9.4，未进本地包。</span></li>
+              </ul>
+            </section>
+
+            <section class="card block" data-od-id="task-output">
+              <h3><span class="eyebrow">OUTPUT</span>当前成果<span class="stamp push">准备完成 · 09-08 14:20</span></h3>
+              <article class="post" data-od-id="task-post-card">
+                <span class="stamp stamp-ai">AI 生成</span>
+                <div class="post-img" role="img" aria-label="配图占位，待商户提供实拍"><div>配图占位<span>待商户提供实拍 · 4:3</span></div></div>
+                <div class="post-body">
+                  <p>周中也值得一顿像样的早午餐。Weekday Brunch Set 工作日 10:00–14:00 供应，一份主餐搭配现磨咖啡和当季小食，上西区 Broadway 街角就能坐下慢慢吃。带上同事或者一个人来都合适，到店直接点即可。</p>
+                  <span class="post-cta">了解更多</span>
+                  <span class="cell-sub">CTA 链接：商户资料里的菜单页地址</span>
+                </div>
+                <div class="post-foot"><span>门店：2020 Broadway · New York</span><span>类型：UPDATE · 不含价格</span></div>
+              </article>
+              <p class="post-note">正文不含价格。T-1205 价格确认完成后，内容 Agent 会补一条带价格的更新帖，另行审批。</p>
+            </section>
+
+            <section class="card block" data-od-id="task-acceptance">
+              <h3><span class="eyebrow">ACCEPTANCE</span>验收标准</h3>
+              <ul class="criteria">
+                <li><span class="num">01</span><span>读回正文与 CTA 完全一致且 LIVE</span><span class="stamp">未验证</span></li>
+                <li><span class="num">02</span><span>发布记录含 post_id</span><span class="stamp">未验证</span></li>
+              </ul>
+            </section>
+
+            <section class="card block" data-od-id="task-next">
+              <h3><span class="eyebrow">NEXT</span>下一步</h3>
+              <p class="next-note">批准后发布 Agent 立即发布。这是一次外部写入，发布后只能删除，不能退回草稿。</p>
+              <div class="btn-row">
+                <button class="btn btn-primary" type="button">批准并发布</button>
+                <button class="btn" type="button">退回重新准备</button>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side">
+            <section class="card" data-od-id="task-owners">
+              <p class="eyebrow">OWNERS</p>
+              <h3 class="card-title" style="margin-bottom: 8px;">负责人</h3>
+              <ul class="owners">
+                <li><span class="avatar" aria-hidden="true">CN</span><span><b>内容 Agent</b><span>准备阶段</span></span><span class="stamp stamp-ok">完成</span></li>
+                <li><span class="avatar" aria-hidden="true">PB</span><span><b>发布 Agent</b><span>发布阶段</span></span><span class="stamp">等待</span></li>
+                <li><span class="avatar avatar-human" aria-hidden="true">XA</span><span><b>你</b><span>审批</span></span><span class="stamp stamp-warn">当前</span></li>
+              </ul>
+            </section>
+            <section class="card" data-od-id="task-facts">
+              <dl class="kv">
+                <div><dt>截止</dt><dd class="mono">09-10 12:00</dd></div>
+                <div><dt>前置任务</dt><dd>1 · <a href="#am-task-detail-human">T-1205 价格确认</a></dd></div>
+                <div><dt>后置任务</dt><dd>0</dd></div>
+                <div><dt>批准状态</dt><dd><span class="stamp">未批准</span></dd></div>
+                <div><dt>成本</dt><dd>本任务已用 $0.42 · 2 次调用</dd></div>
+                <div><dt>证据</dt><dd>3 条 · E-1 / E-2 / E-3</dd></div>
+              </dl>
+            </section>
+          </aside>
+        </div>
+
+        <section class="card" style="margin-top: 16px;" data-od-id="task-history">
+          <div class="card-head">
+            <div><p class="eyebrow">HISTORY · 5 EVENTS</p><h3 class="card-title">历史</h3></div>
+            <span class="cell-sub">来自任务事件流 · 最新在下</span>
+          </div>
+          <ol class="timeline">
+            <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>创建任务 · 来自 Plan #12 · 对话派单「下周推广早餐」</span></li>
+            <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>派发给内容 Agent · 准备阶段 · 关联前置 T-1205</span></li>
+            <li><time>09-08 14:20</time><span class="actor">内容 Agent</span><span>准备完成 · 生成正文与 CTA · 2 次调用 · $0.42</span></li>
+            <li><time>09-08 14:21</time><span class="actor">系统</span><span>状态 → AWAITING_APPROVAL · 等待 xander 审批</span></li>
+            <li><time>09-09 09:15</time><span class="actor">Orchestrator</span><span>提醒：正文不含价格，可先发布；价格确认后另起更新帖</span></li>
+          </ol>
+          <details class="trace" data-od-id="task-trace">
+            <summary>技术 trace <span class="count">· 2 次调用 · 默认折叠</span></summary>
+            <pre>run        prepare · 内容 Agent · 2026-09-08 14:03 → 14:20
+skill      gbp-post-writer · 专用 · 来自 Plan #12 允许项 GBP_POST
+inputs     plan#12.params · audit#28.summary · keywords.v3.cluster#3 · merchant.profile
+call 1     draft · $0.31 · 输出 post.body
+call 2     revise · $0.11 · 去除候选价格 · 输出 post.cta
+artifact   post.body · post.cta · 无 media（配图占位）
+guard      价格字段为空 → 标记「不含价格」并关联 T-1205</pre>
+          </details>
+        </section>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 04 am-task-detail-human ===================================================== -->
+<section class="sheet-section" id="am-task-detail-human" data-od-id="am-task-detail-human">
+  <p class="eyebrow">04 · AM-TASK-DETAIL-HUMAN · HUMAN EXECUTOR</p>
+  <h2>Task 详情 · HUMAN 执行</h2>
+  <p class="sheet-note">同一张工作单的结构，执行者换成人：「当前成果」变成「提交结果」表单，主按钮是提交而不是批准；侧区多一行它阻塞了什么。</p>
+  <div class="app" data-od-id="am-task-detail-human-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home">工作台</a>
+        <a href="#am-merchant-space">商户</a>
+        <a href="#am-task-detail" aria-current="page">任务与计划</a>
+        <span title="本原型未包含此页">数据与报告</span>
+        <a href="#am-team">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">TASK · T-1205 · PLAN #12</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+      </header>
+      <main class="main">
+        <p class="crumb"><a href="#am-merchant-space">← George Merchant</a> · 计划与任务</p>
+        <header class="task-head" data-od-id="human-task-header">
+          <p class="eyebrow">TASK · T-1205 · HUMAN_INPUT</p>
+          <h1>确认 Weekday Brunch Set 的价格与有效期 <span class="stamp stamp-info">EXECUTING · 分派给你</span></h1>
+          <div class="task-meta"><span>来源：Plan #12</span><span>商户：George Merchant · 2020 Broadway</span><span>执行者：xander（你）· 人工执行</span></div>
+        </header>
+
+        <div class="detail">
+          <div>
+            <section class="card block" data-od-id="human-task-what">
+              <h3><span class="eyebrow">WHAT</span>做什么</h3>
+              <p class="lead">向商户确认 Weekday Brunch Set 的价格与有效期，并留下来源凭证。</p>
+              <dl class="params">
+                <dt>门店</dt><dd>2020 Broadway · New York</dd>
+                <dt>需要确认</dt><dd>价格 · 有效期起止 · 来源</dd>
+                <dt>结果去向</dt><dd>写入商户资料「菜单与价格」，并解除 T-1204 的价格补充等待</dd>
+              </dl>
+            </section>
+
+            <section class="card block" data-od-id="human-task-why">
+              <h3><span class="eyebrow">WHY</span>为什么</h3>
+              <p class="lead">内容 Agent 不能把候选价格当经营事实。帖子和后续菜单更新都会引用这个价格，一旦发布就是对外承诺，只有人能替商户确认。</p>
+              <ul class="evidence" style="margin-top: 12px;">
+                <li><code>E-1</code><span>候选值 $24 · 来源：官网菜单页抓取 2026-08-30 · 未经商户确认，不得发布。</span></li>
+              </ul>
+            </section>
+
+            <section class="card block" data-od-id="human-task-submit">
+              <h3><span class="eyebrow">RESULT</span>提交结果</h3>
+              <form class="form" action="#am-task-detail-human" onsubmit="return false;">
+                <div class="field-row">
+                  <div class="field">
+                    <label for="f-price">价格<span class="req">*</span></label>
+                    <div class="prefix"><span>$</span><input class="input" id="f-price" type="text" inputmode="decimal" placeholder="24.00" /></div>
+                  </div>
+                  <div class="field">
+                    <label for="f-source">来源<span class="req">*</span></label>
+                    <input class="input" id="f-source" type="text" placeholder="例如：店长微信确认 / 到店确认" />
+                  </div>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="f-from">有效期起<span class="req">*</span></label>
+                    <input class="input mono" id="f-from" type="text" placeholder="YYYY-MM-DD" />
+                  </div>
+                  <div class="field">
+                    <label for="f-to">有效期止</label>
+                    <input class="input mono" id="f-to" type="text" placeholder="YYYY-MM-DD · 留空表示长期" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="f-note">来源备注</label>
+                  <textarea class="input" id="f-note" placeholder="例如：店长确认周一至周五供应，节假日不适用；截图见附件"></textarea>
+                </div>
+                <div class="field">
+                  <label>上传凭证</label>
+                  <div class="dropzone" data-od-id="human-task-dropzone"><b>拖入截图或聊天记录</b>尚未上传 · PNG / JPG / PDF · 单个文件 ≤ 10 MB</div>
+                </div>
+                <div class="submit-foot">
+                  <button class="btn btn-primary" type="submit">提交确认结果</button>
+                  <button class="btn btn-quiet" type="button">转交给…</button>
+                  <button class="btn btn-quiet" type="button">标记为无法完成</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <aside class="side">
+            <section class="card" data-od-id="human-task-owners">
+              <p class="eyebrow">OWNERS</p>
+              <h3 class="card-title" style="margin-bottom: 8px;">负责人</h3>
+              <ul class="owners">
+                <li><span class="avatar avatar-human" aria-hidden="true">XA</span><span><b>xander（你）</b><span>人工执行</span></span><span class="stamp stamp-info">当前</span></li>
+                <li><span class="avatar" aria-hidden="true">OR</span><span><b>Orchestrator</b><span>派单</span></span><span class="stamp stamp-ok">完成</span></li>
+                <li><span class="avatar" aria-hidden="true">CN</span><span><b>内容 Agent</b><span>等待结果</span></span><span class="stamp">等待</span></li>
+              </ul>
+              <p class="side-note">阻塞了 1 个任务：GBP 帖子草稿</p>
+            </section>
+            <section class="card" data-od-id="human-task-facts">
+              <dl class="kv">
+                <div><dt>截止</dt><dd class="mono due-today">今天 18:00</dd></div>
+                <div><dt>前置任务</dt><dd>0</dd></div>
+                <div><dt>后置任务</dt><dd>1 · <a href="#am-task-detail">T-1204 GBP 帖子</a></dd></div>
+                <div><dt>批准状态</dt><dd><span class="stamp">不需要审批</span></dd></div>
+                <div><dt>成本</dt><dd>本任务已用 $0.00 · 0 次调用</dd></div>
+                <div><dt>证据</dt><dd>1 条 · E-1</dd></div>
+              </dl>
+            </section>
+          </aside>
+        </div>
+
+        <section class="card" style="margin-top: 16px;" data-od-id="human-task-history">
+          <div class="card-head">
+            <div><p class="eyebrow">HISTORY · 3 EVENTS</p><h3 class="card-title">历史</h3></div>
+            <span class="cell-sub">来自任务事件流 · 最新在下</span>
+          </div>
+          <ol class="timeline">
+            <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>创建任务 · 来自提案 REQUEST_HUMAN_INPUT · 对话派单「下周推广早餐」</span></li>
+            <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>派发给 xander · 截止 09-09 18:00 · 后置 T-1204</span></li>
+            <li><time>09-09 09:15</time><span class="actor">系统</span><span>提醒：距截止不足 9 小时 · T-1204 的价格补充在等这个结果</span></li>
+          </ol>
+          <details class="trace" data-od-id="human-task-trace">
+            <summary>技术 trace <span class="count">· 0 次调用 · 默认折叠</span></summary>
+            <pre>run        none · 人工执行任务不产生模型调用
+inputs     merchant.profile.menu（候选价格 $24 · 08-30 抓取）
+outputs    待提交：price · valid_from · valid_to · source · evidence[]</pre>
+          </details>
+        </section>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 05 am-dispatch-drawer ===================================================== -->
+<section class="sheet-section" id="am-dispatch-drawer" data-od-id="am-dispatch-drawer">
+  <p class="eyebrow">05 · AM-DISPATCH-DRAWER · OVERLAY ON MERCHANT SPACE</p>
+  <h2>对话派单抽屉</h2>
+  <p class="sheet-note">在商户空间里用一句话派单：Orchestrator 把话翻译成提案卡，应用后才会创建任务并派单。抽屉 480px，叠在商户空间之上，范围锁定在当前商户。</p>
+  <div class="app" style="min-height: 1000px;" data-od-id="am-dispatch-drawer-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home">工作台</a>
+        <a href="#am-merchant-space" aria-current="page">商户</a>
+        <a href="#am-task-detail">任务与计划</a>
+        <span title="本原型未包含此页">数据与报告</span>
+        <a href="#am-team">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">MERCHANT · GEORGE MERCHANT</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+      </header>
+      <main class="main" aria-hidden="true" inert>
+        <p class="crumb"><a href="#am-home">← 商户列表</a></p>
+        <header class="merchant-head">
+          <div>
+            <p class="eyebrow">MERCHANT · RESTAURANT · NEW YORK</p>
+            <h1>George Merchant <span class="stamp stamp-warn">GSC 未授权</span></h1>
+            <dl class="merchant-meta">
+              <div><dt>门店</dt><dd>2020 Broadway · New York</dd></div>
+              <div><dt>负责 AM</dt><dd>xander</dd></div>
+              <div><dt>服务周期</dt><dd>2026-Q4 · 第 2 周</dd></div>
+              <div><dt>里程碑</dt><dd>9 月：GBP 内容 4 篇 · 关键词监测集 20 词</dd></div>
+            </dl>
+          </div>
+          <div class="btn-row">
+            <span class="btn">团队对话</span>
+            <span class="btn btn-quiet">编辑资料</span>
+          </div>
+        </header>
+        <nav class="tabs">
+          <a href="#am-dispatch-drawer" aria-current="page" tabindex="-1">概览</a>
+          <a href="#am-dispatch-drawer" tabindex="-1">计划与任务</a>
+          <a href="#am-dispatch-drawer" tabindex="-1">商户资料与记忆</a>
+          <a href="#am-dispatch-drawer" tabindex="-1">数据与诊断</a>
+          <a href="#am-dispatch-drawer" tabindex="-1">成果与报告</a>
+        </nav>
+        <div class="two-col">
+          <section class="card">
+            <div class="card-head">
+              <div><p class="eyebrow">CURRENT PLAN · #12 · ACTIVE</p><h3 class="card-title">当前 Plan</h3></div>
+            </div>
+            <p class="plan-goal">目标：提升 brunch 相关本地可见度</p>
+            <div class="scope">
+              <div>
+                <h5><span class="stamp stamp-ok">允许</span>授权范围内自动推进</h5>
+                <ul><li>GBP 帖子发布（逐条审批）</li><li>只读同步</li><li>关键词重算</li></ul>
+              </div>
+              <div>
+                <h5><span class="stamp stamp-bad">不允许</span>需要单独授权</h5>
+                <ul><li>修改营业时间</li><li>付费扫描超过 100 credits</li></ul>
+              </div>
+            </div>
+            <dl class="params params-tight" style="margin-top: 14px;">
+              <dt>有效期</dt><dd>至 2026-12-31</dd>
+              <dt>批准</dt><dd>xander · 2026-09-01</dd>
+            </dl>
+            <div class="progress">
+              <div class="progress-head"><span>进度 · 7 项任务</span><span>3 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
+              <div class="bar-track" style="--max: 7;">
+                <i class="seg-done" style="--v: 3;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
+              </div>
+              <div class="legend">
+                <span><i class="seg-done"></i><b>3</b>完成</span>
+                <span><i class="seg-doing"></i><b>2</b>进行中</span>
+                <span><i class="seg-wait"></i><b>1</b>待审批</span>
+                <span><i class="seg-block"></i><b>1</b>阻塞</span>
+              </div>
+            </div>
+          </section>
+          <div>
+            <section class="card">
+              <p class="eyebrow">THIS WEEK · W37</p>
+              <h3 class="card-title" style="margin-bottom: 10px;">本周节奏</h3>
+              <ul class="week">
+                <li><span class="day">周一 09-07</span><span>诊断复核 · Audit #28</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span class="day">周二 09-08</span><span>关键词监测集重算 v3</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span class="day today">周三 今天</span><span>brunch 帖子审批 · 价格确认</span><span class="stamp stamp-warn">等你</span></li>
+                <li><span class="day">周四 09-10</span><span>Local Falcon 基线扫描</span><span class="stamp">待批准</span></li>
+                <li><span class="day">周五 09-11</span><span>周报草稿</span><span class="stamp">未开始</span></li>
+              </ul>
+            </section>
+            <section class="card">
+              <p class="eyebrow">OPEN BLOCKERS · 2</p>
+              <h3 class="card-title" style="margin-bottom: 10px;">未解决 blocker</h3>
+              <ul class="blockers">
+                <li><b>GSC 未授权</b><span>阻塞：GSC 只读同步 · 自 09-02</span></li>
+                <li><b>价格未确认</b><span>影响：GBP 帖子草稿的价格补充 · 分派给 xander</span></li>
+              </ul>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="mask" aria-hidden="true"></div>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" data-od-id="dispatch-drawer">
+      <div class="drawer-head">
+        <div class="row">
+          <div>
+            <p class="eyebrow">TEAM CHAT · DISPATCH</p>
+            <h3 id="drawer-title">团队对话 · George Merchant</h3>
+          </div>
+          <button class="close" type="button" aria-label="关闭">×</button>
+        </div>
+        <span class="stamp stamp-info">范围：George Merchant · 2020 Broadway</span>
+      </div>
+
+      <div class="chat" data-od-id="dispatch-chat">
+        <div class="msg msg-me" data-od-id="chat-msg-me">
+          <span class="avatar avatar-human" aria-hidden="true">XA</span>
+          <div>
+            <div class="msg-head"><b>你</b><time>09-08 14:01</time></div>
+            <div class="msg-body">下周推广早餐，不增加预算，内容先给我审核</div>
+          </div>
+        </div>
+
+        <div class="msg" data-od-id="chat-msg-proposal">
+          <span class="avatar" aria-hidden="true">OR</span>
+          <div>
+            <div class="msg-head"><b>Orchestrator</b><span class="stamp stamp-info">提案</span><time>09-08 14:02</time></div>
+            <div class="msg-body">已理解为：本周期内新增 1 篇 GBP 帖子任务，主题 brunch，发布前逐条审批，不新增预算。需要先确认 Weekday Brunch Set 的价格。</div>
+            <article class="proposal" data-od-id="proposal-create-task">
+              <div class="proposal-head"><b><code>CREATE_TASK</code> · GBP 帖子 · 内容 Agent</b><span class="stamp stamp-warn">待应用</span></div>
+              <dl class="params params-tight">
+                <dt>主题</dt><dd>brunch · Weekday Brunch Set</dd>
+                <dt>审批</dt><dd>发布前逐条审批（xander）</dd>
+                <dt>预算</dt><dd>不新增</dd>
+                <dt>截止</dt><dd>09-10 12:00</dd>
+              </dl>
+              <div class="btn-row"><button class="btn btn-sm" type="button">应用提案</button><button class="btn btn-sm btn-quiet" type="button">修改</button></div>
+            </article>
+            <article class="proposal" data-od-id="proposal-human-input">
+              <div class="proposal-head"><b><code>REQUEST_HUMAN_INPUT</code> · 确认价格 · xander</b><span class="stamp stamp-warn">待应用</span></div>
+              <dl class="params params-tight">
+                <dt>内容</dt><dd>Weekday Brunch Set 的价格与有效期</dd>
+                <dt>截止</dt><dd>09-09 18:00</dd>
+                <dt>阻塞</dt><dd>GBP 帖子的价格补充</dd>
+              </dl>
+              <div class="btn-row"><button class="btn btn-sm" type="button">应用提案</button><button class="btn btn-sm btn-quiet" type="button">修改</button></div>
+            </article>
+          </div>
+        </div>
+
+        <div class="msg msg-system" data-od-id="chat-msg-system">
+          <div>提案已应用 · 2 个任务已创建 · 已派单<span class="stamp stamp-ok">已派单</span></div>
+        </div>
+
+        <div class="msg" data-od-id="chat-msg-followup">
+          <span class="avatar" aria-hidden="true">OR</span>
+          <div>
+            <div class="msg-head"><b>Orchestrator</b><time>09-08 14:03</time></div>
+            <div class="msg-body">内容 Agent 已开始准备不依赖价格的部分；价格确认后会自动补齐。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer" data-od-id="dispatch-composer">
+        <div class="row">
+          <label for="chat-input" class="visually-hidden" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">跟团队说点什么</label>
+          <input class="input" id="chat-input" type="text" placeholder="跟团队说点什么…" />
+          <button class="btn btn-primary" type="button">发送</button>
+        </div>
+        <div class="mentions">
+          <span>@</span>
+          <button class="chip" type="button">Orchestrator</button>
+          <button class="chip" type="button">内容 Agent</button>
+          <button class="chip" type="button">审计 Agent</button>
+          <button class="chip" type="button">关键词 Agent</button>
+          <button class="chip chip-human" type="button">交给我</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ===================================================== 06 am-team ===================================================== -->
+<section class="sheet-section" id="am-team" data-od-id="am-team">
+  <p class="eyebrow">06 · AM-TEAM · DESKTOP 1280+</p>
+  <h2>团队</h2>
+  <p class="sheet-note">人和 AI 并列在一张表里：职责、允许的任务类型、当前工作量与运行健康。右侧是能力目录，标明每个 Skill 的引用方式。</p>
+  <div class="app" data-od-id="am-team-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home">工作台</a>
+        <a href="#am-merchant-space">商户</a>
+        <a href="#am-task-detail">任务与计划</a>
+        <span title="本原型未包含此页">数据与报告</span>
+        <a href="#am-team" aria-current="page">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">TEAM · HUMAN + AI AGENTS</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+      </header>
+      <main class="main">
+        <div class="page-head">
+          <p class="eyebrow">TEAM · 7 MEMBERS · 1 INACTIVE</p>
+          <h1>团队</h1>
+          <p class="sub">人和 AI 的职责、工作量与运行健康。active 只表示注册状态，不代表远端可用或本次已调用。</p>
+        </div>
+        <div class="team-layout">
+          <section class="card" data-od-id="team-table">
+            <table class="table table-compact">
+              <thead>
+                <tr><th>成员</th><th>类型</th><th>职责</th><th>允许的任务类型</th><th>当前工作量</th><th>健康</th><th>最近一次执行</th></tr>
+              </thead>
+              <tbody>
+                <tr data-od-id="team-row-xander">
+                  <td><div class="member-cell"><span class="avatar avatar-human" aria-hidden="true">XA</span><b>xander</b></div></td>
+                  <td><span class="stamp stamp-human">HUMAN</span><span class="cell-sub">AM</span></td>
+                  <td>商户关系、审批、人工执行与派单</td>
+                  <td><code>HUMAN_INPUT</code><span class="cell-sub">APPROVAL · MANUAL_PUBLISH</span></td>
+                  <td class="workload"><span>进行中 1</span><span>等待 1</span></td>
+                  <td><span class="stamp stamp-ok">正常</span></td>
+                  <td><span class="mono">09-09 09:58</span><span class="cell-sub">批准关键词版本 v3 · George</span></td>
+                </tr>
+                <tr data-od-id="team-row-orchestrator">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">OR</span><b>Orchestrator</b></div></td>
+                  <td><span class="stamp">AI_AGENT</span><span class="cell-sub">编排</span></td>
+                  <td>理解对话、生成提案、在授权范围内派单与推进</td>
+                  <td><code>PLAN_DRAFT</code><span class="cell-sub">PROPOSAL · DISPATCH</span></td>
+                  <td class="workload"><span>进行中 0</span><span>等待 0</span></td>
+                  <td><span class="stamp stamp-ok">正常</span></td>
+                  <td><span class="mono">09-09 09:15</span><span class="cell-sub">关联 T-1204 前置任务</span></td>
+                </tr>
+                <tr data-od-id="team-row-content">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">CN</span><b>内容 Agent</b></div></td>
+                  <td><span class="stamp">AI_AGENT</span><span class="cell-sub">内容</span></td>
+                  <td>GBP 帖子、菜单文案；不得引用未确认的经营事实</td>
+                  <td><code>GBP_POST</code><span class="cell-sub">MENU_COPY</span></td>
+                  <td class="workload"><span>进行中 1</span><span>等待 1</span></td>
+                  <td><span class="stamp stamp-ok">正常</span></td>
+                  <td><span class="mono">09-08 14:20</span><span class="cell-sub">T-1204 准备完成 · George</span></td>
+                </tr>
+                <tr data-od-id="team-row-audit">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">AU</span><b>审计 Agent</b></div></td>
+                  <td><span class="stamp">AI_AGENT</span><span class="cell-sub">诊断与审计</span></td>
+                  <td>诊断 Run、资料核对、只读同步</td>
+                  <td><code>AUDIT_RUN</code><span class="cell-sub">PROFILE_CHECK · SYNC_READONLY</span></td>
+                  <td class="workload"><span>进行中 0</span><span>等待 1</span></td>
+                  <td><span class="stamp stamp-warn">绑定漂移</span><span class="cell-sub">SYNC_READONLY 绑定的凭证与配置不一致</span></td>
+                  <td><span class="mono">09-08 22:15</span><span class="cell-sub">诊断 Run #31 · Only Bear</span></td>
+                </tr>
+                <tr data-od-id="team-row-keyword">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">KW</span><b>关键词 Agent</b></div></td>
+                  <td><span class="stamp">AI_AGENT</span><span class="cell-sub">关键词</span></td>
+                  <td>关键词簇、监测集重算、付费扫描</td>
+                  <td><code>KEYWORD_RECALC</code><span class="cell-sub">PAID_SCAN</span></td>
+                  <td class="workload"><span>进行中 1</span><span>等待 0</span></td>
+                  <td><span class="stamp stamp-ok">正常</span></td>
+                  <td><span class="mono">09-08 11:30</span><span class="cell-sub">关键词 v3 重算 · George</span></td>
+                </tr>
+                <tr data-od-id="team-row-publish">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">PB</span><b>发布 Agent</b></div></td>
+                  <td><span class="stamp">AI_AGENT</span><span class="cell-sub">发布</span></td>
+                  <td>GBP 发布、读回对账、写入发布记录</td>
+                  <td><code>GBP_PUBLISH</code><span class="cell-sub">READBACK</span></td>
+                  <td class="workload"><span>进行中 0</span><span>等待 1</span></td>
+                  <td><span class="stamp">未验证</span><span class="cell-sub">上次发布读回未完成</span></td>
+                  <td><span class="mono">09-05 18:02</span><span class="cell-sub">帖子发布 · Only Bear · 结果未知</span></td>
+                </tr>
+                <tr class="row-off" data-od-id="team-row-report">
+                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">RP</span><div><b>报告 Agent</b><br /><span class="stamp">未启用</span></div></div></td>
+                  <td><span class="stamp">AI_AGENT</span><span class="cell-sub">报告</span></td>
+                  <td>周报与月报草稿（尚未接入）</td>
+                  <td><code>WEEKLY_REPORT</code><span class="cell-sub">MONTHLY_REPORT</span></td>
+                  <td class="workload"><span>进行中 0</span><span>等待 0</span></td>
+                  <td><span class="stamp">未验证</span><span class="cell-sub">从未执行</span></td>
+                  <td><span class="mono">—</span></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="table-foot"><span>工作量 = 该成员为执行者的任务：进行中 / 等待（含等待授权与等待输入）</span><span>健康每 10 分钟由绑定校验刷新</span></div>
+          </section>
+
+          <aside>
+            <section class="card" data-od-id="team-capabilities">
+              <div class="card-head">
+                <div><p class="eyebrow">CAPABILITIES · 3 SKILLS</p><h3 class="card-title">能力目录</h3></div>
+              </div>
+              <ul class="skills">
+                <li data-od-id="skill-gbp-post-writer">
+                  <div class="row"><code>gbp-post-writer</code><span class="stamp stamp-info">专用</span></div>
+                  <p>生成 GBP 帖子正文与 CTA；价格等经营事实必须来自已确认的商户资料。</p>
+                  <div class="refs"><span>引用：</span>内容 Agent</div>
+                </li>
+                <li data-od-id="skill-local-audit-runner">
+                  <div class="row"><code>local-audit-runner</code><span class="stamp stamp-warn">共享，禁止覆盖</span></div>
+                  <p>跑诊断 Run，产出 Audit 发现与证据引用；Plan 草稿以它为依据。</p>
+                  <div class="refs"><span>引用：</span>审计 Agent · Orchestrator</div>
+                </li>
+                <li data-od-id="skill-keyword-cluster-recalc">
+                  <div class="row"><code>keyword-cluster-recalc</code><span class="stamp stamp-info">专用</span></div>
+                  <p>按商户监测集重算关键词簇并生成新版本，激活需要人批准。</p>
+                  <div class="refs"><span>引用：</span>关键词 Agent</div>
+                </li>
+              </ul>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
