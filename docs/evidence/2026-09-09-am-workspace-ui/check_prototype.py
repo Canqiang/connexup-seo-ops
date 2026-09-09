@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Acceptance check for the AM workspace prototype v2 (AM OS design spec §13 + prompt-v2.md)."""
+"""Acceptance check for the AM workspace prototype v3 (business contract spec + prompt-v3.md)."""
 from __future__ import annotations
 import re, sys
 from pathlib import Path
@@ -7,7 +7,7 @@ from pathlib import Path
 PROTO = Path(__file__).resolve().parent / "prototype"
 REQUIRED_SECTIONS = [
     "am-home", "am-merchant-space", "am-gbp-work-order", "am-task-detail-human",
-    "am-dispatch-drawer", "am-team", "am-memory", "am-model-cost", "am-reports",
+    "am-dispatch-drawer", "am-team", "am-memory", "am-model-cost", "am-reports", "am-exceptions",
 ]
 REQUIRED_COPY = [
     # navigation + home groups
@@ -28,12 +28,27 @@ REQUIRED_COPY = [
     # merchant space / team
     "当前 Plan", "绑定漂移", "active 只表示注册状态，不代表远端可用或本次已调用",
     # new sections
-    "已确认事实", "待确认经验", "Core AI 原生记忆", "确认为规则",
-    "模型与成本", "升级条件", "预算规则", "模型是可替换的执行依赖",
-    "Audit 报告", "周期表现报告", "生成报告不等于已发送", "记录交付", "冻结快照",
+    "已确认事实", "Core AI 原生记忆", "确认为规则",
+    "模型与成本", "升级条件", "预算规则", "角色与模型不永久绑定",
+    "Audit 报告", "记录交付", "冻结快照",
+    # v3: principles, demo-data banner, rule ids and "why you"
+    "Agent 主动推进，AM 按职责参与", "Plan 授权工作范围，内容审批授权具体产物", "系统用证据判断完成",
+    "演示数据", "R3 · 公开内容需逐条审批", "R4 · Plan #12 付费扫描额度 100 credits", "本次 120",
+    "已在 Plan #12 额度 100 内自动执行", "R1 · 在 Plan #12 允许的",
+    # v3: work order de-duplication and approval binding
+    "本次批准绑定", "发布时间窗",
+    # v3: exceptions section
+    "异常恢复", "退回 → 修改 → 新审核", "批准后产物变化 → 批准失效", "发布超时 → 自动核验 → 人工介入",
+    "输入任务取消 → 下游重新规划", "批准已失效", "影响范围分级", "任务级", "商户级", "项目级",
+    # v3: memory three classes, isolation as precondition, hypothesis validation
+    "经营事实", "业务规则与偏好", "候选经验", "未启用 · 隔离未验证", "待数据验证", "确认偏好适用，不等于证明策略有效",
+    # v3: model by stage, cost three states
+    "工作阶段", "确定性程序", "已消耗", "已预留", "未结算", "缺事实、缺权限不允许升级",
+    # v3: reports three layers, labelled draft export, coverage checklist
+    "表现看板", "分析与 Audit", "冻结报告", "草稿 · 未审核", "旧报告覆盖清单", "未覆盖",
 ]
 # Copy the v2 review explicitly removed; its presence means a flow fix regressed.
-FORBIDDEN_COPY = ["批准并发布", "标记为无法完成", "应用提案"]
+FORBIDDEN_COPY = ["批准并发布", "标记为无法完成", "应用提案", "Local Falcon 扫描将消耗 40 credits", "批准扫描"]
 EXTERNAL = re.compile(r"""(?:<link[^>]+href|<script[^>]+src|@import\s+(?:url\()?|url\()\s*["']?https?://""", re.I)
 
 def main() -> int:
@@ -45,11 +60,15 @@ def main() -> int:
     for sid in REQUIRED_SECTIONS:
         if not re.search(rf"""<section[^>]*\bid\s*=\s*["']{sid}["']""", html):
             failures.append(f'missing <section id="{sid}">')
+    # Compare on tag-stripped text with whitespace and middle dots removed, so a rule id rendered as
+    # <code>R3</code>公开内容… still matches the prompt's "R3 · 公开内容…".
+    norm = lambda s: re.sub(r"[\s·]+", "", re.sub(r"<[^>]+>", "", s))
+    text_norm = norm(html)
     for text in REQUIRED_COPY:
-        if text not in html:
+        if norm(text) not in text_norm:
             failures.append(f"missing copy: {text}")
     for text in FORBIDDEN_COPY:
-        if text in html:
+        if norm(text) in text_norm:
             failures.append(f"forbidden copy present: {text}")
     for m in EXTERNAL.finditer(html):
         failures.append(f"external resource: {html[m.start():m.start()+80]!r}")

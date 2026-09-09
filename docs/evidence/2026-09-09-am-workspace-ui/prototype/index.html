@@ -577,7 +577,8 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 .facts .fix { grid-column: 2; grid-row: 1 / span 2; align-self: start; font-size: var(--text-sm); white-space: nowrap; }
 .cand { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; }
 .cand + .cand { margin-top: 10px; }
-.cand-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.cand-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 6px 10px; }
+.cand-head p { flex: 1 1 170px; min-width: 0; }
 .cand-head p { font-weight: 500; line-height: 1.6; }
 .cand .meta { font-size: var(--text-sm); color: var(--fg-2); margin: 6px 0 10px; display: flex; flex-wrap: wrap; gap: 2px 10px; }
 .cand .btn-row .btn { height: 30px; padding: 0 10px; font-size: var(--text-sm); }
@@ -616,35 +617,141 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 .issues li:first-child { border-top: 0; padding-top: 0; }
 .issues .stamp { justify-content: center; }
 .report-actions .btn { height: 28px; padding: 0 8px; font-size: var(--text-sm); }
+
+/* ---------- v3 additions ---------- */
+.demo-banner { background: var(--surface-warm); color: var(--fg-2); font-size: var(--text-sm); text-align: center; padding: 7px 12px; letter-spacing: 0.02em; border-bottom: 1px solid var(--border); }
+.rule { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--fg-2); line-height: 1.5; }
+.rule code { font-weight: 600; color: var(--brand-ink); background: var(--brand-soft); padding: 1px 5px; border-radius: 2px; font-size: 11px; letter-spacing: 0.04em; }
+.todo .meta-line { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--text-sm); color: var(--fg-2); margin-top: 4px; }
+.todo .meta-line b { color: var(--fg); font-weight: 500; }
+.todo .meta-line .risk-high { color: var(--danger); font-weight: 600; }
+.todo .meta-line .risk-mid { color: var(--accent-hover); font-weight: 600; }
+.group-sort { font-size: var(--text-sm); color: var(--fg-2); }
+.menu-static { display: flex; flex-direction: column; min-width: 148px; padding: 6px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--elev-raised); }
+.menu-static .eyebrow { padding: 4px 10px 6px; }
+.menu-static button { text-align: left; height: 30px; padding: 0 10px; border: 0; background: none; border-radius: var(--radius-sm); color: var(--fg); font-size: var(--text-sm); cursor: pointer; }
+.menu-static button:hover { background: var(--surface-warm); color: var(--fg); }
+.menu-static button.is-danger { color: var(--danger); }
+.menu-static button.is-danger:hover { background: var(--bad-soft); color: var(--danger); }
+.review-actions { align-items: flex-start; }
+.review-actions .btn { margin-top: 0; }
+.review-bind { margin-top: 10px; padding: 8px 12px; background: var(--paper-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); font: 12px/1.7 var(--font-mono); color: var(--fg-2); word-break: break-all; }
+.review-bind b { color: var(--fg); font-weight: 600; }
+.team-collapsed { padding: 0; }
+.team-collapsed > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 16px; font-weight: 600; font-size: var(--text-sm); }
+.team-collapsed > summary::-webkit-details-marker { display: none; }
+.team-collapsed > summary:hover { background: var(--paper-soft); }
+.team-collapsed > summary .toggle { font-weight: 500; color: var(--brand-ink); white-space: nowrap; }
+.team-collapsed[open] > summary .toggle::after { content: "收起 ›"; }
+.team-collapsed:not([open]) > summary .toggle::after { content: "展开 ›"; }
+.team-collapsed .team-mini { padding: 4px 16px 12px; border-top: 1px solid var(--border); }
+.step-meta .ver { font-family: var(--font-mono); }
+
+/* exceptions */
+.exc-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.exc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.exc-head h3 { font-size: var(--text-lg); font-weight: 600; line-height: 1.4; }
+.exc-foot { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.exc-foot dt { color: var(--fg-2); font-weight: 600; margin-bottom: 2px; }
+.exc-foot dd { color: var(--fg); }
+.exc-foot .btn-row { margin-top: 6px; }
+.exc-foot .btn-row .btn { height: 30px; padding: 0 10px; font-size: var(--text-sm); }
+.chain { display: flex; gap: 20px; }
+.chain li { position: relative; flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--paper-soft); font-size: var(--text-sm); color: var(--fg-2); }
+.chain li b { display: block; color: var(--fg); font-weight: 600; margin-bottom: 4px; }
+.chain li .stamp { display: flex; width: max-content; margin-bottom: 4px; }
+.chain li + li::before { content: "→"; position: absolute; left: -16px; top: 12px; color: var(--muted); }
+.chain li.cur { border-color: var(--fg); background: var(--surface); }
+.chain li.bad { border-color: var(--danger); }
+.mini-tl li { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.mini-tl li:first-child { border-top: 0; padding-top: 0; }
+.mini-tl time { font-family: var(--font-mono); color: var(--fg-2); }
+.flow { display: grid; gap: 6px; }
+.flow li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; font-size: var(--text-sm); align-items: start; }
+.flow li .arrow { color: var(--muted); text-align: center; padding-top: 1px; }
+.flow li .node { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--paper-soft); }
+.flow li .node b { display: block; color: var(--fg); font-weight: 600; }
+.flow li .node span { color: var(--fg-2); }
+.flow li .node.applied { border-color: var(--success); background: var(--surface); }
+.scope-card { grid-column: 2; }
+.scope-card .table th, .scope-card .table td { padding: 8px 8px; font-size: var(--text-sm); }
+.scope-card .table td:first-child b { white-space: nowrap; }
+
+/* memory v3 */
+.memory { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr); }
+.rules-list li { padding: 10px 0; border-top: 1px solid var(--border); }
+.rules-list li:first-child { border-top: 0; padding-top: 0; }
+.rules-list b { display: block; font-weight: 500; }
+.rules-list .meta { font-size: var(--text-sm); color: var(--fg-2); display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 2px; }
+.cand .note { font-size: var(--text-sm); color: var(--fg-2); margin-top: 8px; }
+.metrics { display: flex; flex-wrap: wrap; gap: 6px 28px; margin-top: 16px; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--fg-2); }
+.metrics b { color: var(--fg); font-weight: 600; }
+.mem-state .kv dd .stamp { margin-top: 2px; }
+
+/* model & cost v3 */
+.cost3 li { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 7px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.cost3 li:first-child { border-top: 0; padding-top: 0; }
+.cost3 li.total { font-weight: 600; color: var(--fg); border-top: 1px solid var(--line-strong); }
+.cost3 .money { font-size: var(--text-base); color: var(--fg); }
+.cost3 .sub { display: block; font-size: 11px; color: var(--fg-2); font-weight: 400; }
+.rules-compact li { padding: 8px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.rules-compact li:first-child { border-top: 0; }
+.rules-compact code { color: var(--brand-ink); }
+
+/* reports v3 */
+.tab-state + .tab-state { margin-top: 28px; }
+.tab-state > .tabs { margin: 0 0 14px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.filter { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); font-size: 13px; background: var(--surface); color: var(--fg); }
+.filter span { color: var(--fg-2); }
+.filter i { font-style: normal; color: var(--muted); }
+.kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.kpi { padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--paper-soft); }
+.kpi .label { font-size: var(--text-sm); color: var(--fg-2); }
+.kpi b { display: block; font-size: var(--text-2xl); font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; margin: 2px 0; }
+.kpi .delta { font-size: var(--text-sm); color: var(--fg-2); }
+.kpi .up { color: var(--success); font-weight: 600; }
+.kpi .down { color: var(--danger); font-weight: 600; }
+.trend-ph { margin-top: 12px; height: 128px; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); display: grid; place-items: center; text-align: center; color: var(--fg-2); font-size: var(--text-sm); background: var(--paper-soft); }
+.audit-layout { display: grid; grid-template-columns: minmax(0, 1fr) 248px; gap: 16px; align-items: start; }
+.audit-layout .audit { grid-template-columns: 184px minmax(0, 1fr) 236px; gap: 18px; }
+.coverage li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: start; padding: 8px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); }
+.coverage li:first-child { border-top: 0; padding-top: 0; }
+.coverage b { grid-column: 1; grid-row: 1; font-weight: 500; display: block; }
+.coverage span { grid-column: 1; grid-row: 2; color: var(--fg-2); }
+.coverage .stamp { grid-column: 2; grid-row: 1 / span 2; align-self: start; color: var(--success); }
+.coverage .stamp-warn { color: var(--accent-hover); }
 </style>
 </head>
 <body>
+<div class="demo-banner" data-od-id="demo-banner">演示数据 · 所有数字为示例，已校验自洽</div>
 <div class="sheet">
 
 <!-- ===================================================== 说明 ===================================================== -->
 <header class="sheet-intro" data-od-id="sheet-intro">
-  <p class="eyebrow">SEO OPS · AM WORKSPACE · STATIC PROTOTYPE · V2 · 2026-09-09</p>
+  <p class="eyebrow">SEO OPS · AM WORKSPACE · STATIC PROTOTYPE · V3 · 2026-09-09</p>
   <h1>AM 工作台界面原型</h1>
   <p>这是 SEO Ops 内部 AM（Account Manager）用的操作系统。AM 同时服务多家餐厅商户，带领一个「人机混合团队」：AI Agent 负责诊断、关键词、内容、发布、报告，AM 自己也是团队成员之一，可以派单、接手、审核、人工执行。</p>
-  <p>系统由 Plan（有限授权）和 Task（工作单）驱动。本页是静态原型集：9 个界面按顺序排列，所有状态并排展示，不依赖点击。桌面 1280px 起，只使用 seo-ops 的 tokens，不引入外部字体、图标或脚本库。</p>
+  <p>本页是静态原型集：10 个界面按顺序排列，所有状态并排展示，不依赖点击。桌面 1280px 起，只使用 seo-ops 的 tokens，不引入外部字体、图标或脚本库。</p>
   <div class="card principles" data-od-id="core-principles">
-    <h3>核心原则</h3>
+    <h3>三条原则</h3>
     <ol>
-      <li><code>01</code><span>Plan 授权范围内的工作由 Orchestrator 自动创建并派发；只有超出范围、增加预算或需要内容审批的事才交给 AM。</span></li>
-      <li><code>02</code><span>审核是一个真正分派给人的 Task。</span></li>
-      <li><code>03</code><span>远端结果未确认前不算完成，也绝不盲目重发。</span></li>
+      <li><code>01</code><span>Agent 主动推进，AM 按职责参与</span></li>
+      <li><code>02</code><span>Plan 授权工作范围，内容审批授权具体产物</span></li>
+      <li><code>03</code><span>系统用证据判断完成</span></li>
     </ol>
   </div>
   <nav class="sheet-toc" aria-label="原型目录">
     <a href="#am-home"><code>01</code>工作台首页</a>
     <a href="#am-merchant-space"><code>02</code>商户空间</a>
     <a href="#am-gbp-work-order"><code>03</code>GBP 内容工作单</a>
-    <a href="#am-task-detail-human"><code>04</code>Task 详情 · HUMAN 执行</a>
-    <a href="#am-dispatch-drawer"><code>05</code>对话派单抽屉</a>
-    <a href="#am-team"><code>06</code>团队</a>
-    <a href="#am-memory"><code>07</code>商户资料与记忆</a>
-    <a href="#am-model-cost"><code>08</code>模型与成本</a>
-    <a href="#am-reports"><code>09</code>数据与报告</a>
+    <a href="#am-exceptions"><code>04</code>异常恢复</a>
+    <a href="#am-task-detail-human"><code>05</code>Task 详情 · HUMAN 执行</a>
+    <a href="#am-dispatch-drawer"><code>06</code>对话派单抽屉</a>
+    <a href="#am-team"><code>07</code>团队</a>
+    <a href="#am-memory"><code>08</code>商户资料与记忆</a>
+    <a href="#am-model-cost"><code>09</code>模型与成本</a>
+    <a href="#am-reports"><code>10</code>数据与报告</a>
   </nav>
 </header>
 
@@ -662,14 +769,15 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
       <span class="stamp stamp-human">HUMAN 执行</span>
       <span class="stamp stamp-ai">AI 生成</span>
       <span class="stamp stamp-warn">候选</span>
+      <span class="rule"><code>R3</code>规则引用</span>
     </div>
   </div>
   <div>
-    <h3>按钮 · 一屏只有一个主操作；不可逆的主操作用 danger 色</h3>
+    <h3>按钮 · 每张卡一个主操作，其余收进「更多 ▾」；不可逆的主操作用 danger 色</h3>
     <div class="kit-row">
       <button class="btn" type="button">查看</button>
       <button class="btn btn-primary" type="button">审阅草稿</button>
-      <button class="btn btn-quiet" type="button">退回</button>
+      <button class="btn btn-quiet" type="button">更多 ▾</button>
       <button class="btn btn-danger-solid" type="button">批准这一版</button>
       <button class="btn btn-danger" type="button">取消任务</button>
       <button class="btn" type="button" disabled>已提交</button>
@@ -694,7 +802,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
       <span class="avatar" title="发布 Agent">PB</span>
       <span class="avatar" title="报告 Agent">RP</span>
     </div>
-    <p class="cell-sub" style="margin-top: 10px;">确认对话框在第 03、04 区块里按实际场景展示。</p>
+    <p class="cell-sub" style="margin-top: 10px;">确认对话框在第 03、05 区块里按实际场景展示。</p>
   </div>
 </div>
 
@@ -702,7 +810,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 <section class="sheet-section" id="am-home" data-od-id="am-home">
   <p class="eyebrow">01 · AM-HOME · DESKTOP 1280+</p>
   <h2>工作台首页</h2>
-  <p class="sheet-note">收件箱按「需要我决定 / 分派给我 / 需要关注 / 仅知会」四级排列。每张待办卡默认只显示结论、影响、操作三行，依据折叠；团队 rail 缩成一张小卡，把空间让给待办和异常。</p>
+  <p class="sheet-note">四组事项按「风险 → 截止 → 阻塞的下游数」排序；每张卡固定三行：结论 / 影响 / 当前有效操作（一个主按钮），其他操作收进「更多 ▾」，依据折叠。每件事只出现一次，卡上标注它落在哪条规则（R1–R5）。</p>
   <div class="app" data-od-id="am-home-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
@@ -731,141 +839,95 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
             <section class="group" data-od-id="home-decide">
               <div class="group-head">
                 <p class="eyebrow">NEEDS MY DECISION</p>
-                <h3>需要我决定（4 件 · 约 8 分钟）</h3>
-                <p class="desc">超出 Plan 授权范围、要加预算，或需要内容审批的事。Orchestrator 在这里停下来等你。</p>
+                <h3>需要我决定（3 件）</h3>
+                <p class="desc">超出 Plan 授权范围、增加预算，或需要内容审批的事。<span class="group-sort">排序：风险 → 截止 → 阻塞的下游数</span></p>
               </div>
 
-              <article class="card decision todo" data-od-id="decision-gbp-post">
-                <div>
-                  <div class="todo-head"><span class="stamp">George Merchant · 2020 Broadway</span><span class="stamp stamp-warn">待审核</span></div>
-                  <h4>GBP 帖子草稿等你批准 · brunch 主题</h4>
-                  <p class="impact"><b>影响：</b>不审阅，帖子停在草稿，9 月「GBP 内容 4 篇」的里程碑少 1 篇。</p>
-                  <details class="basis">
-                    <summary>展开依据 ›</summary>
-                    <dl class="why">
-                      <dt>要做什么</dt><dd>审核帖子 v2。批准后发布 Agent 写入 GBP 并读回核验；退回则内容 Agent 出 v3。</dd>
-                      <dt>为什么</dt><dd>Plan #12 允许 GBP 帖子发布，但要求逐条审批；审核是分派给你的任务 WO-1204 第 ② 步。</dd>
-                      <dt>依据</dt><dd>Audit #28：GBP 超过 60 天无更新帖；关键词簇 #3「brunch」无内容覆盖。</dd>
-                    </dl>
-                  </details>
-                </div>
-                <aside class="preview">
-                  <p class="eyebrow">产物预览 · POST V2</p>
-                  <p>周中也值得一顿像样的早午餐。Weekday Brunch Set 工作日 10:00–14:00 供应，一份主餐搭配现磨咖啡和当季小食，上西区 Broadway……</p>
-                  <div class="preview-foot"><span class="stamp stamp-ai">AI 生成</span><span>前 80 字 · 完整内容在审阅页</span></div>
-                </aside>
-                <div class="todo-foot">
-                  <a class="btn btn-primary" href="#am-gbp-work-order">审阅草稿</a>
-                  <a class="btn btn-quiet push" href="#am-gbp-work-order">查看工作单 ›</a>
-                </div>
-              </article>
-
               <article class="card todo" data-od-id="decision-onlybear-verify">
-                <div class="todo-head"><span class="stamp">Only Bear · Williamsburg</span><span class="stamp stamp-bad">待核验</span></div>
-                <h4>上次发布结果未知，需要你核验</h4>
-                <p class="impact">发布 Agent 收到超时，未取得 post_id。系统已读回门店帖子列表，未找到精确匹配。</p>
-                <details class="basis">
-                  <summary>展开依据 ›</summary>
-                  <dl class="why">
-                    <dt>发生了什么</dt><dd>09-05 18:02 发布 Agent 调用 GBP 写入接口，30 秒后超时，未返回 post_id。</dd>
-                    <dt>已做的检查</dt><dd>09-05 18:03 与 09-09 09:00 两次读回门店帖子列表（各 12 条），没有与帖子 v1 正文一致的记录。</dd>
-                    <dt>为什么要人</dt><dd>远端结果未确认前不算完成；是否已发布只能由人对照门店页面判断，系统不会替你重发。</dd>
-                  </dl>
-                </details>
+                <div class="todo-head"><span class="stamp">Only Bear · Williamsburg</span><span class="stamp stamp-bad">待核验</span><span class="rule"><code>R5</code>系统已读回 3 次，最后一次 09-09 11:23，未找到精确匹配</span></div>
+                <h4>上次发布结果未知，需要你核验 · Only Bear</h4>
+                <p class="impact"><b>影响：</b>远端可能已发布也可能没有。核验前该门店的发布类任务全部暂停，不会自动重发。</p>
+                <div class="meta-line"><span>风险 <span class="risk-high">高</span></span><span>截止 <b>今天 18:00</b></span><span>阻塞下游 <b>1</b></span></div>
                 <div class="todo-foot">
                   <button class="btn btn-primary" type="button">开始核验</button>
-                  <button class="btn btn-quiet" type="button">查看读回列表</button>
+                  <button class="btn btn-quiet" type="button">更多 ▾</button>
                   <span class="note push">不会自动重发</span>
                 </div>
-              </article>
-
-              <article class="card todo" data-od-id="decision-q4-plan">
-                <div class="todo-head"><span class="stamp">Only Bear · Williamsburg</span><span class="stamp stamp-warn">待审批</span></div>
-                <h4>Q4 周期 Plan 待批准 · 7 项任务 · 无外部写入</h4>
-                <p class="impact"><b>影响：</b>不批准，Only Bear 的 Q4 周期不会开始，昨晚的诊断结果只停留在草稿。</p>
                 <details class="basis">
                   <summary>展开依据 ›</summary>
                   <dl class="why">
-                    <dt>要做什么</dt><dd>批准后 Orchestrator 按授权范围推进这 7 项任务；本 Plan 不含任何外部写入，不会改动商户线上资料。</dd>
-                    <dt>为什么</dt><dd>Plan 是有限授权。没有你的批准，Orchestrator 不会派发其中任何一项。</dd>
-                  </dl>
-                  <dl class="params params-tight">
-                    <dt>目标</dt><dd>修复 GBP 基础信息，建立 15 词监测集</dd>
-                    <dt>任务</dt><dd>只读同步 ×2 · 资料核对 ×3 · 诊断复核 ×1 · 关键词重算 ×1</dd>
-                    <dt>外部写入</dt><dd>无</dd>
-                    <dt>预算</dt><dd>0 credits · 有效期至 2026-12-31</dd>
+                    <dt>发生了什么</dt><dd>发布 Agent 收到超时，未取得 post_id。系统已读回门店帖子列表，未找到精确匹配。</dd>
+                    <dt>读回记录</dt><dd>11:02 发布超时 → 11:03 读回 #1 未匹配 → 11:08 #2 未匹配 → 11:23 #3 未匹配 · 重读用尽，升级到这里</dd>
+                    <dt>「更多」里有</dt><dd>查看读回列表 · 转交给… · 暂时受阻</dd>
                   </dl>
                 </details>
+              </article>
+
+              <article class="card todo" data-od-id="decision-gbp-post">
+                <div class="todo-head"><span class="stamp">George Merchant · 2020 Broadway</span><span class="stamp stamp-warn">待审核</span><span class="rule"><code>R3</code>公开内容需逐条审批</span></div>
+                <h4>审阅草稿 · brunch 帖子 v2 · George</h4>
+                <p class="impact"><b>影响：</b>不审阅，帖子停在草稿，9 月「GBP 内容 4 篇」少 1 篇；发布与远端核验两步都在等它。</p>
+                <div class="meta-line"><span>风险 <span class="risk-mid">中</span></span><span>截止 <b>09-10 12:00</b></span><span>阻塞下游 <b>2</b></span></div>
                 <div class="todo-foot">
-                  <button class="btn btn-primary" type="button">批准 Plan</button>
-                  <button class="btn btn-quiet" type="button">退回</button>
-                  <a class="btn btn-quiet push" href="#am-merchant-space">查看 Plan ›</a>
+                  <a class="btn btn-primary" href="#am-gbp-work-order">审阅草稿</a>
+                  <button class="btn btn-quiet" type="button">更多 ▾</button>
+                  <a class="push" href="#am-gbp-work-order" style="font-size: var(--text-sm);">查看工作单 ›</a>
                 </div>
-              </article>
-
-              <article class="card todo" data-od-id="decision-falcon-scan">
-                <div class="todo-head"><span class="stamp">George Merchant · 2020 Broadway</span><span class="stamp stamp-warn">待审批 · 关联 2 项</span></div>
-                <h4>Local Falcon 扫描将消耗 40 credits · 关联「扫描后重算关键词监测集」</h4>
-                <p class="impact"><b>影响：</b>不批准，本周没有排名基线，下周报告只能引用 8 月的旧数据。</p>
                 <details class="basis">
                   <summary>展开依据 ›</summary>
                   <dl class="why">
-                    <dt>要做什么</dt><dd>批准后创建两项任务：关键词 Agent 对「brunch near me」等 5 个词跑 7×7 网格扫描，扫描完成后重算监测集。</dd>
-                    <dt>为什么</dt><dd>上次扫描是 8 月 12 日，已超过 4 周。付费扫描超出 Plan #12 的自动授权，需要你批准预算。</dd>
-                  </dl>
-                  <dl class="params params-tight">
-                    <dt>网格</dt><dd>7×7 · 半径 2 km · 关键词 5 个（簇 #3）</dd>
-                    <dt>预计消耗</dt><dd>40 credits · 账户余额 260 credits</dd>
+                    <dt>为什么要人</dt><dd>Plan #12 允许 GBP 帖子发布，但公开内容需逐条审批；审核是工作单 WO-1204 的第 ② 步，分派给你。</dd>
+                    <dt>版本</dt><dd>v1 于 09-08 被你退回（图片来源未授权）；v2 于 09-09 10:12 换用 FBR 菜品图 #17 后完成。</dd>
+                    <dt>产物预览</dt><dd>周中也值得一顿像样的早午餐。Weekday Brunch Set 工作日 10:00–14:00 供应，一份主餐搭配现磨咖啡和当季小食，上西区 Broadway……<br /><span class="stamp stamp-ai">AI 生成</span> 前 80 字 · 完整内容在审阅页</dd>
                   </dl>
                 </details>
+              </article>
+
+              <article class="card todo" data-od-id="decision-change-request">
+                <div class="todo-head"><span class="stamp">George Merchant · 2020 Broadway</span><span class="stamp stamp-warn">待审批</span><span class="rule"><code>R4</code>Plan #12 付费扫描额度 100 credits，本周期已用 40，本次 120，超出 60</span></div>
+                <h4>整体批准变更申请 · Local Falcon 扫描 120 credits 超出 Plan 额度 100</h4>
+                <p class="impact"><b>影响：</b>不批准，扫描和它之后的监测集重算都不会创建；brunch 簇本周没有完整基线。</p>
+                <div class="meta-line"><span>风险 <span class="risk-mid">中</span></span><span>截止 <b>09-11</b></span><span>阻塞下游 <b>1</b></span></div>
                 <div class="todo-foot">
                   <button class="btn btn-primary" type="button">整体批准这 2 项</button>
-                  <button class="btn btn-quiet" type="button">退回</button>
+                  <button class="btn btn-quiet" type="button">更多 ▾</button>
                   <span class="note push">关联任务整体批准，避免只创建前半段</span>
                 </div>
+                <details class="basis">
+                  <summary>展开依据 ›</summary>
+                  <dl class="why">
+                    <dt>申请内容</dt><dd>新增 Local Falcon 扫描 120 credits（簇 #3 全部 12 词 + 品牌词 · 7×7），扫描后重算关键词监测集。</dd>
+                    <dt>为什么范围外</dt><dd>本周期额度 100 credits 已用 40（昨天自动执行的 5 词基线扫描），再加 120 超出 60，Orchestrator 不能自动创建。</dd>
+                    <dt>「更多」里有</dt><dd>退回 · 改成额度内方案 · 查看 Plan #12</dd>
+                  </dl>
+                </details>
               </article>
             </section>
 
             <section class="group" data-od-id="home-assigned">
               <div class="group-head">
                 <p class="eyebrow">ASSIGNED TO ME</p>
-                <h3>分派给我（3 件）</h3>
-                <p class="desc">Orchestrator 判定必须由人完成的任务，执行者是你。提交结果后，下游任务会自动续上。</p>
+                <h3>分派给我（2 件）</h3>
+                <p class="desc">Orchestrator 判定必须由人完成的任务，执行者是你。<span class="group-sort">排序：截止 → 阻塞的下游数</span></p>
               </div>
-              <article class="card assign" data-od-id="assign-brunch-price">
-                <div class="assign-body">
-                  <div class="todo-head"><span class="stamp stamp-human">HUMAN 执行</span><span class="stamp stamp-info">执行中</span></div>
-                  <h4>确认 Weekday Brunch Set 的价格与有效期（George）</h4>
-                  <p class="meta">阻塞 1 个任务：含价格的 GBP 更新帖 · 来源 Plan #12 · T-1205</p>
-                </div>
-                <div class="due">截止 <b class="due-today">今天 18:00</b></div>
-                <div class="btn-row">
+              <article class="card todo" data-od-id="assign-brunch-price">
+                <div class="todo-head"><span class="stamp stamp-human">HUMAN 执行</span><span class="stamp stamp-info">执行中</span><span class="rule"><code>R2</code>阻塞 1 个草稿</span></div>
+                <h4>确认 Weekday Brunch Set 的价格与有效期</h4>
+                <p class="impact"><b>影响：</b>未确认前，含价格的 GBP 更新帖草稿只能等待；本版帖子 v2 不受影响。</p>
+                <div class="meta-line"><span>George Merchant</span><span>截止 <b class="due-today">今天 18:00</b></span><span>阻塞下游 <b>1</b></span><span>T-1205</span></div>
+                <div class="todo-foot">
                   <a class="btn" href="#am-task-detail-human">去处理</a>
-                  <button class="btn btn-quiet" type="button">转交给…</button>
+                  <button class="btn btn-quiet" type="button">更多 ▾</button>
                 </div>
               </article>
-              <article class="card assign" data-od-id="assign-weekly-report">
-                <div class="assign-body">
-                  <div class="todo-head"><span class="stamp stamp-human">HUMAN 执行</span><span class="stamp stamp-warn">待审阅</span></div>
-                  <h4>审阅第 37 周周报草稿 · 可可小卤</h4>
-                  <p class="meta">数据截止 09-07 · 冻结快照 #221 · 审阅后才能导出与记录交付 · R-3721</p>
-                </div>
-                <div class="due">截止 <b>周五 09-11 12:00</b></div>
-                <div class="btn-row">
+              <article class="card todo" data-od-id="assign-weekly-report">
+                <div class="todo-head"><span class="stamp stamp-human">HUMAN 执行</span><span class="stamp stamp-warn">待审阅</span></div>
+                <h4>审阅第 37 周周报草稿 · 可可小卤</h4>
+                <p class="impact"><b>影响：</b>未审阅前只能导出带「草稿 · 未审核」标识的 PDF，不能正式交付。</p>
+                <div class="meta-line"><span>可可小卤</span><span>截止 <b>周五 09-11 12:00</b></span><span>阻塞下游 <b>0</b></span><span>R-3721 · 冻结快照 #221</span></div>
+                <div class="todo-foot">
                   <a class="btn" href="#am-reports">去处理</a>
-                  <button class="btn btn-quiet" type="button">转交给…</button>
-                </div>
-              </article>
-              <article class="card assign" data-od-id="assign-coco-access">
-                <div class="assign-body">
-                  <div class="todo-head"><span class="stamp stamp-human">HUMAN 执行</span><span class="stamp stamp-info">执行中</span></div>
-                  <h4>向可可小卤索要官网后台权限</h4>
-                  <p class="meta">阻塞 2 个任务：官网诊断、Schema 修复 · 来源 Plan #9 · T-0931</p>
-                </div>
-                <div class="due">截止 <b>周五 09-11</b></div>
-                <div class="btn-row">
-                  <a class="btn" href="#am-task-detail-human">去处理</a>
-                  <button class="btn btn-quiet" type="button">转交给…</button>
+                  <button class="btn btn-quiet" type="button">更多 ▾</button>
                 </div>
               </article>
             </section>
@@ -874,26 +936,27 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
               <div class="group-head">
                 <p class="eyebrow">NEEDS ATTENTION</p>
                 <h3>需要关注（1 件）</h3>
-                <p class="desc">只放有明确责任人和动作的事项；没有动作的不进这一组。</p>
+                <p class="desc">只放有明确责任人和动作的事项。</p>
               </div>
               <div class="notice notice-warning" data-od-id="watch-coco-gsc">
-                <div class="notice-body"><span>可可小卤 · GSC 授权已过期，3 个任务被阻塞</span><small>责任人：xander · 动作：重新授权 GSC</small></div>
-                <span class="push"></span><a class="btn btn-sm" href="#am-merchant-space">去处理</a>
+                <span>可可小卤 · GSC 授权已过期 · 责任人 xander · 动作 重新授权 · 影响 3 个同步任务（内部草稿不受影响）</span>
+                <span class="push"></span><a class="btn btn-sm" href="#am-merchant-space">重新授权</a>
               </div>
             </section>
 
             <section class="group" data-od-id="home-fyi">
               <div class="group-head">
                 <p class="eyebrow">FYI</p>
-                <h3>仅知会（3 件）</h3>
-                <p class="desc">不需要任何动作的记录。默认折叠，展开后最新在上。</p>
+                <h3>仅知会（4 件）</h3>
+                <p class="desc">不需要任何动作的记录，包括授权范围内自动执行完成的事。默认折叠，展开后最新在上。</p>
               </div>
               <details class="card fyi" open>
-                <summary>3 条记录 <span class="count">· 今天 2 条 · 昨天 1 条</span></summary>
+                <summary>4 条记录 <span class="count">· 今天 2 条 · 昨天 2 条</span></summary>
                 <ul class="fyi-list">
                   <li><span>Maya 已核对 3 家门店营业时间，无需修改</span><span class="merchant">George · 可可小卤 · Only Bear</span><time>10:42</time></li>
                   <li><span>关键词版本 v3 已激活</span><span class="merchant">George Merchant</span><time>09:58</time></li>
                   <li><span>诊断 Run 完成，Plan 草稿 7 项已进入审批</span><span class="merchant">Only Bear</span><time>昨天 22:15</time></li>
+                  <li><span>Local Falcon 扫描 40 credits 已在 Plan #12 额度 100 内自动执行 · 已用 40 / 100</span><span class="merchant">George Merchant</span><time>昨天 13:40</time></li>
                 </ul>
               </details>
             </section>
@@ -901,11 +964,8 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
           </div>
 
           <aside class="rail">
-            <section class="card" data-od-id="home-team">
-              <div class="card-head">
-                <div><p class="eyebrow">TEAM · LIVE</p><h3 class="card-title">团队</h3></div>
-                <a href="#am-team">全部 ›</a>
-              </div>
+            <details class="card team-collapsed" data-od-id="home-team">
+              <summary><span>团队 · 5 个 Agent 工作中 1</span><span class="toggle"></span></summary>
               <ul class="team-mini">
                 <li><span class="name"><span class="avatar" aria-hidden="true">OR</span>Orchestrator</span><span class="stamp">待命</span></li>
                 <li><span class="name"><span class="avatar" aria-hidden="true">CN</span>内容 Agent</span><span class="stamp">待命</span></li>
@@ -914,17 +974,17 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <li><span class="name"><span class="avatar" aria-hidden="true">PB</span>发布 Agent</span><span class="stamp stamp-bad">阻塞</span></li>
                 <li><span class="name"><span class="avatar avatar-human" aria-hidden="true">XA</span>xander（你）</span><span class="stamp stamp-info">工作中</span></li>
               </ul>
-            </section>
+            </details>
             <section class="card" data-od-id="home-pulse">
               <p class="eyebrow">TODAY · 09-09</p>
               <h3 class="card-title" style="margin-bottom: 10px;">今日节奏</h3>
               <dl class="pulse">
-                <div><dt><span>已完成</span></dt><dd><b>11</b></dd></div>
+                <div><dt><span>已完成</span></dt><dd><b>12</b></dd></div>
                 <div><dt><span>进行中</span></dt><dd><b>4</b></dd></div>
-                <div class="is-wait"><dt><span>等你</span></dt><dd><b>7</b></dd></div>
+                <div class="is-wait"><dt><span>等你</span></dt><dd><b>5</b></dd></div>
                 <div class="is-block"><dt><span>阻塞</span></dt><dd><b>3</b></dd></div>
               </dl>
-              <p style="margin-top: 8px; font-size: var(--text-sm); color: var(--fg-2);">口径：今天有事件变化的任务，跨 5 家商户。</p>
+              <p style="margin-top: 8px; font-size: var(--text-sm); color: var(--fg-2);">口径：今天有事件变化的任务，跨 5 家商户。等你 = 需要我决定 3 + 分派给我 2。</p>
             </section>
           </aside>
         </div>
@@ -937,7 +997,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 <section class="sheet-section" id="am-merchant-space" data-od-id="am-merchant-space">
   <p class="eyebrow">02 · AM-MERCHANT-SPACE · DESKTOP 1280+</p>
   <h2>商户空间</h2>
-  <p class="sheet-note">一家商户的全部上下文：服务周期、当前 Plan 的授权边界（允许 / 不允许两列）与进度、本周节奏、未解决 blocker，以及任务预览。范围外待批准的事项不会出现在任务表里，批准后才创建。</p>
+  <p class="sheet-note">一家商户的全部上下文：服务周期、当前 Plan 的授权边界（允许 / 不允许两列）、付费扫描额度与进度、本周节奏、未解决 blocker，以及任务预览。范围外变更申请不会出现在任务表里，批准后才创建。</p>
   <div class="app" data-od-id="am-merchant-space-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
@@ -1001,14 +1061,15 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
             <dl class="params params-tight" style="margin-top: 14px;">
               <dt>有效期</dt><dd>至 2026-12-31</dd>
               <dt>批准</dt><dd>xander · 2026-09-01</dd>
+              <dt>付费扫描额度</dt><dd>100 credits · 本周期已用 40 · 变更申请 120 等你批准</dd>
             </dl>
             <div class="progress">
-              <div class="progress-head"><span>进度 · 7 项任务</span><span>3 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
-              <div class="bar-track" style="--max: 7;" role="img" aria-label="7 项任务：3 完成，2 进行中，1 待审批，1 阻塞">
-                <i class="seg-done" style="--v: 3;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
+              <div class="progress-head"><span>进度 · 8 项任务</span><span>4 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
+              <div class="bar-track" style="--max: 8;" role="img" aria-label="8 项任务：4 完成，2 进行中，1 待审批，1 阻塞">
+                <i class="seg-done" style="--v: 4;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
               </div>
               <div class="legend">
-                <span><i class="seg-done"></i><b>3</b>完成</span>
+                <span><i class="seg-done"></i><b>4</b>完成</span>
                 <span><i class="seg-doing"></i><b>2</b>进行中</span>
                 <span><i class="seg-wait"></i><b>1</b>待审批</span>
                 <span><i class="seg-block"></i><b>1</b>阻塞</span>
@@ -1023,7 +1084,8 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <li><span class="day">周一 09-07</span><span>诊断复核 · Audit #28</span><span class="stamp stamp-ok">完成</span></li>
                 <li><span class="day">周二 09-08</span><span>关键词监测集重算 v3</span><span class="stamp stamp-ok">完成</span></li>
                 <li><span class="day today">周三 今天</span><span>审核帖子 v2 · 价格确认</span><span class="stamp stamp-warn">等你</span></li>
-                <li><span class="day">周四 09-10</span><span>Local Falcon 基线扫描</span><span class="stamp">等你批准</span></li>
+                <li><span class="day">周二 09-08</span><span>Local Falcon 扫描 40 credits · 额度内自动执行</span><span class="stamp stamp-ok">完成</span></li>
+                <li><span class="day">周四 09-10</span><span>Local Falcon 扫描 120 credits · 变更申请</span><span class="stamp">等你批准</span></li>
                 <li><span class="day">周五 09-11</span><span>周报草稿</span><span class="stamp">未开始</span></li>
               </ul>
             </section>
@@ -1041,7 +1103,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
         <section class="card" style="margin-top: 16px;" data-od-id="merchant-tasks-preview">
           <div class="card-head">
             <div><p class="eyebrow">PLAN #12 · TASKS</p><h3 class="card-title">计划与任务</h3></div>
-            <a href="#am-merchant-space">查看全部 7 项 ›</a>
+            <a href="#am-merchant-space">查看全部 8 项 ›</a>
           </div>
           <table class="table">
             <thead><tr><th>任务</th><th>类型</th><th>执行者</th><th>状态</th><th>就绪性</th><th>截止</th></tr></thead>
@@ -1088,7 +1150,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
               </tr>
             </tbody>
           </table>
-          <div class="table-foot"><span>显示 5 / 7 项 · 已完成的「诊断复核」「营业时间核对」未列出</span><span>范围外待批准 2 项（Local Falcon 扫描 + 重算）批准后才创建</span></div>
+          <div class="table-foot"><span>显示 5 / 8 项 · 已完成的「诊断复核」「营业时间核对」「Local Falcon 扫描 40 credits」未列出</span><span>范围外变更申请 2 项（扫描 120 credits + 重算）批准后才创建</span></div>
         </section>
       </main>
     </div>
@@ -1099,7 +1161,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
 <section class="sheet-section" id="am-gbp-work-order" data-od-id="am-gbp-work-order">
   <p class="eyebrow">03 · AM-GBP-WORK-ORDER · REVIEW IS A HUMAN TASK</p>
   <h2>GBP 内容工作单</h2>
-  <p class="sheet-note">一条竖向流水线：草稿 → 审核 → 发布 → 远端核验，四步各有负责人、状态与交付物。审核是分派给人的任务，第 ② 步展开为完整审阅视图；第 ③ ④ 步折叠；依据与历史放在后面折叠。</p>
+  <p class="sheet-note">竖向流水线：草稿 → 审核 → 发布 → 远端核验。每步保留自己的负责人；侧栏只有一张「当前」卡，不再重复列全部负责人。第 ② 步只有一个主操作，其余收进「更多 ▾」；批准绑定具体产物。</p>
   <div class="app" data-od-id="am-gbp-work-order-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
@@ -1122,13 +1184,13 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
         <header class="task-head" data-od-id="wo-header">
           <p class="eyebrow">WORK ORDER · WO-1204 · GBP_POST</p>
           <h1>GBP 内容工作单 · brunch 主题 · George Merchant <span class="stamp stamp-warn">审核中 · 分派给你</span></h1>
-          <div class="task-meta"><span>来源：Plan #12</span><span>门店：2020 Broadway · New York</span><span>当前：第 ② 步 审核 · xander · 截止 09-10 12:00</span></div>
+          <div class="task-meta"><span>来源：Plan #12</span><span>门店：2020 Broadway · New York</span><span class="rule"><code>R3</code>公开内容需逐条审批</span></div>
         </header>
 
         <div class="detail">
           <div>
             <section class="card block" data-od-id="wo-pipeline">
-              <h3><span class="eyebrow">PIPELINE</span>流水线<span class="cell-sub push">4 步 · 1 完成 · 1 进行中 · 2 待前置</span></h3>
+              <h3><span class="eyebrow">PIPELINE</span>流水线<span class="cell-sub push">4 步 · 1 完成 · 1 进行中 · 2 待前置 · 版本 v2</span></h3>
               <ol class="pipe">
                 <li class="step step-done" data-od-id="wo-step-draft">
                   <span class="step-num" aria-hidden="true">1</span>
@@ -1136,7 +1198,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                     <div class="step-head">
                       <div class="step-title">草稿 <span class="stamp stamp-ok">已完成</span></div>
                       <span class="due">09-09 10:12</span>
-                      <div class="step-meta"><span>负责人 <b>内容 Agent</b></span><span>交付物 <b>帖子 v2（正文 + 图片 + CTA）</b></span><span>v1 于 09-08 14:20，因图片来源未授权改出 v2</span></div>
+                      <div class="step-meta"><span>负责人 <b>内容 Agent</b></span><span>交付物 <b>帖子 v2（正文 + 图片 + CTA）</b></span><span>版本链 <b class="ver">v1 09-08 14:20 → v2 09-09 10:12</b></span></div>
                     </div>
                   </div>
                 </li>
@@ -1147,7 +1209,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                     <div class="step-head">
                       <div class="step-title">审核 <span class="stamp stamp-warn">进行中</span></div>
                       <span class="due">截止 <b>09-10 12:00</b></span>
-                      <div class="step-meta"><span>负责人 <b>xander（分派给你）</b></span><span>交付物 <b>批准或退回记录</b></span></div>
+                      <div class="step-meta"><span>负责人 <b>xander（分派给你）</b></span><span>交付物 <b>批准或退回记录</b></span><span>审核 v1 <b>已退回 · xander · 理由「图片来源未授权」</b></span><span>审核 v2 <b>分派给你</b></span></div>
                     </div>
                     <div class="review" data-od-id="wo-review">
                       <div class="review-grid">
@@ -1168,10 +1230,18 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                         </div>
                       </div>
                       <p class="review-dep">本版不含价格。价格确认任务 T-1205 已解除对本版的阻塞；含价格的更新帖会另建工作单</p>
+                      <p class="review-bind"><b>本次批准绑定：</b>正文 b4de70ec… · 图片 sha256 91af… · CTA 了解更多 → https://georgemerchant.example/menu · 门店 2020 Broadway · 发布时间窗 09-09 至 09-16</p>
                       <div class="review-actions">
                         <button class="btn btn-danger-solid" type="button">批准这一版</button>
                         <button class="btn" type="button">退回并说明</button>
-                        <span class="cell-sub push">批准是外部写入，会先弹确认对话框</span>
+                        <button class="btn btn-quiet" type="button">更多 ▾</button>
+                        <div class="menu-static push" role="menu" aria-label="更多操作（展开示意）" data-od-id="wo-more-menu">
+                          <p class="eyebrow">更多 ▾ 展开后</p>
+                          <button type="button" role="menuitem">暂时受阻</button>
+                          <button type="button" role="menuitem">请求协助</button>
+                          <button type="button" role="menuitem">转交给…</button>
+                          <button type="button" role="menuitem" class="is-danger">取消任务</button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1188,7 +1258,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                           <div class="step-meta"><span>负责人 <b>发布 Agent</b></span><span>交付物 <b>发布记录（含 post_id）</b></span></div>
                         </div>
                       </summary>
-                      <p>第 ② 步批准后自动开始：把帖子 v2 写入 Google 门店 2020 Broadway。超时或未取得 post_id 时不重发，转为「需要你核验」。</p>
+                      <p>第 ② 步批准后自动开始：把批准绑定的帖子 v2 写入 Google 门店 2020 Broadway。若产物在批准后变化（checksum 或 sha256 不一致），发布停在待授权并新建审核任务。超时或未取得 post_id 时不重发。</p>
                     </details>
                   </div>
                 </li>
@@ -1204,7 +1274,7 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                           <div class="step-meta"><span>负责人 <b>系统</b></span><span>交付物 <b>读回核验结果</b></span></div>
                         </div>
                       </summary>
-                      <p>第 ③ 步完成后自动读回：正文与 CTA 完全一致且 LIVE，发布记录含 post_id。两条都通过工作单才算完成。</p>
+                      <p>第 ③ 步完成后自动读回：正文与 CTA 完全一致且 LIVE，发布记录含 post_id。两条都通过工作单才算完成；系统用证据判断完成。</p>
                     </details>
                   </div>
                 </li>
@@ -1218,49 +1288,42 @@ textarea.input { height: auto; min-height: 84px; padding: 8px 12px; resize: vert
                 <ul class="evidence" style="margin-top: 12px;">
                   <li><code>E-1</code><span>Audit #28 · 2026-09-07 · GBP 最近一篇更新帖发布于 2026-07-06，超过 60 天。</span></li>
                   <li><code>E-2</code><span>关键词 v3 · 簇 #3「brunch」· 12 词 · 当前没有任何帖子或页面覆盖。</span></li>
-                  <li><code>E-3</code><span>Local Falcon 2026-08-12 · 「brunch near me」7×7 平均排名 9.4，未进本地包。</span></li>
+                  <li><code>E-3</code><span>Local Falcon 2026-09-08 · 5 词基线扫描（40 credits）· 「brunch near me」7×7 平均排名 8.9。</span></li>
                 </ul>
               </div>
             </details>
 
             <details class="card fold" data-od-id="wo-history">
-              <summary>历史 <span class="count">· 6 条事件 · 技术 trace · 默认折叠</span></summary>
+              <summary>历史 <span class="count">· 7 条事件 · 技术 trace · 默认折叠</span></summary>
               <div class="fold-body">
                 <ol class="timeline" style="margin-top: 12px;">
-                  <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>创建工作单 · 来自 Plan #12 · 对话派单「下周推广早餐」· 第 ① 步派给内容 Agent</span></li>
-                  <li><time>09-08 14:20</time><span class="actor">内容 Agent</span><span>帖子 v1 完成 · 配图来源未授权，等待图片策略核对</span></li>
+                  <li><time>09-08 14:02</time><span class="actor">Orchestrator</span><span>创建工作单 · Plan #12 范围内（R1）· 对话派单「下周推广早餐」· 第 ① 步派给内容 Agent</span></li>
+                  <li><time>09-08 14:20</time><span class="actor">内容 Agent</span><span>草稿 v1 完成 · 审核 v1 分派给 xander</span></li>
+                  <li><time>09-08 16:05</time><span class="actor">xander</span><span>审核 v1 退回 · 理由「图片来源未授权」· 理由已进候选经验</span></li>
                   <li><time>09-09 09:40</time><span class="actor">Orchestrator</span><span>依赖调整：v2 不含价格，T-1205 解除对本工作单的阻塞</span></li>
-                  <li><time>09-09 10:12</time><span class="actor">内容 Agent</span><span>帖子 v2 完成 · 换用 FBR 菜品图 #17（已授权）· checksum b4de70ec…</span></li>
-                  <li><time>09-09 10:12</time><span class="actor">系统</span><span>第 ② 步 审核 分派给 xander · 截止 09-10 12:00</span></li>
-                  <li><time>09-09 10:13</time><span class="actor">系统</span><span>工作台「需要我决定」新增待办：审阅草稿</span></li>
+                  <li><time>09-09 10:12</time><span class="actor">内容 Agent</span><span>草稿 v2 完成 · 换用 FBR 菜品图 #17（已授权）· checksum b4de70ec… · 图片 sha256 91af…</span></li>
+                  <li><time>09-09 10:12</time><span class="actor">系统</span><span>审核 v2 分派给 xander · 截止 09-10 12:00</span></li>
+                  <li><time>09-09 10:13</time><span class="actor">系统</span><span>工作台「需要我决定」新增：审阅草稿 · brunch 帖子 v2</span></li>
                 </ol>
                 <details class="trace" data-od-id="wo-trace">
                   <summary>技术 trace <span class="count">· 4 次调用 · $0.71</span></summary>
-                  <pre>state      step=2 · task_state=AWAITING_APPROVAL · readiness=READY
+                  <pre>state      step=2 · task_state=AWAITING_APPROVAL · readiness=READY · approval=none
 run 1      draft v1 · 内容 Agent · 2 次调用 · $0.42 · skill gbp-post-writer（专用）
-run 2      draft v2 · 内容 Agent · 2 次调用 · $0.29 · 输入 +memory.facts[图片策略优先级]
-artifact   post.body · post.cta · media FBR#17 · checksum b4de70ec…
-guard      价格字段为空 → 标记「不含价格」· 解除 T-1205 依赖</pre>
+review 1   v1 rejected · xander · reason="图片来源未授权" → memory.candidates
+run 2      draft v2 · 内容 Agent · 2 次调用 · $0.29 · 输入 +rules[图片策略优先级]
+artifact   post.body b4de70ec… · media FBR#17 sha256 91af… · cta → /menu
+bind       approval will pin: body checksum · media sha256 · cta · location · window 09-09..09-16</pre>
                 </details>
               </div>
             </details>
           </div>
 
           <aside class="side">
-            <section class="card" data-od-id="wo-now">
-              <p class="eyebrow">NOW</p>
-              <h3 class="card-title">现在需要谁做什么</h3>
-              <div class="now"><span class="avatar avatar-human avatar-lg" aria-hidden="true">XA</span><div><b>xander（你）· 审核帖子 v2</b><span>截止 09-10 12:00 · 批准进入第 ③ 步；退回则回到第 ① 步出 v3</span></div></div>
-            </section>
-            <section class="card" data-od-id="wo-owners">
-              <p class="eyebrow">OWNERS</p>
-              <h3 class="card-title" style="margin-bottom: 8px;">负责人</h3>
-              <ul class="owners">
-                <li><span class="avatar" aria-hidden="true">CN</span><span><b>内容 Agent</b><span>① 草稿</span></span><span class="stamp stamp-ok">完成</span></li>
-                <li><span class="avatar avatar-human" aria-hidden="true">XA</span><span><b>你</b><span>② 审核</span></span><span class="stamp stamp-warn">当前</span></li>
-                <li><span class="avatar" aria-hidden="true">PB</span><span><b>发布 Agent</b><span>③ 发布</span></span><span class="stamp">待前置</span></li>
-                <li><span class="avatar" aria-hidden="true">SY</span><span><b>系统</b><span>④ 远端核验</span></span><span class="stamp">待前置</span></li>
-              </ul>
+            <section class="card" data-od-id="wo-current">
+              <p class="eyebrow">CURRENT</p>
+              <h3 class="card-title">当前</h3>
+              <div class="now"><span class="avatar avatar-human avatar-lg" aria-hidden="true">XA</span><div><b>第 ② 步 审核 · xander</b><span>截止 09-10 12:00</span></div></div>
+              <p style="margin-top: 10px; font-size: var(--text-sm); color: var(--fg-2);">主操作：批准这一版 / 退回并说明</p>
             </section>
             <section class="card" data-od-id="wo-facts">
               <dl class="kv">
@@ -1288,11 +1351,11 @@ guard      价格字段为空 → 标记「不含价格」· 解除 T-1205 依�
         <button class="close" type="button" aria-label="关闭">×</button>
       </div>
       <div class="dialog-body">
-        <p>批准后发布 Agent 会把帖子 v2 写入 Google 门店 2020 Broadway。发布后只能删除，不能退回草稿。确认？</p>
+        <p>批准后发布 Agent 会把帖子 v2 写入 Google 门店 2020 Broadway。发布后不能退回草稿，修改或撤下需要新建补偿任务。确认？</p>
+        <p class="review-bind" style="margin-top: 0;"><b>本次批准绑定：</b>正文 b4de70ec… · 图片 sha256 91af… · CTA 了解更多 → https://georgemerchant.example/menu · 门店 2020 Broadway · 发布时间窗 09-09 至 09-16</p>
         <dl class="params params-tight">
-          <dt>版本</dt><dd class="mono">帖子 v2 · checksum b4de70ec…</dd>
-          <dt>目标门店</dt><dd>2020 Broadway · New York</dd>
           <dt>执行者</dt><dd>发布 Agent（第 ③ 步）· 系统读回核验（第 ④ 步）</dd>
+          <dt>产物变化</dt><dd>绑定的任一项变化即批准失效，发布停在待授权</dd>
           <dt>超时处理</dt><dd>不重发，转为「需要你核验」</dd>
         </dl>
       </div>
@@ -1301,13 +1364,142 @@ guard      价格字段为空 → 标记「不含价格」· 解除 T-1205 依�
         <button class="btn btn-danger-solid" type="button">批准这一版</button>
       </div>
     </div>
-    <p class="sheet-note">点击「批准这一版」后弹出。先说后果再问确认；主按钮用 danger 色，因为发布是不可逆的外部写入。</p>
+    <p class="sheet-note">点击「批准这一版」后弹出。批准的是具体产物：绑定行里的任何一项变化，批准都会失效（见第 04 区块 E2）。</p>
+  </div>
+</section>
+
+<!-- ===================================================== 04 am-exceptions ===================================================== -->
+<section class="sheet-section" id="am-exceptions" data-od-id="am-exceptions">
+  <p class="eyebrow">04 · AM-EXCEPTIONS · RECOVERY STATES</p>
+  <h2>异常恢复 · 四组状态</h2>
+  <p class="sheet-note">每张异常卡回答四件事：谁处理、系统已尝试什么、下一步是什么、什么时候升级。默认只限制受影响的任务。</p>
+  <div class="app" data-od-id="am-exceptions-frame">
+    <aside class="sidenav" aria-label="全局导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
+      <nav class="nav">
+        <a href="#am-home">工作台</a>
+        <a href="#am-merchant-space">商户</a>
+        <a href="#am-gbp-work-order" aria-current="page">任务与计划</a>
+        <a href="#am-reports">数据与报告</a>
+        <a href="#am-team">团队</a>
+      </nav>
+      <div class="nav-foot">5 家商户 · 6 位成员</div>
+    </aside>
+    <div>
+      <header class="topbar">
+        <p class="eyebrow">EXCEPTIONS · RECOVERY · 4 STATES</p>
+        <div class="operator">当前操作员 · <b>xander</b> · <button class="linklike" type="button">退出</button></div>
+      </header>
+      <main class="main">
+        <div class="page-head">
+          <p class="eyebrow">EXCEPTIONS · GEORGE MERCHANT · ONLY BEAR</p>
+          <h1>异常恢复 · 四组状态</h1>
+          <p class="sub">每张异常卡回答四件事：谁处理、系统已尝试什么、下一步是什么、什么时候升级。默认只限制受影响的任务。</p>
+        </div>
+        <div class="exc-grid">
+
+          <article class="card exc" data-od-id="exc-e1">
+            <div class="exc-head">
+              <div><p class="eyebrow">E1 · RETURN → REVISE → RE-REVIEW</p><h3>退回 → 修改 → 新审核</h3></div>
+              <span class="stamp stamp-warn">审核 v2 进行中</span>
+            </div>
+            <p class="cell-sub" style="margin-bottom: 8px;">工作单 WO-1204 版本链</p>
+            <ol class="chain" data-od-id="exc-e1-chain">
+              <li><b>草稿 v1</b><span class="stamp stamp-ok">已完成</span>09-08 14:20 · 内容 Agent</li>
+              <li class="bad"><b>审核 v1</b><span class="stamp stamp-bad">已退回</span>xander · 理由「图片来源未授权」</li>
+              <li><b>草稿 v2</b><span class="stamp stamp-ok">已完成</span>09-09 10:12 · 内容 Agent</li>
+              <li class="cur"><b>审核 v2</b><span class="stamp stamp-warn">分派给你</span>截止 09-10 12:00</li>
+            </ol>
+            <dl class="exc-foot">
+              <div><dt>谁处理</dt><dd>内容 Agent 已重做 · 你再审</dd></div>
+              <div><dt>系统已尝试</dt><dd>自动建草稿 v2 与审核 v2，退回理由已进候选经验</dd></div>
+              <div><dt>下一步</dt><dd>审阅草稿 v2<div class="btn-row"><a class="btn btn-primary" href="#am-gbp-work-order">审阅草稿 v2</a></div></dd></div>
+              <div><dt>升级</dt><dd>同一工作单退回 ≥ 3 次进需要处理</dd></div>
+            </dl>
+          </article>
+
+          <article class="card exc" data-od-id="exc-e2">
+            <div class="exc-head">
+              <div><p class="eyebrow">E2 · ARTIFACT CHANGED → APPROVAL VOID</p><h3>批准后产物变化 → 批准失效</h3></div>
+              <span class="stamp stamp-warn">待重新审核</span>
+            </div>
+            <div class="notice notice-warning" role="alert">批准已失效：图片被替换（sha256 变化）。发布 Task 已停在待授权，已新建审核任务。</div>
+            <dl class="params params-tight" style="margin-top: 12px;">
+              <dt>原批准</dt><dd>#A-88 · 绑定图片 sha256 91af… · 09-09 14:10 · xander</dd>
+              <dt>检测到</dt><dd>图片 sha256 变为 c7d2… · 09-09 14:31 · 正文与 CTA 未变</dd>
+              <dt>发布 Task</dt><dd><span class="stamp">待授权</span> 未写入远端</dd>
+              <dt>新任务</dt><dd>审核 v3 · 分派给 xander</dd>
+            </dl>
+            <dl class="exc-foot">
+              <div><dt>谁处理</dt><dd>xander 重新审核</dd></div>
+              <div><dt>系统已尝试</dt><dd>停止发布、失效原批准 #A-88、建审核 v3</dd></div>
+              <div><dt>下一步</dt><dd>审阅 v3<div class="btn-row"><button class="btn btn-primary" type="button">审阅 v3</button></div></dd></div>
+              <div><dt>升级</dt><dd>48 小时无人处理进需要处理</dd></div>
+            </dl>
+          </article>
+
+          <article class="card exc" data-od-id="exc-e3">
+            <div class="exc-head">
+              <div><p class="eyebrow">E3 · PUBLISH TIMEOUT → AUTO VERIFY → HUMAN</p><h3>发布超时 → 自动核验 → 人工介入</h3></div>
+              <span class="stamp stamp-bad">需要处理 · 不会自动重发</span>
+            </div>
+            <p class="cell-sub" style="margin-bottom: 8px;">Only Bear · 帖子发布 · 09-09</p>
+            <ol class="mini-tl" data-od-id="exc-e3-timeline">
+              <li><time>11:02</time><span>发布 Agent 超时（未取得 post_id）</span></li>
+              <li><time>11:03</time><span>自动核验 #1 未匹配</span></li>
+              <li><time>11:08</time><span>#2 未匹配</span></li>
+              <li><time>11:23</time><span>#3 未匹配 · 重读用尽</span></li>
+              <li><time>—</time><span>状态「需要处理 · 不会自动重发」· 已升级到「需要我决定」（R5）</span></li>
+            </ol>
+            <dl class="exc-foot">
+              <div><dt>谁处理</dt><dd>xander 核验</dd></div>
+              <div><dt>系统已尝试</dt><dd>读回 3 次</dd></div>
+              <div><dt>下一步</dt><dd>开始核验 · 查看读回列表<div class="btn-row"><button class="btn btn-primary" type="button">开始核验</button><button class="btn btn-quiet" type="button">查看读回列表</button></div></dd></div>
+              <div><dt>升级</dt><dd>重读用尽即进需要我决定（已升级）</dd></div>
+            </dl>
+          </article>
+
+          <article class="card exc" data-od-id="exc-e4">
+            <div class="exc-head">
+              <div><p class="eyebrow">E4 · INPUT CANCELLED → REPLAN</p><h3>输入任务取消 → 下游重新规划</h3></div>
+              <span class="stamp stamp-ok">Orchestrator 已处理</span>
+            </div>
+            <ol class="flow" data-od-id="exc-e4-flow">
+              <li><span class="arrow" aria-hidden="true">1</span><div class="node"><b>「确认 Weekday Brunch Set 价格」被取消</b><span>原因：商户暂不推价格 · xander · 取消对话框已填原因</span></div></li>
+              <li><span class="arrow" aria-hidden="true">↓</span><div class="node"><b>草稿 v2 显示「等待依赖」</b><span>内容 Agent 暂停含价格段落，其余照常准备</span></div></li>
+              <li><span class="arrow" aria-hidden="true">↓</span><div class="node applied"><b>Orchestrator 提案 <span class="stamp stamp-ok">范围内已应用</span></b><span>解除价格依赖 · 本版不含价格 · 含价格更新帖另建工作单</span></div></li>
+            </ol>
+            <dl class="exc-foot">
+              <div><dt>谁处理</dt><dd>Orchestrator 已处理，你只需知会</dd></div>
+              <div><dt>系统已尝试</dt><dd>发重新规划事件、应用解除依赖</dd></div>
+              <div><dt>下一步</dt><dd>草稿 v2 继续准备</dd></div>
+              <div><dt>升级</dt><dd>24 小时无提案进需要处理</dd></div>
+            </dl>
+          </article>
+
+          <section class="card scope-card" data-od-id="exc-scope">
+            <div class="card-head">
+              <div><p class="eyebrow">BLAST RADIUS</p><h3 class="card-title">影响范围分级</h3></div>
+              <span class="cell-sub">默认只限制受影响的任务</span>
+            </div>
+            <table class="table">
+              <thead><tr><th>级别</th><th>触发</th><th>例子</th><th>限制范围</th></tr></thead>
+              <tbody>
+                <tr><td><b>任务级</b><span class="cell-sub">默认</span></td><td>单个产物或调用失败</td><td>审核退回、读回未匹配</td><td>只停该任务，其余照常</td></tr>
+                <tr><td><b>商户级</b></td><td>凭证失效、预算耗尽</td><td>可可小卤 GSC 授权过期</td><td>停该商户的同步类任务，内部草稿不受影响</td></tr>
+                <tr><td><b>项目级</b></td><td>提供方不可用、绑定漂移</td><td>GBP API 故障、SYNC_READONLY 绑定漂移</td><td>停所有同类任务，通知全部 AM</td></tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </main>
+    </div>
   </div>
 </section>
 
 <!-- ===================================================== 04 am-task-detail-human ===================================================== -->
 <section class="sheet-section" id="am-task-detail-human" data-od-id="am-task-detail-human">
-  <p class="eyebrow">04 · AM-TASK-DETAIL-HUMAN · HUMAN EXECUTOR</p>
+  <p class="eyebrow">05 · AM-TASK-DETAIL-HUMAN · HUMAN EXECUTOR</p>
   <h2>Task 详情 · HUMAN 执行</h2>
   <p class="sheet-note">执行者是人的工作单：首屏是「做什么」和「提交结果」表单，四个次操作都不会关闭任务（取消除外）；依据与历史放在后面折叠。</p>
   <div class="app" data-od-id="am-task-detail-human-frame">
@@ -1481,10 +1673,10 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
 
 <!-- ===================================================== 05 am-dispatch-drawer ===================================================== -->
 <section class="sheet-section" id="am-dispatch-drawer" data-od-id="am-dispatch-drawer">
-  <p class="eyebrow">05 · AM-DISPATCH-DRAWER · OVERLAY ON MERCHANT SPACE</p>
+  <p class="eyebrow">06 · AM-DISPATCH-DRAWER · OVERLAY ON MERCHANT SPACE</p>
   <h2>对话派单抽屉</h2>
-  <p class="sheet-note">在商户空间里用一句话派单。Orchestrator 的回复分两部分：授权范围内的直接创建并派发；超出范围的关联成一组，整体批准。抽屉 480px，叠在商户空间之上。</p>
-  <div class="app" style="min-height: 1120px;" data-od-id="am-dispatch-drawer-frame">
+  <p class="sheet-note">在商户空间里用一句话派单。Orchestrator 的回复分两部分：R1 范围内的直接创建并派发；R4 超出额度的关联成一组，算清额度差后整体批准。抽屉 480px，叠在商户空间之上。</p>
+  <div class="app" style="min-height: 1200px;" data-od-id="am-dispatch-drawer-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
       <nav class="nav">
@@ -1545,14 +1737,15 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
             <dl class="params params-tight" style="margin-top: 14px;">
               <dt>有效期</dt><dd>至 2026-12-31</dd>
               <dt>批准</dt><dd>xander · 2026-09-01</dd>
+              <dt>付费扫描额度</dt><dd>100 credits · 本周期已用 40</dd>
             </dl>
             <div class="progress">
-              <div class="progress-head"><span>进度 · 7 项任务</span><span>3 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
-              <div class="bar-track" style="--max: 7;">
-                <i class="seg-done" style="--v: 3;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
+              <div class="progress-head"><span>进度 · 8 项任务</span><span>4 完成 / 2 进行中 / 1 待审批 / 1 阻塞</span></div>
+              <div class="bar-track" style="--max: 8;">
+                <i class="seg-done" style="--v: 4;"></i><i class="seg-doing" style="--v: 2;"></i><i class="seg-wait" style="--v: 1;"></i><i class="seg-block" style="--v: 1;"></i>
               </div>
               <div class="legend">
-                <span><i class="seg-done"></i><b>3</b>完成</span>
+                <span><i class="seg-done"></i><b>4</b>完成</span>
                 <span><i class="seg-doing"></i><b>2</b>进行中</span>
                 <span><i class="seg-wait"></i><b>1</b>待审批</span>
                 <span><i class="seg-block"></i><b>1</b>阻塞</span>
@@ -1567,7 +1760,7 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                 <li><span class="day">周一 09-07</span><span>诊断复核 · Audit #28</span><span class="stamp stamp-ok">完成</span></li>
                 <li><span class="day">周二 09-08</span><span>关键词监测集重算 v3</span><span class="stamp stamp-ok">完成</span></li>
                 <li><span class="day today">周三 今天</span><span>审核帖子 v2 · 价格确认</span><span class="stamp stamp-warn">等你</span></li>
-                <li><span class="day">周四 09-10</span><span>Local Falcon 基线扫描</span><span class="stamp">等你批准</span></li>
+                <li><span class="day">周四 09-10</span><span>Local Falcon 扫描 120 credits · 变更申请</span><span class="stamp">等你批准</span></li>
                 <li><span class="day">周五 09-11</span><span>周报草稿</span><span class="stamp">未开始</span></li>
               </ul>
             </section>
@@ -1614,6 +1807,7 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
 
             <div class="reply-part" data-od-id="reply-in-scope">
               <h5><span class="stamp stamp-ok">范围内</span>已在 Plan #12 授权范围内创建并分派</h5>
+              <p class="rule" style="margin-bottom: 6px;"><code>R1</code>在 Plan #12 允许的『GBP 帖子发布（逐条审批）』与『只读同步』范围内</p>
               <article class="proposal" data-od-id="dispatched-gbp-draft">
                 <div class="proposal-head"><b>GBP 帖子草稿 · 内容 Agent</b><span class="stamp stamp-ok">已派单</span></div>
                 <dl class="params params-tight" style="margin-bottom: 0;">
@@ -1633,11 +1827,12 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
             <div class="reply-part" data-od-id="reply-out-of-scope">
               <h5><span class="stamp stamp-warn">范围外</span>超出授权范围 · 需要你整体批准</h5>
               <div class="proposal-group" data-od-id="proposal-group-scan">
+                <p class="rule" style="margin-bottom: 8px;"><code>R4</code>Plan #12 付费扫描额度 100 credits，本周期已用 40，本次 120，超出 60</p>
                 <article class="proposal" data-od-id="proposal-falcon-scan">
-                  <div class="proposal-head"><b>新增 Local Falcon 扫描 · 40 credits</b><span class="stamp stamp-warn">待批准</span></div>
+                  <div class="proposal-head"><b>新增 Local Falcon 扫描 · 120 credits</b><span class="stamp stamp-warn">待批准</span></div>
                   <dl class="params params-tight" style="margin-bottom: 0;">
-                    <dt>执行者</dt><dd>关键词 Agent · 7×7 · 5 词</dd>
-                    <dt>为什么范围外</dt><dd>付费扫描需要你批准预算</dd>
+                    <dt>执行者</dt><dd>关键词 Agent · 7×7 · 簇 #3 全部 12 词 + 品牌词</dd>
+                    <dt>为什么范围外</dt><dd>已用 40 + 本次 120 = 160，超出额度 100</dd>
                   </dl>
                 </article>
                 <article class="proposal" data-od-id="proposal-keyword-recalc">
@@ -1691,9 +1886,9 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
 
 <!-- ===================================================== 06 am-team ===================================================== -->
 <section class="sheet-section" id="am-team" data-od-id="am-team">
-  <p class="eyebrow">06 · AM-TEAM · DESKTOP 1280+</p>
+  <p class="eyebrow">07 · AM-TEAM · DESKTOP 1280+</p>
   <h2>团队</h2>
-  <p class="sheet-note">人和 AI 并列在一张表里：职责、允许的任务类型、当前工作量与运行健康。右侧是能力目录，标明每个 Skill 的引用方式。子页「模型与成本」见第 08 区块。</p>
+  <p class="sheet-note">人和 AI 并列在一张表里：职责、允许的任务类型、当前工作量与运行健康。右侧是能力目录，标明每个 Skill 的引用方式。子页「模型与成本」见第 09 区块。</p>
   <div class="app" data-od-id="am-team-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
@@ -1771,7 +1966,7 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td><code>KEYWORD_RECALC</code><span class="cell-sub">PAID_SCAN</span></td>
                   <td class="workload"><span>进行中 0</span><span>等待 0</span></td>
                   <td><span class="stamp stamp-ok">正常</span></td>
-                  <td><span class="mono">09-08 11:30</span><span class="cell-sub">关键词 v3 重算 · George</span></td>
+                  <td><span class="mono">09-08 13:40</span><span class="cell-sub">Local Falcon 扫描 40 credits · George</span></td>
                 </tr>
                 <tr data-od-id="team-row-publish">
                   <td><div class="member-cell"><span class="avatar" aria-hidden="true">PB</span><b>发布 Agent</b></div></td>
@@ -1779,8 +1974,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
                   <td>GBP 发布、读回对账、写入发布记录；远端未确认不重发</td>
                   <td><code>GBP_PUBLISH</code><span class="cell-sub">READBACK</span></td>
                   <td class="workload"><span>进行中 0</span><span>等待 2</span></td>
-                  <td><span class="stamp">未验证</span><span class="cell-sub">Only Bear 上次发布读回未匹配</span></td>
-                  <td><span class="mono">09-05 18:02</span><span class="cell-sub">帖子发布 · Only Bear · 超时无 post_id</span></td>
+                  <td><span class="stamp">未验证</span><span class="cell-sub">Only Bear 读回 3 次未匹配</span></td>
+                  <td><span class="mono">09-09 11:02</span><span class="cell-sub">帖子发布 · Only Bear · 超时无 post_id</span></td>
                 </tr>
                 <tr class="row-off" data-od-id="team-row-report">
                   <td><div class="member-cell"><span class="avatar" aria-hidden="true">RP</span><div><b>报告 Agent</b><br /><span class="stamp">未启用</span></div></div></td>
@@ -1826,11 +2021,11 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
   </div>
 </section>
 
-<!-- ===================================================== 07 am-memory ===================================================== -->
+<!-- ===================================================== 08 am-memory ===================================================== -->
 <section class="sheet-section" id="am-memory" data-od-id="am-memory">
-  <p class="eyebrow">07 · AM-MEMORY · MERCHANT PROFILE &amp; MEMORY TAB</p>
+  <p class="eyebrow">08 · AM-MEMORY · FACTS · RULES · CANDIDATES</p>
   <h2>商户资料与记忆</h2>
-  <p class="sheet-note">商户空间的「商户资料与记忆」tab。三栏：已确认事实是权威来源；待确认经验只是候选线索；右侧是 Core AI 原生记忆的真实状态，不替它说没有观测到的事。</p>
+  <p class="sheet-note">商户空间的「商户资料与记忆」tab。三栏：经营事实只从商户资料读；业务规则与偏好由 AM 确认并注明作用范围；候选经验只作提示。Core AI 原生记忆在隔离验证前不注入。</p>
   <div class="app" data-od-id="am-memory-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
@@ -1857,7 +2052,8 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
             <dl class="merchant-meta">
               <div><dt>门店</dt><dd>2020 Broadway · New York</dd></div>
               <div><dt>负责 AM</dt><dd>xander</dd></div>
-              <div><dt>已确认事实</dt><dd>8 条</dd></div>
+              <div><dt>经营事实</dt><dd>6 条</dd></div>
+              <div><dt>规则与偏好</dt><dd>3 条</dd></div>
               <div><dt>候选经验</dt><dd>3 条</dd></div>
             </dl>
           </div>
@@ -1872,73 +2068,92 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           <a href="#am-reports">数据与诊断</a>
           <a href="#am-reports">成果与报告</a>
         </nav>
-        <p class="notice notice-success" style="margin-bottom: 16px;" data-od-id="memory-principle">已确认事实是权威，经验只是线索；未经确认的经验不会进入发布前的事实检查。</p>
+        <p class="notice notice-success" style="margin-bottom: 16px;" data-od-id="memory-principle">经营事实只从商户资料读，记忆不得覆盖；规则与偏好需 AM 确认并注明作用范围；候选经验只作提示，未确认不进入发布前事实检查。</p>
 
         <div class="memory">
           <section class="card" data-od-id="memory-facts">
             <div class="card-head">
-              <div><p class="eyebrow">CONFIRMED FACTS · 8</p><h3 class="card-title">已确认事实</h3></div>
-              <span class="cell-sub">发布前事实检查只用这一栏</span>
+              <div><p class="eyebrow">BUSINESS FACTS · 6 · READ-ONLY</p><h3 class="card-title">经营事实</h3></div>
+              <span class="cell-sub">发布前检查只用这一栏</span>
             </div>
             <ul class="facts">
               <li data-od-id="fact-hours"><b>营业时间：周一至周日 10:00–22:00</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
               <li data-od-id="fact-address"><b>地址：2020 Broadway, New York, NY 10023</b><span class="meta"><span>来源：GBP 快照</span><span>确认人：系统</span><span>09-02</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
               <li data-od-id="fact-signature"><b>招牌菜：Weekday Brunch Set、Smoked Salmon Bagel</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#am-memory">纠正</a></li>
-              <li data-od-id="fact-wording"><b>不使用「Cantonese」表述，统一用「Hong Kong-style」</b><span class="meta"><span>来源：AM 录入</span><span>确认人：xander</span><span>08-28</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
-              <li data-od-id="fact-image-policy"><b>图片策略优先级：FBR 菜品图 &gt; 商户实拍 &gt; 通用环境图</b><span class="meta"><span>来源：AM 录入</span><span>确认人：xander</span><span>08-28</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
               <li data-od-id="fact-category"><b>主类目：Restaurant · 次类目：Brunch restaurant</b><span class="meta"><span>来源：GBP 快照</span><span>确认人：系统</span><span>09-02</span><span>长期</span></span><a class="fix" href="#am-memory">纠正</a></li>
               <li data-od-id="fact-brunch-window"><b>Weekday Brunch Set 供应时段：工作日 10:00–14:00</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#am-memory">纠正</a></li>
               <li data-od-id="fact-holidays"><b>节假日营业：感恩节、圣诞节闭店</b><span class="meta"><span>来源：商户确认</span><span>确认人：xander</span><span>09-01</span><span>至 2026-12-31</span></span><a class="fix" href="#am-memory">纠正</a></li>
             </ul>
+            <p class="cell-sub" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);">价格：Weekday Brunch Set 价格与有效期尚未确认（T-1205 执行中），未确认前不出现在任何产物里。</p>
           </section>
 
-          <section class="card" data-od-id="memory-candidates">
+          <section class="card" data-od-id="memory-rules">
             <div class="card-head">
-              <div><p class="eyebrow">PENDING LESSONS · 3</p><h3 class="card-title">待确认经验</h3></div>
+              <div><p class="eyebrow">RULES &amp; PREFERENCES · 3</p><h3 class="card-title">业务规则与偏好</h3></div>
             </div>
-            <article class="cand" data-od-id="cand-no-discount">
-              <div class="cand-head"><p>帖子里不要出现「折扣」「优惠」字样，商户不做价格促销</p><span class="stamp stamp-warn">候选</span></div>
-              <div class="meta"><span>来源：AM 退回 · 09-05</span><span>适用范围：本商户</span></div>
-              <div class="btn-row"><button class="btn" type="button">确认为规则</button><button class="btn btn-quiet" type="button">拒绝</button><button class="btn btn-quiet" type="button">仅本次适用</button></div>
-            </article>
-            <article class="cand" data-od-id="cand-image-context">
-              <div class="cand-head"><p>配图优先用带餐桌环境的菜品图，纯白底图被退回过 2 次</p><span class="stamp stamp-warn">候选</span></div>
-              <div class="meta"><span>来源：Core AI 自动提取 · 09-07</span><span>适用范围：项目级</span></div>
-              <div class="btn-row"><button class="btn" type="button">确认为规则</button><button class="btn btn-quiet" type="button">拒绝</button><button class="btn btn-quiet" type="button">仅本次适用</button></div>
-            </article>
-            <article class="cand" data-od-id="cand-post-timing">
-              <div class="cand-head"><p>早午餐相关内容避开周一发布，周三、周四的互动更高</p><span class="stamp stamp-warn">候选</span></div>
-              <div class="meta"><span>来源：Core AI 自动提取 · 09-07</span><span>适用范围：本门店</span></div>
-              <div class="btn-row"><button class="btn" type="button">确认为规则</button><button class="btn btn-quiet" type="button">拒绝</button><button class="btn btn-quiet" type="button">仅本次适用</button></div>
-            </article>
+            <ul class="rules-list">
+              <li data-od-id="rule-wording"><b>不使用「Cantonese」表述，统一用「Hong Kong-style」</b><span class="meta"><span>作用范围：本商户</span><span>确认人：xander · 08-28</span><span>长期</span></span></li>
+              <li data-od-id="rule-image-policy"><b>图片策略优先级：FBR 菜品图 &gt; 商户实拍 &gt; 通用环境图</b><span class="meta"><span>作用范围：本商户</span><span>确认人：xander · 08-28</span><span>长期</span></span></li>
+              <li data-od-id="rule-no-discount"><b>帖子里不出现「折扣」「优惠」字样，商户不做价格促销</b><span class="meta"><span>作用范围：本门店</span><span>确认人：xander · 09-06</span><span>来源：AM 退回 09-05 → 确认为规则</span></span></li>
+            </ul>
+            <p class="cell-sub" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);">规则进入发布前检查；每条都注明作用范围（本门店 / 本商户 / 项目级）和确认人。</p>
           </section>
 
-          <section class="card mem-state" data-od-id="memory-core-ai">
-            <p class="eyebrow">CORE AI · NATIVE MEMORY</p>
-            <h3 class="card-title" style="margin-bottom: 8px;">Core AI 原生记忆状态</h3>
-            <dl class="kv">
-              <div><dt>Agent</dt><dd>内容 Agent</dd></div>
-              <div><dt>Enable memory</dt><dd>已开启（published config）</dd></div>
-              <div><dt>隔离</dt><dd><span class="stamp stamp-warn">按 Agent ID，未证明按商户隔离</span></dd></div>
-              <div><dt>最近注入</dt><dd>未观测到</dd></div>
-            </dl>
-            <div class="btn-row">
-              <button class="btn" type="button">查看原生记忆</button>
-              <button class="btn" type="button" disabled>暂停自动提取</button>
-              <span class="why-disabled">需要远端授权</span>
-            </div>
-          </section>
+          <div>
+            <section class="card" data-od-id="memory-candidates">
+              <div class="card-head">
+                <div><p class="eyebrow">CANDIDATE LESSONS · 3</p><h3 class="card-title">候选经验</h3></div>
+              </div>
+              <article class="cand" data-od-id="cand-image-context">
+                <div class="cand-head"><p>配图优先用带餐桌环境的菜品图，纯白底图被退回过 2 次</p><span class="stamp stamp-warn">候选</span></div>
+                <div class="meta"><span>来源：Core AI 自动提取 · 09-07</span><span>适用范围：项目级</span></div>
+                <div class="btn-row"><button class="btn" type="button">确认为规则</button><button class="btn btn-quiet" type="button">拒绝</button><button class="btn btn-quiet" type="button">仅本次适用</button></div>
+              </article>
+              <article class="cand" data-od-id="cand-image-source">
+                <div class="cand-head"><p>配图来源必须可证明已授权，未授权来源直接退回</p><span class="stamp stamp-warn">候选</span></div>
+                <div class="meta"><span>来源：AM 退回 · 09-08</span><span>适用范围：本商户</span></div>
+                <div class="btn-row"><button class="btn" type="button">确认为规则</button><button class="btn btn-quiet" type="button">拒绝</button><button class="btn btn-quiet" type="button">仅本次适用</button></div>
+              </article>
+              <article class="cand" data-od-id="cand-wednesday">
+                <div class="cand-head"><p>周三发帖效果更好</p><span class="stamp stamp-info">策略假设 · 待数据验证 · 验证周期 4 周</span></div>
+                <div class="meta"><span>来源：Core AI 自动提取 · 09-07</span><span>适用范围：本门店</span></div>
+                <div class="btn-row"><button class="btn" type="button">设为验证中</button><button class="btn btn-quiet" type="button">拒绝</button></div>
+                <p class="note">确认偏好适用，不等于证明策略有效</p>
+              </article>
+            </section>
+
+            <section class="card mem-state" style="margin-top: 16px;" data-od-id="memory-core-ai">
+              <p class="eyebrow">CORE AI · NATIVE MEMORY</p>
+              <h3 class="card-title" style="margin-bottom: 8px;">Core AI 原生记忆状态</h3>
+              <dl class="kv">
+                <div><dt>Agent</dt><dd>内容 Agent</dd></div>
+                <div><dt>状态</dt><dd><span class="stamp">未启用 · 隔离未验证</span></dd></div>
+                <div><dt>最近注入</dt><dd>无</dd></div>
+              </dl>
+              <p class="why-disabled" style="margin-top: 10px;">未证明按商户隔离前，任何调用都不注入记忆</p>
+              <div class="btn-row">
+                <button class="btn" type="button">查看验证清单</button>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div class="metrics" data-od-id="memory-metrics">
+          <span><b>重复错误 -40%</b></span>
+          <span>一次通过率 <b>71% → 83%</b></span>
+          <span>单条内容成本 <b>$0.42 → $0.31</b></span>
+          <span>（近 4 周，演示数据）</span>
         </div>
       </main>
     </div>
   </div>
 </section>
 
-<!-- ===================================================== 08 am-model-cost ===================================================== -->
+<!-- ===================================================== 09 am-model-cost ===================================================== -->
 <section class="sheet-section" id="am-model-cost" data-od-id="am-model-cost">
-  <p class="eyebrow">08 · AM-MODEL-COST · TEAM SUB-PAGE</p>
+  <p class="eyebrow">09 · AM-MODEL-COST · BY WORK STAGE</p>
   <h2>模型与成本</h2>
-  <p class="sheet-note">团队页的子页。每个 Agent 的默认档位、实际运行模型、升级条件与本月预算消耗并排可见；预算规则在右侧。模型只是执行依赖，不改变权限与验收标准。</p>
+  <p class="sheet-note">团队页的子页。按工作阶段而不是按角色列模型档位：同一个 Agent 在不同阶段用不同档位。右侧是三态成本（已消耗 / 已预留 / 未结算）与升级规则。</p>
   <div class="app" data-od-id="am-model-cost-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
@@ -1960,7 +2175,7 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
         <div class="page-head">
           <p class="eyebrow">TEAM · MODELS &amp; COST · 2026-09</p>
           <h1>模型与成本</h1>
-          <p class="sub">本月预算 $195 · 已消耗 $40.80 · 数据截至今天 11:30</p>
+          <p class="sub">本月额度 $40 · 合计 $16.70（已消耗 + 已预留 + 未结算）· 数据截至今天 11:30</p>
         </div>
         <nav class="tabs" aria-label="团队" style="margin-top: 0;">
           <a href="#am-team">成员</a>
@@ -1970,77 +2185,36 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           <section class="card" data-od-id="cost-table">
             <table class="table table-compact">
               <thead>
-                <tr><th>成员</th><th>默认模型档位</th><th>实际运行模型</th><th>升级条件</th><th>本月预算 / 已消耗</th><th>本月调用 / 重试 / 升级</th><th>状态</th></tr>
+                <tr><th>工作阶段</th><th>档位</th><th>当前模型</th><th>升级条件</th><th>本月调用 / 升级次数</th></tr>
               </thead>
               <tbody>
-                <tr data-od-id="cost-row-orchestrator">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">OR</span><b>Orchestrator</b></div></td>
-                  <td>高能力</td>
-                  <td><code>deepseek-v4-pro</code></td>
-                  <td>—<span class="cell-sub">已是最高档位</span></td>
-                  <td class="money">$60 / $18.40</td>
-                  <td class="money">214 / 6 / 0</td>
-                  <td><span class="stamp stamp-ok">正常</span></td>
-                </tr>
-                <tr data-od-id="cost-row-content">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">CN</span><b>内容 Agent</b></div></td>
-                  <td>经济</td>
-                  <td><code>deepseek-v4-lite</code><span class="cell-sub">升级时 → deepseek-v4-pro</span></td>
-                  <td>结构化输出 2 次不合格</td>
-                  <td class="money">$40 / $12.60</td>
-                  <td class="money">96 / 4 / 3</td>
-                  <td><span class="stamp stamp-ok">正常</span></td>
-                </tr>
-                <tr data-od-id="cost-row-audit">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">AU</span><b>审计 Agent</b></div></td>
-                  <td>确定性程序</td>
-                  <td>规则引擎<span class="cell-sub">摘要步骤用 deepseek-v4-lite</span></td>
-                  <td>不适用</td>
-                  <td class="money">$10 / $1.20</td>
-                  <td class="money">31 / 0 / 0</td>
-                  <td><span class="stamp stamp-ok">正常</span></td>
-                </tr>
-                <tr data-od-id="cost-row-keyword">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">KW</span><b>关键词 Agent</b></div></td>
-                  <td>经济</td>
-                  <td><code>deepseek-v4-lite</code></td>
-                  <td>簇一致性校验失败 1 次</td>
-                  <td class="money">$25 / $8.60</td>
-                  <td class="money">58 / 2 / 1</td>
-                  <td><span class="stamp stamp-ok">正常</span></td>
-                </tr>
-                <tr data-od-id="cost-row-publish">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">PB</span><b>发布 Agent</b></div></td>
-                  <td>确定性程序</td>
-                  <td>GBP API<span class="cell-sub">无模型调用</span></td>
-                  <td>不适用</td>
-                  <td class="money">$0 / $0.00</td>
-                  <td class="money">12 / 1 / 0</td>
-                  <td><span class="stamp stamp-warn">需要处理</span><span class="cell-sub">1 次超时未取得 post_id</span></td>
-                </tr>
-                <tr class="row-off" data-od-id="cost-row-report">
-                  <td><div class="member-cell"><span class="avatar" aria-hidden="true">RP</span><b>报告 Agent</b></div></td>
-                  <td>高能力</td>
-                  <td>未绑定</td>
-                  <td>—</td>
-                  <td class="money">$60 / $0.00</td>
-                  <td class="money">0 / 0 / 0</td>
-                  <td><span class="stamp">未启用</span></td>
-                </tr>
+                <tr data-od-id="cost-row-orchestrate"><td><b>编排与复杂诊断</b><span class="cell-sub">Orchestrator · 审计 Agent</span></td><td>高能力</td><td><code>deepseek-v4-pro</code></td><td>—<span class="cell-sub">已是最高档位</span></td><td class="money">214 / 0</td></tr>
+                <tr data-od-id="cost-row-conflict"><td><b>证据冲突裁决</b><span class="cell-sub">Orchestrator</span></td><td>高能力</td><td><code>deepseek-v4-pro</code></td><td>—<span class="cell-sub">已是最高档位</span></td><td class="money">18 / 0</td></tr>
+                <tr data-od-id="cost-row-draft"><td><b>常规草稿与改写</b><span class="cell-sub">内容 Agent</span></td><td>经济</td><td><code>deepseek-v4-lite</code><span class="cell-sub">升级时 → deepseek-v4-pro</span></td><td>结构化输出连续 2 次不合格</td><td class="money">96 / 3</td></tr>
+                <tr data-od-id="cost-row-format"><td><b>格式整理</b><span class="cell-sub">内容 Agent · 报告模板</span></td><td>经济</td><td><code>deepseek-v4-lite</code></td><td>JSON 校验连续 2 次失败</td><td class="money">142 / 1</td></tr>
+                <tr data-od-id="cost-row-sync"><td><b>同步与计算</b><span class="cell-sub">审计 Agent · 关键词 Agent</span></td><td>确定性程序</td><td>无 LLM</td><td>不适用</td><td class="money">58 / 0</td></tr>
+                <tr data-od-id="cost-row-permission"><td><b>权限检查</b><span class="cell-sub">Orchestrator · 系统</span></td><td>确定性程序</td><td>无 LLM</td><td>不适用</td><td class="money">311 / 0</td></tr>
+                <tr data-od-id="cost-row-publish"><td><b>发布与核验</b><span class="cell-sub">发布 Agent · 系统</span></td><td>确定性程序</td><td>无 LLM</td><td>不适用</td><td class="money">15 / 0</td></tr>
               </tbody>
             </table>
-            <div class="table-foot"><span>升级 = 达到升级条件后临时切到高能力档位的次数；切回由下一次成功调用触发</span><span>消耗按供应商账单口径，延迟约 1 小时</span></div>
-            <p class="footnote">模型是可替换的执行依赖，切换不改变权限与验收标准</p>
+            <div class="table-foot"><span>升级 = 达到升级条件后临时切到高能力档位；每任务最多 1 次，切回由下一次成功调用触发</span><span>调用按供应商账单口径，延迟约 1 小时</span></div>
+            <p class="footnote">角色与模型不永久绑定；切换不改变权限与验收标准</p>
           </section>
 
           <aside>
             <section class="card" data-od-id="cost-rules">
-              <p class="eyebrow">BUDGET RULES</p>
+              <p class="eyebrow">BUDGET · SEPTEMBER</p>
               <h3 class="card-title" style="margin-bottom: 8px;">预算规则</h3>
-              <ul class="rules">
-                <li><span>单商户日预算上限</span><b>$8.00</b><span>今天最高：George $2.35</span></li>
-                <li><span>连续无进展次数上限</span><b>3 次</b><span>同一任务连续 3 次调用没有新产物即触发</span></li>
-                <li><span>达到上限后</span><b>进入「需要处理」</b><span>暂停该商户的自动派单，通知 AM；不自动重试</span></li>
+              <ul class="cost3" data-od-id="cost-three-states">
+                <li><span>已消耗</span><span class="money">$12.60</span></li>
+                <li><span>已预留<span class="sub">4 个执行中任务</span></span><span class="money">$3.20</span></li>
+                <li><span>未结算<span class="sub">账单延迟约 1 小时</span></span><span class="money">$0.90</span></li>
+                <li class="total"><span>合计 / 额度</span><span class="money">$16.70 / $40</span></li>
+              </ul>
+              <ul class="rules-compact" style="margin-top: 12px;">
+                <li>触发前检查 <code>已消耗+已预留+未结算 ≤ 额度</code></li>
+                <li>每任务升级 ≤ 1 次</li>
+                <li>缺事实、缺权限不允许升级</li>
               </ul>
             </section>
           </aside>
@@ -2050,11 +2224,11 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
   </div>
 </section>
 
-<!-- ===================================================== 09 am-reports ===================================================== -->
+<!-- ===================================================== 10 am-reports ===================================================== -->
 <section class="sheet-section" id="am-reports" data-od-id="am-reports">
-  <p class="eyebrow">09 · AM-REPORTS · DATA &amp; REPORTS</p>
+  <p class="eyebrow">10 · AM-REPORTS · DASHBOARD · AUDIT · FROZEN</p>
   <h2>数据与报告</h2>
-  <p class="sheet-note">上半部分是最近一次 Audit 报告：总分、7 个维度覆盖（N/A 与 0 分分开）、前 3 个问题。下半部分是周期表现报告：生成、审阅、导出、交付四个状态分开记录。</p>
+  <p class="sheet-note">三个 tab 并排静态展示：表现看板（筛选 + 指标 + 趋势）、分析与 Audit（沿用 Audit 报告卡）、冻结报告（生成、审阅、导出、交付分开留痕）。旁边一张「旧报告覆盖清单」标出还没承接的项目。</p>
   <div class="app" data-od-id="am-reports-frame">
     <aside class="sidenav" aria-label="全局导航">
       <div class="brand"><span class="brand-mark" aria-hidden="true">SEO</span><div><div class="brand-name">SEO Ops</div><div class="brand-sub">AM Console</div></div></div>
@@ -2079,90 +2253,146 @@ outputs    待提交：price · valid_from · valid_to · source · evidence[]</
           <p class="sub">生成报告不等于已发送；交付需要 AM 明确记录。</p>
         </div>
 
-        <section class="card" data-od-id="audit-report">
-          <div class="card-head">
-            <div><p class="eyebrow">AUDIT REPORT · #28 · GEORGE MERCHANT</p><h3 class="card-title">Audit 报告</h3></div>
-            <span class="cell-sub">7 个维度 · 5 个已评分 · 1 个 0 分 · 1 个 N/A</span>
-          </div>
-          <div class="audit">
-            <div>
-              <dl class="params params-tight">
-                <dt>商户</dt><dd>George Merchant · 2020 Broadway</dd>
-                <dt>日期</dt><dd class="mono">2026-09-07</dd>
-                <dt>执行</dt><dd>审计 Agent · local-audit-runner</dd>
-              </dl>
-              <p class="score" style="margin-top: 14px;">62<small> / 100</small></p>
-              <p class="cell-sub">总分只计已评分维度（6 个），N/A 不计入</p>
-              <div class="btn-row" style="margin-top: 16px;">
-                <button class="btn btn-primary" type="button">转成 Plan 任务</button>
-                <button class="btn" type="button">查看证据</button>
-              </div>
+        <!-- tab 1 -->
+        <div class="tab-state" data-od-id="reports-tab-dashboard">
+          <nav class="tabs" aria-label="数据与报告 · 表现看板">
+            <a href="#am-reports" aria-current="page">表现看板</a>
+            <a href="#am-reports">分析与 Audit</a>
+            <a href="#am-reports">冻结报告</a>
+          </nav>
+          <section class="card" data-od-id="dashboard-card">
+            <div class="filters" data-od-id="dashboard-filters">
+              <span class="filter"><span>商户</span>George Merchant <i>▾</i></span>
+              <span class="filter"><span>门店</span>2020 Broadway <i>▾</i></span>
+              <span class="filter"><span>期间</span>09-01 至 09-07 <i>▾</i></span>
+              <span class="filter"><span>比较期</span>上周 <i>▾</i></span>
             </div>
-            <div>
-              <p class="eyebrow" style="margin-bottom: 6px;">7 DIMENSIONS · SCORE / 100</p>
-              <ul class="dims" style="--max: 100;" data-od-id="audit-dimensions">
-                <li><span class="dim">GBP 资料完整度</span><span class="track"><span class="fill" style="--v: 78;"></span></span><span class="val">78</span></li>
-                <li><span class="dim">NAP 一致性</span><span class="track"><span class="fill" style="--v: 90;"></span></span><span class="val">90</span></li>
-                <li><span class="dim">评价与回复</span><span class="track"><span class="fill" style="--v: 55;"></span></span><span class="val">55</span></li>
-                <li><span class="dim">本地排名</span><span class="track"><span class="fill" style="--v: 41;"></span></span><span class="val">41</span></li>
-                <li><span class="dim">帖子活跃度</span><span class="track"><span class="fill" style="--v: 20;"></span></span><span class="val">20</span></li>
-                <li class="zero"><span class="dim">结构化数据</span><span class="track"><span class="fill" style="--v: 0;"></span></span><span class="val">0 分</span></li>
-                <li class="na"><span class="dim">官网技术</span><span class="track"></span><span class="val">N/A</span></li>
-              </ul>
-              <div class="dims-note"><span><b style="color: var(--danger);">0 分</b> = 已检查，完全缺失</span><span><b>N/A</b> = 未覆盖：GSC 未授权，未检查</span></div>
+            <div class="kpis" data-od-id="dashboard-kpis">
+              <div class="kpi"><span class="label">GBP 曝光（搜索 + 地图）</span><b>3,240</b><span class="delta"><span class="up">+8%</span> vs 上周 3,000</span></div>
+              <div class="kpi"><span class="label">导航与来电请求</span><b>186</b><span class="delta"><span class="up">+3%</span> vs 上周 181</span></div>
+              <div class="kpi"><span class="label">「brunch near me」平均排名 · 7×7</span><b>8.9</b><span class="delta"><span class="up">↑ 0.5</span> vs 08-12 基线 9.4 · 09-08 扫描</span></div>
             </div>
-            <div>
-              <p class="eyebrow" style="margin-bottom: 6px;">TOP 3 ISSUES</p>
-              <ul class="issues" data-od-id="audit-issues">
-                <li><span class="stamp stamp-bad">P1</span><span><b>GBP 超过 60 天无更新帖</b><br /><span class="cell-sub">已转成 WO-1204 · 审核中</span></span></li>
-                <li><span class="stamp stamp-warn">P2</span><span><b>结构化数据缺失（Restaurant / Menu schema）</b><br /><span class="cell-sub">依赖官网后台权限 · 未转任务</span></span></li>
-                <li><span class="stamp stamp-warn">P3</span><span><b>评价回复率 38%，近 30 天 5 条未回复</b><br /><span class="cell-sub">未转任务 · 回复属外部写入，需单独授权</span></span></li>
-              </ul>
-            </div>
-          </div>
-        </section>
+            <div class="trend-ph" data-od-id="dashboard-trend">近 4 周趋势 · 占位<br />接入 GBP Performance 数据后显示；GSC 未授权，官网指标不显示</div>
+          </section>
+        </div>
 
-        <section class="card" style="margin-top: 16px;" data-od-id="period-reports">
-          <div class="card-head">
-            <div><p class="eyebrow">PERIOD REPORTS · 3</p><h3 class="card-title">周期表现报告</h3></div>
-            <span class="cell-sub">审阅 → 导出 → 记录交付，三步都有人留痕</span>
+        <!-- tab 2 -->
+        <div class="tab-state" data-od-id="reports-tab-audit">
+          <nav class="tabs" aria-label="数据与报告 · 分析与 Audit">
+            <a href="#am-reports">表现看板</a>
+            <a href="#am-reports" aria-current="page">分析与 Audit</a>
+            <a href="#am-reports">冻结报告</a>
+          </nav>
+          <div class="audit-layout">
+            <section class="card" data-od-id="audit-report">
+              <div class="card-head">
+                <div><p class="eyebrow">AUDIT REPORT · #28 · GEORGE MERCHANT</p><h3 class="card-title">Audit 报告</h3></div>
+                <span class="cell-sub">7 个维度 · 5 个已评分 · 1 个 0 分 · 1 个 N/A</span>
+              </div>
+              <div class="audit">
+                <div>
+                  <dl class="params params-tight">
+                    <dt>商户</dt><dd>George Merchant · 2020 Broadway</dd>
+                    <dt>日期</dt><dd class="mono">2026-09-07</dd>
+                    <dt>执行</dt><dd>审计 Agent · local-audit-runner</dd>
+                  </dl>
+                  <p class="score" style="margin-top: 14px;">62<small> / 100</small></p>
+                  <p class="cell-sub">总分只计已评分维度（6 个），N/A 不计入</p>
+                  <div class="btn-row" style="margin-top: 16px; flex-direction: column; align-items: stretch;">
+                    <button class="btn btn-primary" type="button">交给 Orchestrator 提计划</button>
+                    <button class="btn" type="button">查看证据</button>
+                  </div>
+                </div>
+                <div>
+                  <p class="eyebrow" style="margin-bottom: 6px;">7 DIMENSIONS · SCORE / 100</p>
+                  <ul class="dims" style="--max: 100;" data-od-id="audit-dimensions">
+                    <li><span class="dim">GBP 资料完整度</span><span class="track"><span class="fill" style="--v: 78;"></span></span><span class="val">78</span></li>
+                    <li><span class="dim">NAP 一致性</span><span class="track"><span class="fill" style="--v: 90;"></span></span><span class="val">90</span></li>
+                    <li><span class="dim">评价与回复</span><span class="track"><span class="fill" style="--v: 55;"></span></span><span class="val">55</span></li>
+                    <li><span class="dim">本地排名</span><span class="track"><span class="fill" style="--v: 41;"></span></span><span class="val">41</span></li>
+                    <li><span class="dim">帖子活跃度</span><span class="track"><span class="fill" style="--v: 20;"></span></span><span class="val">20</span></li>
+                    <li class="zero"><span class="dim">结构化数据</span><span class="track"><span class="fill" style="--v: 0;"></span></span><span class="val">0 分</span></li>
+                    <li class="na"><span class="dim">官网技术</span><span class="track"></span><span class="val">N/A</span></li>
+                  </ul>
+                  <div class="dims-note"><span><b style="color: var(--danger);">0 分</b> = 已检查，完全缺失</span><span><b>N/A</b> = 未覆盖：GSC 未授权，未检查</span></div>
+                </div>
+                <div>
+                  <p class="eyebrow" style="margin-bottom: 6px;">TOP 3 ISSUES</p>
+                  <ul class="issues" data-od-id="audit-issues">
+                    <li><span class="stamp stamp-bad">P1</span><span><b>GBP 超过 60 天无更新帖</b><br /><span class="cell-sub">已转成 WO-1204 · 审核中</span></span></li>
+                    <li><span class="stamp stamp-warn">P2</span><span><b>结构化数据缺失（Restaurant / Menu schema）</b><br /><span class="cell-sub">依赖官网后台权限 · 未转任务</span></span></li>
+                    <li><span class="stamp stamp-warn">P3</span><span><b>评价回复率 38%，近 30 天 5 条未回复</b><br /><span class="cell-sub">未转任务 · 回复属外部写入，需单独授权</span></span></li>
+                  </ul>
+                </div>
+              </div>
+            </section>
+            <aside>
+              <section class="card" data-od-id="legacy-coverage">
+                <div class="card-head">
+                  <div><p class="eyebrow">LEGACY COVERAGE · 6</p><h3 class="card-title">旧报告覆盖清单</h3></div>
+                </div>
+                <ul class="coverage">
+                  <li><b>周报 PDF</b><span>→ 冻结报告</span><span class="stamp stamp-ok">已覆盖</span></li>
+                  <li><b>月报 PPTX</b><span>→ 冻结报告</span><span class="stamp stamp-ok">已覆盖</span></li>
+                  <li><b>Audit 总分与维度</b><span>→ 分析与 Audit</span><span class="stamp stamp-ok">已覆盖</span></li>
+                  <li><b>评价摘要与回复率</b><span>→ 分析与 Audit · P3 问题</span><span class="stamp stamp-ok">已覆盖</span></li>
+                  <li><b>排名网格截图（Local Falcon）</b><span>→ 表现看板 · 待接入扫描结果</span><span class="stamp stamp-warn">未覆盖</span></li>
+                  <li><b>竞品对比表</b><span>→ 无新页面承接</span><span class="stamp stamp-warn">未覆盖</span></li>
+                </ul>
+              </section>
+            </aside>
           </div>
-          <table class="table table-compact">
-            <thead>
-              <tr><th>报告</th><th>商户</th><th>数据</th><th>AM 审阅</th><th>导出</th><th>交付</th><th>操作</th></tr>
-            </thead>
-            <tbody>
-              <tr data-od-id="report-row-w37">
-                <td><b>第 37 周周报</b><span class="cell-sub">R-3721 · 生成 09-08 06:00</span></td>
-                <td>可可小卤</td>
-                <td>数据截止 09-07<span class="cell-sub">冻结快照 #221</span></td>
-                <td><span class="stamp stamp-warn">待审阅</span><span class="cell-sub">分派给 xander · 09-11 12:00</span></td>
-                <td class="mono">—</td>
-                <td class="mono">—</td>
-                <td><div class="btn-row report-actions"><button class="btn" type="button">审阅</button><button class="btn btn-quiet" type="button" disabled>导出 PDF</button><button class="btn btn-quiet" type="button" disabled>导出 PPTX</button><button class="btn btn-quiet" type="button" disabled>记录交付</button></div><span class="cell-sub">审阅通过后才能导出</span></td>
-              </tr>
-              <tr data-od-id="report-row-aug">
-                <td><b>8 月月报</b><span class="cell-sub">R-3608 · 生成 09-01 06:00</span></td>
-                <td>George Merchant</td>
-                <td>数据截止 08-31<span class="cell-sub">冻结快照 #214</span></td>
-                <td><span class="stamp stamp-ok">已审阅</span><span class="cell-sub">xander · 09-02</span></td>
-                <td>PDF ✓ PPTX ✓<span class="cell-sub">09-02 · xander</span></td>
-                <td><span class="stamp stamp-ok">已交付</span><span class="cell-sub">09-03 · 邮件 · xander 记录</span></td>
-                <td><div class="btn-row report-actions"><button class="btn btn-quiet" type="button">审阅</button><button class="btn btn-quiet" type="button">导出 PDF</button><button class="btn btn-quiet" type="button">导出 PPTX</button><button class="btn btn-quiet" type="button">记录交付</button></div></td>
-              </tr>
-              <tr data-od-id="report-row-custom">
-                <td><b>自定义 08-15 至 09-05</b><span class="cell-sub">R-3702 · 生成 09-06 09:12</span></td>
-                <td>Only Bear</td>
-                <td><span class="stamp">草稿</span><span class="cell-sub" style="color: var(--accent-hover);">数据质量：GSC 缺 3 天</span></td>
-                <td class="mono">—</td>
-                <td class="mono">—</td>
-                <td class="mono">—</td>
-                <td><div class="btn-row report-actions"><button class="btn" type="button">审阅</button><button class="btn btn-quiet" type="button" disabled>导出 PDF</button><button class="btn btn-quiet" type="button" disabled>导出 PPTX</button><button class="btn btn-quiet" type="button" disabled>记录交付</button></div><span class="cell-sub">补齐缺失数据或在审阅时注明后才能导出</span></td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="table-foot"><span>导出文件带冻结快照编号；交付记录写明渠道、时间与记录人</span><span>报告 Agent 未启用，草稿由系统模板生成</span></div>
-        </section>
+        </div>
+
+        <!-- tab 3 -->
+        <div class="tab-state" data-od-id="reports-tab-frozen">
+          <nav class="tabs" aria-label="数据与报告 · 冻结报告">
+            <a href="#am-reports">表现看板</a>
+            <a href="#am-reports">分析与 Audit</a>
+            <a href="#am-reports" aria-current="page">冻结报告</a>
+          </nav>
+          <section class="card" data-od-id="period-reports">
+            <div class="card-head">
+              <div><p class="eyebrow">FROZEN REPORTS · 3</p><h3 class="card-title">冻结报告</h3></div>
+              <span class="cell-sub">生成文件、下载、对客户发送是三个动作，各自留记录</span>
+            </div>
+            <table class="table table-compact">
+              <thead>
+                <tr><th>报告</th><th>商户</th><th>数据</th><th>AM 审阅</th><th>导出</th><th>交付</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                <tr data-od-id="report-row-w37">
+                  <td><b>第 37 周周报</b><span class="cell-sub">R-3721 · 生成 09-08 06:00</span></td>
+                  <td>可可小卤</td>
+                  <td>数据截止 09-07<span class="cell-sub">冻结快照 #221</span></td>
+                  <td><span class="stamp stamp-warn">待审阅</span><span class="cell-sub">分派给 xander · 09-11 12:00</span></td>
+                  <td>导出草稿 PDF<span class="cell-sub">带『草稿 · 未审核』标识</span></td>
+                  <td>—<span class="cell-sub">正式交付需审核</span></td>
+                  <td><div class="btn-row report-actions"><button class="btn" type="button">审阅</button><button class="btn btn-quiet" type="button">导出草稿 PDF</button><button class="btn btn-quiet" type="button" disabled>导出 PPTX</button><button class="btn btn-quiet" type="button" disabled>记录交付</button></div></td>
+                </tr>
+                <tr data-od-id="report-row-aug">
+                  <td><b>8 月月报</b><span class="cell-sub">R-3608 · 生成 09-01 06:00</span></td>
+                  <td>George Merchant</td>
+                  <td>数据截止 08-31<span class="cell-sub">冻结快照 #214</span></td>
+                  <td><span class="stamp stamp-ok">已审阅</span><span class="cell-sub">xander · 09-02</span></td>
+                  <td>PDF ✓ PPTX ✓<span class="cell-sub">09-02 · xander 下载</span></td>
+                  <td><span class="stamp stamp-ok">已交付</span><span class="cell-sub">09-03 · 邮件 · xander 记录</span></td>
+                  <td><div class="btn-row report-actions"><button class="btn btn-quiet" type="button">审阅</button><button class="btn btn-quiet" type="button">导出 PDF</button><button class="btn btn-quiet" type="button">导出 PPTX</button><button class="btn btn-quiet" type="button">记录交付</button></div></td>
+                </tr>
+                <tr data-od-id="report-row-custom">
+                  <td><b>自定义 08-15 至 09-05</b><span class="cell-sub">R-3702 · 生成 09-06 09:12</span></td>
+                  <td>Only Bear</td>
+                  <td><span class="stamp">草稿</span><span class="cell-sub" style="color: var(--accent-hover);">数据质量：GSC 缺 3 天</span></td>
+                  <td class="mono">—</td>
+                  <td>—<span class="cell-sub">补齐缺失数据或审阅时注明后可导出</span></td>
+                  <td>—<span class="cell-sub">正式交付需审核</span></td>
+                  <td><div class="btn-row report-actions"><button class="btn" type="button">审阅</button><button class="btn btn-quiet" type="button" disabled>导出 PDF</button><button class="btn btn-quiet" type="button" disabled>导出 PPTX</button><button class="btn btn-quiet" type="button" disabled>记录交付</button></div></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="table-foot"><span>导出文件带冻结快照编号；交付记录写明渠道、时间与记录人</span><span>报告 Agent 未启用，草稿由系统模板生成</span></div>
+          </section>
+        </div>
       </main>
     </div>
   </div>
