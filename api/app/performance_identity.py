@@ -75,61 +75,66 @@ def seed_gbp_locations_from_profiles(
 ) -> tuple[BoundScope, ...]:
     """Create one location, scope and binding per stored GBP profile. Idempotent."""
     stamp = canonical_instant(observed_at)
-    profiles = conn.execute(
-        "SELECT gbp_location_id, source_title, normalized_json FROM merchant_gbp_profiles"
-        " WHERE merchant_id = ? ORDER BY gbp_location_id",
-        (merchant_id,),
-    ).fetchall()
-    scopes: list[BoundScope] = []
-    for profile in profiles:
-        external_id = canonical_gbp_external_id(profile["gbp_location_id"])
-        canonical_key = f"gbp_location:{external_id}"
-        normalized = json.loads(profile["normalized_json"] or "{}")
-        place_id = normalized.get("place_id")
-        display_name = profile["source_title"] or normalized.get("title") or external_id
-        existing = conn.execute(
-            "SELECT id FROM source_scopes WHERE source='GBP' AND scope_type='GBP_LOCATION' AND canonical_key = ?",
-            (canonical_key,),
-        ).fetchone()
-        if existing is None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        profiles = conn.execute(
+            "SELECT gbp_location_id, source_title, normalized_json FROM merchant_gbp_profiles"
+            " WHERE merchant_id = ? ORDER BY gbp_location_id",
+            (merchant_id,),
+        ).fetchall()
+        scopes: list[BoundScope] = []
+        for profile in profiles:
+            external_id = canonical_gbp_external_id(profile["gbp_location_id"])
+            canonical_key = f"gbp_location:{external_id}"
+            normalized = json.loads(profile["normalized_json"] or "{}")
+            place_id = normalized.get("place_id")
+            display_name = profile["source_title"] or normalized.get("title") or external_id
+            existing = conn.execute(
+                "SELECT id FROM source_scopes WHERE source='GBP' AND scope_type='GBP_LOCATION' AND canonical_key = ?",
+                (canonical_key,),
+            ).fetchone()
+            if existing is None:
+                cursor = conn.execute(
+                    "INSERT INTO source_scopes (source, scope_type, external_id, canonical_key, timezone_name,"
+                    " date_basis, metadata_json, created_at) VALUES ('GBP','GBP_LOCATION',?,?,NULL,'store_local',?,?)",
+                    (external_id, canonical_key, json.dumps({"place_id": place_id}, sort_keys=True), stamp),
+                )
+                scope_id = int(cursor.lastrowid)
+            else:
+                scope_id = int(existing["id"])
+            binding = conn.execute(
+                "SELECT merchant_id, merchant_location_id, binding_generation FROM source_scope_bindings"
+                " WHERE source_scope_id = ? AND valid_to IS NULL",
+                (scope_id,),
+            ).fetchone()
+            if binding is not None:
+                if binding["merchant_id"] != merchant_id:
+                    raise IdentityConflict("GBP location is bound to another merchant")
+                location = _location_row(conn, binding["merchant_location_id"])
+                scopes.append(BoundScope(location, scope_id, external_id, place_id, binding["binding_generation"]))
+                continue
             cursor = conn.execute(
-                "INSERT INTO source_scopes (source, scope_type, external_id, canonical_key, timezone_name,"
-                " date_basis, metadata_json, created_at) VALUES ('GBP','GBP_LOCATION',?,?,NULL,'store_local',?,?)",
-                (external_id, canonical_key, json.dumps({"place_id": place_id}, sort_keys=True), stamp),
+                "INSERT INTO merchant_locations (merchant_id, display_name, canonical_address, timezone_name,"
+                " status, created_at) VALUES (?,?,NULL,NULL,'needs_attention',?)",
+                (merchant_id, display_name, stamp),
             )
-            scope_id = int(cursor.lastrowid)
-        else:
-            scope_id = int(existing["id"])
-        binding = conn.execute(
-            "SELECT merchant_id, merchant_location_id, binding_generation FROM source_scope_bindings"
-            " WHERE source_scope_id = ? AND valid_to IS NULL",
-            (scope_id,),
-        ).fetchone()
-        if binding is not None:
-            if binding["merchant_id"] != merchant_id:
-                raise IdentityConflict("GBP location is bound to another merchant")
-            location = _location_row(conn, binding["merchant_location_id"])
-            scopes.append(BoundScope(location, scope_id, external_id, place_id, binding["binding_generation"]))
-            continue
-        cursor = conn.execute(
-            "INSERT INTO merchant_locations (merchant_id, display_name, canonical_address, timezone_name,"
-            " status, created_at) VALUES (?,?,NULL,NULL,'needs_attention',?)",
-            (merchant_id, display_name, stamp),
-        )
-        location_id = int(cursor.lastrowid)
-        conn.execute(
-            "INSERT INTO merchant_location_status_events (merchant_location_id, status, timezone_name,"
-            " metadata_json, effective_at, generation, actor, reason, created_at)"
-            " VALUES (?, 'needs_attention', NULL, '{}', ?, 1, ?, 'seeded_from_gbp_profile', ?)",
-            (location_id, stamp, actor, stamp),
-        )
-        conn.execute(
-            "INSERT INTO source_scope_bindings (source_scope_id, merchant_id, merchant_location_id,"
-            " binding_generation, valid_from, valid_to, created_by, created_at) VALUES (?,?,?,1,?,NULL,?,?)",
-            (scope_id, merchant_id, location_id, stamp, actor, stamp),
-        )
-        scopes.append(BoundScope(_location_row(conn, location_id), scope_id, external_id, place_id, 1))
-    conn.commit()
+            location_id = int(cursor.lastrowid)
+            conn.execute(
+                "INSERT INTO merchant_location_status_events (merchant_location_id, status, timezone_name,"
+                " metadata_json, effective_at, generation, actor, reason, created_at)"
+                " VALUES (?, 'needs_attention', NULL, '{}', ?, 1, ?, 'seeded_from_gbp_profile', ?)",
+                (location_id, stamp, actor, stamp),
+            )
+            conn.execute(
+                "INSERT INTO source_scope_bindings (source_scope_id, merchant_id, merchant_location_id,"
+                " binding_generation, valid_from, valid_to, created_by, created_at) VALUES (?,?,?,1,?,NULL,?,?)",
+                (scope_id, merchant_id, location_id, stamp, actor, stamp),
+            )
+            scopes.append(BoundScope(_location_row(conn, location_id), scope_id, external_id, place_id, 1))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return tuple(scopes)
 
 
@@ -204,7 +209,6 @@ def build_population_manifest(
     manifest = {
         "contract": "seo_ops.performance_population.v1",
         "merchant_id": merchant_id,
-        "as_of": canonical_instant(as_of),
         "locations": [
             {
                 "location_id": scope.location.id,
@@ -222,6 +226,8 @@ def build_population_manifest(
 
 
 def resolve_default_end(population: PopulationManifest, *, as_of: datetime) -> date:
+    if as_of.tzinfo is None:
+        raise ValueError("naive datetimes are not accepted")
     if not population.scopes:
         raise TimezoneUnresolved("population_empty_for_default_period")
     candidates: list[date] = []
