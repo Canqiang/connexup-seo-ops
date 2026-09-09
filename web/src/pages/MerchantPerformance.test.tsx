@@ -60,7 +60,7 @@ beforeEach(() => {
   vi.spyOn(api, 'getPerformanceLocations').mockResolvedValue(LOCATIONS as never)
   vi.spyOn(api, 'queryMerchantPerformance').mockResolvedValue(BODY as never)
 })
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 describe('MerchantPerformance', () => {
   it('renders totals, the comparison and the delta from the server response', async () => {
@@ -79,7 +79,15 @@ describe('MerchantPerformance', () => {
     expect(valueCell.textContent).toBe('无数据')
   })
 
-  it('sends the period from the query string and writes changes back to it', async () => {
+  it('sends the period from the query string, and computes a clicked preset in the store timezone -- not the test runner clock', async () => {
+    // 2026-10-01T02:00:00Z is 2026-10-01 in the test runner's Asia/Shanghai
+    // clock (UTC+8) but still 2026-09-30 in the store's America/New_York
+    // timezone (UTC-4, EDT) -- the two clocks disagree on both the day AND
+    // the month. If "上月" used the browser/test clock it would compute
+    // September (2026-09-01..2026-09-30); computed correctly in the store's
+    // timezone it must compute August (2026-08-01..2026-08-31).
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-10-01T02:00:00Z'))
     renderPage('?from=2026-09-01&to=2026-09-02&cmp=previous_equal_length&granularity=day')
     await waitFor(() => expect(api.queryMerchantPerformance).toHaveBeenCalledWith(3, expect.objectContaining({
       current: { start: '2026-09-01', end: '2026-09-02' },
@@ -88,6 +96,9 @@ describe('MerchantPerformance', () => {
     fireEvent.click(await screen.findByRole('button', { name: '上月' }))
     fireEvent.click(screen.getByRole('button', { name: '应用筛选' }))
     await waitFor(() => expect(api.queryMerchantPerformance).toHaveBeenCalledTimes(2))
+    expect(api.queryMerchantPerformance).toHaveBeenLastCalledWith(3, expect.objectContaining({
+      current: { start: '2026-08-01', end: '2026-08-31' },
+    }), expect.anything())
   })
 
   it('blocks the query and offers a timezone form when the store timezone is unset', async () => {
