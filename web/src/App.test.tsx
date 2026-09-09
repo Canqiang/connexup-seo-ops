@@ -3495,7 +3495,7 @@ describe('desktop operator shell', () => {
 
     await screen.findByText('plan revision changed; refresh and retry')
     expect(approve.disabled).toBe(true)
-    screen.getByRole('button', { name: '重新载入服务器 Plan' })
+    screen.getByRole('button', { name: '重新载入' })
   })
 
   it('renders an accepted Audit snapshot as decisions instead of raw JSON or legacy Markdown', async () => {

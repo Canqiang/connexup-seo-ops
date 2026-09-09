@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, ApiError, type Merchant, type TaskPlan, type TaskPlanItem, type TaskPlanPayload, isAbortError } from '../api'
 import { executionWaves, isTaskPlan, taskPlanSnapshot, taskPlanValidationErrors } from '../taskPlan'
+import { ConflictBanner, LoadingState, Notice } from '../components/feedback'
 
 type EditorTask = TaskPlanItem & {
   editorId: string
@@ -549,12 +550,8 @@ function PlanReviewWorkspace({ planId }: { planId: number }) {
     return (
       <main className="plan-review-page" aria-label="Plan 审批工作区">
         {error ? (
-          <section className="plan-load-state" role="alert">
-            <strong>无法读取 Plan</strong>
-            <p>{error}</p>
-            <button type="button" onClick={() => void load()} disabled={busy === 'load'}>重新加载</button>
-          </section>
-        ) : <p className="plan-load-state">正在读取 Plan…</p>}
+          <Notice tone="error" action={{ label: '重新加载', onClick: () => void load(), disabled: busy === 'load' }}>{error}</Notice>
+        ) : <LoadingState variant="detail" label="正在读取 Plan…" />}
       </main>
     )
   }
@@ -585,22 +582,25 @@ function PlanReviewWorkspace({ planId }: { planId: number }) {
         </dl>
       </header>
 
-      {error && (
-        <div className="plan-message error" role="alert">
-          <span>{error}</span>
-          {(conflicted || merchantStatus !== 'active') && (
-            <button type="button" onClick={() => void load()} disabled={Boolean(busy)}>
-              {conflicted ? '重新载入服务器 Plan' : '重新加载 Plan 与商户状态'}
-            </button>
-          )}
-        </div>
-      )}
-      {notice && <p className="plan-message success" role="status">{notice}</p>}
+      {conflicted ? (
+        <ConflictBanner
+          message="服务器 revision 已变化，旧 checksum 已失效。请重新载入后审阅。"
+          detail={error || undefined}
+          busy={busy === 'load'}
+          onReload={() => void load()}
+        />
+      ) : error ? (
+        <Notice
+          tone="error"
+          action={merchantStatus !== 'active' ? { label: '重新加载 Plan 与商户状态', onClick: () => void load(), disabled: Boolean(busy) } : undefined}
+        >{error}</Notice>
+      ) : null}
+      {notice && <Notice tone="success">{notice}</Notice>}
       {merchantStatus === 'archived' && (
-        <p className="plan-message warning" role="status">商户已归档，Plan 与生成任务仅供查看；恢复在营后可继续审批。</p>
+        <Notice tone="warning">商户已归档，Plan 与生成任务仅供查看；恢复在营后可继续审批。</Notice>
       )}
       {merchantStatus === null && !error && (
-        <p className="plan-message warning" role="status">正在确认商户状态，Plan 暂时只读。</p>
+        <Notice tone="warning">正在确认商户状态，Plan 暂时只读。</Notice>
       )}
 
       <div className="plan-review-layout">
@@ -720,7 +720,6 @@ function PlanReviewWorkspace({ planId }: { planId: number }) {
           {dirty && validationErrors.length === 0 && (
             <p className="plan-dirty-note">存在未保存修改。保存后才能批准或拒绝当前 revision。</p>
           )}
-          {conflicted && <p className="plan-conflict-note">服务器 revision 已变化，旧 checksum 已失效。请重新载入后审阅。</p>}
 
           <div className="plan-primary-actions">
             <button type="button" onClick={() => void save()} disabled={!canSave}>
