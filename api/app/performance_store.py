@@ -395,29 +395,55 @@ def record_quality_event(
     batch_id: int | None,
     now: datetime,
 ) -> int:
+    """Open a quality event, or -- if an identical one is already open -- touch it instead.
+
+    The daily job republishes a trailing window so corrections can land, and
+    calls this once per omission on every successful publish. Without
+    dedup, a persistently-omitted (day, metric) would gain a fresh,
+    byte-identical row on every republish. An "identical" open event is one
+    matching (source, source_scope_id, category, start_date, end_date,
+    details_json); such a row has its ``last_seen_at``/``batch_id`` advanced
+    and keeps its original ``first_seen_at`` rather than gaining a sibling.
+    """
     stamp = canonical_instant(now)
+    start_iso = start.isoformat() if start is not None else None
+    end_iso = end.isoformat() if end is not None else None
+    details_json = json.dumps(details, sort_keys=True, separators=(",", ":"))
     conn.execute("BEGIN IMMEDIATE")
     try:
-        cursor = conn.execute(
-            "INSERT INTO data_quality_events (source, source_scope_id, merchant_id, merchant_location_id,"
-            " start_date, end_date, category, severity, status, details_json, first_seen_at,"
-            " last_seen_at, batch_id) VALUES (?,?,?,?,?,?,?,?, 'open', ?, ?, ?, ?)",
-            (
-                source,
-                scope_id,
-                merchant_id,
-                location_id,
-                start.isoformat() if start is not None else None,
-                end.isoformat() if end is not None else None,
-                category,
-                severity,
-                json.dumps(details, sort_keys=True, separators=(",", ":")),
-                stamp,
-                stamp,
-                batch_id,
-            ),
-        )
-        event_id = int(cursor.lastrowid)
+        existing = conn.execute(
+            "SELECT id FROM data_quality_events WHERE status = 'open' AND source = ?"
+            " AND source_scope_id IS ? AND category = ? AND start_date IS ? AND end_date IS ?"
+            " AND details_json = ?",
+            (source, scope_id, category, start_iso, end_iso, details_json),
+        ).fetchone()
+        if existing is not None:
+            event_id = int(existing["id"])
+            conn.execute(
+                "UPDATE data_quality_events SET last_seen_at = ?, batch_id = ? WHERE id = ?",
+                (stamp, batch_id, event_id),
+            )
+        else:
+            cursor = conn.execute(
+                "INSERT INTO data_quality_events (source, source_scope_id, merchant_id, merchant_location_id,"
+                " start_date, end_date, category, severity, status, details_json, first_seen_at,"
+                " last_seen_at, batch_id) VALUES (?,?,?,?,?,?,?,?, 'open', ?, ?, ?, ?)",
+                (
+                    source,
+                    scope_id,
+                    merchant_id,
+                    location_id,
+                    start_iso,
+                    end_iso,
+                    category,
+                    severity,
+                    details_json,
+                    stamp,
+                    stamp,
+                    batch_id,
+                ),
+            )
+            event_id = int(cursor.lastrowid)
         conn.commit()
     except Exception:
         conn.rollback()

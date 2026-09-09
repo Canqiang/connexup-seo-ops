@@ -162,6 +162,19 @@ def test_create_batch_stores_retrieved_at_distinct_from_now(conn):
     assert row["created_at"] == canonical_instant(NOW)
 
 
+def _batch(conn, scope_id: int, *, attempt: int = 1, business_date: date = date(2026, 8, 18)) -> int:
+    """A bare queued batch row -- enough to satisfy data_quality_events.batch_id's foreign key."""
+    job_id = create_sync_job(
+        conn, job_type="daily", request_id=f"batch-{scope_id}-{attempt}-{business_date}", requested_by="test",
+        scope_manifest={"scope_ids": [scope_id]}, start=business_date, end=business_date, now=NOW,
+    )
+    return create_batch(
+        conn,
+        BatchDraft(job_id, scope_id, business_date.strftime("%Y-%m"), attempt, "gbp.v1", NOW, business_date),
+        now=NOW,
+    )
+
+
 def test_record_quality_event_appears_in_open_quality_events_for_its_period(conn):
     scope_id = _scope(conn)
     record_quality_event(
@@ -201,6 +214,71 @@ def test_open_quality_events_sorts_most_severe_first(conn):
         )
     events = open_quality_events(conn, (scope_id,), date(2026, 8, 18), date(2026, 8, 18))
     assert [event["severity"] for event in events] == ["red", "yellow", "info"]
+
+
+def test_record_quality_event_dedups_repeated_omissions_into_one_open_row(conn):
+    """The daily job republishes a trailing window so corrections can land,
+    calling record_quality_event again for a (day, metric) omission that is
+    still open. Three such republishes must leave exactly one open row --
+    advancing last_seen_at and batch_id -- rather than one row per call."""
+    scope_id = _scope(conn)
+    kwargs = dict(
+        source="GBP", scope_id=scope_id, merchant_id=None, location_id=None,
+        category="source_omits_metric_rows", severity="yellow",
+        start=date(2026, 8, 18), end=date(2026, 8, 18),
+        details={"metric_key": "CALL_CLICKS"},
+    )
+    batch_1 = _batch(conn, scope_id, attempt=1)
+    batch_2 = _batch(conn, scope_id, attempt=2)
+    batch_3 = _batch(conn, scope_id, attempt=3)
+
+    first_id = record_quality_event(conn, **kwargs, batch_id=batch_1, now=NOW)
+    later = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    second_id = record_quality_event(conn, **kwargs, batch_id=batch_2, now=later)
+    even_later = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
+    third_id = record_quality_event(conn, **kwargs, batch_id=batch_3, now=even_later)
+
+    assert first_id == second_id == third_id
+    rows = conn.execute(
+        "SELECT first_seen_at, last_seen_at, batch_id, status FROM data_quality_events"
+        " WHERE source_scope_id = ?",
+        (scope_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["status"] == "open"
+    assert row["first_seen_at"] == canonical_instant(NOW)
+    assert row["last_seen_at"] == canonical_instant(even_later)
+    assert row["batch_id"] == batch_3
+
+
+def test_record_quality_event_creates_a_new_row_for_a_genuinely_different_omission(conn):
+    """A different day, or a different metric on the same day, is a distinct
+    quality event and must not collapse into the first one's row."""
+    scope_id = _scope(conn)
+    batch_id = _batch(conn, scope_id)
+    record_quality_event(
+        conn, source="GBP", scope_id=scope_id, merchant_id=None, location_id=None,
+        category="source_omits_metric_rows", severity="yellow",
+        start=date(2026, 8, 18), end=date(2026, 8, 18),
+        details={"metric_key": "CALL_CLICKS"}, batch_id=batch_id, now=NOW,
+    )
+    record_quality_event(
+        conn, source="GBP", scope_id=scope_id, merchant_id=None, location_id=None,
+        category="source_omits_metric_rows", severity="yellow",
+        start=date(2026, 8, 19), end=date(2026, 8, 19),
+        details={"metric_key": "CALL_CLICKS"}, batch_id=batch_id, now=NOW,
+    )
+    record_quality_event(
+        conn, source="GBP", scope_id=scope_id, merchant_id=None, location_id=None,
+        category="source_omits_metric_rows", severity="yellow",
+        start=date(2026, 8, 18), end=date(2026, 8, 18),
+        details={"metric_key": "WEBSITE_CLICKS"}, batch_id=batch_id, now=NOW,
+    )
+    count = conn.execute(
+        "SELECT COUNT(*) FROM data_quality_events WHERE source_scope_id = ?", (scope_id,)
+    ).fetchone()[0]
+    assert count == 3
 
 
 def test_create_sync_job_is_idempotent_for_a_byte_identical_repeat(conn):
