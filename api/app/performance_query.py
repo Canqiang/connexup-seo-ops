@@ -9,7 +9,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .canonical_json import canonical_decimal
-from .performance_identity import PopulationManifest, build_population_manifest, resolve_default_end
+from .performance_identity import (
+    PopulationManifest,
+    TimezoneUnresolved,
+    build_population_manifest,
+    resolve_default_end,
+)
 from .performance_metrics import (
     DERIVED_IMPRESSIONS_KEY,
     GBP_SOURCE_METRICS,
@@ -56,7 +61,12 @@ class MerchantPerformanceQueryV1(BaseModel):
     location_ids: list[int] = Field(default_factory=list)
     current: DatePeriodV1 | None = None
     comparison: ComparisonV1 = Field(default_factory=ComparisonV1)
-    granularity: Literal["day", "week", "month"] = "day"
+    # Weekly/monthly rollup arrives with the feature that needs it; the pilot
+    # has ~20 days of data. Narrowed from day|week|month so a client can never
+    # get a response whose periods.granularity claims a rollup that _series
+    # does not actually produce (see periods.granularity below, which stays
+    # in the response so the contract remains explicit).
+    granularity: Literal["day"] = "day"
 
 
 def _days(period: Period) -> list[date]:
@@ -72,27 +82,48 @@ def _index(heads: list[HeadObservation]) -> dict[tuple[date, str], list[HeadObse
 
 def _daily_value(
     grouped: dict[tuple[date, str], list[HeadObservation]], day: date, metric_key: str, scope_count: int
-) -> tuple[Decimal | None, str, str]:
-    """Return (value, availability, completeness) for one metric on one day across all scopes."""
+) -> tuple[Decimal | None, str, str, str | None]:
+    """Return (value, availability, completeness, missing_reason) for one metric on one day.
+
+    ``missing_reason`` is None whenever a value is available. Otherwise it
+    distinguishes "we never synced this day" (``no_observation``, no
+    published observation exists at all for this scope/day/metric) from
+    "the source reported this metric as unavailable" (``metric_unavailable``,
+    an observation exists and is hashed, but every scope reporting it said
+    unavailable) -- these are different facts and must not read the same.
+    """
     if metric_key == DERIVED_IMPRESSIONS_KEY:
         components = [
             _daily_value(grouped, day, component, scope_count) for component in IMPRESSION_COMPONENTS
         ]
-        available = [value for value, availability, _ in components if availability == "available"]
+        available = [value for value, availability, _completeness, _reason in components if availability == "available"]
         if not available:
-            return None, "unavailable", "unknown"
+            reason = (
+                "metric_unavailable"
+                if any(reason == "metric_unavailable" for _v, _a, _c, reason in components)
+                else "no_observation"
+            )
+            return None, "unavailable", "unknown", reason
         total = sum(available, Decimal(0))
-        complete = all(availability == "available" for _, availability, _ in components)
-        return total, "available", "complete" if complete else "partial"
+        # A component that is itself only partially covered by the bound
+        # population (some scopes reported it, some did not) must not be
+        # treated as fully reported just because at least one scope answered
+        # -- the derived total is "complete" only when every component is
+        # both available AND complete.
+        complete = all(
+            availability == "available" and completeness == "complete"
+            for _value, availability, completeness, _reason in components
+        )
+        return total, "available", "complete" if complete else "partial", None
     observations = grouped.get((day, metric_key), [])
     if not observations:
-        return None, "unavailable", "unknown"
+        return None, "unavailable", "unknown", "no_observation"
     available = [obs.numeric_value for obs in observations if obs.availability == "available"]
     if not available:
-        return None, "unavailable", "unknown"
+        return None, "unavailable", "unknown", "metric_unavailable"
     total = sum(available, Decimal(0))
     complete = len(available) == scope_count
-    return total, "available", "complete" if complete else "partial"
+    return total, "available", "complete" if complete else "partial", None
 
 
 def _aggregate(
@@ -103,7 +134,7 @@ def _aggregate(
     partial = False
     data_through: date | None = None
     for day in _days(period):
-        value, availability, completeness = _daily_value(grouped, day, metric_key, scope_count)
+        value, availability, completeness, _reason = _daily_value(grouped, day, metric_key, scope_count)
         if availability == "available" and value is not None:
             values.append(value)
             observed += 1
@@ -129,18 +160,26 @@ def _series(
 ) -> dict:
     points = []
     for day in _days(period):
-        value, availability, completeness = _daily_value(grouped, day, metric_key, scope_count)
+        value, availability, completeness, missing_reason = _daily_value(grouped, day, metric_key, scope_count)
         points.append({
             "date": day.isoformat(),
             "value": canonical_decimal(value),
             "availability": availability,
             "completeness": completeness,
-            "missing_reason": None if availability == "available" else "no_observation",
+            "missing_reason": missing_reason,
         })
     return {"metric_key": metric_key, "label": metric_definition(metric_key).label, "points": points}
 
 
-def _sources(conn: sqlite3.Connection, population: PopulationManifest, period: Period) -> list[dict]:
+def _sources(conn: sqlite3.Connection, population: PopulationManifest) -> list[dict]:
+    """Scope-wide source freshness -- deliberately not scoped to the queried period.
+
+    ``source_data_through`` is "the newest published batch across all time for
+    these scopes", distinct from a KPI's ``current.data_through`` ("last
+    available day inside the requested period"). Naming it plainly (instead
+    of reusing ``data_through``) keeps the two from reading as the same fact
+    in a contract that gets hashed.
+    """
     scope_ids = tuple(scope.scope_id for scope in population.scopes)
     if not scope_ids:
         return []
@@ -153,7 +192,7 @@ def _sources(conn: sqlite3.Connection, population: PopulationManifest, period: P
     return [{
         "source": "GBP",
         "date_basis": "store_local",
-        "data_through": row["data_through"],
+        "source_data_through": row["data_through"],
         "last_success_sync_at": row["published_at"],
         "status": "ready" if row["published_at"] else "no_data",
     }]
@@ -164,6 +203,19 @@ def query_merchant_performance(
 ) -> dict:
     location_ids = tuple(sorted(request.location_ids)) or None
     population = build_population_manifest(conn, merchant_id, location_ids, as_of=now)
+    # Fail closed on every path, not just the default-period branch below:
+    # resolve_default_end only ever runs when the caller omits `current`, but
+    # a bound location seeded from a GBP profile starts with no verified
+    # timezone (status 'needs_attention') and resolve_bound_scopes excludes
+    # only archived locations -- so a caller supplying explicit dates (what
+    # the Task 10 period picker always does) would otherwise sum observations
+    # for a location whose store-local date_basis was never verified. The
+    # write side already refuses this at preflight (location_timezone_missing
+    # blocker); the read side must refuse it the same way regardless of which
+    # period branch runs.
+    for scope in population.scopes:
+        if not scope.location.timezone_name:
+            raise TimezoneUnresolved("location_timezone_missing")
     if request.current is None:
         end = resolve_default_end(population, as_of=now)
         current = Period(end - timedelta(days=27), end)
@@ -235,7 +287,7 @@ def query_merchant_performance(
             "comparison_days": periods.comparison.days if periods.comparison else None,
         },
         "quality": open_quality_events(conn, scope_ids, periods.current.start, periods.current.end),
-        "sources": _sources(conn, population, periods.current),
+        "sources": _sources(conn, population),
         "backfill_notes": [
             {"business_date": business_date, "metric_key": metric_key} for business_date, metric_key in corrected
         ],

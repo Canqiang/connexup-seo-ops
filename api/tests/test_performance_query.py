@@ -1,7 +1,14 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from app.performance_identity import canonical_instant, seed_gbp_locations_from_profiles, set_location_timezone
+import pytest
+
+from app.performance_identity import (
+    TimezoneUnresolved,
+    canonical_instant,
+    seed_gbp_locations_from_profiles,
+    set_location_timezone,
+)
 from app.performance_query import MerchantPerformanceQueryV1, query_merchant_performance
 from app.performance_store import BatchDraft, ObservationDraft, create_batch, create_sync_job, publish_metric_batch
 
@@ -165,3 +172,75 @@ def test_corrected_days_are_listed_as_backfill_notes(conn, merchant_with_gbp_pro
     assert body["backfill_notes"] == [{"business_date": "2026-09-01", "metric_key": "WEBSITE_CLICKS"}]
     website = next(k for k in body["kpis"] if k["metric_key"] == "WEBSITE_CLICKS")
     assert website["current"]["value"] == "9"
+
+
+def test_derived_impressions_reports_partial_when_only_some_scopes_report_it(conn, merchant_with_gbp_profiles):
+    """Two bound locations; only one publishes any impression component for the day.
+
+    Every component is honestly (value, "available", "partial") -- one of
+    two scopes reported it. The derived total must not read "complete" just
+    because each of the four components had *some* available value; it is
+    complete only when every component is both available and complete.
+    """
+    scopes = _ready_merchant(conn, merchant_with_gbp_profiles)
+    assert len(scopes) == 2
+    day = date(2026, 9, 1)
+    _publish_day(conn, scopes[0].scope_id, day, {
+        "BUSINESS_IMPRESSIONS_DESKTOP_MAPS": 10, "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH": 20,
+        "BUSINESS_IMPRESSIONS_MOBILE_MAPS": 30, "BUSINESS_IMPRESSIONS_MOBILE_SEARCH": 40,
+    }, request_id="c0")
+    body = query_merchant_performance(
+        conn, merchant_with_gbp_profiles,
+        MerchantPerformanceQueryV1(
+            location_ids=[scope.location.id for scope in scopes],
+            current={"start": "2026-09-01", "end": "2026-09-01"},
+            comparison={"mode": "previous_equal_length"},
+        ),
+        now=NOW,
+    )
+    impressions = next(k for k in body["kpis"] if k["metric_key"] == "gbp_impressions_total")
+    assert impressions["current"]["value"] == "100"
+    assert impressions["current"]["completeness"] == "partial"
+    series = next(s for s in body["series"] if s["metric_key"] == "gbp_impressions_total")
+    assert series["points"][0]["value"] == "100"
+    assert series["points"][0]["completeness"] == "partial"
+
+
+def test_missing_reason_distinguishes_never_synced_from_source_reported_unavailable(conn, merchant_with_gbp_profiles):
+    scopes = _ready_merchant(conn, merchant_with_gbp_profiles)
+    _publish_day(conn, scopes[0].scope_id, date(2026, 9, 1), {"WEBSITE_CLICKS": 5}, request_id="c0")
+    _publish_day(conn, scopes[0].scope_id, date(2026, 9, 2), {"WEBSITE_CLICKS": None}, request_id="c1")
+    # 2026-09-03 is left entirely unpublished -- never synced.
+    body = query_merchant_performance(
+        conn, merchant_with_gbp_profiles,
+        MerchantPerformanceQueryV1(
+            location_ids=[scopes[0].location.id],
+            current={"start": "2026-09-01", "end": "2026-09-03"},
+            comparison={"mode": "previous_equal_length"},
+        ),
+        now=NOW,
+    )
+    series = next(s for s in body["series"] if s["metric_key"] == "WEBSITE_CLICKS")
+    assert series["points"][0]["missing_reason"] is None
+    assert series["points"][1]["missing_reason"] == "metric_unavailable"
+    assert series["points"][2]["missing_reason"] == "no_observation"
+
+
+def test_explicit_period_fails_closed_when_a_bound_location_has_no_timezone(conn, merchant_with_gbp_profiles):
+    """The fail-closed timezone check must run for explicit dates too, not only the default-period path.
+
+    resolve_default_end alone would never catch this, since it only ever
+    runs when the caller omits `current` -- exactly what the Task 10 period
+    picker never does.
+    """
+    scopes = seed_gbp_locations_from_profiles(conn, merchant_with_gbp_profiles, actor="test", observed_at=NOW)
+    with pytest.raises(TimezoneUnresolved, match="location_timezone_missing"):
+        query_merchant_performance(
+            conn, merchant_with_gbp_profiles,
+            MerchantPerformanceQueryV1(
+                location_ids=[scopes[0].location.id],
+                current={"start": "2026-09-01", "end": "2026-09-01"},
+                comparison={"mode": "previous_equal_length"},
+            ),
+            now=NOW,
+        )

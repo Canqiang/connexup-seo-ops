@@ -437,7 +437,7 @@ def open_quality_events(
         f" FROM data_quality_events WHERE source_scope_id IN ({marks}) AND status = 'open'"
         "   AND (start_date IS NULL OR start_date <= ?) AND (end_date IS NULL OR end_date >= ?)"
         " ORDER BY CASE severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 ELSE 2 END, category,"
-        "   start_date",
+        "   start_date, source_scope_id, id",
         (*scope_ids, end.isoformat(), start.isoformat()),
     ).fetchall()
     return [
