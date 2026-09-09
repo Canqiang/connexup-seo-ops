@@ -13,6 +13,7 @@ import {
 import { formatTime } from '../format'
 import TaskAssignment from '../components/TaskAssignment'
 import { CATEGORY_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS, blockerSummary } from '../labels'
+import { ConflictBanner, EmptyState, LoadingState, Notice } from '../components/feedback'
 
 const EXECUTION_STATUS_LABELS: Record<TaskExecution['status'], string> = {
   PENDING: '等待派发',
@@ -409,6 +410,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
   const [error, setError] = useState(validTaskId ? '' : '任务 ID 无效')
   const [notice, setNotice] = useState('')
   const [conflict, setConflict] = useState(false)
+  const writeLocked = busy || conflict
   const [metadataConflict, setMetadataConflict] = useState('')
   const [metadataEditBase, setMetadataEditBase] = useState<MetadataSnapshot | null>(null)
   const [assignee, setAssignee] = useState('')
@@ -759,11 +761,8 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
     return (
       <main aria-label="任务详情" className="task-detail-page">
         {error ? (
-          <section className="task-load-state" role="alert">
-            <p>{error}</p>
-            {validTaskId && <button type="button" onClick={load}>重试读取</button>}
-          </section>
-        ) : <p>{loading ? '加载中…' : '没有可显示的任务。'}</p>}
+          <Notice tone="error" action={validTaskId ? { label: '重试读取', onClick: load } : undefined}>{error}</Notice>
+        ) : loading ? <LoadingState variant="detail" /> : <p>没有可显示的任务。</p>}
       </main>
     )
   }
@@ -813,30 +812,26 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
           </div>
           <div className="task-actions" role="group" aria-label="任务操作">
             <button className="quiet" type="button" aria-label="刷新任务状态" onClick={load} disabled={busy || loading}>刷新</button>
-            {canExecute && <button className="primary" type="button" onClick={() => void execute()} disabled={busy}>开始内容准备</button>}
-            {canRetry && <button type="button" onClick={() => { setShowCancel(false); setShowRetry(value => !value) }} disabled={busy}>授权重新准备</button>}
-            {canCancel && <button className="quiet" type="button" onClick={() => { setShowRetry(false); setShowCancel(value => !value) }} disabled={busy}>取消任务并保留历史</button>}
+            {canExecute && <button className="primary" type="button" onClick={() => void execute()} disabled={writeLocked}>开始内容准备</button>}
+            {canRetry && <button type="button" onClick={() => { setShowCancel(false); setShowRetry(value => !value) }} disabled={writeLocked}>授权重新准备</button>}
+            {canCancel && <button className="quiet" type="button" onClick={() => { setShowRetry(false); setShowCancel(value => !value) }} disabled={writeLocked}>取消任务并保留历史</button>}
           </div>
         </div>
       </header>
 
       {merchantArchived && (
-        <p className="notice warning" role="status">商户已归档，任务已冻结；恢复在营后可继续处理。</p>
+        <Notice tone="warning">商户已归档，任务已冻结；恢复在营后可继续处理。</Notice>
       )}
 
-      {error && (
-        <section className="task-action-message error" role="alert">
-          <span>{error}</span>
-          {conflict && <button type="button" onClick={load} disabled={busy}>刷新任务</button>}
-        </section>
-      )}
+      {conflict ? (
+        <ConflictBanner message="任务已变更，请刷新后再操作。" busy={busy || loading} onReload={load} />
+      ) : error ? (
+        <Notice tone="error">{error}</Notice>
+      ) : null}
       {metadataConflict && (
-        <section className="task-action-message error" role="alert">
-          <span>{metadataConflict}</span>
-          <button type="button" onClick={load} disabled={busy || loading}>刷新任务</button>
-        </section>
+        <Notice tone="error" action={{ label: '刷新任务', onClick: load, disabled: busy || loading }}>{metadataConflict}</Notice>
       )}
-      {notice && <p className="task-action-message success" role="status">{notice}</p>}
+      {notice && <Notice tone="success">{notice}</Notice>}
 
       {(showCancel || showRetry) && (
         <section className="task-decision-form" aria-label={showCancel ? '取消任务' : '重新准备'}>
@@ -846,7 +841,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
               <textarea id="cancel-reason" maxLength={2000} value={cancelReason} onChange={event => setCancelReason(event.target.value)} disabled={busy} />
               <p>任务会进入 CANCELLED；定义、Attempts 和审计事件不会删除。</p>
               <div>
-                <button className="danger-button" type="button" onClick={() => void cancelTask()} disabled={busy || !cancelReason.trim()}>确认取消任务</button>
+                <button className="danger-button" type="button" onClick={() => void cancelTask()} disabled={writeLocked || !cancelReason.trim()}>确认取消任务</button>
                 <button type="button" onClick={() => setShowCancel(false)} disabled={busy}>保留任务</button>
               </div>
             </>
@@ -856,7 +851,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
               <textarea id="retry-reason" maxLength={2000} value={retryReason} onChange={event => setRetryReason(event.target.value)} disabled={busy} />
               <p>会创建新的内容准备 Attempt，可能重复产生模型成本；不会发布外部资源。</p>
               <div>
-                <button className="primary" type="button" onClick={() => void retryPreparation()} disabled={busy || !retryReason.trim()}>确认重新准备</button>
+                <button className="primary" type="button" onClick={() => void retryPreparation()} disabled={writeLocked || !retryReason.trim()}>确认重新准备</button>
                 <button type="button" onClick={() => setShowRetry(false)} disabled={busy}>暂不重试</button>
               </div>
             </>
@@ -898,7 +893,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
               <span className="result-count">{task.executions.length} 次</span>
             </div>
             {task.executions.length === 0 ? (
-              <div className="empty-state">尚无内容准备 Attempt。</div>
+              <EmptyState>尚无内容准备 Attempt。</EmptyState>
             ) : (
               <div className="task-attempt-list">
                 {task.executions.map(execution => {
@@ -949,15 +944,15 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
                         <p>人工批准只会完成这个内容准备 Task；不会发布，也不会验证外部资源。</p>
                         {!showReturn ? (
                           <div role="group" aria-label="准备结果审批">
-                            <button className="primary" type="button" onClick={() => void approve()} disabled={busy}>批准准备结果</button>
-                            <button type="button" onClick={() => setShowReturn(true)} disabled={busy}>退回重新准备</button>
+                            <button className="primary" type="button" onClick={() => void approve()} disabled={writeLocked}>批准准备结果</button>
+                            <button type="button" onClick={() => setShowReturn(true)} disabled={writeLocked}>退回重新准备</button>
                           </div>
                         ) : (
                           <div className="return-form">
                             <label htmlFor="return-reason">退回原因</label>
                             <textarea id="return-reason" rows={3} maxLength={2000} value={returnReason} onChange={event => setReturnReason(event.target.value)} disabled={busy} />
                             <div className="review-actions">
-                              <button className="primary" type="button" onClick={() => void returnForRevision()} disabled={busy || !returnReason.trim()}>确认退回</button>
+                              <button className="primary" type="button" onClick={() => void returnForRevision()} disabled={writeLocked || !returnReason.trim()}>确认退回</button>
                               <button type="button" onClick={() => setShowReturn(false)} disabled={busy}>保留结果</button>
                             </div>
                           </div>
@@ -976,7 +971,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
               <div><h2 id="task-events-title">Task events</h2><p>Append-only 审计记录。</p></div>
               <span className="result-count">{task.events.length} 条</span>
             </div>
-            {task.events.length === 0 ? <div className="empty-state">暂无事件记录。</div> : (
+            {task.events.length === 0 ? <EmptyState>暂无事件记录。</EmptyState> : (
               <ol>
                 {task.events.map(event => (
                   <li key={event.id}>
@@ -997,7 +992,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
             version={task.version}
             assignment={task.assignment ?? null}
             agentBound={task.agent_preparation_bound === true}
-            disabled={!merchantActive || busy || !['PENDING', 'NEEDS_ATTENTION'].includes(task.status)
+            disabled={!merchantActive || writeLocked || !['PENDING', 'NEEDS_ATTENTION'].includes(task.status)
               || task.executions.some(execution => ['PENDING', 'DISPATCHING', 'RUNNING', 'UNKNOWN'].includes(execution.status))}
             onSaved={poll}
           />
@@ -1082,7 +1077,7 @@ function TaskDetailPage({ taskId }: { taskId: number }) {
               <span>Task version {task.version}</span>
               {metadataCandidate === null && <small>没有需要保存的变更。</small>}
               {metadataCandidate !== null && metadataBase.version !== task.version && <small>本地编辑基于 Task version {metadataBase.version}。</small>}
-              <button className="primary" type="button" onClick={() => void saveMetadata()} disabled={!merchantActive || busy || metadataCandidate === null || Boolean(metadataConflict)}>保存内部元数据</button>
+              <button className="primary" type="button" onClick={() => void saveMetadata()} disabled={!merchantActive || writeLocked || metadataCandidate === null || Boolean(metadataConflict)}>保存内部元数据</button>
             </div>
           </section>
         </aside>
