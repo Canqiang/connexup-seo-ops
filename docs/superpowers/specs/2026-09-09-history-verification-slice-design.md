@@ -9,7 +9,7 @@
 
 | 证明 | 目标 | 通过标准 |
 |---|---|---|
-| V1 历史能查准 | 对 Choice Brooklyn 任选一个过去完整月和一个任意日期区间，从已存历史观测得到 GBP 指标与比较 | 总量、逐日值与手算 gold fixture 一致；缺失日期显示为缺失且不参与均值；比较期按三种模式正确；同一查询重复执行结果字节一致 |
+| V1 历史能查准 | 对 Choice Brooklyn 任选一个任意日期区间（来源起点 2026-08-18 之后）和第一个完整月（2026-09，10 月 1 日后可验），从已存历史观测得到 GBP 指标与比较 | 总量、逐日值与手算 gold fixture 一致；缺失日期显示为缺失且不参与均值；比较期按三种模式正确（比较期早于来源起点时显示「无可比数据」）；同一查询重复执行结果字节一致 |
 | V2 诊断能追溯 | 每次 Audit 是独立、不可变的一条记录；失败不覆盖有效结果；两次可比的 Audit 能算出新增 / 持续 / 已核验解决 / 再次出现 | 历史列表含成功、失败、专项；失败行无得分；对比引擎对固定输入给出确定结果；规则版本不同返回「不可直接比较」 |
 | V3 报告不会变 | 冻结一份 8 月报告后再补采 8 月数据，报告不变 | 快照与文件 SHA-256 不变；Performance 查询结果改变并标「已补齐」；报告页显示 `has_newer_source_data`；更新交付物只能生成 v2 且 v1 保留 |
 
@@ -44,7 +44,8 @@
 
 ### 3.1 来源与键
 
-- FBR operation-assistant-api `GET /gbp/performance-metric?from_date&to_date&place_id`（现有 `FbrGbpClient.list_performance_metrics`）。现有同步请求最近 30 天，但库里只有 08-18 起的 12–13 天，说明来源本身有起点；历史深度见 §9.1。
+- FBR operation-assistant-api `GET /gbp/performance-metric?from_date&to_date&place_id`（现有 `FbrGbpClient.list_performance_metrics`）。**2026-09-09 只读探测结果（§9.1）：两家门店无论请求 06-01 还是 08-09 起，都只返回 2026-08-18 至 09-06 的数据；来源起点固定为 08-18（GBP 接入日），数据延迟约 2–3 天；区间长度不受 30 天限制。** 因此本切片没有「过去完整月」可补采；补采的价值在于把 08-18 起的全部日期一次拉齐并从此按日累积，第一个完整月是 2026-09。
+- **缺行不等于 0**：同一门店同一天，来源对部分指标不返回行（20 天里 `CALL_CLICKS` 只有 8–13 行、曝光类 16–19 行）。本切片把「该天该门店有任一指标行、但缺某指标行」记为该指标 `availability=unavailable, completeness=unknown`，并记一条 `data_quality_events(category=source_omits_metric_rows, severity=yellow)`；不写 0，不插值。待 FBR 确认「省略 = 0」后，可用新的 `formula_version` 重新发布，旧观测不改。
 - 指标键固定为现有 8 个：`BUSINESS_IMPRESSIONS_DESKTOP_MAPS / DESKTOP_SEARCH / MOBILE_MAPS / MOBILE_SEARCH`、`WEBSITE_CLICKS`、`CALL_CLICKS`、`BUSINESS_DIRECTION_REQUESTS`、`BUSINESS_FOOD_MENU_CLICKS`。曝光 = 四项之和（公式版本 `gbp_impressions_v1`）；四个行动指标分开展示，不合并。
 - 日期基准：门店本地日（`date_basis=store_local`）。
 
@@ -126,8 +127,8 @@
 
 ## 9. 待验证（写实施计划前各做一次，全部只读）
 
-1. **FBR 历史深度**：`FBR_SEO_BASE_URL` 是集群内 UAT 地址（`operation-assistant-api.uat.svc.cluster.local`），本机不可直达；需经 kubectl port-forward 后用 `FbrGbpClient.list_performance_metrics(from_date="2026-06-01", to_date="2026-08-31")` 探测 Choice Brooklyn 两家门店各自返回的最早日期与是否支持 > 30 天区间。若来源起点就是 08-18，V1 的「过去完整月」只能是 9 月（需先积累），验收改用「任意区间」加「9 月完整月」。
-2. FBR 返回的 8 个指标是否与 Google `DailyMetric` 一一对应、是否含 `BUSINESS_BOOKINGS` 等未存键；缺失日与 0 的区分方式。
+1. **FBR 历史深度：已探测（2026-09-09，只读，经 `kubectl port-forward svc/operation-assistant-api -n uat`）。** Clinton Hill（place `ChIJaYcl…`）与 Upper West Side（place `ChIJH8iZ…`）请求 06-01 至 09-08 与 08-09 至 09-08 两种区间，均返回 08-18 至 09-06 共 20 个日期、126 / 121 行；响应形如 `{"metrics": [{"metric_date", "metric", "value"}]}`，只含现有 8 个指标键，没有 `BUSINESS_BOOKINGS` 等其他键。结论：来源起点 08-18，数据延迟 2–3 天，长区间可用，V1 的「过去完整月」改为 2026-09（见 §0）。
+2. **缺行语义**：同一天部分指标无行（见 §3.1）。需向 FBR 确认省略是否表示 0；确认前按 unavailable 处理。
 3. **门店时区**：`location_json` 没有时区字段，两家门店需操作员录入 `America/New_York`（Phase 1 Task 3 的前提）；确认录入入口放在商户资料页。
 4. 现有 `merchant_local_falcon_reports` 能否作为 Phase 2 的扫描历史来源（本切片不用，但迁移时不得删除）。
 5. 现有 `metric_*` 表的触发器 / 约束与 Phase 1 计划 Task 1 的 SQL 是否一致（迁移已跑过，需 checksum 核对）。
