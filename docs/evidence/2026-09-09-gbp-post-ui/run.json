@@ -1,0 +1,17 @@
+{
+  "projectId": "seo-ops-gbp-post-ui",
+  "projectName": "seo-ops GBP Post 任务页",
+  "designSystemId": "user:seo-ops",
+  "skill": "frontend-design",
+  "agent": "claude",
+  "requestId": "118aa037-618b-4d26-b001-5c0b9ef563a0",
+  "runId": "5caa627a-5522-4ad8-b735-d08ff78a336d",
+  "conversationId": "218a14f1-7d96-4d42-b566-68931d5fcc14",
+  "status": "succeeded",
+  "previewUrl": "http://127.0.0.1:60061/api/projects/seo-ops-gbp-post-ui/raw/index.html",
+  "studioUrl": "http://127.0.0.1:60071/projects/seo-ops-gbp-post-ui/conversations/218a14f1-7d96-4d42-b566-68931d5fcc14",
+  "startedAt": "2026-09-09T06:12:21Z",
+  "terminalAt": "2026-09-09T06:28:22Z",
+  "files": ["index.html"],
+  "note": "previewUrl/studioUrl ports belong to the current OpenDesign daemon session; call get_run again after an OpenDesign restart."
+}

@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1180">
+<title>SEO Ops · GBP Post 任务界面原型</title>
+<style>
+/* design-systems/seo-ops/tokens.css
+ * Derived from web/src/index.css (:root) on 2026-09-09. Values are verbatim
+ * except --accent-active and --focus-ring, which index.css does not define.
+ */
+
+:root {
+  /* A1 identity */
+  --bg: #f5f7f9;                /* --paper */
+  --surface: #ffffff;           /* --card */
+  --surface-warm: #e8eff5;      /* --paper-blue */
+  --fg: #19324a;                /* --ink */
+  --fg-2: #4f6578;              /* --ink-2 */
+  --muted: #8394a4;             /* --muted */
+  --meta: #205d7b;              /* --brand-ink */
+  --border: #d5dfe7;            /* --line */
+  --border-soft: var(--border); /* no lighter line in the existing palette */
+  --accent: #c8731a;            /* --accent, button.primary */
+  --accent-on: #ffffff;
+  --accent-hover: #9d5712;      /* button.primary:hover */
+  --accent-active: #7f4610;
+
+  /* A2 semantic */
+  --success: #26765b;           /* --ok */
+  --warn: #c8731a;              /* --accent doubles as warning (credit-warning) */
+  --danger: #b4372e;            /* --bad */
+
+  /* Typography */
+  --font-display: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-xs: 10px;              /* .section-code / .eyebrow */
+  --text-sm: 12px;
+  --text-base: 14px;            /* body */
+  --text-lg: 16px;
+  --text-xl: 18px;              /* dialog h4 */
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+  --text-4xl: 40px;
+  --leading-body: 1.65;         /* body */
+  --leading-tight: 1.2;
+  --tracking-display: 0;
+
+  /* Spacing on a 4px grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --section-y-desktop: 48px;
+  --section-y-tablet: 40px;
+  --section-y-phone: 32px;
+
+  /* Shape and elevation */
+  --radius-sm: 4px;
+  --radius-md: 8px;             /* button, .error */
+  --radius-lg: 8px;             /* cards stay square-ish; never larger */
+  --radius-pill: 9999px;
+  --elev-flat: none;
+  --elev-ring: 0 0 0 1px var(--border);
+  --elev-raised: 0 24px 70px rgb(25 50 74 / 22%);   /* .operation-confirm-dialog */
+  --focus-ring: 0 0 0 3px #e7f2f7;
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout */
+  --container-max: 1380px;      /* .task-detail-layout */
+  --container-gutter-desktop: 32px;
+  --container-gutter-tablet: 24px;
+  --container-gutter-phone: 16px;
+
+  /* C-layer extensions: original seo-ops names, kept so the prototype can
+     reference the same vocabulary the React app uses. */
+  --brand: #37799a;
+  --brand-ink: #205d7b;
+  --brand-soft: #e7f2f7;
+  --line-strong: #b9c9d6;
+  --accent-soft: #fff5e8;
+  --ok-soft: #e5f2ed;
+  --bad-soft: #f9e9e7;
+  --ai: #6b46a8;
+  --ai-soft: #f0e9f9;
+}
+
+/* ---- base ---- */
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;min-width:1180px;font:400 var(--text-base)/var(--leading-body) var(--font-body);color:var(--fg);background:var(--bg);-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4,p,dl,dd,ol,ul,figure{margin:0}
+ol,ul{padding:0;list-style:none}
+a{color:var(--brand)}
+a:hover{color:var(--brand-ink)}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--brand-ink);outline-offset:2px;box-shadow:var(--focus-ring)}
+.mono{font-family:var(--font-mono);font-size:var(--text-sm);word-break:break-all}
+.eyebrow{display:block;font:600 var(--text-xs)/1.4 var(--font-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--meta)}
+.sub{font-size:13px;color:var(--fg-2)}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.ic{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.soft-surface{background:color-mix(in oklch,var(--surface) 65%,var(--bg))}
+
+/* ---- prototype sheet chrome ---- */
+.sheet{max-width:calc(var(--container-max) + var(--container-gutter-desktop) * 2);margin:0 auto;padding:40px var(--container-gutter-desktop) 96px}
+.sheet-head{margin-bottom:40px;padding-bottom:28px;border-bottom:1px solid var(--line-strong)}
+.sheet-head h1{font-size:var(--text-3xl);line-height:1.3;font-weight:600;margin:6px 0 12px}
+.sheet-head>p{max-width:72ch;color:var(--fg-2)}
+.toc{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 24px;margin-top:20px;font-size:13px}
+.toc li{display:flex;align-items:baseline;gap:8px}
+.idx{font:600 var(--text-sm)/1.4 var(--font-mono);letter-spacing:.1em;color:var(--meta)}
+.toc a{text-decoration:none}
+.toc a:hover{text-decoration:underline}
+.toc .mono{color:var(--fg-2)}
+.proto{margin-bottom:56px;scroll-margin-top:24px}
+.proto-head{display:flex;align-items:baseline;gap:14px;margin-bottom:12px}
+.proto-head h2{font-size:var(--text-lg);font-weight:600;line-height:1.4}
+.proto-head p{font-size:13px;color:var(--fg-2)}
+.screen{position:relative;border:1px solid var(--line-strong);background:var(--bg);padding:24px 32px 36px}
+
+/* ---- task context + lifecycle ---- */
+.back{display:inline-block;font-size:13px;margin-bottom:10px;text-decoration:none}
+.back:hover{text-decoration:underline}
+.task-title-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:2px}
+.task-title{font-size:var(--text-2xl);font-weight:600;line-height:1.35}
+.task-source{font-size:13px;color:var(--fg-2);margin-top:4px}
+.lifecycle{display:flex;gap:4px;padding:6px;margin-top:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.lifecycle li{flex:1;position:relative;min-width:0;padding:10px 12px;border-radius:var(--radius-sm)}
+.lifecycle li::after{content:"";position:absolute;top:19px;left:38px;right:-4px;height:1px;background:var(--line-strong)}
+.lifecycle li:last-child::after{display:none}
+.lifecycle .mark{position:relative;z-index:1;display:grid;place-items:center;width:18px;height:18px;border-radius:50%;border:1px solid var(--line-strong);background:var(--surface);color:var(--accent-on)}
+.lifecycle .mark .ic{width:10px;height:10px;stroke-width:2}
+.lifecycle .done .mark{background:var(--success);border-color:var(--success)}
+.lifecycle .current{background:var(--brand-soft)}
+.lifecycle .current .mark{background:var(--meta);border-color:var(--meta);box-shadow:inset 0 0 0 3px var(--surface)}
+.lifecycle .code{display:block;margin-top:8px;font:600 var(--text-xs)/1.4 var(--font-mono);letter-spacing:.08em;color:var(--fg-2);white-space:nowrap}
+.lifecycle .name{display:block;font-size:var(--text-sm);color:var(--fg-2)}
+.lifecycle li.future .code{color:color-mix(in oklch,var(--fg-2) 75%,var(--muted))}
+.lifecycle .current .code{color:var(--meta)}
+.lifecycle .current .name{color:var(--fg);font-weight:600}
+.lifecycle .current.ok{background:var(--ok-soft)}
+.lifecycle .current.ok .mark{background:var(--success);border-color:var(--success);box-shadow:none}
+.lifecycle .current.ok .code{color:var(--success)}
+.lifecycle .current.attn{background:var(--accent-soft)}
+.lifecycle .current.attn .mark{background:var(--accent);border-color:var(--accent);box-shadow:none}
+.lifecycle .current.attn .code{color:var(--accent-hover)}
+
+/* ---- layout ---- */
+.task-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:24px;margin-top:20px;align-items:start}
+.task-main.two{grid-template-columns:420px minmax(0,1fr)}
+.col{display:grid;gap:16px}
+.two .col{gap:10px}
+.col-title{font-size:13px;font-weight:600;color:var(--fg-2)}
+
+/* ---- card, params, empty ---- */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px}
+.card h3{font-size:var(--text-base);font-weight:600;line-height:1.5;margin-bottom:12px}
+.card .eyebrow+h3{margin-top:2px}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.card-head h3{margin-bottom:12px}
+.params{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 16px;font-size:13px}
+.params dt{color:var(--fg-2)}
+.params dd{min-width:0}
+.params.stack{grid-template-columns:minmax(0,1fr);gap:2px}
+.params.stack dt{font-size:var(--text-sm);font-weight:600;letter-spacing:.02em}
+.params.stack dd{margin-bottom:10px}
+.params.stack dd:last-child{margin-bottom:0}
+.empty{min-height:116px;display:grid;place-items:center;text-align:center;font-size:13px;color:var(--fg-2);border:1px solid var(--border);border-radius:var(--radius-sm)}
+.refs li{line-height:1.7}
+.quote{font-family:var(--font-mono);font-size:var(--text-sm);line-height:1.6;color:var(--fg-2);padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:6px}
+.quote:first-child{margin-top:0}
+
+/* ---- stamp ---- */
+.stamp{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;font-size:11px;font-weight:600;line-height:1.4;letter-spacing:.05em;text-transform:uppercase;border-radius:2px;white-space:nowrap}
+.stamp-neutral{background:var(--surface-warm);color:var(--fg-2)}
+.stamp-brand{background:var(--brand-soft);color:var(--brand-ink)}
+.stamp-ok{background:var(--ok-soft);color:var(--success)}
+.stamp-warn{background:var(--accent-soft);color:var(--accent-hover)}
+.stamp-bad{background:var(--bad-soft);color:var(--danger)}
+.stamp-ai{background:var(--ai-soft);color:var(--ai)}
+.stamp .ic{width:11px;height:11px}
+.stamp.keep{text-transform:none}
+
+/* ---- button ---- */
+.button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface);color:var(--fg-2);font-size:var(--text-base);font-weight:500;letter-spacing:.02em;white-space:nowrap;text-decoration:none;cursor:pointer;transition:background-color var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard),transform var(--motion-fast) var(--ease-standard)}
+.button:hover{background:var(--surface-warm);border-color:var(--muted);color:var(--fg)}
+.button:active{transform:translateY(1px)}
+.button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-on)}
+.button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);color:var(--accent-on)}
+.button.primary:active{background:var(--accent-active);border-color:var(--accent-active)}
+.button.primary-danger{background:var(--danger);border-color:var(--danger);color:var(--accent-on)}
+.button.primary-danger:hover{background:color-mix(in oklch,var(--danger) 80%,var(--fg));border-color:color-mix(in oklch,var(--danger) 80%,var(--fg));color:var(--accent-on)}
+.button.quiet{background:transparent;border-color:transparent;color:var(--fg-2)}
+.button.quiet:hover{background:var(--surface-warm);color:var(--fg)}
+.button.danger-button{color:var(--danger);border-color:var(--danger)}
+.button.danger-button:hover{background:var(--bad-soft);color:var(--danger);border-color:var(--danger)}
+.button:disabled{background:var(--muted);border-color:var(--muted);color:var(--accent-on);cursor:not-allowed;transform:none}
+.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.actions .note{font-size:var(--text-sm);color:var(--fg-2);margin-left:8px;max-width:34ch;line-height:1.5;word-break:keep-all}
+
+/* ---- notice / banner ---- */
+.notice{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:var(--radius-md);font-size:13px;line-height:1.5}
+.notice-info{background:var(--brand-soft);color:var(--brand-ink)}
+.notice-warn{background:var(--accent-soft);color:var(--accent-hover)}
+.notice .grow{flex:1}
+.notice .meta{font-family:var(--font-mono);font-size:var(--text-sm);margin-top:2px}
+.banner{display:flex;align-items:center;gap:12px;padding:10px 14px;margin-bottom:20px;border-radius:var(--radius-md);background:var(--accent-soft);color:var(--accent-hover)}
+.banner p{flex:1;font-weight:500}
+
+/* ---- post card ---- */
+.post-card{width:420px;max-width:100%;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+.post-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:var(--text-sm);color:var(--fg-2)}
+.post-media{position:relative;aspect-ratio:4/3;background:var(--surface-warm)}
+.post-media .stamp{position:absolute;top:10px;left:10px}
+.post-media .stamp.tr{left:auto;right:10px}
+.post-body{padding:16px 16px 12px}
+.post-body p{line-height:1.55}
+.post-cta{display:inline-block;margin-top:12px;font-weight:500;text-decoration:none}
+.post-cta:hover{text-decoration:underline}
+.post-foot{padding:10px 16px;border-top:1px solid var(--border);font-size:var(--text-sm);color:var(--fg-2)}
+.sk{background:var(--surface-warm);border-radius:var(--radius-sm);animation:breathe 1.6s var(--ease-standard) infinite}
+.sk-line{height:12px;margin-top:10px}
+.sk-line:first-child{margin-top:2px}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* ---- basis (details) ---- */
+.basis{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.basis summary{display:flex;align-items:center;gap:10px;padding:12px 20px;font-weight:600;cursor:pointer;list-style:none}
+.basis summary::-webkit-details-marker{display:none}
+.basis summary::before{content:"";width:6px;height:6px;margin-left:2px;border-right:1.5px solid var(--fg-2);border-bottom:1.5px solid var(--fg-2);transform:rotate(-45deg);transition:transform var(--motion-fast) var(--ease-standard)}
+.basis[open] summary::before{transform:rotate(45deg) translate(-2px,-2px)}
+.basis-body{padding:14px 20px 18px;border-top:1px solid var(--border)}
+
+/* ---- dialog ---- */
+.dialog-mask{position:absolute;inset:0;z-index:2;display:flex;justify-content:center;align-items:flex-start;padding-top:88px;background:color-mix(in oklch,var(--fg) 42%,transparent)}
+.operation-confirm-dialog{width:640px;overflow:hidden;background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-lg);box-shadow:var(--elev-raised);animation:rise var(--motion-base) var(--ease-standard)}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.dialog-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:18px 22px;border-bottom:1px solid var(--border)}
+.dialog-head h4{font-size:var(--text-xl);font-weight:600;line-height:1.4;margin-top:4px}
+.dialog-close{width:34px;height:34px;display:grid;place-items:center;flex:none;border:1px solid transparent;border-radius:var(--radius-md);background:transparent;color:var(--fg-2);cursor:pointer}
+.dialog-close:hover{background:var(--surface-warm);color:var(--fg)}
+.dialog-close .ic{width:14px;height:14px}
+.dialog-body{padding:18px 22px}
+.dialog-body p{margin-bottom:14px}
+.dialog-foot{display:flex;justify-content:flex-end;gap:8px;padding:18px 22px;border-top:1px solid var(--border)}
+
+/* ---- readback list (needs attention) ---- */
+.readback{display:grid;gap:8px}
+.rb{display:grid;grid-template-columns:72px minmax(0,1fr);gap:12px;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md)}
+.rb.exact{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand)}
+.rb .thumb{aspect-ratio:4/3;background:var(--surface-warm);border-radius:var(--radius-sm)}
+.rb p{font-size:13px;line-height:1.5}
+.rb-meta{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:var(--text-sm);color:var(--fg-2)}
+.rb-meta time{margin-left:auto;font-family:var(--font-mono)}
+
+/* ---- merchant side ---- */
+.merchant-grid{display:grid;grid-template-columns:1fr 1.1fr 1fr;grid-template-areas:"form offers profile" "gallery gallery profile";gap:20px;align-items:start}
+.area-form{grid-area:form}.area-offers{grid-area:offers}.area-profile{grid-area:profile}.area-gallery{grid-area:gallery}
+.field{display:grid;gap:6px;margin-bottom:14px}
+.field label{font-size:13px;font-weight:500;color:var(--fg-2)}
+.input{width:100%;height:36px;padding:0 10px;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface);font:inherit;color:var(--fg)}
+.input:hover{border-color:var(--muted)}
+.input:focus{outline:none;border-color:var(--brand-ink);box-shadow:var(--focus-ring)}
+.hint{font-size:var(--text-sm);color:var(--fg-2);line-height:1.5}
+.field .hint{margin-top:-2px}
+.form-hint{margin:-2px 0 16px}
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table th{text-align:left;font-weight:600;font-size:var(--text-sm);color:var(--fg-2);padding:6px 8px;border-bottom:1px solid var(--line-strong);letter-spacing:.02em}
+.table td{padding:10px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+.table td:first-child,.table th:first-child{padding-left:0}
+.mt{margin-top:14px}
+.tags{display:flex;gap:6px;flex-wrap:wrap}
+.tag{font-family:var(--font-mono);font-size:11px;padding:1px 6px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);color:var(--fg-2)}
+.list{padding-left:18px;list-style:decimal}
+.list.bullet{list-style:disc}
+.list li{line-height:1.6}
+.gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.g-item{position:relative;aspect-ratio:4/3;background:var(--surface-warm);border:1px solid var(--border);border-radius:var(--radius-sm)}
+.g-item .stamp{position:absolute;top:8px;left:8px}
+.g-ok{position:absolute;top:8px;right:8px;width:18px;height:18px;border-radius:50%;background:var(--success);color:var(--accent-on);display:grid;place-items:center}
+.g-ok .ic{width:10px;height:10px;stroke-width:2}
+
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-check" viewBox="0 0 12 12"><path d="M2.5 6.4l2.4 2.4 4.6-4.9"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></symbol>
+  <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 16 16"><path d="M9 3h4v4M13 3L7 9M11 9v4H3V5h4"/></symbol>
+</svg>
+
+<main class="sheet" data-od-id="sheet">
+  <header class="sheet-head" data-od-id="sheet-head">
+    <span class="eyebrow">SEO OPS / GBP POST / PROTOTYPE</span>
+    <h1 data-od-id="sheet-title">GBP Post 任务界面原型</h1>
+    <p>一个 GBP_POST 任务 = 为一家餐厅的一个 Google Business Profile 门店准备并发布一篇帖子。内容和图片由内容 Agent 生成，操作员只能批准或退回；批准后由发布 Agent 写入 Google，系统读回 Google 上的帖子精确匹配后才算完成。下面按任务生命周期 PENDING → PREPARING → AWAITING_APPROVAL → EXECUTING → VERIFYING → DONE / NEEDS_ATTENTION 的顺序静态铺开 8 个任务页画面，最后是商户侧的 3 张新界面。所有状态并排展示，不依赖点击；桌面 1180px 起，左侧固定导航栏未画。</p>
+    <ol class="toc" data-od-id="toc">
+      <li><span class="idx">01</span><a href="#task-preparing">内容准备中</a><span class="mono">task-preparing</span></li>
+      <li><span class="idx">02</span><a href="#task-preparing-blocked">缺少风格档案</a><span class="mono">task-preparing-blocked</span></li>
+      <li><span class="idx">03</span><a href="#task-awaiting-approval">待审批</a><span class="mono">task-awaiting-approval</span></li>
+      <li><span class="idx">04</span><a href="#task-approve-dialog">批准确认对话框</a><span class="mono">task-approve-dialog</span></li>
+      <li><span class="idx">05</span><a href="#task-executing">发布中</a><span class="mono">task-executing</span></li>
+      <li><span class="idx">06</span><a href="#task-verifying">核对中</a><span class="mono">task-verifying</span></li>
+      <li><span class="idx">07</span><a href="#task-done">已上线</a><span class="mono">task-done</span></li>
+      <li><span class="idx">08</span><a href="#task-needs-attention">需要处理</a><span class="mono">task-needs-attention</span></li>
+      <li><span class="idx">09</span><a href="#merchant-and-profile">商户侧界面</a><span class="mono">merchant-and-profile</span></li>
+    </ol>
+  </header>
+
+  <!-- 01 PREPARING -->
+  <section id="task-preparing" class="proto" data-od-id="task-preparing">
+    <div class="proto-head"><span class="idx">01</span><h2 data-od-id="task-preparing-title">任务页 · PREPARING（内容准备中）</h2><p>帖子卡为骨架屏；rail 的「发布身份」为空态。</p></div>
+    <div class="screen">
+      <header class="task-context" data-od-id="task-preparing-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-brand">PREPARING · 内容准备中</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹" data-od-id="lifecycle-preparing">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="current" aria-current="step"><span class="mark"></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="future"><span class="mark"></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="future"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main">
+        <div class="col">
+          <article class="post-card" aria-busy="true" data-od-id="post-card-preparing">
+            <div class="post-head" role="status">内容 Agent 准备中 · 加载中…</div>
+            <div class="post-media sk"></div>
+            <div class="post-body"><div class="sk sk-line" style="width:92%"></div><div class="sk sk-line" style="width:84%"></div><div class="sk sk-line" style="width:58%"></div></div>
+            <footer class="post-foot">George Merchant · 2020 Broadway, New York, NY</footer>
+          </article>
+          <div class="card" data-od-id="prep-inputs">
+            <h3>本次准备使用的输入</h3>
+            <dl class="params">
+              <dt>门店</dt><dd>2020 Broadway</dd>
+              <dt>主题</dt><dd>brunch</dd>
+              <dt>关键词簇</dt><dd>hakka / chinese / brunch</dd>
+              <dt>风格档案</dt><dd>v1</dd>
+              <dt>日历上下文</dt><dd>Labor Day 2026-09-07 · 本期优惠：Weekday Brunch Set</dd>
+              <dt>候选图</dt><dd>6 张</dd>
+            </dl>
+          </div>
+        </div>
+        <aside class="col rail">
+          <div class="card" data-od-id="publish-identity-preparing">
+            <span class="eyebrow">PUBLISHER</span><h3>发布身份</h3>
+            <div class="empty soft-surface">尚未批准</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 PREPARING · blocked -->
+  <section id="task-preparing-blocked" class="proto" data-od-id="task-preparing-blocked">
+    <div class="proto-head"><span class="idx">02</span><h2 data-od-id="task-preparing-blocked-title">任务页 · PREPARING（缺少风格档案，无法开始）</h2><p>帖子卡位置换成 warning 提示；「开始内容准备」禁用。</p></div>
+    <div class="screen">
+      <header class="task-context" data-od-id="task-preparing-blocked-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-brand">PREPARING · 内容准备中</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹" data-od-id="lifecycle-preparing-blocked">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="current" aria-current="step"><span class="mark"></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="future"><span class="mark"></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="future"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main">
+        <div class="col">
+          <div class="notice notice-warn" role="alert" data-od-id="blocked-notice">
+            <p class="grow">该商户尚未填写风格档案，内容 Agent 无法开始。</p>
+            <a class="button" href="#merchant-and-profile" data-od-id="cta-fill-style-profile">去填写风格档案</a>
+          </div>
+          <div class="actions" data-od-id="actions-blocked"><button class="button primary" type="button" disabled>开始内容准备</button></div>
+          <div class="card" data-od-id="prep-inputs-blocked">
+            <h3>本次准备使用的输入</h3>
+            <dl class="params">
+              <dt>门店</dt><dd>2020 Broadway</dd>
+              <dt>主题</dt><dd>brunch</dd>
+              <dt>关键词簇</dt><dd>hakka / chinese / brunch</dd>
+              <dt>风格档案</dt><dd><span class="stamp stamp-warn">未填写</span></dd>
+              <dt>日历上下文</dt><dd>Labor Day 2026-09-07 · 本期优惠：Weekday Brunch Set</dd>
+              <dt>候选图</dt><dd>6 张</dd>
+            </dl>
+          </div>
+        </div>
+        <aside class="col rail">
+          <div class="card" data-od-id="publish-identity-blocked">
+            <span class="eyebrow">PUBLISHER</span><h3>发布身份</h3>
+            <div class="empty soft-surface">尚未批准</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 AWAITING_APPROVAL -->
+  <section id="task-awaiting-approval" class="proto" data-od-id="task-awaiting-approval">
+    <div class="proto-head"><span class="idx">03</span><h2 data-od-id="task-awaiting-approval-title">任务页 · AWAITING_APPROVAL（待审批）</h2><p>完整帖子卡 + 「依据」折叠区（默认展开）+ 批准 / 退回操作区。</p></div>
+    <div class="screen">
+      <header class="task-context" data-od-id="task-awaiting-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-brand">AWAITING_APPROVAL · 待审批</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹" data-od-id="lifecycle-awaiting">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="current" aria-current="step"><span class="mark"></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="future"><span class="mark"></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="future"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main">
+        <div class="col">
+          <article class="post-card" data-od-id="post-card-awaiting">
+            <div class="post-media"><span class="stamp stamp-neutral">商户照片</span></div>
+            <div class="post-body"><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway is your friendly local spot for a relaxed brunch. Stop by and see us soon.</p><a class="post-cta" href="#">Learn more</a></div>
+            <footer class="post-foot">George Merchant · 2020 Broadway, New York, NY</footer>
+          </article>
+          <details class="basis" open data-od-id="basis-awaiting">
+            <summary>依据</summary>
+            <div class="basis-body">
+              <dl class="params">
+                <dt>关键词</dt><dd>hakka / chinese / brunch</dd>
+                <dt>证据引用</dt><dd><ul class="refs"><li class="mono">fbr-keyword-set:54b7…</li><li class="mono">gbp-location-readback:6709…</li><li class="mono">merchant-style-profile:v1</li></ul></dd>
+                <dt>Agent limitations</dt><dd><p class="quote">No absolute HTTPS URL was supplied for a booking page, so cta_type is LEARN_MORE with the website URL.</p><p class="quote">Copy contains no phone number per policy.</p></dd>
+              </dl>
+            </div>
+          </details>
+          <div class="actions" data-od-id="actions-awaiting">
+            <button class="button primary-danger" type="button" data-od-id="cta-approve-publish">批准并发布</button>
+            <button class="button" type="button" data-od-id="cta-return-prepare">退回重新准备</button>
+            <span class="note">批准后由发布 Agent 写入 Google，不能撤回；发布后如需修改，请新建补偿任务。</span>
+          </div>
+        </div>
+        <aside class="col rail">
+          <div class="card" data-od-id="publish-identity-awaiting">
+            <span class="eyebrow">PUBLISHER</span><h3>发布身份</h3>
+            <div class="empty soft-surface">尚未批准</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 approve dialog -->
+  <section id="task-approve-dialog" class="proto" data-od-id="task-approve-dialog">
+    <div class="proto-head"><span class="idx">04</span><h2 data-od-id="task-approve-dialog-title">任务页 · 批准确认对话框</h2><p>在区块 03 上叠加 operation-confirm-dialog；点击遮罩不关闭。</p></div>
+    <div class="screen">
+      <div inert>
+      <header class="task-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-brand">AWAITING_APPROVAL · 待审批</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="current" aria-current="step"><span class="mark"></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="future"><span class="mark"></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="future"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main">
+        <div class="col">
+          <article class="post-card" data-od-id="post-card-approve-dialog">
+            <div class="post-media"><span class="stamp stamp-neutral">商户照片</span></div>
+            <div class="post-body"><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway is your friendly local spot for a relaxed brunch. Stop by and see us soon.</p><a class="post-cta" href="#">Learn more</a></div>
+            <footer class="post-foot">George Merchant · 2020 Broadway, New York, NY</footer>
+          </article>
+          <details class="basis" open>
+            <summary>依据</summary>
+            <div class="basis-body">
+              <dl class="params">
+                <dt>关键词</dt><dd>hakka / chinese / brunch</dd>
+                <dt>证据引用</dt><dd><ul class="refs"><li class="mono">fbr-keyword-set:54b7…</li><li class="mono">gbp-location-readback:6709…</li><li class="mono">merchant-style-profile:v1</li></ul></dd>
+                <dt>Agent limitations</dt><dd><p class="quote">No absolute HTTPS URL was supplied for a booking page, so cta_type is LEARN_MORE with the website URL.</p><p class="quote">Copy contains no phone number per policy.</p></dd>
+              </dl>
+            </div>
+          </details>
+          <div class="actions">
+            <button class="button primary-danger" type="button">批准并发布</button>
+            <button class="button" type="button">退回重新准备</button>
+            <span class="note">批准后由发布 Agent 写入 Google，不能撤回；发布后如需修改，请新建补偿任务。</span>
+          </div>
+        </div>
+        <aside class="col rail">
+          <div class="card">
+            <span class="eyebrow">PUBLISHER</span><h3>发布身份</h3>
+            <div class="empty soft-surface">尚未批准</div>
+          </div>
+        </aside>
+      </div>
+      </div>
+      <div class="dialog-mask" data-od-id="approve-dialog-mask">
+        <div class="operation-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="approve-dialog-title" data-od-id="approve-dialog">
+          <header class="dialog-head">
+            <div><span class="eyebrow">GBP POST / PUBLISH</span><h4 id="approve-dialog-title">批准并发布这篇帖子</h4></div>
+            <button class="dialog-close" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+          </header>
+          <div class="dialog-body">
+            <p>发布 Agent 会把这一版内容和图片写入 Google 门店 2020 Broadway。发布后不能撤回，只能新建补偿任务修改。确认发布？</p>
+            <dl class="params">
+              <dt>目标门店</dt><dd class="mono">accounts/…/locations/6709824005172040369</dd>
+              <dt>Artifact checksum</dt><dd class="mono">b4de70ec4954…</dd>
+              <dt>图片来源</dt><dd>商户照片 · <span class="mono">f78ee971ac70…</span></dd>
+            </dl>
+          </div>
+          <footer class="dialog-foot soft-surface">
+            <button class="button quiet" type="button">取消</button>
+            <button class="button primary-danger" type="button" data-od-id="cta-confirm-publish">确认发布</button>
+          </footer>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 EXECUTING -->
+  <section id="task-executing" class="proto" data-od-id="task-executing">
+    <div class="proto-head"><span class="idx">05</span><h2 data-od-id="task-executing-title">任务页 · EXECUTING（发布中）</h2><p>帖子卡只读并加锁；status 提示显示 Attempt、触发时间、audit_id；没有操作按钮。</p></div>
+    <div class="screen">
+      <header class="task-context" data-od-id="task-executing-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-brand">EXECUTING · 发布中</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹" data-od-id="lifecycle-executing">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="current" aria-current="step"><span class="mark"></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="future"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main">
+        <div class="col">
+          <div class="notice notice-info" role="status" data-od-id="executing-status">
+            <div class="grow"><p>发布 Agent 执行中，页面每 10 秒刷新</p><p class="meta">Attempt #1 · 触发时间 2026-09-09 14:20:31 · audit_id aud_8f2c…</p></div>
+          </div>
+          <article class="post-card" data-od-id="post-card-executing">
+            <div class="post-media"><span class="stamp stamp-neutral">商户照片</span><span class="stamp stamp-neutral tr"><svg class="ic"><use href="#i-lock"/></svg>已锁定</span></div>
+            <div class="post-body"><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway is your friendly local spot for a relaxed brunch. Stop by and see us soon.</p><a class="post-cta" href="#">Learn more</a></div>
+            <footer class="post-foot">George Merchant · 2020 Broadway, New York, NY</footer>
+          </article>
+        </div>
+        <aside class="col rail">
+          <div class="card" data-od-id="publish-identity-executing">
+            <span class="eyebrow">PUBLISHER</span><h3>发布身份</h3>
+            <dl class="params stack">
+              <dt>目标门店</dt><dd class="mono">accounts/…/locations/6709824005172040369</dd>
+              <dt>批准人与时间</dt><dd>xander · 2026-09-09 14:20</dd>
+              <dt>Artifact checksum</dt><dd class="mono">b4de70ec4954…</dd>
+              <dt>图片来源与 sha256</dt><dd>商户照片 · <span class="mono">f78ee971ac70…</span></dd>
+              <dt>发布 Agent</dt><dd>SEO Ops GBP Post Publisher - 2026-09-09</dd>
+              <dt>audit_id</dt><dd class="mono">aud_8f2c…</dd>
+            </dl>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 VERIFYING -->
+  <section id="task-verifying" class="proto" data-od-id="task-verifying">
+    <div class="proto-head"><span class="idx">06</span><h2 data-od-id="task-verifying-title">任务页 · VERIFYING（核对中）</h2><p>已提交 Google，等待读回；提示带「立即重新核对」。</p></div>
+    <div class="screen">
+      <header class="task-context" data-od-id="task-verifying-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-brand">VERIFYING · 核对中</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹" data-od-id="lifecycle-verifying">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="current" aria-current="step"><span class="mark"></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="future"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main">
+        <div class="col">
+          <div class="notice notice-info" role="status" data-od-id="verifying-status">
+            <p class="grow">已提交 Google，等待读回 · 下次自动核对 4:32 后</p>
+            <button class="button" type="button" data-od-id="cta-recheck-now">立即重新核对</button>
+          </div>
+          <article class="post-card" data-od-id="post-card-verifying">
+            <div class="post-media"><span class="stamp stamp-neutral">商户照片</span><span class="stamp stamp-neutral tr"><svg class="ic"><use href="#i-lock"/></svg>已锁定</span></div>
+            <div class="post-body"><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway is your friendly local spot for a relaxed brunch. Stop by and see us soon.</p><a class="post-cta" href="#">Learn more</a></div>
+            <footer class="post-foot">George Merchant · 2020 Broadway, New York, NY</footer>
+          </article>
+        </div>
+        <aside class="col rail">
+          <div class="card" data-od-id="publish-identity-verifying">
+            <span class="eyebrow">PUBLISHER</span><h3>发布身份</h3>
+            <dl class="params stack">
+              <dt>目标门店</dt><dd class="mono">accounts/…/locations/6709824005172040369</dd>
+              <dt>批准人与时间</dt><dd>xander · 2026-09-09 14:20</dd>
+              <dt>Artifact checksum</dt><dd class="mono">b4de70ec4954…</dd>
+              <dt>图片来源与 sha256</dt><dd>商户照片 · <span class="mono">f78ee971ac70…</span></dd>
+              <dt>发布 Agent</dt><dd>SEO Ops GBP Post Publisher - 2026-09-09</dd>
+              <dt>audit_id</dt><dd class="mono">aud_8f2c…</dd>
+            </dl>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 DONE -->
+  <section id="task-done" class="proto" data-od-id="task-done">
+    <div class="proto-head"><span class="idx">07</span><h2 data-od-id="task-done-title">任务页 · DONE（已上线）</h2><p>帖子卡顶部「已上线」戳记；卡下方是 Google 读回参数表；没有操作按钮。</p></div>
+    <div class="screen">
+      <header class="task-context" data-od-id="task-done-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-ok">DONE · 已上线</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹" data-od-id="lifecycle-done">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="current ok" aria-current="step"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="future"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main">
+        <div class="col">
+          <article class="post-card" data-od-id="post-card-done">
+            <div class="post-head"><span class="stamp stamp-ok">已上线</span></div>
+            <div class="post-media"><span class="stamp stamp-neutral">商户照片</span></div>
+            <div class="post-body"><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway is your friendly local spot for a relaxed brunch. Stop by and see us soon.</p><a class="post-cta" href="#">Learn more</a></div>
+            <footer class="post-foot">George Merchant · 2020 Broadway, New York, NY</footer>
+          </article>
+          <div class="card" data-od-id="done-readback">
+            <h3>Google 读回结果</h3>
+            <dl class="params">
+              <dt>Google post_id</dt><dd class="mono">localPosts/8123…</dd>
+              <dt>读回时间</dt><dd>2026-09-09 14:26</dd>
+              <dt>search_url</dt><dd><a href="#" data-od-id="link-view-on-google">在 Google 上查看<svg class="ic" style="display:inline-block;vertical-align:-1px;margin-left:4px"><use href="#i-ext"/></svg></a></dd>
+            </dl>
+          </div>
+        </div>
+        <aside class="col rail">
+          <div class="card" data-od-id="publish-identity-done">
+            <span class="eyebrow">PUBLISHER</span><h3>发布身份</h3>
+            <dl class="params stack">
+              <dt>目标门店</dt><dd class="mono">accounts/…/locations/6709824005172040369</dd>
+              <dt>批准人与时间</dt><dd>xander · 2026-09-09 14:20</dd>
+              <dt>Artifact checksum</dt><dd class="mono">b4de70ec4954…</dd>
+              <dt>图片来源与 sha256</dt><dd>商户照片 · <span class="mono">f78ee971ac70…</span></dd>
+              <dt>发布 Agent</dt><dd>SEO Ops GBP Post Publisher - 2026-09-09</dd>
+              <dt>audit_id</dt><dd class="mono">aud_8f2c…</dd>
+            </dl>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 08 NEEDS_ATTENTION -->
+  <section id="task-needs-attention" class="proto" data-od-id="task-needs-attention">
+    <div class="proto-head"><span class="idx">08</span><h2 data-od-id="task-needs-attention-title">任务页 · NEEDS_ATTENTION（需要处理）</h2><p>409 风格横幅；左边批准的帖子卡，右边 Google 读回列表，两条精确匹配高亮。</p></div>
+    <div class="screen">
+      <div class="banner" role="alert" data-od-id="attention-banner">
+        <span class="stamp stamp-warn">需要处理</span>
+        <p>Google 上读到 2 条内容完全一致的帖子，无法确定哪一条是本次发布。</p>
+        <button class="button" type="button" data-od-id="cta-recheck">重新核对</button>
+      </div>
+      <header class="task-context" data-od-id="task-attention-context">
+        <a class="back" href="#">← 示例商户</a>
+        <span class="eyebrow">GBP POST / TASK</span>
+        <div class="task-title-row"><h3 class="task-title">为 2020 Broadway 门店发布一篇 brunch 主题帖子</h3><span class="stamp stamp-warn">NEEDS_ATTENTION · 需要处理</span></div>
+        <p class="task-source">来源 Plan #12 · revision 3</p>
+      </header>
+      <ol class="lifecycle" aria-label="生命周期轨迹" data-od-id="lifecycle-attention">
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PENDING</span><span class="name">待开始</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">PREPARING</span><span class="name">内容准备中</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">AWAITING_APPROVAL</span><span class="name">待审批</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">EXECUTING</span><span class="name">发布中</span></li>
+        <li class="done"><span class="mark"><svg class="ic"><use href="#i-check"/></svg></span><span class="code">VERIFYING</span><span class="name">核对中</span></li>
+        <li class="future"><span class="mark"></span><span class="code">DONE</span><span class="name">已上线</span></li>
+        <li class="current attn" aria-current="step"><span class="mark"></span><span class="code">NEEDS_ATTENTION</span><span class="name">需要处理</span></li>
+      </ol>
+      <div class="task-main two">
+        <div class="col">
+          <h3 class="col-title">批准的帖子</h3>
+          <article class="post-card" data-od-id="post-card-attention">
+            <div class="post-media"><span class="stamp stamp-neutral">商户照片</span><span class="stamp stamp-neutral tr"><svg class="ic"><use href="#i-lock"/></svg>已锁定</span></div>
+            <div class="post-body"><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway is your friendly local spot for a relaxed brunch. Stop by and see us soon.</p><a class="post-cta" href="#">Learn more</a></div>
+            <footer class="post-foot">George Merchant · 2020 Broadway, New York, NY</footer>
+          </article>
+        </div>
+        <div class="col">
+          <h3 class="col-title">Google 上读到的最近帖子</h3>
+          <ol class="readback" data-od-id="readback-list">
+            <li class="rb exact" data-od-id="readback-item-1"><div class="thumb"></div><div><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway…</p><div class="rb-meta"><span class="stamp stamp-ok">LIVE</span><span class="stamp stamp-brand">精确匹配</span><time datetime="2026-09-09T14:24">2026-09-09 14:24</time></div></div></li>
+            <li class="rb exact" data-od-id="readback-item-2"><div class="thumb"></div><div><p>Looking for Hakka and Chinese around Broadway? George Merchant at 2020 Broadway…</p><div class="rb-meta"><span class="stamp stamp-ok">LIVE</span><span class="stamp stamp-brand">精确匹配</span><time datetime="2026-09-09T14:23">2026-09-09 14:23</time></div></div></li>
+            <li class="rb" data-od-id="readback-item-3"><div class="thumb"></div><div><p>Labor Day hours: open 10am to 3pm on Monday, September 7. Come by for brunch and…</p><div class="rb-meta"><span class="stamp stamp-brand">PROCESSING</span><time datetime="2026-09-09T09:12">2026-09-09 09:12</time></div></div></li>
+            <li class="rb" data-od-id="readback-item-4"><div class="thumb"></div><div><p>Weekday Brunch Set is back: two mains and two drinks for one price. Call (212) 55…</p><div class="rb-meta"><span class="stamp stamp-bad">REJECTED</span><time datetime="2026-09-01T11:40">2026-09-01 11:40</time></div></div></li>
+          </ol>
+          <p class="sub">补救请新建补偿任务，本任务不可修改。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 merchant + profile -->
+  <section id="merchant-and-profile" class="proto" data-od-id="merchant-and-profile">
+    <div class="proto-head"><span class="idx">09</span><h2 data-od-id="merchant-and-profile-title">商户侧：新建任务 / 本期活动与优惠 / 风格档案与图库</h2><p>商户页两张卡 + 商户资料页的风格档案卡与图库卡。</p></div>
+    <div class="screen">
+      <div class="merchant-grid">
+        <form class="card area-form" data-od-id="merchant-new-task" onsubmit="return false">
+          <span class="eyebrow">MERCHANT / NEW TASK</span><h3>新建任务</h3>
+          <div class="field"><label for="f-type">任务类型</label><select id="f-type" class="input"><option value="PREPARE_ONLY">PREPARE_ONLY</option><option value="GBP_POST" selected>GBP_POST</option></select></div>
+          <div class="field"><label for="f-loc">门店</label><select id="f-loc" class="input"><option selected>2020 Broadway</option></select><span class="hint">只列已绑定的 GBP 门店</span></div>
+          <div class="field"><label for="f-topic">主题</label><input id="f-topic" class="input" type="text" value="brunch"></div>
+          <p class="hint form-hint">内容和图片由 Agent 生成，你只审批</p>
+          <button class="button primary" type="submit" data-od-id="cta-create-task">创建任务</button>
+        </form>
+        <div class="card area-offers" data-od-id="merchant-campaigns">
+          <span class="eyebrow">MERCHANT / CAMPAIGNS</span><h3>本期活动与优惠</h3>
+          <table class="table">
+            <thead><tr><th>标题</th><th>类型</th><th>起止</th><th>来源</th></tr></thead>
+            <tbody>
+              <tr><td>Weekday Brunch Set</td><td>优惠</td><td>09-01 到 09-30</td><td>商户提供</td></tr>
+              <tr><td>Labor Day Hours</td><td>活动</td><td>09-07</td><td>商户提供</td></tr>
+            </tbody>
+          </table>
+          <button class="button mt" type="button" data-od-id="cta-add-campaign">＋ 新增</button>
+        </div>
+        <div class="card area-profile" data-od-id="merchant-style-profile">
+          <div class="card-head"><div><span class="eyebrow">MERCHANT PROFILE / STYLE</span><h3>风格档案</h3></div><span class="stamp stamp-neutral keep">v1</span></div>
+          <dl class="params stack">
+            <dt>语气标签</dt><dd><span class="tags"><span class="tag">clear</span><span class="tag">friendly</span><span class="tag">local</span></span></dd>
+            <dt>帖子结构</dt><dd><ol class="list"><li>首句点明菜系与街区（Hakka and Chinese · Broadway）</li><li>第二句介绍门店与场景（brunch，轻松）</li><li>结尾一句邀请到店</li><li>全文 2–4 句，不超过 300 字符</li></ol></dd>
+            <dt>禁忌</dt><dd><ul class="list bullet"><li>不写电话号码</li><li>不用感叹号，不全大写</li><li>不承诺具体价格或折扣金额</li></ul></dd>
+            <dt>图片策略优先级</dt><dd>商户照片 › 操作员上传 › AI 生成</dd>
+            <dt>备注</dt><dd>菜单以客家菜为主，文案中优先用「Hakka and Chinese」表述，不用「Cantonese」。</dd>
+          </dl>
+          <button class="button mt" type="button" data-od-id="cta-edit-profile">编辑并保存为 v2</button>
+        </div>
+        <div class="card area-gallery" data-od-id="merchant-gallery">
+          <div class="card-head"><div><span class="eyebrow">MERCHANT PROFILE / GALLERY</span><h3>图库</h3></div><span class="sub">6 张 · 已授权 4 张</span></div>
+          <ul class="gallery">
+            <li class="g-item" data-od-id="gallery-item-1"><span class="stamp stamp-neutral">FBR 菜品图</span><span class="g-ok" title="已授权"><svg class="ic"><use href="#i-check"/></svg><span class="sr-only">已授权</span></span></li>
+            <li class="g-item" data-od-id="gallery-item-2"><span class="stamp stamp-neutral">FBR 菜品图</span><span class="g-ok" title="已授权"><svg class="ic"><use href="#i-check"/></svg><span class="sr-only">已授权</span></span></li>
+            <li class="g-item" data-od-id="gallery-item-3"><span class="stamp stamp-neutral">FBR 帖子图</span><span class="g-ok" title="已授权"><svg class="ic"><use href="#i-check"/></svg><span class="sr-only">已授权</span></span></li>
+            <li class="g-item" data-od-id="gallery-item-4"><span class="stamp stamp-neutral">FBR 帖子图</span></li>
+            <li class="g-item" data-od-id="gallery-item-5"><span class="stamp stamp-neutral">操作员上传</span><span class="g-ok" title="已授权"><svg class="ic"><use href="#i-check"/></svg><span class="sr-only">已授权</span></span></li>
+            <li class="g-item" data-od-id="gallery-item-6"><span class="stamp stamp-neutral">FBR 菜品图</span></li>
+          </ul>
+          <button class="button mt" type="button" data-od-id="cta-upload-photo">上传真实照片</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>
