@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type PerformanceDashboard as PerformanceDashboardData } from '../api'
+import { LoadingState, Notice } from '../components/feedback'
 
 const number = new Intl.NumberFormat('en-US')
 
@@ -205,8 +206,8 @@ export default function PerformanceDashboard() {
     api.getPerformanceDashboard().then(setDashboard).catch(err => setError((err as Error).message))
   }, [])
 
-  if (error) return <main aria-label="数据看板"><h1>Performance 数据看板</h1><p className="error" role="alert">读取数据看板失败：{error}</p></main>
-  if (!dashboard) return <main aria-label="数据看板"><h1>Performance 数据看板</h1><p className="page-summary">正在读取最近一次成功同步的表现快照…</p></main>
+  if (error) return <main aria-label="数据看板"><h1>Performance 数据看板</h1><Notice tone="error">读取数据看板失败：{error}</Notice></main>
+  if (!dashboard) return <main aria-label="数据看板"><h1>Performance 数据看板</h1><LoadingState label="正在读取最近一次成功同步的表现快照…" /></main>
 
   const gaps = dashboard.merchants.filter(merchant => merchant.data_status !== 'ready')
   const { coverage, totals, window } = dashboard

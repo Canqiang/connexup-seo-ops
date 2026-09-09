@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
 import { api, type Operator } from './api'
+import { Notice } from './components/feedback'
 import MerchantList from './pages/MerchantList'
 import MerchantDetail from './pages/MerchantDetail'
 import TaskDetail from './pages/TaskDetail'
@@ -113,7 +114,7 @@ function LoginPage({ onLogin }: { onLogin: (operator: Operator) => void }) {
         <p className="page-summary">内部运营控制台</p>
         <label>账号<input aria-label="账号" value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" required /></label>
         <label>密码<input aria-label="密码" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" required /></label>
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && <Notice tone="error">{error}</Notice>}
         <button className="primary" type="submit" disabled={busy}>{busy ? '登录中…' : '登录'}</button>
       </form>
     </main>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type TaskBlockerCode, type TaskReadiness, type TaskSourceKind, type TaskStatus, type TaskSummary, isAbortError } from '../api'
 import TaskTable from '../components/TaskTable'
 import { TASK_STATUS_LABELS } from '../labels'
+import { EmptyState, LoadingState, Notice } from '../components/feedback'
 
 const STATUS_RANK: Record<TaskStatus, number> = {
   NEEDS_ATTENTION: 0,
@@ -143,15 +144,14 @@ export default function TasksOverview() {
         </div>
 
         {error ? (
-          <section className="task-query-error" role="alert">
-            <p>{error}</p>
-            <button type="button" onClick={load}>重试查询</button>
-          </section>
+          <Notice tone="error" action={{ label: '重试查询', onClick: load, disabled: loading }}>{error}</Notice>
         ) : tasks.length > 0 ? (
           <TaskTable tasks={tasks} showMerchant />
-        ) : !loading ? (
-          <div className="empty-state">当前查询条件下没有任务。</div>
-        ) : null}
+        ) : loading ? (
+          <LoadingState variant="list" label="正在查询…" />
+        ) : (
+          <EmptyState>当前查询条件下没有任务。</EmptyState>
+        )}
       </section>
     </main>
   )
