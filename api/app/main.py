@@ -17,6 +17,7 @@ from .db import connect, init_db
 from .merchants import router as merchants_router
 from .merchant_profiles import identity_router, router as merchant_profiles_router
 from .performance_dashboard import router as performance_dashboard_router
+from .performance_query_api import router as performance_query_router
 from .performance_sync_api import router as performance_sync_router
 from .runs import router as runs_router
 from .scheduler import fbr_scheduler_loop, scheduler_loop
@@ -86,6 +87,9 @@ def create_app(lifespan_context) -> FastAPI:
     )
     application.include_router(
         performance_sync_router, dependencies=operator_dependencies
+    )
+    application.include_router(
+        performance_query_router, dependencies=operator_dependencies
     )
     application.include_router(
         agent_workbench_router, dependencies=operator_dependencies
