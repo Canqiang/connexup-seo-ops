@@ -202,7 +202,23 @@ def cmd_install_ds(src_dir: str, check_only: bool = False) -> None:
         shutil.copy2(src / name, dest / name)
     manifest["source"] = {"type": "local", "path": str(src)}
     (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
-    print(f"installed to {dest}")
+    # The daemon lists user folders as `draft` unless metadata.json says
+    # otherwise, and projects refuse draft design systems. Mirror what the
+    # app's publish toggle writes (design-systems/index.ts updateUserDesignSystem).
+    meta_path = dest / "metadata.json"
+    existing = json.loads(meta_path.read_text("utf-8")) if meta_path.is_file() else {}
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    metadata = {
+        **existing,
+        "title": manifest["name"],
+        "category": manifest["category"],
+        "surface": "web",
+        "status": "published",
+        "createdAt": existing.get("createdAt", now),
+        "updatedAt": now,
+    }
+    meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", "utf-8")
+    print(f"installed to {dest} (status=published)")
 
 
 def main(argv: list[str]) -> None:
