@@ -3503,3 +3503,89 @@ pre {
   .agent-workbench .agent-workbench__table-scroll:focus-visible,
   .agent-workbench.agent-workbench__portal .agent-workbench__drawer :focus-visible { outline: 3px solid Highlight; }
 }
+
+/* ---- 商户表现 Tab：只读存量数据，不触发同步/报告/扫描 ---- */
+.performance-page-header { padding-bottom: 4px; }
+.performance-page-header h1 { margin: 4px 0 0; }
+
+.performance-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 20px 26px;
+  padding: 16px 20px;
+  margin: 4px 0 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+.performance-filter-bar fieldset { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; border: 0; }
+.performance-filter-bar legend { padding: 0 0 6px; color: var(--ink-2); font-size: 11px; font-weight: 650; letter-spacing: .06em; }
+.performance-location-checkbox { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); }
+.performance-period-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.performance-period-presets button {
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.performance-period-presets button:hover { border-color: var(--brand); color: var(--brand-ink); }
+.performance-period-inputs { display: flex; gap: 14px; }
+.performance-period-inputs label,
+.performance-comparison-select {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .04em;
+}
+.performance-period-inputs input,
+.performance-comparison-select select { font-size: 13px; }
+.performance-filter-bar > button.primary { margin-left: auto; }
+
+.performance-scope-note {
+  margin: 0 0 20px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--brand);
+  background: var(--brand-soft);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.performance-period-summary { margin: 0 0 16px; color: var(--ink-2); font-size: 12px; }
+
+.performance-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.performance-kpi-card { padding: 16px 18px; background: var(--card); display: grid; gap: 6px; }
+.performance-kpi-card h3 { margin: 0; color: var(--ink-2); font-size: 12px; font-weight: 650; letter-spacing: .03em; }
+.performance-kpi-value { font: 650 26px/1.2 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); }
+.performance-kpi-compare { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 12px; }
+.performance-delta { font-weight: 650; }
+.performance-delta-up { color: var(--ok); }
+.performance-delta-down { color: var(--bad); }
+.performance-delta-flat { color: var(--ink-2); }
+.performance-kpi-delta-na { color: var(--muted); }
+.performance-kpi-partial { margin: 0; color: #9d5712; font-size: 11px; }
+.performance-kpi-footnote { margin: 0; color: var(--muted); font-size: 11px; }
+
+.performance-table-viewport { overflow-x: auto; border: 1px solid var(--line); background: var(--card); margin-bottom: 8px; }
+.performance-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.performance-table th, .performance-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.performance-table thead th { background: var(--paper-blue); color: var(--ink-2); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.performance-table tbody tr:last-child th, .performance-table tbody tr:last-child td { border-bottom: 0; }
+.performance-table caption { caption-side: top; padding: 8px 0; text-align: left; color: var(--ink-2); font-size: 12px; }
+
+.performance-backfill-notes { margin: 0; padding: 0 0 0 18px; color: var(--ink-2); font-size: 12px; }
+.performance-empty-note { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+
+.performance-timezone-gate { display: grid; gap: 10px; }
+.performance-timezone-gate-item { padding: 14px 16px; background: var(--card); border: 1px solid var(--line); display: grid; gap: 10px; }
+.performance-timezone-form { display: flex; align-items: center; gap: 10px; }
+.performance-timezone-form label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }

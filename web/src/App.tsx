@@ -9,6 +9,7 @@ import TaskDetail from './pages/TaskDetail'
 import RunDetail from './pages/RunDetail'
 import TasksOverview from './pages/TasksOverview'
 import MerchantProfile from './pages/MerchantProfile'
+import MerchantPerformance from './pages/MerchantPerformance'
 import PerformanceDashboard from './pages/PerformanceDashboard'
 import PlanReview from './pages/PlanReview'
 import AgentWorkbench from './pages/AgentWorkbench'
@@ -73,6 +74,7 @@ function DesktopShell({ operator, onLogout }: { operator: Operator; onLogout: ()
         <Routes>
           <Route path="/" element={<MerchantList />} />
           <Route path="/merchants/:id" element={<MerchantDetail />} />
+          <Route path="/merchants/:id/performance" element={<MerchantPerformance />} />
           <Route path="/merchants/:id/profile" element={<MerchantProfile />} />
           <Route path="/tasks" element={<TasksOverview />} />
           <Route path="/tasks/:id" element={<TaskDetail />} />

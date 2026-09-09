@@ -1,6 +1,36 @@
 import type { TaskPlan, TaskPlanPayload } from './taskPlan'
+import type {
+  MerchantPerformance,
+  MerchantPerformanceQuery,
+  PerformanceBackfillConfirmResult,
+  PerformanceBackfillPreflight,
+  PerformanceLocations,
+} from './performanceTypes'
 
 export type { TaskPlan, TaskPlanItem, TaskPlanPayload, TaskPlanRevision } from './taskPlan'
+export type {
+  Availability,
+  ComparisonMode,
+  Completeness,
+  DeltaReason,
+  KpiPeriodValue,
+  MerchantPerformance,
+  MerchantPerformancePeriods,
+  MerchantPerformanceQuery,
+  MissingReason,
+  PerformanceBackfillBlocker,
+  PerformanceBackfillConfirmResult,
+  PerformanceBackfillNote,
+  PerformanceBackfillPreflight,
+  PerformanceKpi,
+  PerformanceLocationSummary,
+  PerformanceLocations,
+  PerformanceQualityEvent,
+  PerformanceSeries,
+  PerformanceSeriesPoint,
+  PerformanceSource,
+  PeriodBasis,
+} from './performanceTypes'
 
 export type Merchant = {
   id: number
@@ -1207,4 +1237,20 @@ export const api = {
     request<TaskPlan>(`/api/task-plans/${id}/reject`, { method: 'POST', body: JSON.stringify(body), signal }),
   listPlanTasks: (id: number, signal?: AbortSignal) => request<PlanTaskSummary[]>(taskQueryPath({ plan_id: id, include_archived: true }), { signal }),
   listAllTasks: (filters: TaskQuery = {}, signal?: AbortSignal) => request<TaskSummary[]>(taskQueryPath(filters), { signal }),
+  getPerformanceLocations: (merchantId: number, signal?: AbortSignal) =>
+    request<PerformanceLocations>(`/api/merchants/${merchantId}/performance/locations`, { signal }),
+  setLocationTimezone: (locationId: number, timezoneName: string) =>
+    request<{ location_id: number; timezone_name: string; status: string }>(
+      `/api/merchant-locations/${locationId}/timezone`,
+      { method: 'PUT', body: JSON.stringify({ timezone_name: timezoneName }) },
+    ),
+  queryMerchantPerformance: (merchantId: number, body: MerchantPerformanceQuery, signal?: AbortSignal) =>
+    request<MerchantPerformance>(`/api/merchants/${merchantId}/performance/query`,
+      { method: 'POST', body: JSON.stringify(body), signal }),
+  performanceBackfillPreflight: (merchantId: number, body: { start: string; end: string }) =>
+    request<PerformanceBackfillPreflight>(`/api/merchants/${merchantId}/performance/backfill/preflight`,
+      { method: 'POST', body: JSON.stringify(body) }),
+  confirmPerformanceBackfill: (merchantId: number, body: { request_id: string; start: string; end: string; confirmed: true }) =>
+    request<PerformanceBackfillConfirmResult>(
+      `/api/merchants/${merchantId}/performance/backfill`, { method: 'POST', body: JSON.stringify(body) }),
 }
