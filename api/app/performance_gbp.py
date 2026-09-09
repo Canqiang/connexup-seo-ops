@@ -88,4 +88,4 @@ def classify_source_error(exc: Exception) -> Literal["retryable", "blocked"]:
         return "blocked"
     if isinstance(exc, FbrUnavailableError):
         return "retryable"
-    return "retryable"
+    return "blocked"

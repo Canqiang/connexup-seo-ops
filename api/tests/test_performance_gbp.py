@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.fbr_gbp import FbrPayloadError, FbrUnavailableError
+from app.fbr_gbp import FbrConfigurationError, FbrPayloadError, FbrUnavailableError
 from app.performance_gbp import classify_source_error, normalize_performance_payload
 
 GOLD = json.loads((Path(__file__).parent / "fixtures/performance/gbp_choice_brooklyn_gold.json").read_text())
@@ -63,3 +63,11 @@ def test_unknown_metric_keys_and_malformed_values_are_rejected():
 def test_transport_failures_are_retryable_and_payload_failures_are_blocked():
     assert classify_source_error(FbrUnavailableError("timeout")) == "retryable"
     assert classify_source_error(FbrPayloadError("bad")) == "blocked"
+
+
+def test_configuration_errors_are_blocked():
+    assert classify_source_error(FbrConfigurationError("invalid key")) == "blocked"
+
+
+def test_unexpected_exceptions_are_blocked():
+    assert classify_source_error(RuntimeError("unexpected")) == "blocked"
