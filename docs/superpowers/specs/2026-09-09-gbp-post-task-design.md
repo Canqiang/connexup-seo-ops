@@ -1,7 +1,7 @@
 # GBP Post 任务设计（第一个外部写闭环）
 
 日期：2026-09-09
-状态：待用户审阅（UI 原型由 OpenDesign 生成中，见 `docs/evidence/2026-09-09-gbp-post-ui/`）
+状态：待用户审阅（UI 原型已由 OpenDesign 生成并归档，待定稿：`docs/evidence/2026-09-09-gbp-post-ui/`）
 取代：`2026-09-03-gbp-post-execution-phase-3.md` 里「发布 Agent + 验证 Agent + 托管策略」的实施假设；沿用 `2026-09-02-agent-generated-task-dependencies-design.md` 的状态机、ApprovalGrant 与「只有读回才算 DONE」原则。
 
 ## 1. 目标
@@ -14,12 +14,14 @@
 
 ## 2. 已拍板的决定（2026-09-09 讨论）
 
+**总原则：Agent 驱动；AM（人）是执行者类型之一。** 任何阶段的执行者都建模为 `assignee(AGENT|HUMAN)`，共用同一条 attempt、授权、读回核对链路；不为「人工」单独造旁路。
+
 | 问题 | 决定 |
 |---|---|
-| 谁生成内容 | 内容 Agent（Core AI），输入由 SEO Ops 服务端组装 |
+| 谁生成内容 | PREPARATION 阶段执行者默认是内容 Agent（Core AI），输入由 SEO Ops 服务端组装；执行者模型允许 HUMAN，但第一版不开放人工写稿 |
 | 操作员能否改内容 | 不能，只能批准或退回重新准备 |
 | 图片来源 | Agent 决定：候选图库有真实照片就选，没有才生成一次；操作员不按任务选图 |
-| 谁发布 | 独立的发布 Agent（Core AI），只挂 `createLocationPost` 一个工具 |
+| 谁发布 | PUBLICATION 阶段的执行者：默认绑定的发布 Agent（Core AI，只挂 `createLocationPost`），AM 可在批准时选择「由我发布」作为 HUMAN 执行者 |
 | 怎么验收 | 服务端读 FBR 帖子列表，正文 + CTA 精确匹配、唯一、LIVE 才 DONE |
 | 任务来源 | 诊断 Plan 提出 + 商户页手建，一任务一篇，不做排期日历 |
 | 本地活动与节日 | 服务端算节假日 + 操作员录入活动优惠；第一版不让 Agent 上网 |
@@ -59,6 +61,7 @@ Plan / 操作员 ──创建──▶ Task(GBP_POST, PENDING)
 | 内容 Agent | Core AI | `builtin-media-generation`（生图一次） | 任何写 GBP、上网、文件、子 Agent |
 | 发布 Agent | Core AI | `api-operation:operation-assistant-api:GBPOperationWebService:createLocationPost` | 改内容、改目标、任何读或第二次写 |
 | 核对 | SEO Ops 服务端 | FBR 只读 | 无 |
+| AM 作为发布执行者（HUMAN） | 操作员 | 按发布清单在 GBP 后台发布，声明「我已发布」 | 改内容、改目标；DONE 仍只由服务端读回决定 |
 
 ## 5. 任务模型
 
@@ -154,7 +157,9 @@ SEO_OPS_GBP_POST_ENABLED=false
 - 批准：现有 `approve-execution` 扩展为写 `task_approvals`（新表）：task version、execution id、artifact checksum、media sha256、operator、时间、`grant_type=HUMAN`。任务 → EXECUTING。退回：原因必填，任务 → PENDING，artifact 保留。
 - `audit_id` 解析（发布前，服务端）：`PUT /seo/audit` searchAudits 按 `merchant_id + place_id` 取最新；没有 → 任务 NEEDS_ATTENTION（blocker `FBR_AUDIT_MISSING`），提示先在 FBR 建立审计。不自动 saveAudit。
 - 图片公网 URL：`MERCHANT_PHOTO` 用其 Google URL；`AI_GENERATED` / `OPERATOR_UPLOAD` 先用现有 FBR `upload-media` 把图片上传为门店照片得到 Google URL，再用于帖子（避免依赖 Core AI 公开链接的有效期）。这一步也是写，纳入同一次批准的授权范围，并在 attempt 里记录 media key。
-- PUBLICATION attempt：先落库 request JSON 与 checksum、idempotency key，再 trigger 发布 Agent 一次。
+- 执行者选择：批准时 AM 选择本次 PUBLICATION 的执行者，默认是绑定的发布 Agent，也可以选「由我发布」。两种执行者创建同一种 PUBLICATION attempt（`executor_type ∈ AGENT|HUMAN` 记录在 attempt 上）。
+- AGENT 执行：先落库 request JSON 与 checksum、idempotency key，再 trigger 发布 Agent 一次。
+- HUMAN 执行：attempt 落库后任务进 EXECUTING，页面给发布清单（正文复制、图片下载、CTA、目标门店、audit_id）；AM 点「我已发布，去核对」即写入声明并进入 VERIFYING。声明不是完成，核对规则与 AGENT 完全相同。
 - 结果处理：COMPLETED 且 trace 里 `createLocationPost` 恰好一次且返回 `post_id` → 记 `provider_resource_id`，任务 → VERIFYING。trace 显示零次调用且 run 失败 → 可重新发布（同幂等身份，限 2 次）。其他任何情况（超时、多次调用、无 post_id、响应丢失）→ 直接 VERIFYING 以读回为准，绝不重发。
 
 ## 10. 核对
@@ -181,7 +186,7 @@ SEO_OPS_GBP_POST_ENABLED=false
 
 ## 13. UI
 
-任务页 GBP_POST 变体按阶段切换帖子卡（PREPARING 骨架屏与输入清单 / 阻断提示；AWAITING_APPROVAL 完整帖子卡 + 依据 + 批准并发布（ConfirmDialog）与退回；EXECUTING 只读加锁 + status；VERIFYING 倒计时 + 立即重新核对；DONE 已上线戳记 + post_id + search_url；NEEDS_ATTENTION 顶部横幅 + 左批准卡右读回列表）。rail 增加「发布身份」卡。商户页新增类型选择与门店下拉、「本期活动与优惠」；资料页新增「风格档案」「图库」卡；任务总览加类型筛选。全部复用 `components/feedback`。视觉以 OpenDesign 原型定稿为准（`docs/evidence/2026-09-09-gbp-post-ui/`）。
+任务页 GBP_POST 变体按阶段切换帖子卡（PREPARING 骨架屏与输入清单 / 阻断提示；AWAITING_APPROVAL 完整帖子卡 + 依据 + 批准并发布（ConfirmDialog）与退回；EXECUTING 只读加锁 + status（AGENT 执行者显示 attempt 进度；HUMAN 执行者显示发布清单和「我已发布，去核对」）；VERIFYING 倒计时 + 立即重新核对；DONE 已上线戳记 + post_id + search_url；NEEDS_ATTENTION 顶部横幅 + 左批准卡右读回列表）。rail 增加「发布身份」卡。商户页新增类型选择与门店下拉、「本期活动与优惠」；资料页新增「风格档案」「图库」卡；任务总览加类型筛选。全部复用 `components/feedback`。视觉以 OpenDesign 原型定稿为准（`docs/evidence/2026-09-09-gbp-post-ui/`）。
 
 ## 14. 待验证（写实施计划前各做一次）
 
