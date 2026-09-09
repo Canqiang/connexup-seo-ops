@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -296,8 +296,6 @@ describe('merchant lifecycle', () => {
 
   it('offers guarded deletion only for an eligible archived blank draft', async () => {
     window.history.pushState({}, '', '/')
-    const confirmMock = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmMock)
     const archivedMerchant = {
       id: 7,
       name: '误建空白草稿',
@@ -336,9 +334,10 @@ describe('merchant lifecycle', () => {
     const deleteButton = await screen.findByRole('button', { name: '删除商户 误建空白草稿' })
     fireEvent.click(deleteButton)
 
-    expect(confirmMock).toHaveBeenCalledWith(
-      '“误建空白草稿”没有任何同步、任务、分析或审计历史。删除空白草稿后无法恢复，确认删除？',
-    )
+    const dialog = await screen.findByRole('dialog', { name: '删除空白草稿' })
+    within(dialog).getByText('“误建空白草稿”没有任何同步、任务、分析或审计历史。删除空白草稿后无法恢复，确认删除？')
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE')).toBe(false)
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/merchants/7',
       expect.objectContaining({ method: 'DELETE' }),

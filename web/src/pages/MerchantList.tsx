@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { api, type MerchantStats } from '../api'
 import { formatTime } from '../format'
 import { RUN_STATUS_LABELS } from '../labels'
+import { ConfirmDialog, EmptyState, Notice } from '../components/feedback'
 
 const isConnectedProfileReady = (profile: {
   state: string
@@ -26,6 +27,8 @@ export default function MerchantList() {
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [creating, setCreating] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<MerchantStats | null>(null)
+  const [deleteError, setDeleteError] = useState('')
   const [error, setError] = useState('')
   const createLockRef = useRef(false)
 
@@ -94,21 +97,25 @@ export default function MerchantList() {
     }
   }
 
-  const removeBlankDraft = async (event: React.MouseEvent, merchant: MerchantStats) => {
+  const requestBlankDraftRemoval = (event: React.MouseEvent, merchant: MerchantStats) => {
     event.preventDefault()
     event.stopPropagation()
     if (!merchant.can_delete || deletingId !== null) return
-    const confirmed = window.confirm(
-      `“${merchant.name}”没有任何同步、任务、分析或审计历史。删除空白草稿后无法恢复，确认删除？`,
-    )
-    if (!confirmed) return
+    setDeleteError('')
+    setPendingDelete(merchant)
+  }
+
+  const removeBlankDraft = async () => {
+    const merchant = pendingDelete
+    if (!merchant || deletingId !== null) return
     setDeletingId(merchant.id)
     try {
       await api.deleteMerchant(merchant.id)
       setMerchants(current => current.filter(item => item.id !== merchant.id))
       setError('')
+      setPendingDelete(null)
     } catch (err) {
-      setError((err as Error).message)
+      setDeleteError((err as Error).message)
     } finally {
       setDeletingId(null)
     }
@@ -116,7 +123,7 @@ export default function MerchantList() {
 
   return (
     <main aria-label="商户台账" className="merchant-ledger-page">
-      {error && <p className="error">{error}</p>}
+      {error && <Notice tone="error">{error}</Notice>}
       <section className="panel">
         <div className="panel-head">
           <div>
@@ -220,7 +227,7 @@ export default function MerchantList() {
                         className="merchant-delete-action"
                         aria-label={`删除商户 ${m.name}`}
                         disabled={deletingId !== null}
-                        onClick={event => void removeBlankDraft(event, m)}
+                        onClick={event => requestBlankDraftRemoval(event, m)}
                       >
                         {deletingId === m.id ? '删除中…' : '删除草稿'}
                       </button>
@@ -234,9 +241,21 @@ export default function MerchantList() {
             </table>
           </div>
         ) : (
-          <div className="empty-state">当前筛选下没有商户。</div>
+          <EmptyState>当前筛选下没有商户。</EmptyState>
         )}
       </section>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        code="DRAFT / DELETE"
+        title="删除空白草稿"
+        message={pendingDelete ? `“${pendingDelete.name}”没有任何同步、任务、分析或审计历史。删除空白草稿后无法恢复，确认删除？` : ''}
+        confirmLabel="确认删除"
+        busyLabel="删除中…"
+        busy={deletingId !== null}
+        error={deleteError}
+        onConfirm={() => void removeBlankDraft()}
+        onCancel={() => { if (deletingId === null) { setPendingDelete(null); setDeleteError('') } }}
+      />
     </main>
   )
 }
