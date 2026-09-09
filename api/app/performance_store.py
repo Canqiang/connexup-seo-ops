@@ -230,7 +230,14 @@ def publish_metric_batch(
         # metric_observation_heads INSERT/UPDATE — collect what each head
         # write needs here and apply it after that flip.
         pending: list[tuple[int, str, sqlite3.Row | None]] = []
-        for draft in observations:
+        # published_sequence only needs to strictly increase, so the next
+        # free value is read once (not once per observation, which would
+        # make publishing a batch of N observations pay an O(table size)
+        # scan N times under the held write lock) and offset locally.
+        next_sequence = conn.execute(
+            "SELECT COALESCE(MAX(published_sequence), 0) + 1 FROM metric_observations"
+        ).fetchone()[0]
+        for offset, draft in enumerate(observations):
             logical = _logical_key(draft)
             logical_sha = canonical_sha256(logical)
             logical_bytes = canonical_json_bytes(logical)
@@ -242,9 +249,7 @@ def publish_metric_batch(
                 "completeness": draft.completeness,
                 "formula_version": METRIC_REGISTRY_VERSION,
             }
-            sequence = conn.execute(
-                "SELECT COALESCE(MAX(published_sequence), 0) + 1 FROM metric_observations"
-            ).fetchone()[0]
+            sequence = next_sequence + offset
             previous = conn.execute(
                 "SELECT observation_id, head_generation FROM metric_observation_heads"
                 " WHERE logical_key_sha256 = ?",
@@ -324,12 +329,19 @@ def query_metric_heads(
 ) -> list[HeadObservation]:
     """Return each logical key's current head observation in the given window.
 
-    ``superseded`` is True only when the head's value actually differs from
-    the observation it replaced — compared via ``content_sha256``, which
-    folds in numeric_value/availability/completeness/formula_version/
-    logical_key. A republish that carries the same value as before still
-    advances ``head_generation`` (a new observation was appended) but is not
-    a "correction", so it reports ``superseded=False``.
+    ``superseded`` is True when *any* observation sharing the head's
+    ``logical_key_sha256`` (i.e. any earlier or later publish for the same
+    scope/date/metric/dimension, not just the one immediately superseded)
+    differs from the head in ``numeric_value``, ``availability`` or
+    ``completeness``. This makes the flag sticky across a chain like
+    3 -> 5 -> 5: the final republish of 5 is still flagged as a corrected
+    day, because some observation in its chain (the original 3) disagrees
+    with the current value. A day that was only ever republished with the
+    same value (3 -> 3) is never flagged, since nothing in its chain
+    disagrees. The comparison deliberately excludes ``formula_version`` (and
+    so does not use ``content_sha256``, which folds it in) — a metric
+    registry version bump must not retroactively mark every republished day
+    as corrected when the observed number never moved.
     """
     if not scope_ids or not metric_keys:
         return []
@@ -338,11 +350,16 @@ def query_metric_heads(
     rows = conn.execute(
         "SELECT o.source_scope_id, o.metric_key, o.business_date, o.numeric_value, o.availability,"
         " o.completeness, o.id AS observation_id,"
-        " (o.supersedes_observation_id IS NOT NULL AND prior.content_sha256 != o.content_sha256)"
-        "   AS superseded"
+        " EXISTS ("
+        "   SELECT 1 FROM metric_observations e"
+        "   WHERE e.logical_key_sha256 = o.logical_key_sha256"
+        "     AND e.id != o.id"
+        "     AND (e.numeric_value IS NOT o.numeric_value"
+        "          OR e.availability != o.availability"
+        "          OR e.completeness != o.completeness)"
+        " ) AS superseded"
         " FROM metric_observation_heads h"
         " JOIN metric_observations o ON o.id = h.observation_id"
-        " LEFT JOIN metric_observations prior ON prior.id = o.supersedes_observation_id"
         f" WHERE o.source_scope_id IN ({scope_marks}) AND o.metric_key IN ({metric_marks})"
         "   AND o.business_date BETWEEN ? AND ?"
         " ORDER BY o.business_date, o.source_scope_id, o.metric_key",
@@ -419,7 +436,8 @@ def open_quality_events(
         "SELECT source, category, severity, start_date, end_date, details_json, status, resolved_at"
         f" FROM data_quality_events WHERE source_scope_id IN ({marks}) AND status = 'open'"
         "   AND (start_date IS NULL OR start_date <= ?) AND (end_date IS NULL OR end_date >= ?)"
-        " ORDER BY severity DESC, category, start_date",
+        " ORDER BY CASE severity WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 ELSE 2 END, category,"
+        "   start_date",
         (*scope_ids, end.isoformat(), start.isoformat()),
     ).fetchall()
     return [

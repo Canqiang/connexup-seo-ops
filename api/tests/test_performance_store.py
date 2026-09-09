@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -93,6 +94,20 @@ def test_republishing_an_identical_observation_keeps_one_head_generation(conn):
     assert heads[0].numeric_value == Decimal("3") and heads[0].superseded is False
 
 
+def test_superseded_stays_true_after_a_correction_is_republished_unchanged(conn):
+    """A day that was genuinely corrected (3 -> 5) must stay flagged even
+    after the corrected value is republished unchanged (5 -> 5) — this is
+    the routine "republish the current month" case, and the flag must not
+    reset just because the latest publish happens to match the one before
+    it (3 -> 5 -> 5 must report superseded=True, not just 3 -> 5)."""
+    scope_id = _scope(conn)
+    _publish(conn, scope_id, Decimal("3"), attempt=1)
+    _publish(conn, scope_id, Decimal("5"), attempt=2)
+    _publish(conn, scope_id, Decimal("5"), attempt=3)
+    heads = query_metric_heads(conn, (scope_id,), ("CALL_CLICKS",), date(2026, 8, 18), date(2026, 8, 18))
+    assert heads[0].numeric_value == Decimal("5") and heads[0].superseded is True
+
+
 def test_unavailable_observation_keeps_a_null_value_not_zero(conn):
     scope_id = _scope(conn)
     job_id = create_sync_job(
@@ -173,3 +188,50 @@ def test_open_quality_events_excludes_resolved_events(conn):
     conn.execute("UPDATE data_quality_events SET status = 'resolved' WHERE id = ?", (event_id,))
     conn.commit()
     assert open_quality_events(conn, (scope_id,), date(2026, 8, 18), date(2026, 8, 18)) == []
+
+
+def test_open_quality_events_sorts_most_severe_first(conn):
+    scope_id = _scope(conn)
+    for severity, category in (("info", "A"), ("yellow", "B"), ("red", "C")):
+        record_quality_event(
+            conn, source="GBP", scope_id=scope_id, merchant_id=None, location_id=None,
+            category=category, severity=severity,
+            start=date(2026, 8, 1), end=date(2026, 8, 31),
+            details={}, batch_id=None, now=NOW,
+        )
+    events = open_quality_events(conn, (scope_id,), date(2026, 8, 18), date(2026, 8, 18))
+    assert [event["severity"] for event in events] == ["red", "yellow", "info"]
+
+
+def test_create_sync_job_is_idempotent_for_a_byte_identical_repeat(conn):
+    scope_id = _scope(conn)
+    kwargs = dict(
+        job_type="backfill", request_id="idem-1", requested_by="test",
+        scope_manifest={"scope_ids": [scope_id]}, start=date(2026, 8, 1), end=date(2026, 8, 31), now=NOW,
+    )
+    first_id = create_sync_job(conn, **kwargs)
+    second_id = create_sync_job(conn, **kwargs)
+    assert first_id == second_id
+    count = conn.execute(
+        "SELECT COUNT(*) FROM metric_sync_jobs WHERE request_id = ?", ("idem-1",)
+    ).fetchone()[0]
+    assert count == 1
+
+
+def test_create_sync_job_rejects_request_id_reuse_with_a_different_window(conn):
+    scope_id = _scope(conn)
+    create_sync_job(
+        conn, job_type="backfill", request_id="idem-2", requested_by="test",
+        scope_manifest={"scope_ids": [scope_id]}, start=date(2026, 8, 1), end=date(2026, 8, 31), now=NOW,
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        create_sync_job(
+            conn, job_type="backfill", request_id="idem-2", requested_by="test",
+            scope_manifest={"scope_ids": [scope_id]}, start=date(2026, 9, 1), end=date(2026, 9, 30), now=NOW,
+        )
+    # The rejected attempt must not have left a dangling transaction — the
+    # connection is still usable, and no second/divergent job was created.
+    count = conn.execute(
+        "SELECT COUNT(*) FROM metric_sync_jobs WHERE request_id = ?", ("idem-2",)
+    ).fetchone()[0]
+    assert count == 1
