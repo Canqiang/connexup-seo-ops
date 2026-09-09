@@ -1,71 +1,31 @@
 #!/usr/bin/env python3
-"""Acceptance check for the AM workspace prototype v4 (data workspace + interaction contract specs, prompt-v4.md)."""
+"""Acceptance check for the AM workspace prototype v5 (interactive single file, prompt-v5.md).
+
+Static part: demo-data JSON exists and is self-consistent, routes referenced by links/buttons match the
+route table, retired copy is absent, no external resources. The click-through itself is verified in a
+real browser (see run.json "browserCheck")."""
 from __future__ import annotations
-import re, sys
+import json, re, sys
 from pathlib import Path
 
 PROTO = Path(__file__).resolve().parent / "prototype"
-REQUIRED_SECTIONS = [
-    "am-home", "am-merchant-list", "am-task-list", "am-merchant-space",
-    "am-audit-center", "am-audit-compare", "am-performance",
-    "am-gbp-work-order", "am-exceptions", "am-task-detail-human",
-    "am-dispatch-drawer", "am-team", "am-memory", "am-model-cost", "am-reports",
+ROUTES = [
+    r"#/$", r"#/merchants(\?.*)?$", r"#/merchants/[a-z0-9-]+$", r"#/merchants/[a-z0-9-]+/(plans|performance|audit|profile|reports)(\?.*)?$",
+    r"#/audits/[A-Za-z0-9-]+$", r"#/audits/[A-Za-z0-9-]+/compare/[A-Za-z0-9-]+$",
+    r"#/reports/[A-Za-z0-9-]+/v/\d+(/review)?$", r"#/work-orders/[A-Za-z0-9-]+(\?.*)?$", r"#/tasks/[A-Za-z0-9-]+$",
+    r"#/plans/[A-Za-z0-9-]+$", r"#/team(/models|/members/[A-Za-z0-9-]+|/skills/[A-Za-z0-9-]+)?$", r"#/exceptions$",
+    r"#/keywords/[^#]+$", r"#/memory/.+$",
 ]
 REQUIRED_COPY = [
-    # navigation + home groups
-    "工作台", "商户", "任务与计划", "数据与报告", "团队",
-    "需要我决定", "分派给我", "需要关注", "仅知会",
-    # flow fix 1: in-scope auto dispatch vs out-of-scope group approval
-    "已在 Plan #12 授权范围内创建并分派", "超出授权范围 · 需要你整体批准", "整体批准这 2 项",
-    "范围内 2 项已派单 · 范围外 2 项等你批准", "已派单",
-    # flow fix 2: review is a real human task inside a work order
-    "GBP 内容工作单", "批准这一版", "退回并说明", "本版不含价格", "已解除对本版的阻塞",
-    # flow fix 3: home only offers review
-    "审阅草稿", "完整内容在审阅页",
-    # flow fix 4: human task secondary actions
-    "暂时受阻", "请求协助", "转交给", "取消任务", "提交确认结果",
-    "确认 Weekday Brunch Set 的价格与有效期",
-    # notification reclassification
-    "审阅第 37 周周报草稿", "上次发布结果未知，需要你核验", "开始核验", "不会自动重发", "GSC 授权已过期",
-    # merchant space / team
-    "当前 Plan", "绑定漂移", "active 只表示注册状态，不代表远端可用或本次已调用",
-    # new sections
-    "已确认事实", "Core AI 原生记忆", "确认为规则",
-    "模型与成本", "升级条件", "预算规则", "角色与模型不永久绑定",
-    "记录交付", "冻结快照",
-    # v3: principles, demo-data banner, rule ids and "why you"
-    "Agent 主动推进，AM 按职责参与", "Plan 授权工作范围，内容审批授权具体产物", "系统用证据判断完成",
-    "演示数据", "R3 · 公开内容需逐条审批", "R4 · Plan #12 付费扫描额度 100 credits", "本次 120",
-    "已在 Plan #12 额度 100 内自动执行", "R1 · 在 Plan #12 允许的",
-    # v3: work order de-duplication and approval binding
-    "本次批准绑定", "发布时间窗",
-    # v3: exceptions section
-    "异常恢复", "退回 → 修改 → 新审核", "批准后产物变化 → 批准失效", "发布超时 → 自动核验 → 人工介入",
-    "输入任务取消 → 下游重新规划", "批准已失效", "影响范围分级", "任务级", "商户级", "项目级",
-    # v3: memory three classes, isolation as precondition, hypothesis validation
-    "经营事实", "业务规则与偏好", "候选经验", "未启用 · 隔离未验证", "待数据验证", "确认偏好适用，不等于证明策略有效",
-    # v3: model by stage, cost three states
-    "工作阶段", "确定性程序", "已消耗", "已预留", "未结算", "缺事实、缺权限不允许升级",
-    # v3: reports three layers, labelled draft export, coverage checklist
-    "冻结报告", "草稿 · 未审核", "旧报告覆盖清单", "未覆盖",
-    # v4: cleanup
-    "由 Orchestrator 重新规划", "总分 47", "284 ÷ 6 = 47.3", "最新补充观测",
-    # v4: merchant tabs and overview
-    "资料与记忆", "最近一次有效 Audit", "下次诊断",
-    # v4: audit center
-    "Audit 是周期任务 + 历史诊断", "查看最近诊断", "立即诊断", "周期设置", "执行失败", "保留上一次有效结果",
-    "专项 · 不计总分", "首次入驻诊断", "Audit #29 正在执行", "修改后从下一次执行生效",
-    # v4: audit compare
-    "新增问题", "持续存在", "已核验解决", "再次出现", "可直接比较", "不每次重新派单",
-    # v4: performance
-    "选择期间只查询已有数据", "分析这段表现", "生成报告", "同步数据", "电话按钮点击 ≠ 接通或到店",
-    "缺失 08-12 至 08-14", "历史扫描", "没扫描的日期不补成曲线", "两者不同是正常的", "上一等长期间",
-    # v4: interaction contract
-    "返回时恢复搜索、筛选、分页与滚动位置", "六种情况", "已入队", "不会自动重新提交", "内容已变化", "重新载入",
+    "草稿任务", "人工审核任务", "发布任务", "包含远端核验", "T-1198", "T-1199", "T-1200",
+    "授权数据缺失", "公开网站检查", "最近有效结果", "不可直接比较",
+    "查看报告", "交付记录", "有更新的来源数据", "生成修订版", "模拟补数", "已补齐",
+    "历史缺失记录", "当前状态", "仅本工作单", "涉及商户", "2026-Q3", "已入队", "内容已变化", "重新载入",
+    "上次发布结果未知，需要你核验", "不会自动重发", "演示：刷新后重置",
 ]
-# Copy the v2 review explicitly removed; its presence means a flow fix regressed.
-FORBIDDEN_COPY = ["批准并发布", "标记为无法完成", "应用提案", "Local Falcon 扫描将消耗 40 credits", "批准扫描", "会一直等待，需要重新派单"]
+FORBIDDEN_COPY = ["批准并发布", "标记为无法完成", "应用提案", "批准扫描", "会一直等待，需要重新派单", "Q4 · 第 2 周", "发布成功"]
 EXTERNAL = re.compile(r"""(?:<link[^>]+href|<script[^>]+src|@import\s+(?:url\()?|url\()\s*["']?https?://""", re.I)
+norm = lambda s: re.sub(r"[\s·]+", "", re.sub(r"<[^>]+>", "", s))
 
 def main() -> int:
     html_path = PROTO / "index.html"
@@ -73,36 +33,76 @@ def main() -> int:
         print(f"FAIL: {html_path} missing"); return 1
     html = html_path.read_text("utf-8", errors="replace")
     failures = []
-    for sid in REQUIRED_SECTIONS:
-        if not re.search(rf"""<section[^>]*\bid\s*=\s*["']{sid}["']""", html):
-            failures.append(f'missing <section id="{sid}">')
-    # Compare on tag-stripped text with whitespace and middle dots removed, so a rule id rendered as
-    # <code>R3</code>公开内容… still matches the prompt's "R3 · 公开内容…".
-    norm = lambda s: re.sub(r"[\s·]+", "", re.sub(r"<[^>]+>", "", s))
-    text_norm = norm(html)
+    m = re.search(r'<script[^>]*type="application/json"[^>]*id="demo-data"[^>]*>(.*?)</script>', html, re.S) or \
+        re.search(r'<script[^>]*id="demo-data"[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.S)
+    data = None
+    if not m:
+        failures.append("missing <script type=application/json id=demo-data>")
+    else:
+        try:
+            data = json.loads(m.group(1))
+        except json.JSONDecodeError as exc:
+            failures.append(f"demo-data is not valid JSON: {exc}")
+    if isinstance(data, dict):
+        for key in ["merchants", "inbox", "audits", "performance", "scans", "reports", "workOrders", "tasks"]:
+            if key not in data:
+                failures.append(f"demo-data missing key: {key}")
+        merchants = data.get("merchants") or []
+        if len(merchants) != 5:
+            failures.append(f"expected 5 merchants, got {len(merchants)}")
+        merchant_ids = {mm.get("id") for mm in merchants}
+        inbox = data.get("inbox") or []
+        for item in inbox:
+            if item.get("merchantId") not in merchant_ids:
+                failures.append(f"inbox item {item.get('id')} references unknown merchant {item.get('merchantId')}")
+            if item.get("scope") == "task" and "商户" in (item.get("scopeText") or "") and "仅" not in (item.get("scopeText") or ""):
+                failures.append(f"inbox item {item.get('id')}: task-level scope described as merchant-wide")
+        for scan in data.get("scans") or []:
+            arp, atrp = scan.get("arp"), scan.get("atrp")
+            if isinstance(arp, (int, float)) and isinstance(atrp, (int, float)) and atrp < arp:
+                failures.append(f"scan {scan.get('id')}: ATRP {atrp} < ARP {arp}")
+            for kw, row in (scan.get("kw") or {}).items():
+                if isinstance(row, dict) and isinstance(row.get("atrp"), (int, float)) and isinstance(row.get("rank"), (int, float)) and row["atrp"] < row["rank"]:
+                    failures.append(f"scan {scan.get('id')} keyword {kw}: ATRP {row['atrp']} < ARP {row['rank']}")
+        for audit in data.get("audits") or []:
+            dims = audit.get("dimensions") or {}
+            scored = [v for v in dims.values() if isinstance(v, (int, float))] if isinstance(dims, dict) else []
+            total = audit.get("total")
+            status = (audit.get("status") or "").lower()
+            if status == "failed" and total is not None:
+                failures.append(f"audit {audit.get('id')}: failed run carries a score {total}")
+            if audit.get("kind") == "full" and status != "failed" and scored:
+                mean = sum(scored) / len(scored)
+                if total is None or abs(mean - float(total)) > 0.6:
+                    failures.append(f"audit {audit.get('id')}: total {total} != mean {mean:.1f} of {scored}")
+        for wo in data.get("workOrders") or []:
+            steps = wo.get("steps") or {}
+            task_ids = [s.get("taskId") if isinstance(s, dict) else s for s in steps.values()]
+            task_ids = [t for t in task_ids if isinstance(t, str) and t]
+            if len(set(task_ids)) < 3:
+                failures.append(f"work order {wo.get('id')}: expected 3 distinct task ids in steps, got {task_ids}")
     for text in REQUIRED_COPY:
-        if norm(text) not in text_norm:
+        if norm(text) not in norm(html):
             failures.append(f"missing copy: {text}")
     for text in FORBIDDEN_COPY:
-        if norm(text) in text_norm:
+        if norm(text) in norm(html):
             failures.append(f"forbidden copy present: {text}")
-    for m in EXTERNAL.finditer(html):
-        failures.append(f"external resource: {html[m.start():m.start()+80]!r}")
-    # Interaction contract (spec §12): every in-page anchor resolves, every button declares its target.
-    ids = set(re.findall(r"""\bid\s*=\s*["']([^"']+)["']""", html))
-    for href in re.findall(r"""href\s*=\s*["']#([^"']+)["']""", html):
-        if href and href not in ids:
-            failures.append(f"dangling anchor: #{href}")
-    buttons = re.findall(r"<button\b[^>]*>", html, re.I)
-    without_target = [b for b in buttons if "data-target" not in b]
-    if without_target:
-        failures.append(f"{len(without_target)} of {len(buttons)} <button> without data-target, e.g. {without_target[0][:100]!r}")
-    if not re.search(r"""data-effect\s*=\s*["'](open|submit|expand|external|none)["']""", html):
-        failures.append("no data-effect attributes found")
+    for mm in EXTERNAL.finditer(html):
+        failures.append(f"external resource: {html[mm.start():mm.start()+80]!r}")
+    targets = {t for t in re.findall(r"""(?:href|data-target)\s*=\s*["'](#/[^"']*)["']""", html) if "${" not in t}
+    bad = [t for t in targets if not any(re.match(p, t) for p in ROUTES)]
+    for t in sorted(bad)[:20]:
+        failures.append(f"target outside route table: {t}")
+    # Buttons are rendered from JS templates; the source check only covers static markup outside <script>.
+    static_html = re.sub(r"<script\b.*?</script>", "", html, flags=re.S | re.I)
+    buttons = re.findall(r"<button\b[^>]*>", static_html, re.I)
+    without = [b for b in buttons if "data-target" not in b]
+    if without:
+        failures.append(f"{len(without)} of {len(buttons)} static <button> without data-target, e.g. {without[0][:100]!r}")
     if failures:
         print("FAIL"); [print(" -", f) for f in failures]; return 1
-    print(f"PASS: {len(REQUIRED_SECTIONS)} sections, {len(REQUIRED_COPY)} copy strings, "
-          f"{len(FORBIDDEN_COPY)} forbidden strings absent, anchors resolve, buttons carry data-target, no external resources"); return 0
+    print(f"PASS: demo-data consistent, {len(targets)} static route targets valid, {len(buttons)} static buttons carry data-target (rendered DOM checked in browser), "
+          f"{len(REQUIRED_COPY)} copy strings present, {len(FORBIDDEN_COPY)} retired strings absent, no external resources"); return 0
 
 if __name__ == "__main__":
     sys.exit(main())

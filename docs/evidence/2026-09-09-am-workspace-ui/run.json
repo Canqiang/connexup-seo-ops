@@ -4,22 +4,22 @@
   "designSystemId": "user:seo-ops",
   "skill": "frontend-design",
   "agent": "claude",
-  "requestId": "c94c817a-d0c3-40e5-936a-0e854855241e",
-  "runId": "8e800779-306d-45e9-bb84-7896ed3ba71b",
+  "requestId": "a0211352-3cea-4916-b084-8efe74933eeb",
+  "runId": "0a2ed6aa-44cf-4e64-b4c6-985e2487faf7",
   "conversationId": "ccee0859-d894-44dd-abf5-27bd5cb2c7b1",
   "status": "succeeded",
   "previewUrl": "http://127.0.0.1:60061/api/projects/seo-ops-am-workspace/raw/index.html",
   "studioUrl": "http://127.0.0.1:60071/projects/seo-ops-am-workspace/conversations/ccee0859-d894-44dd-abf5-27bd5cb2c7b1",
-  "startedAt": "2026-09-09T08:43:02Z",
-  "terminalAt": "2026-09-09T09:03:04Z",
+  "startedAt": "2026-09-09T09:51:51Z",
+  "terminalAt": "2026-09-09T10:26:30Z",
   "files": [
     "index.html"
   ],
   "spec": "docs/superpowers/specs/2026-09-09-agent-driven-local-seo-am-os-design.md#13",
   "note": "previewUrl/studioUrl ports belong to the current OpenDesign daemon session; call get_run again after an OpenDesign restart.",
-  "prompt": "prompt-v4.md",
-  "revision": 4,
-  "indexSha256": "85a56fd6d5d1e19c05ad0bff8d61b3a8f22950e96dbd251b8a067c7e61210a52",
+  "prompt": "prompt-v5.md",
+  "revision": 5,
+  "indexSha256": "bb2abb4e1e14199bc854f9150aee5770aee44ac2c04f835e626c1c4ac70c4f7b",
   "previousRuns": [
     {
       "runId": "8314a60f-2b5a-4316-8c34-ee2f96bb09d7",
@@ -35,6 +35,87 @@
       "runId": "01679daa-0004-43fc-bbe9-e9f6c68cbfdd",
       "prompt": "prompt-v3.md",
       "archivedCommit": "1bd3d56"
+    },
+    {
+      "runId": "8e800779-306d-45e9-bb84-7896ed3ba71b",
+      "prompt": "prompt-v4.md",
+      "archivedCommit": "1c98ac3"
     }
-  ]
+  ],
+  "browserCheck": {
+    "checkedAt": "2026-09-09T10:40:00Z",
+    "method": "Chrome (claude-in-chrome) driving real DOM clicks via JS; hashes and texts asserted",
+    "georgePath": [
+      {
+        "step": "#/merchants → George Merchant",
+        "result": "PASS",
+        "note": "other merchants open their own pages (Choice Brooklyn 两门店, Only Bear 发布结果未知, test 未接入)"
+      },
+      {
+        "step": "Audit tab → #27 查看",
+        "result": "PASS",
+        "note": "opens #/audits/27 (专项复查, 不计总分); history.back returns to audit list"
+      },
+      {
+        "step": "#28 单次详情",
+        "result": "PASS",
+        "note": "授权数据缺失 vs 公开网站检查 split; 交给 Orchestrator 提计划; 对比 entry"
+      },
+      {
+        "step": "对比 #28 vs #26",
+        "result": "PASS"
+      },
+      {
+        "step": "Performance 上月 08-01 至 08-31 → 应用筛选",
+        "result": "PASS",
+        "note": "cards/trend recomputed (12,480 vs 11,560), hash carries from/to/cmp/granularity; 自定义日期输入未单独验证"
+      },
+      {
+        "step": "关键词详情 → 返回",
+        "result": "PASS",
+        "note": "#/keywords/brunch-near-me keeps from/to; back restores same period and number"
+      },
+      {
+        "step": "生成报告 → 确认生成",
+        "result": "PASS",
+        "note": "R-3731 v1 frozen 12,600 · 草稿"
+      },
+      {
+        "step": "审阅 → 审核通过",
+        "result": "PASS",
+        "note": "已审核; 下载 is <a download href=data:>; 查看报告 shown on report list row"
+      },
+      {
+        "step": "模拟补数 → 报告不变 → 生成修订版",
+        "result": "PASS",
+        "note": "Performance 12,600→12,720; v1 stays 12,600 with 有更新的来源数据; v2 = 12,720; v1 still readable with 历史版本 banner"
+      }
+    ],
+    "workOrderSimulation": [
+      {
+        "step": "header three task ids + 包含远端核验; downstream = 发布任务 T-1200",
+        "result": "PASS"
+      },
+      {
+        "step": "退回并说明 → v3 chain (T-1203/T-1204)",
+        "result": "PASS"
+      },
+      {
+        "step": "批准这一版 → 已保存批准 · 已入队 (no 发布成功) → 模拟发布 Agent 返回 → 核对中 → 读回 LIVE → 已上线",
+        "result": "PASS"
+      },
+      {
+        "step": "读回无匹配 → 需要处理 · 不会自动重发 · 仅本工作单; home shows 上次发布结果未知 for George",
+        "result": "PASS"
+      },
+      {
+        "step": "模拟他人修改产物 → 批准 → ConflictBanner 内容已变化 → 重新载入 → v3",
+        "result": "PASS"
+      }
+    ],
+    "domChecks": {
+      "buttonsWithoutDataTarget": 0,
+      "note": "static check covers demo-data consistency, route table, retired copy; rendered buttons checked in DOM"
+    }
+  }
 }
