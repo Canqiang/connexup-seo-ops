@@ -85,10 +85,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
+from .canonical_json import canonical_sha256
 from .config import performance_sync_settings
 from .db import connect
 from .performance_gbp import GBP_ADAPTER_VERSION, SOURCE_START_DATE, classify_source_error, fetch_partition
-from .performance_identity import canonical_instant, resolve_bound_scopes
+from .performance_identity import BoundScope, canonical_instant, resolve_bound_scopes
 from .performance_store import BatchDraft, create_batch, create_sync_job, publish_metric_batch, record_quality_event
 
 logger = logging.getLogger(__name__)
@@ -133,11 +134,27 @@ def _fbr_merchant_id(conn: sqlite3.Connection, merchant_id: int) -> str:
     return str(row["fbr_merchant_id"])
 
 
-def plan_sync_job(
-    conn: sqlite3.Connection, merchant_id: int, start: date, end: date, *,
-    job_type: str, request_id: str, operator: str, now: datetime,
-) -> SyncJobPlan:
-    """Plan (or replay) a month-partitioned sync job for one merchant's bound GBP scopes.
+@dataclass(frozen=True)
+class _ResolvedManifest:
+    clamped_start: date
+    clamped_end: date
+    scopes: tuple[BoundScope, ...]
+    partitions: tuple[tuple[str, date, date], ...]
+    manifest: dict
+    manifest_sha256: str
+
+
+def _resolve_scope_manifest(
+    conn: sqlite3.Connection, merchant_id: int, start: date, end: date, *, now: datetime
+) -> _ResolvedManifest:
+    """Clamp the window, resolve bound scopes and build the scope manifest for one plan.
+
+    This is the one place the manifest is built, shared by ``plan_sync_job``
+    (which uses it to create the job) and ``enqueue_daily_performance_jobs_once``
+    (which needs the manifest's hash *before* it can choose the day's request
+    id -- see that function's docstring). Extracted so the two callers cannot
+    build divergent manifests for the same inputs: one manifest always
+    produces one hash.
 
     The requested window is clamped to ``SOURCE_START_DATE``: the source
     returns nothing earlier, so a window entirely before it is an error, not
@@ -156,9 +173,32 @@ def plan_sync_job(
         "scope_ids": sorted(scope.scope_id for scope in scopes),
         "partitions": [key for key, _, _ in partitions],
     }
+    return _ResolvedManifest(clamped_start, clamped_end, scopes, partitions, manifest, canonical_sha256(manifest))
+
+
+def plan_sync_job(
+    conn: sqlite3.Connection, merchant_id: int, start: date, end: date, *,
+    job_type: str, request_id: str, operator: str, now: datetime,
+    _resolved: _ResolvedManifest | None = None,
+) -> SyncJobPlan:
+    """Plan (or replay) a month-partitioned sync job for one merchant's bound GBP scopes.
+
+    The requested window is clamped to ``SOURCE_START_DATE``: the source
+    returns nothing earlier, so a window entirely before it is an error, not
+    an empty success (see ``_resolve_scope_manifest``).
+
+    ``_resolved`` is an internal-only escape hatch: a caller that already
+    resolved this exact ``(merchant_id, start, end, now)`` -- currently only
+    ``enqueue_daily_performance_jobs_once``, which needs the manifest hash to
+    choose ``request_id`` before it can call this function -- passes it in to
+    reuse that resolution instead of resolving a second time. Every other
+    caller omits it and this resolves the scopes itself, unchanged from
+    before.
+    """
+    resolved = _resolved if _resolved is not None else _resolve_scope_manifest(conn, merchant_id, start, end, now=now)
     job_id = create_sync_job(
         conn, job_type=job_type, request_id=request_id, requested_by=operator,
-        scope_manifest=manifest, start=clamped_start, end=clamped_end, now=now,
+        scope_manifest=resolved.manifest, start=resolved.clamped_start, end=resolved.clamped_end, now=now,
     )
     existing = {
         (row["source_scope_id"], row["partition_month"])
@@ -167,8 +207,8 @@ def plan_sync_job(
         )
     }
     batch_ids: list[int] = []
-    for scope in scopes:
-        for partition_key, _, partition_end in partitions:
+    for scope in resolved.scopes:
+        for partition_key, _, partition_end in resolved.partitions:
             if (scope.scope_id, partition_key) in existing:
                 continue
             batch_ids.append(
@@ -178,7 +218,7 @@ def plan_sync_job(
                     now=now,
                 )
             )
-    return SyncJobPlan(job_id, tuple(batch_ids), partitions, clamped_start, clamped_end)
+    return SyncJobPlan(job_id, tuple(batch_ids), resolved.partitions, resolved.clamped_start, resolved.clamped_end)
 
 
 def claim_next_batch(
@@ -476,6 +516,26 @@ def enqueue_daily_performance_jobs_once(*, now: datetime | None = None) -> int:
     Returns 0 immediately (without touching the database) when
     ``SEO_OPS_PERFORMANCE_SYNC_ENABLED`` is not ``true`` or no pilot
     merchants are configured.
+
+    The request id is ``daily:{merchant_id}:{end}:{manifest_sha256}`` -- the
+    manifest hash, not just the date and merchant id, is part of it. The
+    date and merchant id alone are stable for the whole day, but the
+    resolved population (which GBP locations are currently bound to this
+    merchant) is re-derived on every tick and can legitimately change
+    mid-day (a location bound or unbound). ``metric_sync_jobs`` has a bare
+    ``UNIQUE (requested_by, request_id)``, so without the manifest hash a
+    changed population under an unchanged request id would collide on that
+    constraint -- ``create_sync_job``'s own fail-closed "one request id, one
+    manifest" check exists for an operator-confirmed backfill, where that
+    collision is a genuine conflict to surface, but here it just means the
+    scheduler re-derived a different, equally legitimate job and should plan
+    it, not silently skip the merchant until the date rolls over. Folding
+    the hash in makes an *unchanged* population still short-circuit to the
+    existing job through ``create_sync_job``'s idempotency path (same
+    request id -> same manifest -> same idempotency key) while a *changed*
+    one plans a new one, exactly as if two different callers had used two
+    different request ids for two different requests -- because that is
+    what they now are.
     """
     settings = performance_sync_settings()
     if not settings.enabled or not settings.pilot_merchant_ids:
@@ -487,24 +547,22 @@ def enqueue_daily_performance_jobs_once(*, now: datetime | None = None) -> int:
     conn = connect()
     try:
         for merchant_id in sorted(settings.pilot_merchant_ids):
-            # The request id must be merchant-specific: metric_sync_jobs has a
-            # bare UNIQUE (requested_by, request_id), and requested_by is the
-            # fixed "scheduler" for every pilot merchant. Without the
-            # merchant id folded in here, every merchant after the first
-            # would collide on that constraint with an sqlite3.IntegrityError
-            # on the very first tick (not just on a same-day scope rebind).
             try:
+                # Resolved once here (not re-resolved inside plan_sync_job)
+                # so the request id and the job it produces are guaranteed
+                # to describe the same population -- see the docstring.
+                resolved = _resolve_scope_manifest(conn, merchant_id, start, end, now=moment)
+                request_id = f"daily:{merchant_id}:{end.isoformat()}:{resolved.manifest_sha256}"
                 plan_sync_job(
                     conn, merchant_id, start, end, job_type="daily",
-                    request_id=f"daily:{merchant_id}:{end.isoformat()}", operator="scheduler", now=moment,
+                    request_id=request_id, operator="scheduler", now=moment,
+                    _resolved=resolved,
                 )
                 created += 1
             except ValueError:
                 logger.info("merchant %s is not ready for performance sync", merchant_id)
             except Exception:
-                # No single merchant's unexpected failure (e.g. an
-                # sqlite3.IntegrityError from a request id collision that
-                # slips past the merchant-scoped id above) may take down the
+                # No single merchant's unexpected failure may take down the
                 # rest of the pilot cohort's daily enqueue.
                 logger.exception("merchant %s daily performance enqueue failed unexpectedly", merchant_id)
     finally:

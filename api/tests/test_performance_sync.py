@@ -396,6 +396,57 @@ def test_enqueue_daily_performance_jobs_handles_multiple_pilot_merchants_indepen
     assert len(set(request_ids)) == 2  # merchant-specific: no collision
 
 
+def test_daily_enqueue_plans_a_new_job_when_the_resolved_population_changes_mid_day(
+    conn, monkeypatch, merchant_with_gbp_profiles
+):
+    """Fix round 2 ruling: the daily request id carries the scope-manifest
+    hash, not just the date and merchant id, so a population that changes
+    between ticks on the same day (a location bound or unbound) plans a
+    genuinely new job instead of colliding on metric_sync_jobs'
+    UNIQUE(requested_by, request_id) and silently going dark for that
+    merchant until the date rolls over. An *unchanged* population across
+    repeated ticks must still short-circuit to exactly one job."""
+    _pilot(conn, monkeypatch, merchant_with_gbp_profiles)
+
+    assert enqueue_daily_performance_jobs_once(now=NOW) == 1
+    # Re-enqueuing with an unchanged population must not create a second job.
+    assert enqueue_daily_performance_jobs_once(now=NOW) == 1
+    jobs = conn.execute(
+        "SELECT id, request_id FROM metric_sync_jobs WHERE requested_by = 'scheduler' ORDER BY id"
+    ).fetchall()
+    assert len(jobs) == 1
+
+    # The population changes mid-day: close one of the two active bindings,
+    # exactly as Task 4 would when a location is unbound. One scope remains
+    # bound, so the merchant is still "ready" -- this is a changed
+    # population, not an empty one.
+    later = NOW + timedelta(hours=1)
+    closing_scope_id = conn.execute(
+        "SELECT source_scope_id FROM source_scope_bindings WHERE valid_to IS NULL ORDER BY source_scope_id LIMIT 1"
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE source_scope_bindings SET valid_to = ?, closed_by = 'test', close_reason = 'test_unbind'"
+        " WHERE source_scope_id = ? AND valid_to IS NULL",
+        (canonical_instant(later), closing_scope_id),
+    )
+    conn.commit()
+
+    created = enqueue_daily_performance_jobs_once(now=later)
+    assert created == 1  # planned, not silently skipped and not an exception
+    jobs = conn.execute(
+        "SELECT id, request_id FROM metric_sync_jobs WHERE requested_by = 'scheduler' ORDER BY id"
+    ).fetchall()
+    assert len(jobs) == 2
+    assert jobs[0]["request_id"] != jobs[1]["request_id"]
+
+    # Re-enqueuing again with the now-stable (changed) population must not
+    # create a third job.
+    assert enqueue_daily_performance_jobs_once(now=later) == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM metric_sync_jobs WHERE requested_by = 'scheduler'"
+    ).fetchone()[0] == 2
+
+
 def test_scheduler_helpers_are_inert_when_the_pilot_flag_is_off(monkeypatch):
     """Both scheduler helpers must return 0 immediately -- without ever
     calling connect() -- when SEO_OPS_PERFORMANCE_SYNC_ENABLED is not 'true',
