@@ -51,7 +51,7 @@
   - `python3 scripts/od_mcp.py resources [substring]` → one `uri | name` per line.
   - `python3 scripts/od_mcp.py call <tool> '<json>'` → prints the tool's text content; string values of the form `@file:<path>` are replaced with that file's content before sending; exit 1 when the tool reports an error.
   - `python3 scripts/od_mcp.py wait-run <runId> [maxSeconds]` → polls `get_run` every 10 s, prints the final JSON, exit 0 on `succeeded`, 1 otherwise.
-  - `python3 scripts/od_mcp.py install-ds <dir> [--check-only]` → validates the package and copies it to `$OD_DATA_DIR/design-systems/<id>/`, rewriting `source.path` in the copied manifest to the absolute source dir.
+  - `python3 scripts/od_mcp.py install-ds <dir> [--check-only]` → validates the package and copies it to `$OD_DATA_DIR/design-systems/<id>/`, rewriting `source.path` in the copied manifest to the absolute source dir, and writes `metadata.json` with `status: "published"` (the daemon treats user folders without it as drafts, and `create_project` rejects drafts with `DESIGN_SYSTEM_NOT_PUBLISHED`; discovered during execution, fixed in commit `19a3759`).
 
 - [ ] **Step 1: Verify the helper does not exist yet**
 
@@ -539,10 +539,10 @@ Expected: `package ok: seo-ops (SEO Ops)`
 - [ ] **Step 6: Install into OpenDesign and confirm it is listed**
 
 Run: `python3 scripts/od_mcp.py install-ds docs/design/open-design/seo-ops`
-Expected: `installed to /Users/.../data/design-systems/seo-ops`
+Expected: `installed to /Users/.../data/design-systems/seo-ops (status=published)`
 
 Run: `python3 scripts/od_mcp.py resources seo-ops`
-Expected: exactly one line whose URI ends in `/seo-ops/DESIGN.md`, for example `od://design-systems/seo-ops/DESIGN.md | Design system: SEO Ops` or `od://design-systems/user:seo-ops/DESIGN.md | Design system: SEO Ops`. Record the id segment between `design-systems/` and `/DESIGN.md` as `DS_ID` for Task 3.
+Expected: exactly one line whose URI ends in `/seo-ops/DESIGN.md`. On execution it was `od://design-systems/user%3Aseo-ops/DESIGN.md | Design system: SEO Ops`, so `DS_ID` is `user:seo-ops` (the `%3A` is a URL-encoded colon; pass the decoded form to `create_project`).
 
 If nothing is listed: quit and reopen the OpenDesign app once, rerun the `resources` command. If still nothing, stop and report; do not edit files under the OpenDesign data dir by hand.
 
