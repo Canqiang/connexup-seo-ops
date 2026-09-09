@@ -244,7 +244,7 @@ Expected shape:
   "job_id": <int>,
   "job_type": "backfill",
   "status": "succeeded",
-  "requested_start_date": "2026-08-01",
+  "requested_start_date": "2026-08-18",
   "requested_end_date": "2026-09-06",
   "progress": {
     "partitions_total": 4,
@@ -256,6 +256,11 @@ Expected shape:
   "batches": [ ... ]
 }
 ```
+
+`requested_start_date` reads `2026-08-18`, not the `2026-08-01` you posted
+above — it stores the *clamped* start (`plan_sync_job` passes
+`resolved.clamped_start` into `create_sync_job`), so do not be surprised
+that it does not echo your request verbatim.
 
 `progress` is derived per partition-group (the latest attempt per
 `source_scope_id` + `partition_month`), not a raw batch-attempt ratio — a
@@ -353,8 +358,13 @@ SEO_OPS_PERFORMANCE_HISTORY_READ_ENABLED=false
 
 (`SEO_OPS_PERFORMANCE_PILOT_MERCHANT_IDS` can be left as `3` or cleared —
 with `SEO_OPS_PERFORMANCE_SYNC_ENABLED` and `SEO_OPS_PERFORMANCE_HISTORY_READ_ENABLED`
-both off, every route behind them returns HTTP 409 before touching the
-database regardless of the allowlist.) Restart the API. Every location,
+both off, every write path (backfill preflight/confirm, `PUT
+/api/merchant-locations/{id}/timezone`) and every history read (the
+performance query) returns HTTP 409 regardless of the allowlist. Two
+read-only diagnostics stay available on purpose: `GET
+/api/merchants/{id}/performance/locations`, deliberately ungated because
+it is the onboarding path, and `GET
+/api/performance-sync/jobs/{job_id}`.) Restart the API. Every location,
 scope, binding, sync job, batch, and observation row seeded or backfilled
 above stays exactly where it is — rollback is a read/write gate, not a
 data-deletion procedure. Re-enabling the flags later resumes from the same
