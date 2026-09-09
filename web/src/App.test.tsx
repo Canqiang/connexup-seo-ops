@@ -2993,7 +2993,7 @@ describe('desktop operator shell', () => {
     render(<App />)
 
     const taskPanel = await screen.findByRole('complementary', { name: '本次生成任务' })
-    await within(taskPanel).findByRole('alert', { name: 'Task Plan 读取失败' })
+    await within(taskPanel).findByRole('alert')
     within(taskPanel).getByText('persisted plan read failed')
     screen.getByText('audit storage unavailable')
     expect(within(taskPanel).queryByText('本次分析没有生成可编辑 Task Plan。')).toBeNull()

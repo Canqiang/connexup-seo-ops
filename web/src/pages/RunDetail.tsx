@@ -17,6 +17,7 @@ import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LA
 import { reportForDisplay } from '../reportDisplay'
 import { formatRunDuration } from '../runPresentation'
 import { isTaskPlan } from '../taskPlan'
+import { ConfirmDialog, EmptyState, LoadingState, Notice } from '../components/feedback'
 
 type PlanReadState = 'loading' | 'ready' | 'missing' | 'error'
 const RUN_POLL_INTERVAL_MS = 10_000
@@ -89,6 +90,7 @@ function RunDetailPage({ runId }: { runId: number }) {
   const [providerRunId, setProviderRunId] = useState('')
   const [reconciliationReason, setReconciliationReason] = useState('')
   const [reconciliationBusy, setReconciliationBusy] = useState(false)
+  const [notCreatedConfirmOpen, setNotCreatedConfirmOpen] = useState(false)
   const [reconciliationError, setReconciliationError] = useState('')
   const [reconciliationNotice, setReconciliationNotice] = useState('')
 
@@ -267,7 +269,7 @@ function RunDetailPage({ runId }: { runId: number }) {
     return (
       <main aria-label="分析报告">
         <p className="breadcrumb"><Link to="/">← 商户台账</Link></p>
-        {runError ? <p className="error">{runError}</p> : <p>加载中…</p>}
+        {runError ? <Notice tone="error">{runError}</Notice> : <LoadingState variant="detail" />}
       </main>
     )
   }
@@ -283,9 +285,11 @@ function RunDetailPage({ runId }: { runId: number }) {
   const reconcileDispatch = async (action: RunDispatchReconciliation['action']) => {
     if (!needsDispatchReview || reconciliationBusy || !normalizedReason) return
     if (action === 'BIND_EXISTING' && !normalizedProviderRunId) return
-    if (action === 'NOT_CREATED' && !window.confirm(
-      '请再次确认：Core AI 中没有创建本次运行。确认后本次分析会标记失败，之后才能重新发起诊断。',
-    )) return
+    if (action === 'NOT_CREATED' && !notCreatedConfirmOpen) {
+      setNotCreatedConfirmOpen(true)
+      return
+    }
+    setNotCreatedConfirmOpen(false)
 
     const body: RunDispatchReconciliation = action === 'BIND_EXISTING'
       ? { action, provider_run_id: normalizedProviderRunId, reason: normalizedReason }
@@ -343,11 +347,11 @@ function RunDetailPage({ runId }: { runId: number }) {
           <span>{formatRunDuration(run.created_at, run.finished_at)}</span>
         </div>
       </header>
-      {runError && <p className="error">{runError}</p>}
-      {merchantError && <p className="error">{merchantError}</p>}
-      {auditError && <p className="error">{auditError}</p>}
-      {run.error && !needsDispatchReview && <p className="error">{run.error}</p>}
-      {reconciliationNotice && <p className="notice success dispatch-reconciliation-success" role="status">{reconciliationNotice}</p>}
+      {runError && <Notice tone="error">{runError}</Notice>}
+      {merchantError && <Notice tone="error">{merchantError}</Notice>}
+      {auditError && <Notice tone="error">{auditError}</Notice>}
+      {run.error && !needsDispatchReview && <Notice tone="error">{run.error}</Notice>}
+      {reconciliationNotice && <Notice tone="success" className="dispatch-reconciliation-success">{reconciliationNotice}</Notice>}
 
       {needsDispatchReview && (
         <section className="dispatch-reconciliation" role="region" aria-labelledby="dispatch-reconciliation-title">
@@ -384,7 +388,7 @@ function RunDetailPage({ runId }: { runId: number }) {
                 <span>{run.error}</span>
               </p>
             )}
-            {reconciliationError && <p className="error" role="alert">{reconciliationError}</p>}
+            {reconciliationError && <Notice tone="error">{reconciliationError}</Notice>}
             <div className="dispatch-reconciliation-actions" role="group" aria-label="人工核对操作">
               <button
                 type="button"
@@ -415,7 +419,7 @@ function RunDetailPage({ runId }: { runId: number }) {
             ? <AuditReport snapshot={audit} />
             : run.report_text
             ? <div className="report"><ReactMarkdown>{reportForDisplay(run.report_text)}</ReactMarkdown></div>
-            : <div className="empty-state">这次分析还没有返回报告。</div>}
+            : <EmptyState>这次分析还没有返回报告。</EmptyState>}
         </section>
 
         <aside className="panel run-task-panel" aria-labelledby="run-tasks-title">
@@ -424,19 +428,15 @@ function RunDetailPage({ runId }: { runId: number }) {
             <span className="result-count">{tasks.length} 项</span>
           </div>
           {run.status === 'succeeded' && planState === 'loading' && (
-            <div className="empty-state compact-empty">正在读取 Task Plan…</div>
+            <LoadingState label="正在读取 Task Plan…" />
           )}
           {run.status === 'succeeded' && planState === 'error' && (
-            <section className="plan-load-error" role="alert" aria-label="Task Plan 读取失败">
-              <strong>无法读取 Task Plan</strong>
-              <p>{planError}</p>
-              <button type="button" onClick={() => void loadPlan()}>重试读取 Plan</button>
-            </section>
+            <Notice tone="error" action={{ label: '重试读取 Plan', onClick: () => void loadPlan() }}>{planError}</Notice>
           )}
           {run.status === 'succeeded' && planState === 'ready' && plan && (
             <section className={`plan-decision ${decision === 'APPROVED' ? 'approved' : ''}`} aria-label="Plan 审批">
               {merchantArchived && (
-                <p className="notice warning" role="status">商户已归档，Plan 与生成任务仅供查看；恢复在营后可继续审批。</p>
+                <Notice tone="warning">商户已归档，Plan 与生成任务仅供查看；恢复在营后可继续审批。</Notice>
               )}
               <strong>
                 {decision === 'APPROVED'
@@ -458,13 +458,10 @@ function RunDetailPage({ runId }: { runId: number }) {
             </section>
           )}
           {run.status === 'succeeded' && planState === 'missing' && (
-            <div className="empty-state compact-empty">本次分析没有生成可编辑 Task Plan。</div>
+            <EmptyState compact>本次分析没有生成可编辑 Task Plan。</EmptyState>
           )}
           {taskError && (
-            <section className="plan-load-error" role="alert" aria-label="正式 Task 读取失败">
-              <p>{taskError}</p>
-              <button type="button" onClick={() => void loadPlan()}>重试读取 Plan</button>
-            </section>
+            <Notice tone="error" action={{ label: '重试读取 Plan', onClick: () => void loadPlan() }}>{taskError}</Notice>
           )}
           {decision === 'APPROVED' && tasks.length > 0 ? (
             <ul className="generated-task-list">
@@ -484,15 +481,25 @@ function RunDetailPage({ runId }: { runId: number }) {
               ))}
             </ul>
           ) : decision === 'APPROVED' && tasksLoading ? (
-            <div className="empty-state compact-empty">正在载入当前批准 revision 的正式 Task。</div>
+            <LoadingState label="正在载入当前批准 revision 的正式 Task。" />
           ) : decision === 'APPROVED' && !taskError ? (
-            <div className="empty-state compact-empty">当前批准 revision 暂无可显示的正式 Task。</div>
+            <EmptyState compact>当前批准 revision 暂无可显示的正式 Task。</EmptyState>
           ) : null}
           <div className="panel-foot">
             <Link to={`/merchants/${run.merchant_id}`} className="panel-link">查看商户任务 →</Link>
           </div>
         </aside>
       </div>
+      <ConfirmDialog
+        open={notCreatedConfirmOpen}
+        code="CORE AI / RUN NOT CREATED"
+        title="标记 Core AI 未创建运行"
+        message="请再次确认：Core AI 中没有创建本次运行。确认后本次分析会标记失败，之后才能重新发起诊断。"
+        confirmLabel="确认标记未创建"
+        busy={reconciliationBusy}
+        onConfirm={() => void reconcileDispatch('NOT_CREATED')}
+        onCancel={() => { if (!reconciliationBusy) setNotCreatedConfirmOpen(false) }}
+      />
     </main>
   )
 }

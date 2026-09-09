@@ -540,8 +540,6 @@ describe('run dispatch reconciliation', () => {
       ...unknownRun,
       provider_candidate_run_id: null,
     }
-    const confirmMock = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmMock)
     const reconciled = {
       ...unknownRun,
       dispatch_state: 'FAILED',
@@ -564,9 +562,10 @@ describe('run dispatch reconciliation', () => {
     expect(notCreated.disabled).toBe(false)
     fireEvent.click(notCreated)
 
-    expect(confirmMock).toHaveBeenCalledWith(
-      '请再次确认：Core AI 中没有创建本次运行。确认后本次分析会标记失败，之后才能重新发起诊断。',
-    )
+    const dialog = await screen.findByRole('dialog', { name: '标记 Core AI 未创建运行' })
+    within(dialog).getByText('请再次确认：Core AI 中没有创建本次运行。确认后本次分析会标记失败，之后才能重新发起诊断。')
+    expect(fetchMock.mock.calls.some(([input, init]) => input === '/api/runs/41/reconcile-dispatch' && (init as RequestInit | undefined)?.method === 'POST')).toBe(false)
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认标记未创建' }))
     await screen.findByText('已确认 Core AI 未创建运行；本次分析已标记失败，可返回商户页重新发起。')
     const call = fetchMock.mock.calls.find(([input, init]) => (
       input === '/api/runs/41/reconcile-dispatch' && (init as RequestInit | undefined)?.method === 'POST'
