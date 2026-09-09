@@ -63,8 +63,8 @@ function formatDelta(delta: string): string {
 }
 
 function deltaClass(delta: string): string {
+  if (/^-?0(\.0+)?$/.test(delta)) return 'performance-delta performance-delta-flat'
   if (delta.startsWith('-')) return 'performance-delta performance-delta-down'
-  if (/^0(\.0+)?$/.test(delta)) return 'performance-delta performance-delta-flat'
   return 'performance-delta performance-delta-up'
 }
 
@@ -573,7 +573,6 @@ function MerchantPerformancePage({ merchantId }: { merchantId: number }) {
               <button type="button" onClick={() => applyPreset(lastNDays(90, parseISODate(referenceIso)))}>最近 90 天</button>
               <button type="button" onClick={() => applyPreset(thisMonth(parseISODate(referenceIso)))}>本月</button>
               <button type="button" onClick={() => applyPreset(lastMonth(parseISODate(referenceIso)))}>上月</button>
-              <button type="button" onClick={() => { /* custom: edit the date fields directly */ }}>自定义</button>
             </div>
 
             <div className="performance-period-inputs">
