@@ -238,7 +238,15 @@ def test_fbr_loop_performance_sync_helpers_are_inert_while_the_pilot_flag_is_off
     """The scheduler wiring itself must not depend on the pilot flag: with it
     off, the real helpers run every tick and must return 0 without ever
     touching the database, so behaviour is unchanged until the pilot is
-    enabled."""
+    enabled.
+
+    Review finding 4: fbr_scheduler_loop wraps its whole tick body in
+    `except Exception`, which would silently swallow an AssertionError raised
+    from a patched connect() -- a test relying on that AssertionError
+    propagating would pass unchanged even if both helpers opened the database
+    every tick. This records calls instead and asserts the list stayed
+    empty, so it can actually fail.
+    """
     from app import performance_sync, scheduler
 
     monkeypatch.delenv("SEO_OPS_PERFORMANCE_SYNC_ENABLED", raising=False)
@@ -247,10 +255,8 @@ def test_fbr_loop_performance_sync_helpers_are_inert_while_the_pilot_flag_is_off
     monkeypatch.setattr(scheduler, "get_fbr_client", lambda: fbr_client)
     monkeypatch.setattr(scheduler, "sync_due_fbr_profiles_once", lambda client: None)
 
-    def _forbidden_connect():
-        raise AssertionError("performance sync must not touch the database while its flag is off")
-
-    monkeypatch.setattr(performance_sync, "connect", _forbidden_connect)
+    connect_calls = []
+    monkeypatch.setattr(performance_sync, "connect", lambda: connect_calls.append(True))
 
     class OneTickComplete(Exception):
         pass
@@ -261,3 +267,5 @@ def test_fbr_loop_performance_sync_helpers_are_inert_while_the_pilot_flag_is_off
     monkeypatch.setattr(scheduler.asyncio, "sleep", stop_after_first_tick)
     with pytest.raises(OneTickComplete):
         asyncio.run(scheduler.fbr_scheduler_loop())
+
+    assert connect_calls == []
