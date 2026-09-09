@@ -12,6 +12,7 @@ import {
   type SeoTargetState,
 } from '../api'
 import MerchantSectionNav from '../components/MerchantSectionNav'
+import { ConfirmDialog, ConflictBanner, LoadingState, Notice } from '../components/feedback'
 import { formatTime } from '../format'
 import { isAcceptedLocalFalconBatchReadback, keywordIdentity } from '../localFalcon'
 
@@ -716,7 +717,7 @@ function LocalFalconReconciliationDialog({
           <button type="button" className="dialog-close" aria-label="关闭人工对账" onClick={onClose} disabled={busy}>×</button>
         </header>
         <p className="reconciliation-boundary"><strong>这里只登记已核实的外部事实。</strong>系统不会自动重试、补扫或更换 request ID，避免重复消耗 credits。</p>
-        {error && <p className="scan-confirm-error" role="alert">{error}</p>}
+        {error && <Notice tone="error">{error}</Notice>}
         {batch.unknown_count > 0 && (
           <section className="reconciliation-section" aria-labelledby="bind-report-title">
             <div>
@@ -1302,80 +1303,67 @@ function KeywordRanking({
           <p>先读取 FBR 已落库关键词；生成新关键词需要单独配置并运行正式的 seed + ranking Skill 工作流。</p>
         </div>
       )}
-      {confirmLocalFalcon && (
-        <div className="operation-confirm-backdrop">
-          <section
-            className="operation-confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="local-falcon-confirm-title"
-          >
-            <header>
-              <div>
-                <p className="section-code">LOCAL FALCON / PAID SCAN</p>
-                <h4 id="local-falcon-confirm-title">确认生成 Local Falcon 报告</h4>
-              </div>
-              <button type="button" className="dialog-close" aria-label="关闭生成确认" onClick={closeGenerationConfirmation} disabled={localFalconBusy}>×</button>
-            </header>
-            <p className="credit-warning"><strong>此操作将消耗 Local Falcon credits</strong>。系统只提交当前已评分并待审批的 Top {localFalconConfirmation?.keywords.length || 0}，不会自动扩大关键词范围。</p>
-            {generationError && <p className="scan-confirm-error" role="alert">{generationError}</p>}
-            <div className="scan-confirm-location" aria-label="扫描门店">
-              <strong>{localFalconConfirmation?.locationTitle}</strong>
-              <span>{localFalconConfirmation?.locationAddress || '未返回门店地址'}</span>
-            </div>
-            <dl className="scan-confirm-params" aria-label="扫描参数">
-              <div><dt>Place ID</dt><dd>{localFalconConfirmation?.placeId}</dd></div>
-              <div><dt>扫描中心</dt><dd>{localFalconConfirmation ? `${localFalconConfirmation.scanDefaults.centerLat.toFixed(6)}, ${localFalconConfirmation.scanDefaults.centerLng.toFixed(6)}` : '—'}</dd></div>
-              <div><dt>关键词</dt><dd>{localFalconConfirmation?.keywords.length || 0} 个</dd></div>
-              <div><dt>点阵</dt><dd>{localFalconConfirmation?.scanDefaults.gridSize} × {localFalconConfirmation?.scanDefaults.gridSize}</dd></div>
-              <div><dt>半径</dt><dd>{localFalconConfirmation?.scanDefaults.radius} {localFalconConfirmation?.scanDefaults.measurement}</dd></div>
-              <div><dt>测量单位</dt><dd>{localFalconConfirmation?.scanDefaults.measurement}</dd></div>
-              <div><dt>平台</dt><dd>Google</dd></div>
-            </dl>
-            <div className="scan-confirm-keywords" aria-label="待生成关键词">
-              <ol>
-                {localFalconConfirmation?.keywords.map(keyword => (
-                  <li key={keyword.keyword}>
-                    <span>#{keyword.scoreRank}</span>
-                    <strong>{keyword.keyword}</strong>
-                    <small>评分 {keyword.score}</small>
-                  </li>
-                ))}
-              </ol>
-            </div>
-            <footer>
-              <button type="button" className="quiet" onClick={closeGenerationConfirmation} disabled={localFalconBusy}>取消</button>
-              <button type="button" className="primary" onClick={() => void confirmGeneration()} disabled={localFalconBusy}>
-                {localFalconBusy ? '正在提交…' : `确认并生成 ${localFalconConfirmation?.keywords.length || 0} 个报告`}
-              </button>
-            </footer>
-          </section>
+      <ConfirmDialog
+        open={Boolean(confirmLocalFalcon)}
+        code="LOCAL FALCON / PAID SCAN"
+        title="确认生成 Local Falcon 报告"
+        closeLabel="关闭生成确认"
+        tone="primary"
+        confirmLabel={`确认并生成 ${localFalconConfirmation?.keywords.length || 0} 个报告`}
+        busyLabel="正在提交…"
+        busy={localFalconBusy}
+        error={generationError}
+        onConfirm={() => void confirmGeneration()}
+        onCancel={closeGenerationConfirmation}
+      >
+        <Notice tone="warning"><strong>此操作将消耗 Local Falcon credits</strong>。系统只提交当前已评分并待审批的 Top {localFalconConfirmation?.keywords.length || 0}，不会自动扩大关键词范围。</Notice>
+        <div className="scan-confirm-location" aria-label="扫描门店">
+          <strong>{localFalconConfirmation?.locationTitle}</strong>
+          <span>{localFalconConfirmation?.locationAddress || '未返回门店地址'}</span>
         </div>
-      )}
-      {selectedVersion && (
-        <div className="operation-confirm-backdrop">
-          <section className="operation-confirm-dialog keyword-version-confirm" role="dialog" aria-modal="true" aria-labelledby="keyword-version-confirm-title">
-            <header>
-              <div>
-                <p className="section-code">KEYWORD VERSION</p>
-                <h4 id="keyword-version-confirm-title">确认{selectedVersion.version.source === 'FBR' ? '采用 FBR 关键词版本' : '恢复 Skill 关键词版本'}</h4>
-              </div>
-              <button type="button" className="dialog-close" aria-label="关闭版本确认" onClick={() => setSelectedVersion(null)} disabled={activationBusy}>×</button>
-            </header>
-            <div className="keyword-version-confirm-copy">
-              <p>将采用 #{selectedVersion.version.artifact_id}，并以确认时的当前活动版本 #{selectedVersion.expectedActiveArtifactId ?? '无'} 作为冲突校验。</p>
-              {selectedVersion.version.source === 'FBR' && (
-                <p className={isFbrActivationLocalFalconEligible(selectedVersion.version.score_status) ? 'muted' : 'credit-warning'}>{fbrActivationEligibilityCopy(selectedVersion.version.score_status)}</p>
-              )}
-              {activationError && <p className="scan-confirm-error" role="alert">{activationError}</p>}
-            </div>
-            <footer>
-              <button type="button" className="quiet" onClick={() => setSelectedVersion(null)} disabled={activationBusy}>取消</button>
-              <button type="button" className="primary" onClick={() => void confirmVersionActivation()} disabled={activationBusy}>{activationBusy ? '正在采用…' : selectedVersion.version.source === 'FBR' ? '确认采用 FBR 版本' : '确认恢复 Skill 版本'}</button>
-            </footer>
-          </section>
+        <dl className="scan-confirm-params" aria-label="扫描参数">
+          <div><dt>Place ID</dt><dd>{localFalconConfirmation?.placeId}</dd></div>
+          <div><dt>扫描中心</dt><dd>{localFalconConfirmation ? `${localFalconConfirmation.scanDefaults.centerLat.toFixed(6)}, ${localFalconConfirmation.scanDefaults.centerLng.toFixed(6)}` : '—'}</dd></div>
+          <div><dt>关键词</dt><dd>{localFalconConfirmation?.keywords.length || 0} 个</dd></div>
+          <div><dt>点阵</dt><dd>{localFalconConfirmation?.scanDefaults.gridSize} × {localFalconConfirmation?.scanDefaults.gridSize}</dd></div>
+          <div><dt>半径</dt><dd>{localFalconConfirmation?.scanDefaults.radius} {localFalconConfirmation?.scanDefaults.measurement}</dd></div>
+          <div><dt>测量单位</dt><dd>{localFalconConfirmation?.scanDefaults.measurement}</dd></div>
+          <div><dt>平台</dt><dd>Google</dd></div>
+        </dl>
+        <div className="scan-confirm-keywords" aria-label="待生成关键词">
+          <ol>
+            {localFalconConfirmation?.keywords.map(keyword => (
+              <li key={keyword.keyword}>
+                <span>#{keyword.scoreRank}</span>
+                <strong>{keyword.keyword}</strong>
+                <small>评分 {keyword.score}</small>
+              </li>
+            ))}
+          </ol>
         </div>
-      )}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={selectedVersion !== null}
+        code="KEYWORD VERSION"
+        title={`确认${selectedVersion?.version.source === 'FBR' ? '采用 FBR 关键词版本' : '恢复 Skill 关键词版本'}`}
+        closeLabel="关闭版本确认"
+        tone="primary"
+        confirmLabel={selectedVersion?.version.source === 'FBR' ? '确认采用 FBR 版本' : '确认恢复 Skill 版本'}
+        busyLabel="正在采用…"
+        busy={activationBusy}
+        error={activationError}
+        onConfirm={() => void confirmVersionActivation()}
+        onCancel={() => { if (!activationBusy) setSelectedVersion(null) }}
+      >
+        {selectedVersion && <>
+          <p>将采用 #{selectedVersion.version.artifact_id}，并以确认时的当前活动版本 #{selectedVersion.expectedActiveArtifactId ?? '无'} 作为冲突校验。</p>
+          {selectedVersion.version.source === 'FBR' && (
+            isFbrActivationLocalFalconEligible(selectedVersion.version.score_status)
+              ? <p className="muted">{fbrActivationEligibilityCopy(selectedVersion.version.score_status)}</p>
+              : <Notice tone="warning">{fbrActivationEligibilityCopy(selectedVersion.version.score_status)}</Notice>
+          )}
+        </>}
+      </ConfirmDialog>
       {reconcileLocalFalcon && scanBatch && (
         <LocalFalconReconciliationDialog
           batch={scanBatch}
@@ -1576,6 +1564,7 @@ export default function MerchantProfile() {
   const [fbrMerchantId, setFbrMerchantId] = useState('')
   const [selectedLocationId, setSelectedLocationId] = useState('')
   const [error, setError] = useState('')
+  const [conflict, setConflict] = useState(false)
   const [busy, setBusy] = useState(false)
   const [showFbrRelink, setShowFbrRelink] = useState(false)
   const [newFbrMerchantId, setNewFbrMerchantId] = useState('')
@@ -1800,6 +1789,7 @@ export default function MerchantProfile() {
       if (!relinkAccepted && err instanceof ApiError && err.status >= 400 && err.status < 500) {
         fbrRelinkRequestRef.current = null
       }
+      if (err instanceof ApiError && err.status === 409) setConflict(true)
       setError((err as Error).message)
     } finally {
       profileMutationBusyRef.current = false
@@ -1951,11 +1941,29 @@ export default function MerchantProfile() {
     }
   }, [merchantId])
 
+  const reloadAfterConflict = async () => {
+    try {
+      const [merchantData, profileData, seoData] = await Promise.all([
+        api.getMerchant(merchantId),
+        api.getMerchantProfile(merchantId),
+        api.getSeoTargets(merchantId),
+      ])
+      setMerchant(merchantData)
+      setProfile(profileData)
+      setSeoTargets(seoData)
+      setFbrMerchantId(profileData.fbr_merchant_id || '')
+      setError('')
+      setConflict(false)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
   if (!merchant || !profile) {
     return (
       <main aria-label="正在加载商户资料" className="merchant-workspace-page merchant-profile-page">
         <p className="breadcrumb"><Link to="/">← 商户列表</Link></p>
-        {error ? <p className="error">{error}</p> : <p>加载中…</p>}
+        {error ? <Notice tone="error">{error}</Notice> : <LoadingState variant="detail" />}
       </main>
     )
   }
@@ -1980,8 +1988,10 @@ export default function MerchantProfile() {
       </header>
 
       <MerchantSectionNav merchantId={merchantId} active="profile" />
-      {error && <p className="error profile-error" role="alert">{error}</p>}
-      {isArchived && <p className="notice warning" role="status">商户已归档，恢复在营后可操作。</p>}
+      {conflict
+        ? <ConflictBanner message="商户资料已被他人修改，本页数据已过期。" detail={error || undefined} onReload={() => void reloadAfterConflict()} />
+        : error && <Notice tone="error" className="profile-error">{error}</Notice>}
+      {isArchived && <Notice tone="warning">商户已归档，恢复在营后可操作。</Notice>}
 
       {isUnbound ? (
         <section className="profile-connect-panel" aria-labelledby="profile-connect-title">
@@ -2011,11 +2021,11 @@ export default function MerchantProfile() {
                 <button
                   type="button"
                   onClick={() => setShowFbrRelink(value => !value)}
-                  disabled={busy || fbrRelinking || profile.binding_generation == null || !profile.binding_sha256}
+                  disabled={busy || conflict || fbrRelinking || profile.binding_generation == null || !profile.binding_sha256}
                 >
                   重新绑定 FBR
                 </button>
-                <button className="primary" type="button" onClick={() => void sync()} disabled={busy || fbrRelinking}>
+                <button className="primary" type="button" onClick={() => void sync()} disabled={busy || conflict || fbrRelinking}>
                   {busy ? '同步中…' : hasLocations ? '重新同步' : '同步 GBP 资料'}
                 </button>
               </div>
@@ -2077,7 +2087,7 @@ export default function MerchantProfile() {
             </form>
           )}
 
-          {profile.last_error && <p className="notice warning profile-sync-warning">上次同步失败：{profile.last_error}。已保留最后一次成功数据。</p>}
+          {profile.last_error && <Notice tone="warning" className="profile-sync-warning">上次同步失败：{profile.last_error}。已保留最后一次成功数据。</Notice>}
 
           {hasLocations && selectedLocation ? (
             <section className="profile-location-area" aria-label="GBP 门店资料">

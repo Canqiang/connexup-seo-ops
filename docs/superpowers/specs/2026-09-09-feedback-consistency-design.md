@@ -215,3 +215,8 @@ type EmptyStateProps = { title: string; description?: string; action?: { label: 
 - 重新载入按钮：统一为 `重新载入`。这是本设计里唯一的文案改动；测试里对「刷新任务」「重新载入服务器 Plan」按钮名的断言随之更新。
 - 空态：`当前筛选下没有商户。` / `当前查询条件下没有任务。` / `暂无事件记录。` / `尚未发起分析。第一次分析会在这里生成报告和任务提案。`
 - 加载：文本 `加载中…`（MerchantDetail / RunDetail / TaskDetail / MerchantProfile 四处一致）；`aria-label` 沿用各页现有值，如 `正在加载商户资料`
+
+## 附录 C：保留原实现的对话框
+
+- `MerchantProfile.tsx` 的 `LocalFalconReconciliationDialog`（Local Falcon 人工对账）：footer 有「确认未提交并关闭批次 / 关闭剩余未执行项 / 绑定已受理报告」三个条件动作，不符合 `ConfirmDialog` 的取消 + 单一确认结构。保留 `operation-confirm-dialog reconciliation-dialog` 外壳，只把内部错误提示换成 `Notice`。
+- `MerchantProfile.tsx` 的 FBR 重新绑定返回 409 时没有既有文案，新增横幅文案「商户资料已被他人修改，本页数据已过期。」，服务器原文作为 detail 一并显示。
