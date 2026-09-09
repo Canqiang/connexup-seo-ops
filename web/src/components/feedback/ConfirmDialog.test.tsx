@@ -70,6 +70,18 @@ describe('ConfirmDialog', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '打开' }))
   })
 
+  it('re-focuses inside the dialog after a busy phase and still closes on Escape', () => {
+    const onCancel = vi.fn()
+    const { rerender } = render(<ConfirmDialog {...base} busy onConfirm={() => {}} onCancel={onCancel} />)
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(false)
+    rerender(<ConfirmDialog {...base} busy={false} error="请求校验失败：商户名称不能为空" onConfirm={() => {}} onCancel={onCancel} />)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '取消' }))
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
   it('traps Tab inside the dialog', () => {
     render(<ConfirmDialog {...base} onConfirm={() => {}} onCancel={() => {}} />)
     const close = screen.getByRole('button', { name: '关闭' })

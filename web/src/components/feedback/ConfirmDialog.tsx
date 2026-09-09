@@ -33,7 +33,6 @@ export function ConfirmDialog({
   useEffect(() => {
     if (!open) return
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    cancelRef.current?.focus()
     return () => {
       const opener = openerRef.current
       openerRef.current = null
@@ -41,14 +40,28 @@ export function ConfirmDialog({
     }
   }, [open])
 
+  // Keep focus inside the dialog: on open, and again after a busy phase, because
+  // disabling the buttons while busy drops focus to <body>.
+  useEffect(() => {
+    if (!open || busy) return
+    if (!dialogRef.current?.contains(document.activeElement)) cancelRef.current?.focus()
+  }, [open, busy])
+
+  // Escape is handled at document level so it works wherever focus ended up.
+  useEffect(() => {
+    if (!open) return
+    const onDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || busy) return
+      event.preventDefault()
+      onCancel()
+    }
+    document.addEventListener('keydown', onDocumentKeyDown)
+    return () => document.removeEventListener('keydown', onDocumentKeyDown)
+  }, [open, busy, onCancel])
+
   if (!open) return null
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      if (!busy) onCancel()
-      return
-    }
     if (event.key !== 'Tab' || !dialogRef.current) return
     const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE))
     if (focusable.length === 0) return
