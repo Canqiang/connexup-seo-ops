@@ -1,3 +1,4 @@
+@import './feedback.css';
 /* seo-ops 台账视觉系统 —— 瓷灰底 / 白卡片 / 墨蓝主色 / 戳记式状态 */
 
 :root {
@@ -2414,14 +2415,6 @@ tr.row-cancelled td.grow a { text-decoration: line-through; text-decoration-colo
   font: 500 11px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
   letter-spacing: 0.04em;
   white-space: nowrap;
-}
-.empty-state {
-  min-height: 116px;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  font-size: 13px;
-  background: #fbfcfd;
 }
 
 /* ---- 数据录入与操作反馈 ---- */

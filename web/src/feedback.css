@@ -1,0 +1,162 @@
+/* 反馈模式套件 —— 由 docs/evidence/2026-09-09-feedback-kit/prototype/index.html 移植。
+   五个模式：ConfirmDialog / ConflictBanner / Notice / LoadingState / EmptyState。
+   只用 index.css 已有的 token；派生色直接写既有字面量。 */
+
+/* ---- 按钮补充：实心危险按钮 ---- */
+button.danger-solid {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+  font-weight: 500;
+}
+button.danger-solid:hover:not(:disabled) { background: #9f312e; border-color: #9f312e; color: #fff; }
+button.danger-solid:disabled { background: var(--muted); border-color: var(--muted); color: #fff; }
+button[aria-busy="true"] { cursor: progress; }
+
+/* ---- 戳记 ---- */
+.fb-stamp {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  font: 600 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: var(--paper-blue);
+  color: var(--brand-ink);
+}
+.fb-stamp-on-warn { background: var(--card); color: #9d5712; box-shadow: inset 0 0 0 1px #e5bb87; }
+
+/* ---- Notice ---- */
+.fb-notice {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.fb-notice > span { flex: 1; min-width: 0; }
+.fb-notice-error { background: var(--bad-soft); color: var(--bad); }
+.fb-notice-success { background: var(--ok-soft); color: var(--ok); }
+.fb-notice-warning { background: var(--accent-soft); color: #9d5712; }
+.fb-notice + .fb-notice { margin-top: 8px; }
+.fb-notice button { flex: none; }
+
+/* ---- Confirm dialog ---- */
+.fb-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgb(25 50 74 / 30%);
+}
+.fb-dialog {
+  width: min(640px, calc(100vw - 96px));
+  max-height: min(720px, calc(100vh - 64px));
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 24px 70px rgb(25 50 74 / 22%);
+}
+.fb-dialog-wide { width: min(720px, calc(100vw - 96px)); }
+.fb-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.fb-dialog-title { margin: 4px 0 0; color: var(--ink); font-size: 18px; line-height: 1.35; font-weight: 600; }
+.fb-dialog .dialog-close { border-radius: 8px; font-size: 20px; }
+.fb-dialog .dialog-close:disabled { background: #fbfcfd; color: var(--muted); cursor: not-allowed; }
+.fb-dialog-body { display: grid; gap: 12px; padding: 20px 22px; }
+.fb-dialog-body > p { margin: 0; }
+.fb-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 22px;
+  border-top: 1px solid var(--line);
+  background: #fbfcfd;
+  border-radius: 0 0 8px 8px;
+}
+
+/* ---- Conflict banner (409) ---- */
+.fb-conflict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 10px 24px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid #e5bb87;
+  color: #9d5712;
+}
+.fb-conflict-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.fb-conflict-text p { margin: 0; font-weight: 500; }
+.fb-conflict-detail { font-size: 12px; font-weight: 400; color: #8c4c0d; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.fb-conflict-actions { display: flex; align-items: center; gap: 12px; }
+.fb-conflict-status { font-size: 12px; color: #9d5712; }
+
+/* ---- Loading ---- */
+.fb-loading { margin: 0; color: var(--ink-2); font-size: 13px; }
+.fb-loading-card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+.fb-loading-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.fb-loading-text { font-size: 12px; color: var(--ink-2); }
+.fb-skeleton {
+  height: 12px;
+  border-radius: 4px;
+  background: var(--paper-blue);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.fb-skeleton-stamp { width: 56px; height: 18px; }
+.fb-sk-row {
+  display: grid;
+  grid-template-columns: 2fr 72px 1fr 1fr 96px;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.fb-sk-row:last-child { border-bottom: 0; }
+.fb-sk-row-head { padding: 10px 16px; background: #fbfcfd; }
+.fb-sk-row-head .fb-skeleton { height: 8px; }
+.fb-sk-detail { display: grid; gap: 20px; padding: 20px; }
+.fb-sk-title { display: grid; gap: 10px; }
+.fb-sk-dl { display: grid; grid-template-columns: 88px 1fr; align-items: center; gap: 14px 16px; }
+
+/* ---- Empty state（覆盖 index.css 的旧规则） ---- */
+.empty-state {
+  min-height: 116px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 20px;
+  text-align: center;
+  background: #fbfcfd;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.empty-state p { margin: 0; max-width: 36em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fb-skeleton { animation: none; }
+}
