@@ -7,6 +7,7 @@ import { formatTime } from '../format'
 import { CATEGORY_LABELS, RUN_STATUS_LABELS, TASK_STATUS_LABELS } from '../labels'
 import { formatRunDuration, runResult } from '../runPresentation'
 import { isTaskPlan } from '../taskPlan'
+import { ConfirmDialog, EmptyState, LoadingState, Notice } from '../components/feedback'
 
 const STATUS_RANK: Record<TaskStatus, number> = {
   NEEDS_ATTENTION: 0,
@@ -103,6 +104,9 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
   const [runsError, setRunsError] = useState('')
   const [planError, setPlanError] = useState('')
   const [actionError, setActionError] = useState('')
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false)
+  const [archiveBusy, setArchiveBusy] = useState(false)
+  const [archiveError, setArchiveError] = useState('')
 
   const clearPlan = useCallback((state: PlanReadState, runId: number | null) => {
     planEpochRef.current += 1
@@ -285,25 +289,34 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
     }
   }
 
-  const toggleArchive = async () => {
+  const applyArchiveToggle = async () => {
+    if (!merchant || archiveBusy) return
+    const archiving = merchant.status === 'active'
+    setArchiveBusy(true)
+    try {
+      const updated = await api.patchMerchant(merchant.id, { status: archiving ? 'archived' : 'active' })
+      setMerchant(updated)
+      if (updated.status === 'archived') setShowCreate(false)
+      setActionError('')
+      setArchiveConfirmOpen(false)
+    } catch (err) {
+      if (archiving) setArchiveError((err as Error).message)
+      else setActionError((err as Error).message)
+    } finally {
+      setArchiveBusy(false)
+    }
+  }
+
+  const toggleArchive = () => {
     if (!merchant) return
     if (merchant.status === 'active') {
       const archiveBlockingTaskCount = tasks.filter(taskBlocksArchive).length
       if (archiveBlockingTaskCount > 0 || hasRunning) return
-      const todoCount = tasks.filter(task => TODO_STATUSES.includes(task.status)).length
-      const confirmed = window.confirm(
-        `归档会关闭自动分析并停止创建新的执行；${todoCount} 个待办及全部历史记录会保留。任何进行中、待审核或同步中的工作都必须先处理完成。确认归档“${merchant.name}”？`,
-      )
-      if (!confirmed) return
+      setArchiveError('')
+      setArchiveConfirmOpen(true)
+      return
     }
-    try {
-      const updated = await api.patchMerchant(merchant.id, { status: merchant.status === 'active' ? 'archived' : 'active' })
-      setMerchant(updated)
-      if (updated.status === 'archived') setShowCreate(false)
-      setActionError('')
-    } catch (err) {
-      setActionError((err as Error).message)
-    }
+    void applyArchiveToggle()
   }
 
   const startRun = async () => {
@@ -332,7 +345,7 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
     return (
       <main aria-label="商户工作区">
         <p className="breadcrumb"><Link to="/">← 商户列表</Link></p>
-        {merchantError ? <p className="error">{merchantError}</p> : <p>加载中…</p>}
+        {merchantError ? <Notice tone="error">{merchantError}</Notice> : <LoadingState variant="detail" />}
       </main>
     )
   }
@@ -363,6 +376,7 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
   const merchantArchived = merchant.status === 'archived'
   const archiveBlockingTaskCount = tasks.filter(taskBlocksArchive).length
   const archiveBlockedReason = merchantArchived ? '' : archiveBlockerMessage(archiveBlockingTaskCount, hasRunning, hasUnknownRun)
+  const todoCount = tasks.filter(task => TODO_STATUSES.includes(task.status)).length
   const latestPlanTaskCount = latestTaskPlan?.current_revision.payload.tasks.length ?? 0
 
   const diagnosis = !latestRun
@@ -488,15 +502,15 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
       </header>
       <MerchantSectionNav merchantId={merchantId} active="operations" />
       {archiveBlockedReason && (
-        <p id="archive-blocked-reason" className="notice warning archive-blocker-notice" role="status">{archiveBlockedReason}</p>
+        <Notice tone="warning" id="archive-blocked-reason" className="archive-blocker-notice">{archiveBlockedReason}</Notice>
       )}
       {merchantArchived && (
-        <p className="notice warning" role="status">商户已归档；自动分析和新的任务执行已暂停，待办及历史记录均已保留。</p>
+        <Notice tone="warning">商户已归档；自动分析和新的任务执行已暂停，待办及历史记录均已保留。</Notice>
       )}
-      {merchantError && <p className="error">{merchantError}</p>}
-      {tasksError && <p className="error">{tasksError}</p>}
-      {runsError && <p className="error">{runsError}</p>}
-      {actionError && <p className="error">{actionError}</p>}
+      {merchantError && <Notice tone="error">{merchantError}</Notice>}
+      {tasksError && <Notice tone="error">{tasksError}</Notice>}
+      {runsError && <Notice tone="error">{runsError}</Notice>}
+      {actionError && <Notice tone="error">{actionError}</Notice>}
 
       {profileStatusLoaded && !profileSetupBlocked && (
         <section className="diagnosis-card" aria-label="初始诊断">
@@ -602,7 +616,7 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
             )}
           </>
         ) : (
-          <div className="empty-state">尚未发起分析。第一次分析会在这里生成报告和任务提案。</div>
+          <EmptyState>尚未发起分析。第一次分析会在这里生成报告和任务提案。</EmptyState>
         )}
       </section>
 
@@ -655,9 +669,21 @@ function MerchantDetailPage({ merchantId }: { merchantId: number }) {
             tasks={shownTasks}
           />
         ) : (
-          <div className="empty-state">当前筛选下没有任务。</div>
+          <EmptyState>当前筛选下没有任务。</EmptyState>
         )}
       </section>
+      <ConfirmDialog
+        open={archiveConfirmOpen}
+        code="MERCHANT / ARCHIVE"
+        title="归档商户"
+        message={`归档会关闭自动分析并停止创建新的执行；${todoCount} 个待办及全部历史记录会保留。任何进行中、待审核或同步中的工作都必须先处理完成。确认归档“${merchant.name}”？`}
+        confirmLabel="确认归档"
+        busyLabel="归档中…"
+        busy={archiveBusy}
+        error={archiveError}
+        onConfirm={() => void applyArchiveToggle()}
+        onCancel={() => { if (!archiveBusy) { setArchiveConfirmOpen(false); setArchiveError('') } }}
+      />
     </main>
   )
 }

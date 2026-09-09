@@ -682,8 +682,6 @@ describe('merchant lifecycle', () => {
 
   it('blocks archiving when a known task is running or awaiting review', async () => {
     window.history.pushState({}, '', '/merchants/1')
-    const confirmMock = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmMock)
     const tasks = [
       { ...activeTask, id: 4, title: '进行中任务', status: 'PREPARING' },
       { ...activeTask, id: 5, title: '待审核任务', status: 'AWAITING_APPROVAL', execution_status: 'SUCCEEDED' },
@@ -717,7 +715,7 @@ describe('merchant lifecycle', () => {
     expect((archiveButton as HTMLButtonElement).disabled).toBe(true)
     await screen.findByText('暂时无法归档：还有 2 个任务正在执行或等待审核。请先完成审核，并等待任务执行结束。')
     fireEvent.click(archiveButton)
-    expect(confirmMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(fetchMock.mock.calls.some(([input, init]) => (
       input === '/api/merchants/1' && (init as RequestInit | undefined)?.method === 'PATCH'
     ))).toBe(false)
@@ -725,8 +723,6 @@ describe('merchant lifecycle', () => {
 
   it('blocks archiving while a merchant analysis is running', async () => {
     window.history.pushState({}, '', '/merchants/1')
-    const confirmMock = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmMock)
     const fetchMock = vi.fn().mockImplementation(async (input: string) => ({
       ok: true,
       status: 200,
@@ -765,7 +761,7 @@ describe('merchant lifecycle', () => {
     expect((archiveButton as HTMLButtonElement).disabled).toBe(true)
     await screen.findByText('暂时无法归档：商户分析仍在运行。请等待分析结束后再归档。')
     fireEvent.click(archiveButton)
-    expect(confirmMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(fetchMock.mock.calls.some(([input, init]) => (
       input === '/api/merchants/1' && (init as RequestInit | undefined)?.method === 'PATCH'
     ))).toBe(false)
@@ -773,8 +769,6 @@ describe('merchant lifecycle', () => {
 
   it('preserves pending work and history when archiving an idle merchant', async () => {
     window.history.pushState({}, '', '/merchants/1')
-    const confirmMock = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmMock)
     const tasks = [activeTask, { ...activeTask, id: 3, title: '第二个待办' }]
     const fetchMock = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
       if (input === '/api/merchants/1' && init?.method === 'PATCH') {
@@ -818,9 +812,10 @@ describe('merchant lifecycle', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '归档商户' }))
 
-    expect(confirmMock).toHaveBeenCalledWith(
-      '归档会关闭自动分析并停止创建新的执行；2 个待办及全部历史记录会保留。任何进行中、待审核或同步中的工作都必须先处理完成。确认归档“在营商户”？',
-    )
+    const dialog = await screen.findByRole('dialog', { name: '归档商户' })
+    within(dialog).getByText('归档会关闭自动分析并停止创建新的执行；2 个待办及全部历史记录会保留。任何进行中、待审核或同步中的工作都必须先处理完成。确认归档“在营商户”？')
+    expect(fetchMock.mock.calls.some(([input, init]) => input === '/api/merchants/1' && (init as RequestInit | undefined)?.method === 'PATCH')).toBe(false)
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认归档' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/merchants/1',
       expect.objectContaining({
@@ -834,7 +829,6 @@ describe('merchant lifecycle', () => {
 
   it('surfaces the server conflict when a hidden sync blocks archiving', async () => {
     window.history.pushState({}, '', '/merchants/1')
-    vi.stubGlobal('confirm', vi.fn(() => true))
     const fetchMock = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
       if (input === '/api/merchants/1' && init?.method === 'PATCH') {
         return {
@@ -866,6 +860,7 @@ describe('merchant lifecycle', () => {
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: '归档商户' }))
+    fireEvent.click(within(await screen.findByRole('dialog', { name: '归档商户' })).getByRole('button', { name: '确认归档' }))
 
     await screen.findByText('仍有正在同步的数据，请等待同步完成后再归档')
     expect(screen.getByRole('button', { name: '归档商户' })).toBeTruthy()
