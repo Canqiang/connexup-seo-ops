@@ -67,3 +67,38 @@ def test_query_reports_a_missing_timezone_as_a_distinct_409_from_the_rollback_ga
     assert response.status_code == 409
     assert response.json()["detail"] == "location_timezone_missing"
     assert response.json()["detail"] != "history_read_not_enabled_for_merchant"
+
+
+def test_put_timezone_refused_when_the_history_read_flag_is_off(client, monkeypatch):
+    """The PUT route writes merchant_locations, merchant_location_status_events
+    and source_scopes, so it must sit behind the same rollback gate as the
+    query route -- with both flags off, the Rollback runbook paragraph
+    claims every route behind them returns 409, and this one must too."""
+    merchant_id = _seed_merchant_with_bound_location(client, set_timezone=False)
+    from app.db import connect
+
+    conn = connect()
+    try:
+        location_id = conn.execute(
+            "SELECT id FROM merchant_locations WHERE merchant_id = ?", (merchant_id,)
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+    monkeypatch.setenv("SEO_OPS_PERFORMANCE_PILOT_MERCHANT_IDS", str(merchant_id))
+    # Both SEO_OPS_PERFORMANCE_HISTORY_READ_ENABLED and
+    # SEO_OPS_PERFORMANCE_SYNC_ENABLED are intentionally left unset (off).
+    response = client.put(
+        f"/api/merchant-locations/{location_id}/timezone",
+        json={"timezone_name": "America/Chicago"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "history_read_not_enabled_for_merchant"
+    # The gate must refuse before the write -- the timezone stays unset.
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT timezone_name FROM merchant_locations WHERE id = ?", (location_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["timezone_name"] is None

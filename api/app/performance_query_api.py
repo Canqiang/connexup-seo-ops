@@ -20,7 +20,7 @@ class TimezoneBodyV1(BaseModel):
     timezone_name: str = Field(min_length=1, max_length=64)
 
 
-def _require_read_gate(merchant_id: int) -> None:
+def _require_read_gate(merchant_id: int | None) -> None:
     settings = performance_sync_settings()
     if not performance_history_read_enabled() or merchant_id not in settings.pilot_merchant_ids:
         raise HTTPException(status_code=409, detail="history_read_not_enabled_for_merchant")
@@ -43,6 +43,8 @@ def locations(merchant_id: int, conn=Depends(get_db), operator: str = Depends(re
 
 @router.put("/api/merchant-locations/{location_id}/timezone")
 def put_timezone(location_id: int, body: TimezoneBodyV1, conn=Depends(get_db), operator: str = Depends(require_operator)):
+    row = conn.execute("SELECT merchant_id FROM merchant_locations WHERE id = ?", (location_id,)).fetchone()
+    _require_read_gate(row["merchant_id"] if row is not None else None)
     try:
         location = set_location_timezone(
             conn, location_id, body.timezone_name, actor=operator, effective_at=datetime.now(timezone.utc)
