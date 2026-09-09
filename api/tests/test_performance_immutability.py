@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 
-def _seed_observation(conn):
+def _seed_observation(conn, batch_status="published"):
     conn.execute(
         "INSERT INTO source_scopes (source, scope_type, external_id, canonical_key, timezone_name,"
         " date_basis, metadata_json, created_at) VALUES"
@@ -19,8 +19,9 @@ def _seed_observation(conn):
     )
     conn.execute(
         "INSERT INTO metric_sync_batches (job_id, source, source_scope_id, partition_month, attempt,"
-        " status, adapter_version, created_at, updated_at) VALUES (1,'GBP',1,'2026-08',1,'published',"
-        " 'gbp.v1','2026-09-09T00:00:00.000000Z','2026-09-09T00:00:00.000000Z')"
+        " status, adapter_version, created_at, updated_at) VALUES (1,'GBP',1,'2026-08',1,?,"
+        " 'gbp.v1','2026-09-09T00:00:00.000000Z','2026-09-09T00:00:00.000000Z')",
+        (batch_status,),
     )
     conn.execute(
         "INSERT INTO metric_observations (batch_id, source_scope_id, metric_key, business_date,"
@@ -48,34 +49,7 @@ def test_observation_on_non_published_batch_is_also_immutable(conn):
     # guarantee, not a convention that depends on batch lifecycle state --
     # so an observation attached to a still-queued batch must be protected
     # too.
-    conn.execute(
-        "INSERT INTO source_scopes (source, scope_type, external_id, canonical_key, timezone_name,"
-        " date_basis, metadata_json, created_at) VALUES"
-        " ('GBP','GBP_LOCATION','1','gbp:1','America/New_York','store_local','{}',"
-        " '2026-09-09T00:00:00.000000Z')"
-    )
-    conn.execute(
-        "INSERT INTO metric_sync_jobs (job_type, request_id, idempotency_key, scope_manifest_json,"
-        " scope_manifest_sha256, requested_start_date, requested_end_date, status, requested_by,"
-        " created_at) VALUES ('backfill','r1','k1','{}', ?, '2026-08-18','2026-08-19','queued',"
-        " 'test','2026-09-09T00:00:00.000000Z')",
-        ("a" * 64,),
-    )
-    conn.execute(
-        "INSERT INTO metric_sync_batches (job_id, source, source_scope_id, partition_month, attempt,"
-        " status, adapter_version, created_at, updated_at) VALUES (1,'GBP',1,'2026-08',1,'queued',"
-        " 'gbp.v1','2026-09-09T00:00:00.000000Z','2026-09-09T00:00:00.000000Z')"
-    )
-    conn.execute(
-        "INSERT INTO metric_observations (batch_id, source_scope_id, metric_key, business_date,"
-        " date_basis, dimension_json, dimension_sha256, logical_key_json, logical_key_sha256,"
-        " numeric_value, availability, completeness, formula_version, published_sequence,"
-        " content_sha256, created_at) VALUES (1,1,'CALL_CLICKS','2026-08-18','store_local','{}',?,"
-        " '{}',?,3,'available','complete','seo_ops.performance_metrics.v1',1,?,"
-        " '2026-09-09T00:00:00.000000Z')",
-        ("b" * 64, "c" * 64, "d" * 64),
-    )
-    conn.commit()
+    _seed_observation(conn, batch_status="queued")
     with pytest.raises(sqlite3.IntegrityError, match="metric_observation_immutable"):
         conn.execute("UPDATE metric_observations SET numeric_value = 99 WHERE id = 1")
     with pytest.raises(sqlite3.IntegrityError, match="metric_observation_immutable"):
