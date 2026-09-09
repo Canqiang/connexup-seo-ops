@@ -1,0 +1,19 @@
+{
+  "projectId": "seo-ops-feedback-kit",
+  "projectName": "seo-ops 反馈模式套件",
+  "designSystemId": "user:seo-ops",
+  "skill": "frontend-design",
+  "agent": "claude",
+  "requestId": "8333302a-a162-42ea-99b6-3cf1242233f9",
+  "runId": "ea4d5b82-c672-4a33-81ee-e9a91e856734",
+  "conversationId": "783b1295-e983-4f3a-867b-0d04f6d2d09d",
+  "status": "succeeded",
+  "previewUrl": "http://127.0.0.1:60061/api/projects/seo-ops-feedback-kit/raw/index.html",
+  "studioUrl": "http://127.0.0.1:60071/projects/seo-ops-feedback-kit/conversations/783b1295-e983-4f3a-867b-0d04f6d2d09d/files/index.html",
+  "artifactRef": { "projectId": "seo-ops-feedback-kit", "entryFile": "index.html" },
+  "startedAt": "2026-09-09T02:46:58Z",
+  "terminalAt": "2026-09-09T03:01:12Z",
+  "files": ["index.html"],
+  "acceptanceCheck": "PASS: 1 file(s), 5 sections, 12 copy strings, no external resources",
+  "note": "previewUrl/studioUrl ports belong to the current OpenDesign daemon session; call get_run again after an OpenDesign restart to refresh them."
+}
