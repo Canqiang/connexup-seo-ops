@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1180" />
+  <title>反馈模式套件 · SEO Ops</title>
+  <style>
+    /* design-systems/seo-ops/tokens.css
+     * Derived from web/src/index.css (:root) on 2026-09-09. Values are verbatim
+     * except --accent-active and --focus-ring, which index.css does not define.
+     */
+
+    :root {
+      /* A1 identity */
+      --bg: #f5f7f9;                /* --paper */
+      --surface: #ffffff;           /* --card */
+      --surface-warm: #e8eff5;      /* --paper-blue */
+      --fg: #19324a;                /* --ink */
+      --fg-2: #4f6578;              /* --ink-2 */
+      --muted: #8394a4;             /* --muted */
+      --meta: #205d7b;              /* --brand-ink */
+      --border: #d5dfe7;            /* --line */
+      --border-soft: var(--border); /* no lighter line in the existing palette */
+      --accent: #c8731a;            /* --accent, button.primary */
+      --accent-on: #ffffff;
+      --accent-hover: #9d5712;      /* button.primary:hover */
+      --accent-active: #7f4610;
+
+      /* A2 semantic */
+      --success: #26765b;           /* --ok */
+      --warn: #c8731a;              /* --accent doubles as warning (credit-warning) */
+      --danger: #b4372e;            /* --bad */
+
+      /* Typography */
+      --font-display: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+      --font-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+      --text-xs: 10px;              /* .section-code / .eyebrow */
+      --text-sm: 12px;
+      --text-base: 14px;            /* body */
+      --text-lg: 16px;
+      --text-xl: 18px;              /* dialog h4 */
+      --text-2xl: 24px;
+      --text-3xl: 32px;
+      --text-4xl: 40px;
+      --leading-body: 1.65;         /* body */
+      --leading-tight: 1.2;
+      --tracking-display: 0;
+
+      /* Spacing on a 4px grid */
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-8: 32px;
+      --space-12: 48px;
+      --section-y-desktop: 48px;
+      --section-y-tablet: 40px;
+      --section-y-phone: 32px;
+
+      /* Shape and elevation */
+      --radius-sm: 4px;
+      --radius-md: 8px;             /* button, .error */
+      --radius-lg: 8px;             /* cards stay square-ish; never larger */
+      --radius-pill: 9999px;
+      --elev-flat: none;
+      --elev-ring: 0 0 0 1px var(--border);
+      --elev-raised: 0 24px 70px rgb(25 50 74 / 22%);   /* .operation-confirm-dialog */
+      --focus-ring: 0 0 0 3px #e7f2f7;
+
+      /* Motion */
+      --motion-fast: 120ms;
+      --motion-base: 200ms;
+      --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+      /* Layout */
+      --container-max: 1380px;      /* .task-detail-layout */
+      --container-gutter-desktop: 32px;
+      --container-gutter-tablet: 24px;
+      --container-gutter-phone: 16px;
+
+      /* C-layer extensions: original seo-ops names, kept so the prototype can
+         reference the same vocabulary the React app uses. */
+      --brand: #37799a;
+      --brand-ink: #205d7b;
+      --brand-soft: #e7f2f7;
+      --line-strong: #b9c9d6;
+      --accent-soft: #fff5e8;
+      --ok-soft: #e5f2ed;
+      --bad-soft: #f9e9e7;
+      --ai: #6b46a8;
+      --ai-soft: #f0e9f9;
+    }
+
+    /* ---- Derived values: mixes of the tokens above, no new colours ---- */
+    body {
+      --surface-quiet: color-mix(in srgb, var(--surface) 60%, var(--bg));      /* dialog footer / empty state */
+      --danger-hover: color-mix(in oklch, var(--danger) 86%, black);
+      --danger-active: color-mix(in oklch, var(--danger) 76%, black);
+      --warn-line: color-mix(in oklch, var(--accent) 35%, var(--accent-soft));
+    }
+
+    /* ---- Base ---- */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { min-width: 1180px; background: var(--bg); }
+    body {
+      margin: 0;
+      font: 400 var(--text-base) / var(--leading-body) var(--font-body);
+      color: var(--fg);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    h1, h2, h3, p, dl, dd, figure { margin: 0; }
+    p { text-wrap: pretty; }   /* avoid 1–2 character orphans on CJK last lines */
+    button { font: inherit; }
+    a { color: var(--brand); text-underline-offset: 3px; }
+    a:hover { color: var(--brand-ink); }
+    a:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 2px; }
+
+    .section-code {
+      font: 600 var(--text-xs) / 1.4 var(--font-mono);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--brand-ink);
+    }
+
+    /* ---- Page chrome ---- */
+    .page {
+      max-width: var(--container-max);
+      margin: 0 auto;
+      padding: 40px var(--container-gutter-desktop) 80px;
+    }
+    .page-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 48px;
+      align-items: start;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+    .page-header h1 {
+      font-size: var(--text-2xl);
+      line-height: 1.35;
+      font-weight: 600;
+      letter-spacing: var(--tracking-display);
+      margin: 6px 0 12px;
+    }
+    .page-intro { max-width: 680px; color: var(--fg-2); }
+    .toc { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 18px 0 0; padding: 0; list-style: none; }
+    .toc a { display: inline-flex; align-items: baseline; gap: 8px; text-decoration: none; }
+    .toc a .n { font: 600 var(--text-xs) / 1 var(--font-mono); letter-spacing: 0.12em; color: var(--brand-ink); }
+    .toc a:hover { text-decoration: underline; }
+    .meta {
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      gap: 8px 12px;
+      padding: 16px 18px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      line-height: 1.5;
+    }
+    .meta dt { color: var(--fg-2); }
+    .meta dd { font-family: var(--font-mono); color: var(--fg); }
+
+    .kit-section { margin-top: 40px; }
+    .kit-section + .kit-section { padding-top: 32px; border-top: 1px solid var(--border); }
+    .section-head { margin-bottom: 20px; }
+    .section-head h2 { font-size: var(--text-xl); line-height: 1.35; font-weight: 600; margin: 4px 0 6px; }
+    .section-summary { color: var(--fg-2); max-width: 780px; }
+
+    /* ---- Specimens ---- */
+    .specimens { display: grid; gap: 24px; }
+    .specimens-dialog { grid-template-columns: repeat(auto-fill, 640px); gap: 40px 24px; }
+    .specimens-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .specimens-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .specimens-loading { grid-template-columns: 3fr 2fr; }
+    .specimen-wide { grid-column: 1 / -1; }
+    .specimen { display: grid; gap: 10px; align-content: start; }
+    .specimen figcaption {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: var(--text-sm);
+      line-height: 1.5;
+      color: var(--fg-2);
+      letter-spacing: 0.01em;
+    }
+    .plate { background: var(--bg); border: 1px solid var(--border); }
+    .plate-pad { padding: 24px; }
+
+    /* ---- Stamp ---- */
+    .stamp {
+      display: inline-flex;
+      align-items: center;
+      height: 18px;
+      padding: 0 6px;
+      font: 600 var(--text-xs) / 1 var(--font-mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      background: var(--surface-warm);
+      color: var(--brand-ink);
+    }
+    .stamp-ok { background: var(--ok-soft); color: var(--success); }
+    .stamp-warn { background: var(--accent-soft); color: var(--accent-hover); }
+    .stamp-danger { background: var(--bad-soft); color: var(--danger); }
+    .stamp-on-warn { background: var(--surface); color: var(--accent-hover); box-shadow: inset 0 0 0 1px var(--warn-line); }
+
+    /* ---- Buttons ---- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 36px;
+      padding: 0 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      color: var(--fg-2);
+      font: 500 var(--text-base) / 1 var(--font-body);
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      cursor: pointer;
+      transition:
+        background-color var(--motion-fast) var(--ease-standard),
+        border-color var(--motion-fast) var(--ease-standard),
+        color var(--motion-fast) var(--ease-standard);
+    }
+    .btn:hover { background: var(--surface-warm); border-color: var(--line-strong); color: var(--fg); }
+    .btn:active { background: var(--border); color: var(--fg); }
+    .btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .btn-quiet { background: transparent; border-color: transparent; }
+    .btn-quiet:hover { background: var(--surface-warm); border-color: transparent; color: var(--fg); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on); }
+    .btn-primary:active { background: var(--accent-active); border-color: var(--accent-active); color: var(--accent-on); }
+    .btn-danger-solid { background: var(--danger); border-color: var(--danger); color: var(--accent-on); }
+    .btn-danger-solid:hover { background: var(--danger-hover); border-color: var(--danger-hover); color: var(--accent-on); }
+    .btn-danger-solid:active { background: var(--danger-active); border-color: var(--danger-active); color: var(--accent-on); }
+    .btn:disabled,
+    .btn[aria-busy="true"] {
+      background: var(--muted);
+      border-color: var(--muted);
+      color: var(--accent-on);
+      cursor: not-allowed;
+    }
+    .btn-quiet:disabled { background: transparent; border-color: transparent; color: var(--muted); }
+    .btn[aria-busy="true"] { cursor: progress; }
+
+    /* ---- Confirm dialog ---- */
+    .operation-confirm-dialog {
+      width: 640px;
+      max-width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-md);
+      box-shadow: var(--elev-raised);
+    }
+    .dialog-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border);
+    }
+    .dialog-title { font-size: var(--text-xl); line-height: 1.35; font-weight: 600; margin-top: 4px; }
+    .dialog-close {
+      flex: none;
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      color: var(--fg-2);
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+    }
+    .dialog-close:hover { background: var(--surface-warm); border-color: var(--line-strong); color: var(--fg); }
+    .dialog-close:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .dialog-close:disabled { background: var(--surface-quiet); color: var(--muted); cursor: not-allowed; }
+    .dialog-body { display: grid; gap: 12px; padding: 20px 22px; }
+    .dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      padding: 18px 22px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-quiet);
+      border-radius: 0 0 var(--radius-md) var(--radius-md);
+    }
+
+    .params {
+      display: grid;
+      grid-template-columns: 88px 1fr;
+      gap: 6px 16px;
+      padding: 12px 0 0;
+      border-top: 1px solid var(--border);
+    }
+    .params dt { font-size: var(--text-sm); color: var(--fg-2); }
+    .params dd { color: var(--fg); }
+
+    .field { display: grid; gap: 6px; }
+    .field label { font-size: var(--text-sm); color: var(--fg-2); letter-spacing: 0.01em; }
+    .input {
+      width: 100%;
+      height: 36px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      color: var(--fg);
+      font: 400 var(--text-base) / 1 var(--font-body);
+    }
+    .input::placeholder { color: var(--muted); }
+    .input:hover { border-color: var(--line-strong); }
+    .input:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+    .input[aria-invalid="true"] { border-color: var(--danger); }
+
+    /* ---- Notice ---- */
+    .notice {
+      padding: 8px 12px;
+      border-radius: var(--radius-md);
+      font-size: var(--text-base);
+      line-height: 1.5;
+    }
+    .notice-error { background: var(--bad-soft); color: var(--danger); }
+    .notice-success { background: var(--ok-soft); color: var(--success); }
+    .notice-warning { background: var(--accent-soft); color: var(--accent-hover); }
+
+    /* ---- Page context (mini page header used inside plates) ---- */
+    .page-context { padding: 18px 24px 24px; }
+    .page-context-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+    .page-context h3 { font-size: var(--text-xl); line-height: 1.35; font-weight: 600; margin-top: 4px; }
+    .page-context .notice { margin-top: 12px; }
+
+    /* ---- Conflict banner ---- */
+    .conflict-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 24px;
+      background: var(--accent-soft);
+      border-bottom: 1px solid var(--warn-line);
+      color: var(--accent-hover);
+    }
+    .conflict-msg { flex: 1; font-weight: 500; }
+    .conflict-actions { display: flex; align-items: center; gap: 12px; }
+    .conflict-status { font-size: var(--text-sm); color: var(--accent-hover); }
+
+    /* ---- Cards, skeletons, empty state ---- */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+    }
+    .loading-text { font-size: var(--text-sm); font-weight: 400; color: var(--fg-2); }
+    .skeleton {
+      height: 12px;
+      border-radius: var(--radius-sm);
+      background: var(--surface-warm);
+      animation: breathe 1.6s ease-in-out infinite;
+    }
+    .skeleton-stamp { width: 56px; height: 18px; }
+    .sk-row {
+      display: grid;
+      grid-template-columns: 2fr 72px 1fr 1fr 96px;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sk-row:last-child { border-bottom: 0; }
+    .sk-row-head { padding: 10px 16px; background: var(--surface-quiet); }
+    .sk-row-head .skeleton { height: 8px; }
+    .sk-detail { display: grid; gap: 20px; padding: 20px; }
+    .sk-dl { display: grid; grid-template-columns: 88px 1fr; align-items: center; gap: 14px 16px; }
+    .btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .btn-row .sep { width: 1px; height: 24px; background: var(--line-strong); margin: 0 8px; }
+
+    .empty-state {
+      min-height: 116px;
+      display: grid;
+      place-content: center;
+      justify-items: center;
+      gap: 12px;
+      padding: 20px;
+      text-align: center;
+      background: var(--surface-quiet);
+      color: var(--fg-2);
+      font-size: 13px;
+      line-height: 1.6;
+      border-radius: 0 0 var(--radius-md) var(--radius-md);
+    }
+    .empty-state p { max-width: 36em; }
+
+    @keyframes breathe {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.25; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton { animation: none; }
+      .btn, .dialog-close { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+
+    <header class="page-header" data-od-id="page-header">
+      <div>
+        <p class="section-code">SEO OPS / FEEDBACK KIT</p>
+        <h1 data-od-id="page-title">反馈模式套件</h1>
+        <p class="page-intro" data-od-id="page-intro">控制台里所有向操作员反馈「发生了什么、接下来能做什么」的模式集中在这一页：确认对话框、冲突横幅、提示、加载和空态。每种模式的全部变体都静态并排展示，文案取自线上原句，实现时可直接对照。三条原则贯穿全部：信息用灰底白卡和 1px 分割线承载；可执行动作只给一个主按钮；不可逆和被阻断的状态先陈述后果，再给唯一出口。</p>
+        <ul class="toc" data-od-id="toc" aria-label="区块目录">
+          <li><a href="#confirm-dialog"><span class="n">01</span>确认对话框</a></li>
+          <li><a href="#conflict-banner"><span class="n">02</span>冲突横幅</a></li>
+          <li><a href="#notice"><span class="n">03</span>提示</a></li>
+          <li><a href="#loading"><span class="n">04</span>加载</a></li>
+          <li><a href="#empty-state"><span class="n">05</span>空态</a></li>
+        </ul>
+      </div>
+      <dl class="meta" data-od-id="page-meta">
+        <dt>设计系统</dt><dd>seo-ops · tokens.css</dd>
+        <dt>视口</dt><dd>desktop ≥ 1180px</dd>
+        <dt>依赖</dt><dd>无外部字体 / 图标 / 脚本</dd>
+        <dt>文案</dt><dd>线上原句，未改写</dd>
+      </dl>
+    </header>
+
+    <!-- 01 确认对话框 -->
+    <section id="confirm-dialog" class="kit-section" data-od-id="section-confirm-dialog" aria-labelledby="h-confirm-dialog">
+      <div class="section-head">
+        <p class="section-code">01 / CONFIRM DIALOG</p>
+        <h2 id="h-confirm-dialog" data-od-id="heading-confirm-dialog">确认对话框</h2>
+        <p class="section-summary">用于不可逆或高成本操作。结构固定：眉标 + 标题 + 关闭，后果说明段落，右下「取消」+ 危险确认按钮。提交中锁定全部控件；提交失败时错误留在对话框内，按钮恢复可用以便重试。点击遮罩不关闭。</p>
+      </div>
+
+      <div class="specimens specimens-dialog">
+
+        <figure class="specimen" data-od-id="dialog-delete-draft">
+          <figcaption><span class="stamp">默认</span>删除空白草稿 · 不可逆</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-delete-title">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">DRAFT / DELETE</p>
+                <h3 class="dialog-title" id="dlg-delete-title">删除空白草稿</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="dialog-body">
+              <p>“误建空白草稿”没有任何同步、任务、分析或审计历史。删除空白草稿后无法恢复，确认删除？</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet">取消</button>
+              <button type="button" class="btn btn-danger-solid" data-od-id="confirm-delete-draft">确认删除</button>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="dialog-archive-merchant">
+          <figcaption><span class="stamp">默认</span>归档商户 · 停止新执行，保留历史</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-archive-title">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">MERCHANT / ARCHIVE</p>
+                <h3 class="dialog-title" id="dlg-archive-title">归档商户</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="dialog-body">
+              <p>归档会关闭自动分析并停止创建新的执行；3 个待办及全部历史记录会保留。任何进行中、待审核或同步中的工作都必须先处理完成。确认归档“示例商户”？</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet">取消</button>
+              <button type="button" class="btn btn-danger-solid" data-od-id="confirm-archive-merchant">确认归档</button>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="dialog-mark-not-created">
+          <figcaption><span class="stamp">默认</span>标记 Core AI 未创建运行 · 分析将标记失败</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-mark-title">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">CORE AI / RUN NOT CREATED</p>
+                <h3 class="dialog-title" id="dlg-mark-title">标记 Core AI 未创建运行</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="dialog-body">
+              <p>请再次确认：Core AI 中没有创建本次运行。确认后本次分析会标记失败，之后才能重新发起诊断。</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet">取消</button>
+              <button type="button" class="btn btn-danger-solid" data-od-id="confirm-mark-not-created">确认标记未创建</button>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="dialog-busy">
+          <figcaption><span class="stamp">提交中</span>删除空白草稿 · 关闭、取消、确认全部禁用</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-busy-title" aria-busy="true">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">DRAFT / DELETE</p>
+                <h3 class="dialog-title" id="dlg-busy-title">删除空白草稿</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭" disabled>&times;</button>
+            </div>
+            <div class="dialog-body">
+              <p>“误建空白草稿”没有任何同步、任务、分析或审计历史。删除空白草稿后无法恢复，确认删除？</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet" disabled>取消</button>
+              <button type="button" class="btn btn-danger-solid" aria-busy="true" disabled data-od-id="confirm-delete-busy">提交中…</button>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="dialog-failed">
+          <figcaption><span class="stamp stamp-danger">提交失败</span>归档商户 · 错误留在对话框内，可直接重试</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-failed-title" aria-describedby="dlg-failed-error">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">MERCHANT / ARCHIVE</p>
+                <h3 class="dialog-title" id="dlg-failed-title">归档商户</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="dialog-body">
+              <p>归档会关闭自动分析并停止创建新的执行；3 个待办及全部历史记录会保留。任何进行中、待审核或同步中的工作都必须先处理完成。确认归档“示例商户”？</p>
+              <p class="notice notice-error" role="alert" id="dlg-failed-error">请求校验失败：商户名称不能为空</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet">取消</button>
+              <button type="button" class="btn btn-danger-solid" data-od-id="confirm-archive-retry">确认归档</button>
+            </div>
+          </div>
+        </figure>
+
+      </div>
+    </section>
+
+    <!-- 02 冲突横幅 -->
+    <section id="conflict-banner" class="kit-section" data-od-id="section-conflict-banner" aria-labelledby="h-conflict-banner">
+      <div class="section-head">
+        <p class="section-code">02 / CONFLICT BANNER · 409</p>
+        <h2 id="h-conflict-banner" data-od-id="heading-conflict-banner">冲突横幅</h2>
+        <p class="section-summary">请求返回 409 后固定在页面顶部，直到重新载入成功才消失。唯一动作是「重新载入」；横幅存在期间页面上所有写操作按钮禁用，只读内容照常可看。</p>
+      </div>
+
+      <div class="specimens">
+
+        <figure class="specimen" data-od-id="banner-task">
+          <figcaption><span class="stamp stamp-warn">任务</span>任务页 · 页面顶部，写操作已禁用</figcaption>
+          <div class="plate">
+            <div class="conflict-banner" role="alert">
+              <span class="stamp stamp-on-warn">409</span>
+              <p class="conflict-msg">任务已变更，请刷新后再操作。</p>
+              <div class="conflict-actions">
+                <span class="stamp stamp-on-warn">写操作已禁用</span>
+                <button type="button" class="btn btn-primary" data-od-id="reload-task">重新载入</button>
+              </div>
+            </div>
+            <div class="page-context">
+              <div class="page-context-head">
+                <div>
+                  <p class="section-code">MERCHANT / TASKS</p>
+                  <h3>示例商户</h3>
+                </div>
+                <button type="button" class="btn" disabled>归档商户</button>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="banner-plan">
+          <figcaption><span class="stamp stamp-warn">Plan</span>Plan 审阅页 · revision 已变化，旧 checksum 失效</figcaption>
+          <div class="plate">
+            <div class="conflict-banner" role="alert">
+              <span class="stamp stamp-on-warn">409</span>
+              <p class="conflict-msg">服务器 revision 已变化，旧 checksum 已失效。请重新载入后审阅。</p>
+              <div class="conflict-actions">
+                <span class="stamp stamp-on-warn">写操作已禁用</span>
+                <button type="button" class="btn btn-primary" data-od-id="reload-plan">重新载入</button>
+              </div>
+            </div>
+            <div class="page-context">
+              <div class="page-context-head">
+                <div>
+                  <p class="section-code">PLAN / REVIEW</p>
+                  <h3>示例商户</h3>
+                </div>
+                <button type="button" class="btn" disabled>提交审阅</button>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="banner-busy">
+          <figcaption><span class="stamp">重新载入中</span>busy · 按钮禁用，旁边显示「加载中…」</figcaption>
+          <div class="plate">
+            <div class="conflict-banner" role="alert" aria-busy="true">
+              <span class="stamp stamp-on-warn">409</span>
+              <p class="conflict-msg">任务已变更，请刷新后再操作。</p>
+              <div class="conflict-actions">
+                <span class="conflict-status" role="status">加载中…</span>
+                <button type="button" class="btn btn-primary" aria-busy="true" disabled data-od-id="reload-busy">重新载入</button>
+              </div>
+            </div>
+            <div class="page-context">
+              <div class="page-context-head">
+                <div>
+                  <p class="section-code">MERCHANT / TASKS</p>
+                  <h3>示例商户</h3>
+                </div>
+                <button type="button" class="btn" disabled>归档商户</button>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+      </div>
+    </section>
+
+    <!-- 03 提示 -->
+    <section id="notice" class="kit-section" data-od-id="section-notice" aria-labelledby="h-notice">
+      <div class="section-head">
+        <p class="section-code">03 / NOTICE</p>
+        <h2 id="h-notice" data-od-id="heading-notice">提示</h2>
+        <p class="section-summary">error / success / warning 三种语气，同一个横条组件：8px 12px 内边距、8px 圆角、浅色底、同色系深色字。页级提示放在页面标题之下、内容之上；对话框内提示放在 body 里、段落或输入之后。语气只靠文字和颜色配对表达，不加图标。</p>
+      </div>
+
+      <p class="section-code" style="margin-bottom: 12px;">PAGE LEVEL</p>
+      <div class="specimens specimens-3" style="margin-bottom: 32px;">
+
+        <figure class="specimen" data-od-id="notice-page-error">
+          <figcaption><span class="stamp stamp-danger">error</span>页级</figcaption>
+          <div class="plate page-context">
+            <p class="section-code">MERCHANT / DETAIL</p>
+            <h3>示例商户</h3>
+            <p class="notice notice-error" role="alert">请求校验失败：商户名称不能为空</p>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="notice-page-success">
+          <figcaption><span class="stamp stamp-ok">success</span>页级</figcaption>
+          <div class="plate page-context">
+            <p class="section-code">MERCHANT / DETAIL</p>
+            <h3>示例商户</h3>
+            <p class="notice notice-success" role="status">已保存。</p>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="notice-page-warning">
+          <figcaption><span class="stamp stamp-warn">warning</span>页级</figcaption>
+          <div class="plate page-context">
+            <p class="section-code">LOCAL FALCON / PAID SCAN</p>
+            <h3>示例商户</h3>
+            <p class="notice notice-warning" role="status">此操作将消耗 Local Falcon credits</p>
+          </div>
+        </figure>
+
+      </div>
+
+      <p class="section-code" style="margin-bottom: 12px;">IN DIALOG</p>
+      <div class="specimens specimens-dialog">
+
+        <figure class="specimen" data-od-id="notice-dialog-error">
+          <figcaption><span class="stamp stamp-danger">error</span>对话框内 · 输入之后，输入框同时标红</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-edit-error-title">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">MERCHANT / EDIT</p>
+                <h3 class="dialog-title" id="dlg-edit-error-title">编辑商户</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="dialog-body">
+              <div class="field">
+                <label for="merchant-name-error">商户名称</label>
+                <input class="input" id="merchant-name-error" type="text" value="" aria-invalid="true" aria-describedby="merchant-name-error-msg" />
+              </div>
+              <p class="notice notice-error" role="alert" id="merchant-name-error-msg">请求校验失败：商户名称不能为空</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet">取消</button>
+              <button type="button" class="btn btn-primary" data-od-id="save-merchant-error">保存</button>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="notice-dialog-success">
+          <figcaption><span class="stamp stamp-ok">success</span>对话框内 · 保存后不关闭，就地反馈</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-edit-ok-title">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">MERCHANT / EDIT</p>
+                <h3 class="dialog-title" id="dlg-edit-ok-title">编辑商户</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="dialog-body">
+              <div class="field">
+                <label for="merchant-name-ok">商户名称</label>
+                <input class="input" id="merchant-name-ok" type="text" value="示例商户" />
+              </div>
+              <p class="notice notice-success" role="status">已保存。</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet">取消</button>
+              <button type="button" class="btn btn-primary" data-od-id="save-merchant-ok">保存</button>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="notice-dialog-warning">
+          <figcaption><span class="stamp stamp-warn">warning</span>对话框内 · 参数表之后，确认之前</figcaption>
+          <div class="operation-confirm-dialog" role="dialog" aria-labelledby="dlg-scan-title">
+            <div class="dialog-header">
+              <div>
+                <p class="section-code">LOCAL FALCON / PAID SCAN</p>
+                <h3 class="dialog-title" id="dlg-scan-title">发起 Local Falcon 扫描</h3>
+              </div>
+              <button type="button" class="dialog-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="dialog-body">
+              <p>确认为“示例商户”发起一次 Local Falcon 扫描？</p>
+              <dl class="params">
+                <dt>商户</dt><dd>示例商户</dd>
+                <dt>数据源</dt><dd>Local Falcon</dd>
+              </dl>
+              <p class="notice notice-warning" role="status">此操作将消耗 Local Falcon credits</p>
+            </div>
+            <div class="dialog-footer">
+              <button type="button" class="btn btn-quiet">取消</button>
+              <button type="button" class="btn btn-primary" data-od-id="start-scan">发起扫描</button>
+            </div>
+          </div>
+        </figure>
+
+      </div>
+    </section>
+
+    <!-- 04 加载 -->
+    <section id="loading" class="kit-section" data-od-id="section-loading" aria-labelledby="h-loading">
+      <div class="section-head">
+        <p class="section-code">04 / LOADING</p>
+        <h2 id="h-loading" data-od-id="heading-loading">加载</h2>
+        <p class="section-summary">加载文本统一「加载中…」并带 role="status"，骨架块只是它的视觉补充。骨架块用 breathe 呼吸（opacity 1 → 0.25 → 1，1.6s），prefers-reduced-motion 下静止。busy 按钮与禁用态同色，读取类文本用「加载中…」，提交类用「提交中…」。</p>
+      </div>
+
+      <div class="specimens specimens-loading">
+
+        <figure class="specimen" data-od-id="skeleton-list">
+          <figcaption><span class="stamp">列表骨架</span>商户列表 · 表头 + 5 行</figcaption>
+          <div class="card">
+            <div class="card-head">
+              <span>商户</span>
+              <span class="loading-text" role="status">加载中…</span>
+            </div>
+            <div aria-hidden="true">
+              <div class="sk-row sk-row-head">
+                <div class="skeleton" style="width: 40%"></div>
+                <div class="skeleton" style="width: 70%"></div>
+                <div class="skeleton" style="width: 55%"></div>
+                <div class="skeleton" style="width: 45%"></div>
+                <div class="skeleton" style="width: 60%"></div>
+              </div>
+              <div class="sk-row">
+                <div class="skeleton" style="width: 72%"></div>
+                <div class="skeleton skeleton-stamp"></div>
+                <div class="skeleton" style="width: 60%"></div>
+                <div class="skeleton" style="width: 45%"></div>
+                <div class="skeleton" style="width: 100%"></div>
+              </div>
+              <div class="sk-row">
+                <div class="skeleton" style="width: 58%"></div>
+                <div class="skeleton skeleton-stamp"></div>
+                <div class="skeleton" style="width: 70%"></div>
+                <div class="skeleton" style="width: 40%"></div>
+                <div class="skeleton" style="width: 100%"></div>
+              </div>
+              <div class="sk-row">
+                <div class="skeleton" style="width: 80%"></div>
+                <div class="skeleton skeleton-stamp"></div>
+                <div class="skeleton" style="width: 52%"></div>
+                <div class="skeleton" style="width: 48%"></div>
+                <div class="skeleton" style="width: 100%"></div>
+              </div>
+              <div class="sk-row">
+                <div class="skeleton" style="width: 64%"></div>
+                <div class="skeleton skeleton-stamp"></div>
+                <div class="skeleton" style="width: 66%"></div>
+                <div class="skeleton" style="width: 36%"></div>
+                <div class="skeleton" style="width: 100%"></div>
+              </div>
+              <div class="sk-row">
+                <div class="skeleton" style="width: 70%"></div>
+                <div class="skeleton skeleton-stamp"></div>
+                <div class="skeleton" style="width: 58%"></div>
+                <div class="skeleton" style="width: 50%"></div>
+                <div class="skeleton" style="width: 100%"></div>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="skeleton-detail">
+          <figcaption><span class="stamp">详情骨架</span>商户详情 · 标题 + 参数表</figcaption>
+          <div class="card">
+            <div class="card-head">
+              <span>商户详情</span>
+              <span class="loading-text" role="status">加载中…</span>
+            </div>
+            <div class="sk-detail" aria-hidden="true">
+              <div style="display: grid; gap: 10px;">
+                <div class="skeleton" style="width: 96px; height: 8px;"></div>
+                <div class="skeleton" style="width: 220px; height: 18px;"></div>
+              </div>
+              <div class="sk-dl">
+                <div class="skeleton" style="width: 64px"></div><div class="skeleton" style="width: 60%"></div>
+                <div class="skeleton" style="width: 48px"></div><div class="skeleton skeleton-stamp"></div>
+                <div class="skeleton" style="width: 72px"></div><div class="skeleton" style="width: 76%"></div>
+                <div class="skeleton" style="width: 56px"></div><div class="skeleton" style="width: 32%"></div>
+                <div class="skeleton" style="width: 64px"></div><div class="skeleton" style="width: 54%"></div>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen specimen-wide" data-od-id="button-busy">
+          <figcaption><span class="stamp">按钮 busy</span>主按钮 / 默认按钮读取中，危险确认提交中，配对的「取消」同时禁用</figcaption>
+          <div class="plate plate-pad">
+            <div class="btn-row">
+              <button type="button" class="btn btn-primary" aria-busy="true" disabled data-od-id="busy-primary">加载中…</button>
+              <button type="button" class="btn" aria-busy="true" disabled data-od-id="busy-default">加载中…</button>
+              <span class="sep" aria-hidden="true"></span>
+              <button type="button" class="btn btn-quiet" disabled>取消</button>
+              <button type="button" class="btn btn-danger-solid" aria-busy="true" disabled data-od-id="busy-danger">提交中…</button>
+            </div>
+          </div>
+        </figure>
+
+      </div>
+    </section>
+
+    <!-- 05 空态 -->
+    <section id="empty-state" class="kit-section" data-od-id="section-empty-state" aria-labelledby="h-empty-state">
+      <div class="section-head">
+        <p class="section-code">05 / EMPTY STATE</p>
+        <h2 id="h-empty-state" data-od-id="heading-empty-state">空态</h2>
+        <p class="section-summary">最小高 116px、居中、13px 灰字，底色比卡片略灰。只有存在明确的下一步时才放主操作按钮；筛选或查询导致的空结果只陈述事实，不给按钮，操作员改筛选条件即可。</p>
+      </div>
+
+      <div class="specimens specimens-2">
+
+        <figure class="specimen" data-od-id="empty-analysis">
+          <figcaption><span class="stamp stamp-ok">带主操作</span>分析 · 有明确下一步</figcaption>
+          <div class="card">
+            <div class="card-head"><span>分析</span></div>
+            <div class="empty-state">
+              <p>尚未发起分析。第一次分析会在这里生成报告和任务提案。</p>
+              <button type="button" class="btn btn-primary" data-od-id="start-analysis">发起分析</button>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="empty-merchants">
+          <figcaption><span class="stamp">无主操作</span>商户列表 · 筛选结果为空</figcaption>
+          <div class="card">
+            <div class="card-head"><span>商户</span></div>
+            <div class="empty-state">
+              <p>当前筛选下没有商户。</p>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="empty-tasks">
+          <figcaption><span class="stamp">无主操作</span>任务列表 · 查询结果为空</figcaption>
+          <div class="card">
+            <div class="card-head"><span>任务</span></div>
+            <div class="empty-state">
+              <p>当前查询条件下没有任务。</p>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="specimen" data-od-id="empty-events">
+          <figcaption><span class="stamp">无主操作</span>事件 · 尚无记录</figcaption>
+          <div class="card">
+            <div class="card-head"><span>事件</span></div>
+            <div class="empty-state">
+              <p>暂无事件记录。</p>
+            </div>
+          </div>
+        </figure>
+
+      </div>
+    </section>
+
+  </main>
+</body>
+</html>
