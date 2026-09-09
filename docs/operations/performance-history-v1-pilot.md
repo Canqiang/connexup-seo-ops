@@ -120,6 +120,14 @@ This writes to `data/seo-ops-v3.db` (the default `SEO_OPS_DB`) — do **not**
 set `SEO_OPS_DB` this time. Confirm it printed `seeded location_id=... scope_id=...`
 for both locations before moving on.
 
+It is safe to re-run this command — the resulting location ids, scope ids,
+binding count, and timezone all converge to the same values every time —
+but it is not silent on repeat: `set_location_timezone` appends a fresh
+`merchant_location_status_events` row on every `--apply` run even when the
+timezone doesn't change, so re-running Step 3 more than once grows that
+table's audit trail (two runs leave three events per location, not two).
+That is expected and harmless, not a sign something went wrong.
+
 ---
 
 ## Step 4 — Turn on the two feature flags, scoped to this merchant only
@@ -307,11 +315,30 @@ Reconcile against `query-2026-09.json`:
    up in the response's series as `"availability": "unavailable"` with a
    `missing_reason` (`"no_observation"` or `"metric_unavailable"`) — never
    as a silent `0`.
-3. **The comparison-before-source-start case is flagged, not silently
-   wrong.** The comparison window for `previous_equal_length` here falls
-   mostly before `2026-08-18`. Confirm the affected KPI entries in the
-   response report `"delta_reason": "comparison_unavailable"` rather than a
-   computed (and misleading) percent change.
+3. **The comparison window overlaps the backfilled range — expect a
+   computed (and likely skewed) percent here, not
+   `delta_reason: "comparison_unavailable"`.** The `previous_equal_length`
+   comparison window for this exact query is `2026-08-06`..`2026-08-19` —
+   14 days — and it contains `2026-08-18` and `2026-08-19`, both inside
+   the range Step 6 backfilled (the source starts exactly on
+   `2026-08-18`). `_aggregate` (`api/app/performance_query.py`) reports
+   `unavailable` only when `observed == 0` across the whole comparison
+   period, and `compute_delta` (`api/app/performance_periods.py`) takes
+   its `comparison_unavailable` branch only when the comparison total is
+   `None` — with two of fourteen days observed, neither condition is met,
+   so every KPI here will most likely show a real, computed percent
+   instead. Because `previous_equal_length` compares equal-length windows
+   it uses `basis: "total"`, so that percent is a straight ratio between a
+   full 14-day current total and a comparison total built from only one or
+   two observed days out of fourteen — **before trusting any percent from
+   this query, read that KPI's `comparison.observed` against
+   `comparison.expected` and its `completeness`, and treat a percent built
+   from a handful of observed days as meaningless, not as a real
+   month-over-month change.** A genuine `delta_reason:
+   "comparison_unavailable"` only appears when the comparison window has
+   zero observed days anywhere in it (for example, a window that falls
+   entirely before `2026-08-18`) — that is not the case for this query, so
+   do not expect to see it here.
 
 ---
 
