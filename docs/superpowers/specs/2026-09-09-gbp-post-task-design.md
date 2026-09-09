@@ -2,7 +2,7 @@
 
 日期：2026-09-09
 状态：待用户审阅。第二版（2026-09-09 下午）：按用户审阅 AM 工作台原型时的裁定，把第一版的「单任务三阶段」改为「草稿 → 审核 → 发布」三个独立 Task，聚合成一张「GBP 内容工作单」。工作单界面原型见 `docs/evidence/2026-09-09-am-workspace-ui/`（`am-gbp-work-order` 区块）；帖子卡视觉沿用 `docs/evidence/2026-09-09-gbp-post-ui/`。
-取代：`2026-09-03-gbp-post-execution-phase-3.md` 里「发布 Agent + 验证 Agent + 托管策略」的实施假设，以及本文件第一版的单任务三阶段模型；沿用 `2026-09-02-agent-generated-task-dependencies-design.md` 的状态机、ApprovalGrant 与「只有读回才算 DONE」原则；与 `2026-09-09-agent-driven-local-seo-am-os-design.md` §6.3、§6.4、§9.2、§18.2 一致。
+取代：`2026-09-03-gbp-post-execution-phase-3.md` 里「发布 Agent + 验证 Agent + 托管策略」的实施假设，以及本文件第一版的单任务三阶段模型；沿用 `2026-09-02-agent-generated-task-dependencies-design.md` 的状态机、ApprovalGrant 与「只有读回才算 DONE」原则；与 `2026-09-09-agent-driven-local-seo-am-os-design.md` §6.3、§6.4、§9.2、§18.2 一致；授权判定、批准失效、异常恢复与收件箱归类遵守 `2026-09-09-am-os-business-contract-design.md`（下称「契约」），本文只写 GBP 特有部分。
 
 ## 1. 目标
 
@@ -129,7 +129,7 @@ GBP_POST_PUBLISH : PENDING → EXECUTING → VERIFYING → DONE
 
 派单：草稿 Task 分派给绑定的内容 Agent；审核 Task 分派给商户的负责 AM（服务端路径，不走操作员自派接口）；发布 Task 分派给绑定的发布 Agent。三者一次创建，依赖同时写入 `task_dependencies`。
 
-首页归类：审核 Task 因为决定一次外部写，进「需要我决定」，卡片主按钮「审阅草稿」；发布 Task 核验失败进「需要我决定」，主按钮「开始核验」；草稿 Task 的 needs_input 生成的人工输入任务进「分派给我」。
+首页归类按契约 §5.1 单一归属：审核 Task 的交付物是门控外部写的决定，只进「需要我决定」（不再同时出现在「分派给我」），卡片主按钮「审阅草稿」，并按契约 §2.4 标注「R3 · 公开内容需逐条审批」；发布 Task 核验失败进「需要我决定」，主按钮「开始核验」（R5）；草稿 Task 的 needs_input 生成的人工输入任务进「分派给我」（R2）。
 
 ## 6. Agent 配置（本仓库交付）
 
@@ -200,7 +200,7 @@ SEO_OPS_GBP_POST_ENABLED=false
 ### 9.1 审核 Task（HUMAN，分派给商户负责 AM）
 
 - 审核视图就是工作单第 ② 步的展开：完整正文不截断；真实图片及其来源与授权标注（如「商户照片 · 来源：FBR 菜品图 #17 · 已授权」或「AI 生成」）；CTA 类型与真实目标网址；目标门店；版本号与 artifact checksum；依赖说明（§5.2）。首页卡只保留结论、影响、操作三行和 80 字预览（标注「完整内容在审阅页」），主按钮「审阅草稿」，不提供「批准并发布」。
-- 决定 A「批准这一版」：ConfirmDialog（文案见附录 C）。服务端校验当前登录身份是审核 Task 的 assignee，不接受任何由模型提交的「AM 已批准」。写 `task_approvals`：review_task_id、draft_task_id、artifact checksum、media sha256、location_id、operator、时间、`grant_type=HUMAN`、`status=ACTIVE`、`expires_at`（默认 7 天）。审核 Task → DONE(APPROVED)，发布 Task 就绪性变 READY，`parameters.approved_artifact_checksum` 写入。
+- 决定 A「批准这一版」：ConfirmDialog（文案见附录 C）。服务端校验当前登录身份是审核 Task 的 assignee，不接受任何由模型提交的「AM 已批准」。写 `task_approvals`，绑定契约 §1.4 的五要素：review_task_id、draft_task_id、artifact checksum（正文）、media sha256（图片）、cta_type + cta_url（链接）、location_id（门店）、`publish_window`（发布时间窗，默认批准起 7 天，也是 `expires_at`）、operator、时间、`grant_type=HUMAN`、`status=ACTIVE`。五要素任一改变或时间窗过期，批准按契约 §3.2 失效，发布 Task 回到 WAITING_AUTHORIZATION 并新建审核 Task。审核 Task → DONE(APPROVED)，发布 Task 就绪性变 READY，`parameters.approved_artifact_checksum` 写入。
 - 决定 B「退回并说明」：理由必填。写 `task_approvals` `status=RETURNED`；审核 Task → DONE(RETURNED)。服务端同一事务创建草稿 v(N+1)（`replaces_task_id` 指向旧草稿，`reviewer_feedback` 进请求）和新的审核 Task（同一 AM），并为发布 Task 新增对新审核 Task 的依赖；旧版产物与旧审核记录保留只读。退回理由同时作为「待确认经验」候选进入记忆（AM OS §10），需 AM 在记忆页确认才成为规则，不自动生效。
 - 人工任务通用次操作（不再有「标记为无法完成」）：「暂时受阻」= 加 blocker 与备注，任务 NEEDS_ATTENTION，不关闭；「请求协助」= 写事件交 Orchestrator 接续（它可提案 `CREATE_TASK`），不关闭；「转交给…」= 改派给另一位 AM（需要把现有 `set_assignment` 的「HUMAN 只能派给自己」放宽为「AM 可转交给其他 AM」，见 §14）；「取消任务」= 理由必填 + 确认，等于取消整张工作单。
 - 批准有效性在发布前重新校验（AM OS §9.2）：grant `ACTIVE`、未过期、artifact checksum 与图片 sha256 未变、location 未变、审核 Task 的 assignee 与 grant 的 operator 一致。任何不一致 → 发布 Task NEEDS_ATTENTION，不发布。
@@ -213,7 +213,7 @@ SEO_OPS_GBP_POST_ENABLED=false
 - AGENT 执行：先落库 request JSON 与 checksum、idempotency key，再 trigger 发布 Agent 一次。
 - HUMAN 执行：attempt 落库后发布 Task 进 EXECUTING，工作单第 ③ 步给发布清单（正文复制、图片下载、CTA、目标门店、audit_id）；AM 点「我已发布，去核对」即写入声明并进入 VERIFYING。声明不是完成，核对规则与 AGENT 完全相同。
 - 结果处理：COMPLETED 且 trace 里 `createLocationPost` 恰好一次且返回 `post_id` → 记 `provider_resource_id`，发布 Task → VERIFYING。trace 显示零次调用且 run 失败 → 可重新发布（同幂等身份，限 2 次）。其他任何情况（超时、多次调用、无 post_id、响应丢失）→ 直接 VERIFYING 以读回为准，绝不重发。
-- 结果未知的通知：核验最终失败时发布 Task NEEDS_ATTENTION，核验责任人 = 商户负责 AM，首页「需要我决定」出现「上次发布结果未知，需要你核验」，主按钮「开始核验」（新建 VERIFICATION attempt），次按钮「查看读回列表」，提示「不会自动重发」。这条不能放进「需要关注」或「仅知会」。
+- 结果未知的通知：核验最终失败时发布 Task NEEDS_ATTENTION，核验责任人 = 商户负责 AM，首页「需要我决定」出现「上次发布结果未知，需要你核验」，主按钮「开始核验」（新建 VERIFICATION attempt），次按钮「查看读回列表」，提示「不会自动重发」。这条不能放进「需要关注」或「仅知会」。异常卡内容按契约 §4.3 模板（影响、系统已尝试、现在需要谁做什么、何时升级）；影响范围只限本工作单（契约 §4.2 任务级）。
 
 ## 10. 核对
 
@@ -232,7 +232,7 @@ SEO_OPS_GBP_POST_ENABLED=false
 - `task_work_orders`（id, merchant_id, location_id, kind ∈ GBP_POST, topic, plan_id, created_by, created_at, cancelled_at, cancel_reason）。状态不存，从成员任务派生。
 - `task_artifacts`（task_id, execution_id, schema_version, version, artifact_json, checksum, media_id, created_at）。
 - `task_media`（id, task_id, source ∈ AI_GENERATED|MERCHANT_PHOTO|OPERATOR_UPLOAD, local_path, public_url, sha256, bytes, content_type, alt_text, created_at）。
-- `task_approvals`（id, work_order_id, review_task_id, draft_task_id, artifact_checksum, media_sha256, location_id, operator, grant_type ∈ HUMAN, status ∈ ACTIVE|RETURNED|REVOKED|EXPIRED, reason, created_at, expires_at, revoked_at, revoked_by）。
+- `task_approvals`（id, work_order_id, review_task_id, draft_task_id, artifact_checksum, media_sha256, cta_type, cta_url, location_id, publish_window_start, publish_window_end, operator, grant_type ∈ HUMAN, status ∈ ACTIVE|RETURNED|INVALIDATED|REVOKED|EXPIRED, reason, created_at, expires_at, revoked_at, revoked_by）。
 - `merchant_voice_profiles`（merchant_id, version, tone_json, structure_json, avoid_json, image_policy_json, note, created_by, created_at）。
 - `merchant_promotions`（merchant_id, kind ∈ EVENT|OFFER, title, starts_on, ends_on, terms, source_note, created_by, created_at）。
 - `merchant_photos`（merchant_id, source ∈ FBR_MENU|FBR_POST|OPERATOR_UPLOAD, url, local_path, alt_text, authorized, sha256, created_at）。
