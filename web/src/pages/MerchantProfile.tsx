@@ -319,7 +319,11 @@ function ContentAssets({ location }: { location: MerchantGbpLocation }) {
           </div>
           {menuItems.length > 0 ? (
             <>
-              <ul className="gbp-menu-catalog" aria-label="菜品目录">
+              <ul
+                className={showAllMenuItems ? 'gbp-menu-catalog gbp-menu-catalog--scroll' : 'gbp-menu-catalog'}
+                aria-label="菜品目录"
+                {...(showAllMenuItems ? { role: 'region', tabIndex: 0 } : {})}
+              >
                 {visibleMenuItems.map((item, index) => {
                   const mediaUrl = safeHttpUrl(item.media_url)
                   const mediaUnavailable = mediaUrl ? unavailableMedia.has(mediaUrl) : false
@@ -1081,7 +1085,7 @@ function KeywordRanking({
               ? <span>FBR 已落库 · {keywords.length} 个关键词 · {hasMissingLocalScores ? '评分缺失' : `Top ${localFalconCohort.length}`}</span>
               : keywords.length > 0
                 ? hasTrustedScoredCohort
-                  ? <span>Seed + Ranking Skill 已调用 · Top {localFalconCohort.length} 待审批</span>
+                  ? <span>Seed + Ranking Skill 已调用 · 按评分取最多 20 个，本次符合条件 {localFalconCohort.length} 个，待审批</span>
                   : <span>历史关键词结果 · 尚未通过来源校验</span>
                 : null}
           <div className="seo-target-primary-actions">
@@ -1096,7 +1100,7 @@ function KeywordRanking({
               type="button"
               onClick={openGenerationConfirmation}
               disabled={localFalconBusy || isGenerationRunning || !canOpenGenerationConfirmation}
-            >审批并生成 Top 20 报告</button>
+            >审批并生成排名报告</button>
           </div>
           <div className="seo-target-secondary-actions" aria-label="关键词辅助操作">
             <button className="text-action" type="button" onClick={() => setVersionsOpen(value => !value)} aria-expanded={versionsOpen} aria-controls="seo-keyword-versions">查看版本</button>
@@ -1219,8 +1223,8 @@ function KeywordRanking({
                   <th>关键词 / 优先级</th>
                   <th><span className="field-label-line align-right">{keywordScoreHeading}<FieldHelp label="关键词评分" description={keywordScoreDescription} align="end" /></span></th>
                   <th><span className="local-falcon-heatmap-head"><span>热力图</span><LocalFalconLegend /></span></th>
-                  <th><span className="field-label-line align-right">ARP<FieldHelp label="ARP" description="Local Falcon 网格中各采样点排名的平均值；数值越低越好。" align="end" /></span></th>
-                  <th><span className="field-label-line align-right">ATRP<FieldHelp label="ATRP" description="商户被发现的采样点中，各点排名的平均值；数值越低越好。" align="end" /></span></th>
+                  <th><span className="field-label-line align-right">ARP<FieldHelp label="ARP" description="Average Rank Position：只统计商户进入前 20 名的采样点，取这些点排名的平均值；未进入前 20 的点不计入。数值越低越好。" align="end" /></span></th>
+                  <th><span className="field-label-line align-right">ATRP<FieldHelp label="ATRP" description="Average Total Rank Position：统计网格中全部采样点，未进入前 20 的点按截断值计入，因此同一次扫描的 ATRP 不会低于 ARP。数值越低越好。" align="end" /></span></th>
                   <th><span className="field-label-line align-right">SoLV<FieldHelp label="SoLV" description="Share of Local Voice，本地排名可见度占比；数值越高越好。" align="end" /></span></th>
                   <th><span className="field-label-line align-right">DataForSEO Local Pack 排名<FieldHelp label="本地排名" description="DataForSEO 在单一搜索位置读取的 Local Pack 名次；它不是 Skill 评分，也不是 Local Falcon 网格平均排名。" align="end" /></span></th>
                   <th><span className="field-label-line align-right">DataForSEO 自然排名<FieldHelp label="自然排名" description="DataForSEO 读取的商户网站普通自然搜索结果位置；没有测得时显示“—”，不代表第 0 名。" align="end" /></span></th>
@@ -1316,7 +1320,7 @@ function KeywordRanking({
         onConfirm={() => void confirmGeneration()}
         onCancel={closeGenerationConfirmation}
       >
-        <Notice tone="warning"><strong>此操作将消耗 Local Falcon credits</strong>。系统只提交当前已评分并待审批的 Top {localFalconConfirmation?.keywords.length || 0}，不会自动扩大关键词范围。</Notice>
+        <Notice tone="warning"><strong>此操作将消耗 Local Falcon credits</strong>。按评分取最多 20 个关键词，本次符合条件的是 {localFalconConfirmation?.keywords.length || 0} 个，系统只提交这些，不会自动扩大关键词范围。</Notice>
         <div className="scan-confirm-location" aria-label="扫描门店">
           <strong>{localFalconConfirmation?.locationTitle}</strong>
           <span>{localFalconConfirmation?.locationAddress || '未返回门店地址'}</span>

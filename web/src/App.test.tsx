@@ -1379,7 +1379,7 @@ describe('desktop operator shell', () => {
     expect(screen.getByRole('region', { name: '关键词与 Local Falcon 排名' }).getAttribute('aria-busy')).toBe('true')
     expect(status.querySelector('.seo-running-spinner')).not.toBeNull()
     expect(status.querySelector('.seo-running-progress')).not.toBeNull()
-    for (const name of ['重新生成关键词并评分', '审批并生成 Top 20 报告', '读取中…', '只同步已有报告']) {
+    for (const name of ['重新生成关键词并评分', '审批并生成排名报告', '读取中…', '只同步已有报告']) {
       expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
     }
 
@@ -1573,7 +1573,7 @@ describe('desktop operator shell', () => {
 
     await screen.findByRole('heading', { name: 'SEO 目标关键词与排名' })
     screen.getByRole('button', { name: '重新生成关键词并评分' })
-    screen.getByRole('button', { name: '审批并生成 Top 20 报告' })
+    screen.getByRole('button', { name: '审批并生成排名报告' })
     screen.getByRole('button', { name: '从 FBR 重新读取' })
     screen.getByRole('button', { name: '只同步已有报告' })
     screen.getByText('评分 95')
@@ -1600,7 +1600,7 @@ describe('desktop operator shell', () => {
     expect(screen.queryByRole('dialog', { name: 'breakfast upper west side Local Falcon 报告' })).toBeNull()
     expect(screen.queryByRole('button', { name: /查看全部 .* 个关键词/ })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: '审批并生成 Top 20 报告' }))
+    fireEvent.click(screen.getByRole('button', { name: '审批并生成排名报告' }))
     const confirmation = screen.getByRole('dialog', { name: '确认生成 Local Falcon 报告' })
     within(confirmation).getByText('此操作将消耗 Local Falcon credits')
     within(confirmation).getByText('breakfast upper west side')
@@ -1621,7 +1621,7 @@ describe('desktop operator shell', () => {
     expect(screen.getByRole('dialog', { name: '确认生成 Local Falcon 报告' })).toBe(confirmation)
     fireEvent.click(within(confirmation).getByRole('button', { name: '关闭生成确认' }))
     expect(screen.queryByRole('dialog', { name: '确认生成 Local Falcon 报告' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '审批并生成 Top 20 报告' }))
+    fireEvent.click(screen.getByRole('button', { name: '审批并生成排名报告' }))
     const retriedConfirmation = screen.getByRole('dialog', { name: '确认生成 Local Falcon 报告' })
     fireEvent.click(within(retriedConfirmation).getByRole('button', { name: '确认并生成 2 个报告' }))
 
@@ -1641,7 +1641,7 @@ describe('desktop operator shell', () => {
       expect(retriedBatch.request_id).toBe(firstBatch.request_id)
     })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '确认生成 Local Falcon 报告' })).toBeNull())
-    expect((screen.getByRole('button', { name: '审批并生成 Top 20 报告' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '审批并生成排名报告' }) as HTMLButtonElement).disabled).toBe(true)
     const batchStatus = screen.getByRole('alert', { name: 'Local Falcon 批次状态' })
     within(batchStatus).getByText('本批次需人工对账')
     within(batchStatus).getByText('未知 2')
@@ -1919,13 +1919,13 @@ describe('desktop operator shell', () => {
     const locationSelect = screen.getByRole('combobox', { name: 'GBP 门店' }) as HTMLSelectElement
     expect(locationSelect.value).toBe('locations/uws')
     screen.getByRole('heading', { name: 'Choice Brooklyn - Upper West Side', level: 2 })
-    expect((screen.getByRole('button', { name: '审批并生成 Top 20 报告' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '审批并生成排名报告' }) as HTMLButtonElement).disabled).toBe(false)
 
     fireEvent.change(locationSelect, { target: { value: 'locations/clinton' } })
 
     screen.getByRole('heading', { name: 'Choice Brooklyn - Clinton Hill', level: 2 })
     screen.getByText('当前 SEO 工作区未绑定到所选 GBP 门店。为避免对错误的 Place ID 发起付费扫描，关键词与 Local Falcon 操作已暂停。')
-    for (const name of ['重新生成关键词并评分', '审批并生成 Top 20 报告', '从 FBR 重新读取', '只同步已有报告']) {
+    for (const name of ['重新生成关键词并评分', '审批并生成排名报告', '从 FBR 重新读取', '只同步已有报告']) {
       expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
     }
     expect(fetchMock.mock.calls.filter(([input, init]) =>
@@ -2151,7 +2151,7 @@ describe('desktop operator shell', () => {
     })
     screen.getByText('active skill keyword')
     expect(screen.queryByText('candidate FBR keyword')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '审批并生成 Top 20 报告' }))
+    fireEvent.click(screen.getByRole('button', { name: '审批并生成排名报告' }))
     const confirmation = screen.getByRole('dialog', { name: '确认生成 Local Falcon 报告' })
     fireEvent.click(within(confirmation).getByRole('button', { name: '确认并生成 1 个报告' }))
     await waitFor(() => {

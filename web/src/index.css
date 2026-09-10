@@ -33,8 +33,14 @@ body {
   color: var(--ink);
   font-size: 14px;
   line-height: 1.65;
-  min-width: 1180px;
 }
+
+/* The page deliberately has no min-width. Wide content scrolls inside its own
+   container (.table-wrap, .dashboard-table-viewport, .performance-table-viewport,
+   .seo-target-table-viewport, .agent-workbench__table-scroll), so a narrow
+   window shrinks the layout instead of pushing the right-hand actions off
+   screen. Do not "fix" a future overflow with overflow-x: hidden — that clips
+   content out of reach; give the offending block its own scrolling wrapper. */
 
 .auth-loading,
 .login-page {
@@ -1284,6 +1290,14 @@ tr.row-cancelled td.grow a { text-decoration: line-through; text-decoration-colo
 }
 .gbp-menu-filter select { width: 176px; min-width: 0; }
 .gbp-menu-catalog { border-top: 1px solid #edf1f4; }
+/* A merchant can carry dozens of dishes; the expanded catalogue scrolls in
+   place instead of pushing the rest of the profile thousands of pixels down. */
+.gbp-menu-catalog--scroll {
+  max-height: min(560px, 64vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.gbp-menu-catalog--scroll:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .gbp-menu-catalog li {
   min-height: 94px;
   padding: 10px 0;

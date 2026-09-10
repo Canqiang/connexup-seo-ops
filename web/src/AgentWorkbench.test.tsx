@@ -1487,7 +1487,7 @@ describe('Agent Workbench', () => {
     expect(screen.getByText('已选择近 7 天 · 当前仍显示近 30 天数据')).not.toBeNull()
   })
 
-  it('paused manual refresh and history controls permit only one read', async () => {
+  it('pausing stops automatic history re-reads but still allows paging the loaded range', async () => {
     const aggregate = vi.spyOn(api, 'getAgentWorkbench')
       .mockResolvedValueOnce(makeSnapshot())
       .mockResolvedValueOnce(makeSnapshot({ range: '7d' }))
@@ -1501,8 +1501,29 @@ describe('Agent Workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '刷新显示' }))
     expect(await screen.findByText('历史仍为 30d · 当前页面为 7d')).not.toBeNull()
     expect(aggregate).toHaveBeenCalledTimes(2)
+    // Pausing suppressed the automatic re-read the range change would have caused.
     expect(history).toHaveBeenCalledTimes(1)
-    expect((screen.getByRole('button', { name: '载入更多' }) as HTMLButtonElement).disabled).toBe(true)
+    // It does not lock the operator out of their own read: paging stays live and
+    // continues within the range the loaded history belongs to, not the page's.
+    const loadMore = screen.getByRole('button', { name: '载入更多' }) as HTMLButtonElement
+    expect(loadMore.disabled).toBe(false)
+    fireEvent.click(loadMore)
+    await act(async () => { await Promise.resolve() })
+    expect(history).toHaveBeenCalledTimes(2)
+    expect(history.mock.calls[1]?.[1]).toBe('30d')
+    expect(history.mock.calls[1]?.[3]).toBe('cursor')
+  })
+
+  it('reads history on first open even when auto-update is already paused', async () => {
+    vi.spyOn(api, 'getAgentWorkbench').mockResolvedValue(makeSnapshot())
+    const history = vi.spyOn(api, 'getAgentRunHistory').mockResolvedValue(makeHistory('30d'))
+    render(<AgentWorkbench />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: '暂停自动更新' }))
+    expect(history).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '查看历史' }))
+    expect(await screen.findByText('history-run-1')).not.toBeNull()
+    expect(history).toHaveBeenCalledTimes(1)
   })
 
   it('resume reloads expanded history after aggregate acceptance', async () => {

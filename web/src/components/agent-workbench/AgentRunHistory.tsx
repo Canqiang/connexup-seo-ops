@@ -74,17 +74,23 @@ export default function AgentRunHistory({ agent, range, autoUpdate, onAnnounceme
   const [error, setError] = useState<string | null>(null)
   const generationRef = useRef(0)
   const requestRef = useRef<AbortController | null>(null)
+  const historyRef = useRef<AgentRunHistoryResponse | null>(null)
+  historyRef.current = history
 
-  const load = (before: string | null, append: boolean) => {
-    if (!autoUpdate) return
+  // Pausing stops the workbench re-reading on its own. It is not a lock on the
+  // operator's own reads, so `load` never checks `autoUpdate`; callers decide.
+  // `targetRange` is the range the request belongs to, which is the displayed
+  // range for a fresh read and the loaded history's own range when paginating
+  // a paused history whose range no longer matches the page.
+  const load = (before: string | null, append: boolean, targetRange: WorkbenchRange = range) => {
     requestRef.current?.abort()
     const controller = new AbortController()
     requestRef.current = controller
     const generation = ++generationRef.current
     setLoading(true)
     setError(null)
-    void api.getAgentRunHistory(agent.id, range, 20, before, controller.signal).then(response => {
-      if (controller.signal.aborted || generation !== generationRef.current || response.range !== range) return
+    void api.getAgentRunHistory(agent.id, targetRange, 20, before, controller.signal).then(response => {
+      if (controller.signal.aborted || generation !== generationRef.current || response.range !== targetRange) return
       setHistory(response)
       setItems(current => append ? [...current, ...response.items] : response.items)
       setError(null)
@@ -99,7 +105,12 @@ export default function AgentRunHistory({ agent, range, autoUpdate, onAnnounceme
 
   useEffect(() => {
     let cancelled = false
-    if (autoUpdate) queueMicrotask(() => { if (!cancelled) load(null, false) })
+    // Re-read when live. While paused, still perform the first read — there is
+    // no earlier snapshot to preserve, and refusing it only hides history from
+    // an operator who paused before opening it.
+    if (autoUpdate || historyRef.current === null) {
+      queueMicrotask(() => { if (!cancelled) load(null, false) })
+    }
     return () => {
       cancelled = true
       generationRef.current += 1
@@ -109,7 +120,6 @@ export default function AgentRunHistory({ agent, range, autoUpdate, onAnnounceme
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id, range, autoUpdate])
 
-  if (!autoUpdate && history === null) return <p>自动更新已暂停 · 恢复后载入历史</p>
   return (
     <section className="agent-workbench__history" aria-label={`${agent.display_name} 运行历史`} aria-live="off">
       {!autoUpdate && history && history.range !== range && <p>历史仍为 {history.range} · 当前页面为 {range}</p>}
@@ -117,7 +127,7 @@ export default function AgentRunHistory({ agent, range, autoUpdate, onAnnounceme
       {error && <p className="agent-workbench__history-error">{error}</p>}
       {history !== null && items.length === 0 && !loading && !error && <p>此范围暂无已镜像 Run</p>}
       <ol>{items.map(item => <RunItem key={item.coreai_run_id} item={item} onAnnouncement={onAnnouncement} />)}</ol>
-      {history?.next_before && <button type="button" disabled={!autoUpdate || loading} onClick={() => load(history.next_before, true)}>载入更多</button>}
+      {history?.next_before && <button type="button" disabled={loading} onClick={() => load(history.next_before, true, history.range)}>载入更多</button>}
     </section>
   )
 }

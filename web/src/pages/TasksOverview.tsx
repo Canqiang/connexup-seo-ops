@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api, type TaskBlockerCode, type TaskReadiness, type TaskSourceKind, type TaskStatus, type TaskSummary, isAbortError } from '../api'
 import TaskTable from '../components/TaskTable'
 import { TASK_STATUS_LABELS } from '../labels'
@@ -22,19 +23,44 @@ const BLOCKER_OPTIONS: Array<[TaskBlockerCode, string]> = [
   ['MERCHANT_ARCHIVED', '商户已归档'],
   ['REVISION_INACTIVE', 'Plan revision 已停用'],
 ]
+const READINESS_ORDER: TaskReadiness[] = ['READY', 'BLOCKED']
+const SOURCE_ORDER: TaskSourceKind[] = ['AGENT', 'OPERATOR', 'MIGRATION']
+
+// The filters live in the query string, so leaving the page and coming back
+// (or reloading, or sharing the link) reproduces the same query instead of
+// silently resetting to "all tasks". A value the current build does not
+// recognise is dropped rather than sent to the API.
+function readFilter<T extends string>(params: URLSearchParams, key: string, allowed: readonly T[]): T | '' {
+  const raw = params.get(key)
+  return raw !== null && (allowed as readonly string[]).includes(raw) ? (raw as T) : ''
+}
 
 export default function TasksOverview() {
   const mountedRef = useRef(false)
   const loadEpochRef = useRef(0)
   const loadControllerRef = useRef<AbortController | null>(null)
   const [tasks, setTasks] = useState<TaskSummary[]>([])
-  const [status, setStatus] = useState<TaskStatus | ''>('')
-  const [readiness, setReadiness] = useState<TaskReadiness | ''>('')
-  const [blockerCode, setBlockerCode] = useState<TaskBlockerCode | ''>('')
-  const [sourceKind, setSourceKind] = useState<TaskSourceKind | ''>('')
-  const [includeArchived, setIncludeArchived] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const status = readFilter(searchParams, 'status', STATUS_ORDER)
+  const readiness = readFilter(searchParams, 'readiness', READINESS_ORDER)
+  const sourceKind = readFilter(searchParams, 'source', SOURCE_ORDER)
+  const blockerCode = readiness === 'BLOCKED'
+    ? readFilter(searchParams, 'blocker', BLOCKER_OPTIONS.map(([value]) => value))
+    : ''
+  const includeArchived = searchParams.get('archived') === '1'
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  const updateFilters = (patch: Record<string, string>) => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current)
+      for (const [key, value] of Object.entries(patch)) {
+        if (value) next.set(key, value)
+        else next.delete(key)
+      }
+      return next
+    }, { replace: true })
+  }
 
   const load = useCallback(() => {
     const epoch = ++loadEpochRef.current
@@ -78,8 +104,7 @@ export default function TasksOverview() {
   }, [load])
 
   const changeReadiness = (next: TaskReadiness | '') => {
-    setReadiness(next)
-    if (next !== 'BLOCKED') setBlockerCode('')
+    updateFilters({ readiness: next, blocker: next === 'BLOCKED' ? blockerCode : '' })
   }
 
   return (
@@ -104,7 +129,7 @@ export default function TasksOverview() {
         <div className="table-toolbar task-query-toolbar" role="group" aria-label="任务查询条件">
           <label>
             <span>权威状态</span>
-            <select aria-label="任务状态" value={status} onChange={event => setStatus(event.target.value as TaskStatus | '')}>
+            <select aria-label="任务状态" value={status} onChange={event => updateFilters({ status: event.target.value })}>
               <option value="">全部状态</option>
               {STATUS_ORDER.map(value => <option key={value} value={value}>{TASK_STATUS_LABELS[value]}</option>)}
             </select>
@@ -119,14 +144,14 @@ export default function TasksOverview() {
           </label>
           <label>
             <span>阻塞原因</span>
-            <select aria-label="任务阻塞原因" value={blockerCode} disabled={readiness !== 'BLOCKED'} onChange={event => setBlockerCode(event.target.value as TaskBlockerCode | '')}>
+            <select aria-label="任务阻塞原因" value={blockerCode} disabled={readiness !== 'BLOCKED'} onChange={event => updateFilters({ blocker: event.target.value })}>
               <option value="">全部阻塞原因</option>
               {BLOCKER_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </label>
           <label>
             <span>来源</span>
-            <select aria-label="任务来源" value={sourceKind} onChange={event => setSourceKind(event.target.value as TaskSourceKind | '')}>
+            <select aria-label="任务来源" value={sourceKind} onChange={event => updateFilters({ source: event.target.value })}>
               <option value="">全部来源</option>
               <option value="AGENT">Agent Plan</option>
               <option value="OPERATOR">操作人新增</option>
@@ -136,7 +161,7 @@ export default function TasksOverview() {
           <button
             type="button"
             className={includeArchived ? 'stat on' : 'stat'}
-            onClick={() => setIncludeArchived(value => !value)}
+            onClick={() => updateFilters({ archived: includeArchived ? '' : '1' })}
           >
             {includeArchived ? '隐藏已归档商户任务' : '显示已归档商户任务'}
           </button>
