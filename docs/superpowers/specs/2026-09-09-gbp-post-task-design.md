@@ -312,3 +312,65 @@ SEO_OPS_GBP_POST_ENABLED=false
 - 人工任务次操作说明：「受阻和协助请求会交给 Orchestrator 接续处理，不会关闭任务。」
 - 补救提示：「补救请新建补偿任务，本工作单不可修改。」
 
+
+---
+
+## 15. §14 待验证项的实测结论与裁定（2026-09-10）
+
+第 14 节的七项在写实施计划前逐项实测。探测全部只读：FBR 走 UAT 隧道 `svc/operation-assistant-api`，Core AI 走 `https://core-ai-server.connexup-uat.net`，本地走库副本与源码。以下结论取代第 14 节的问句；其中 §15.2 与 §15.6 推翻了原设计的一部分，裁定写在各条末尾。
+
+### 15.1 Core AI Skill 上传接口 —— 已确认
+
+`GET /api/skills/{id}/download` 返回 `{id, name, namespace, qualified_name, digest, content, resources[]}`，`resources[]` 每项为 `{path, content}`。`OPTIONS /api/skills` 返回 `access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS`。现有 `fbradmin/seo-keyword-seed-generate` 的 `source_type` 是 `UPLOAD`，证明上传是既有路径而非推测。
+
+裁定：上传用 `POST /api/skills`，请求体沿用 download 的形状（`content` 正文 + `resources[]` 附件），namespace 取 `fbradmin`。必填字段的确切集合在第一次 POST 后立刻 GET 读回核对，按 `docs/agents/task-preparation-2026-09-08-readback.md` 的惯例记录；不预先假设。
+
+### 15.2 图片公网 URL —— 原方案不成立，第一版删掉图片子系统
+
+`CreateGBPLocalPostRequest$Media` 只有两个字段，`media_format` 与 `source_url`，两者都必填；`UploadGBPLocationMediaRequest` 同样只接受 `source_url`。**整个 FBR 帖子与门店照片接口没有任何 base64 或文件上传入口。** 第 14.2 条设想的兜底「由发布 Agent 用 base64」在接口层面不存在。
+
+这意味着 AI 生成图与操作员上传图都必须先有一个 FBR 侧能抓取的公网地址。SEO Ops 跑在本机，没有公网地址；Core AI artifact 链接的可达性与有效期都未经证实，而它是这条链上唯一不受我们控制的一环。
+
+同时实测到 `CreateGBPLocalPostRequest` 只有 `audit_id` 与 `topic_type` 必填，`summary`、`media`、`call_to_action` 全部可选，`media` 给了就至少一项。
+
+裁定：第一版工作单只发不带新图的帖子。图片候选只允许来自该门店已有帖子的 `media[].google_url`（已是 Google 托管的公网地址，实测 Choice Brooklyn UWS 的 14 条帖子每条都带），或者干脆不带图。生图、操作员上传、`merchant_photos` 表、图片上传接口与图库页全部移出第一版。代价：第一版帖子的视觉丰富度低于运营现状。收益：删掉一个必须依赖外部托管才能成立的子系统，把第一次外部写的不确定性压到只剩文本。图片闭环另开工作单，先解决托管地址问题再谈。
+
+### 15.3 `searchAudits` 与 `audit_id` —— 已确认
+
+`PUT /seo/audit`（`merchant_id` + `place_id`）返回 `total` 与 `audits[]`，元素类型 `AuditOperationView`，`audit_id` 必填。Choice Brooklyn Upper West Side（place `ChIJH8iZh-5ZwokRPLzzADeSnYE`）返回 2 条，最新一条 `01a00ef5-68b7-79ab-a703-3902cc5c445f`，生成于 2026-08-17。`audit_id` 在 `CreateGBPLocalPostRequest` 上 `notNull=true, notBlank=true`。
+
+裁定：§9.2 的 `audit_id` 解析照原设计实现，取最新一条；没有就阻塞并提示去 FBR 建审计，不自动 `saveAudit`。
+
+### 15.4 读回延迟与 `PROCESSING` —— 路径确认，时长待第一次发布后测
+
+`GET /gbp/location/:id/post?limit=20` 与 `GET /gbp/location/:id/post/:postId` 都可用，各约 1.2–1.5 秒。UWS 当前 14 条帖子全部 `LIVE`，没有观察到 `PROCESSING`，因为没有新帖。
+
+裁定：核对优先用 `getLocationPost` 按 `post_id` 精确取，取不到再退回列表匹配。这比第 10 节原写的「只读列表再匹配」更准，且省掉多匹配的歧义。`PROCESSING` 时长只能等第一次真发布才知道，退避表暂定第 10 节的 1、5、15、60、60、60 分钟，第一次发布后按实测修正。
+
+### 15.5 发布 Agent 在 `max_turns=2` 下的稳定性 —— 未验证
+
+需要真实建 Agent 并触发才能知道，属于实施期验证，不是计划前提。计划里为它留一条独立验收：发布 Agent 在 UAT 上对着一个可丢弃的目标完成一次调用并返回结构化结果，然后才允许接真实商户。
+
+### 15.6 「商户负责 AM」与「转交给…」—— 不存在的概念，第一版删掉转交
+
+`merchants` 表的全部列是 `id, name, status, notes, created_at, auto_run_interval_days, primary_location, website_url`，没有负责人字段。更根本的是，**这个系统只有一个操作员账号**：`auth.py` 从 `SEO_OPS_AUTH_USERNAME` / `SEO_OPS_AUTH_PASSWORD` 读单一凭据，没有用户表，`assignment_options` 只返回当前登录者这一个 HUMAN 选项，`set_assignment` 明确拒绝把 HUMAN 任务派给别人（「人工负责人只能是当前登录的 AM」）。
+
+裁定：审核 Task 自动分派给那个唯一的操作员，这在语义上就是「商户负责 AM」，不需要新字段。§9.1 的次操作「转交给…」从第一版删除，§14.6 里「放宽 set_assignment」的改动一并取消——没有第二个人可转交，放宽限制只会造出一个无法验证的入口。人工任务次操作剩三个：暂时受阻、请求协助、取消任务。多人协作是独立的身份子系统，不在这条闭环里解决。
+
+另注：`assignment_lock_reason` 只允许 PENDING 与 NEEDS_ATTENTION 的任务改派。审核 Task 按 §5.1 停在 EXECUTING，本来也改派不了。
+
+### 15.7 就绪性能否表达「有效批准」—— 需要新增 blocker，不需要改模型
+
+`task_blocker` 现在按固定优先级返回四种之一：`MERCHANT_ARCHIVED`、`REVISION_INACTIVE`、`SCHEDULED_FOR_FUTURE`、`UPSTREAM_NOT_DONE`，全部由商户状态、Plan revision、排期与依赖派生，没有任何位置能表达「存在一个未过期且五要素未变的批准」。
+
+裁定：新增 blocker code `AWAITING_VALID_APPROVAL`（发布 Task 无有效批准）与 `VOICE_PROFILE_MISSING`（草稿 Task 无风格档案），各配一个派生函数，插进现有优先级链的依赖检查之后。就绪性仍然只有 READY / BLOCKED 两态，不新增第三态——第 5.1 节写的 `WAITING_AUTHORIZATION` / `WAITING_INPUT` / `WAITING_DEPENDENCY` 在现有模型里是 blocker code 而不是就绪态，按 blocker 实现，中文文案不变。前端 `TasksOverview.tsx` 的 `BLOCKER_OPTIONS` 需同步加这两项，否则查询串里的新值会被 `readFilter` 丢掉。
+
+### 15.8 复用面盘点（计划规模的依据）
+
+`task_executions` 已有 `stage`、`approval_id`、`artifact_id`、`provider_resource_id`、`request_checksum`、`idempotency_key`、`dispatch_token`、`coreai_run_id`、`evidence_json`，第 11 节「现有列已够用」属实，只缺 `executor_type`。`tasks` 已有 `replaces_task_id` / `replaced_by_task_id`，缺 `work_order_id`。`task_agent_preparation` 的一次性 trigger / attempt / dispatch_token 链路有 3 次 SUCCEEDED 的真实执行记录，草稿 Task 可直接复用而不是重写。
+
+### 15.9 第一版的落地对象
+
+`merchant_gbp_profiles` 里只有商户 3（Choice Brooklyn，两个门店）、4、5 有 GBP 档案；George（商户 7）没有 FBR 绑定也没有 GBP 档案，承载不了 GBP 工作单。第一张真实工作单落在 Choice Brooklyn - Upper West Side（`gbp_location_id` `24300588970198995`，place `ChIJH8iZh-5ZwokRPLzzADeSnYE`）。
+
+这是一家真实营业、且 GBP 正在被人运营的商户：14 条 LIVE 帖子，最近一条 2026-09-04，全部带 ORDER CTA 指向同一个 Toast 下单页。**因此第一次真实发布必须在发布前把确切正文、CTA、目标门店交给用户逐字确认，不得由本闭环自行决定发出。** 这条是红线，不是流程建议。
